@@ -332,7 +332,7 @@ def fold(p, briefs=None):
     """The concerns of this project, oldest first: {id, text, surface, opened, last_said, said, tasks, state ("open",
     "shown" or "answered"), reopened (said after its last show or answer, or its shown number worse a day later),
     proof, checked, refuted (the shown proof that a later report or reading refuted, else None), refuted_by ("said" or
-    "remeasure"), refuted_at, said_at (when each message was said)}. Empty with no rows."""
+    "remeasure"), refuted_at, said_at (when each message was said), kind (the meter's kind of the last saying)}. Empty with no rows."""
     rows = _rows(p)
     if not rows:
         return []
@@ -380,7 +380,7 @@ def _fold(p, rows, events, briefs, root, hold=False):
                     "opened": first["at"], "last_said": last["at"], "said": len(members), "tasks": sorted(tasks),
                     "state": state, "reopened": reopened, "proof": proof, "checked": checked, "refuted": refuted,
                     "refuted_by": refuted_by, "refuted_at": refuted_at, "said_at": [rows[i]["at"] for i in members],
-                    "named": docs, "saying": saying(last)})
+                    "named": docs, "saying": saying(last), "kind": last.get("kind"), "first_kind": first.get("kind")})  # T-4218: the last and first sayings' kinds
     return out
 
 
@@ -460,13 +460,15 @@ def open_concerns(p, briefs=None):
     return [x for x in fold(p, briefs) if x["state"] == "open"]
 
 
-def _wanted(x, session, floor, told):
+def _wanted(x, session, floor, told, active=None):
     t = _epoch(x["last_said"])
+    if active and x.get("kind") == "steer" and x.get("first_kind") == "steer":
+        return False  # T-4218: a steer corrects the work in progress: the session applies it to the active task
     return x["state"] == "open" and x["session"] == session and not x["tasks"] and x["saying"] not in told \
         and t is not None and t >= floor
 
 
-def hold(p, session, floor, told=(), briefs=None, limit=5):
+def hold(p, session, floor, told=(), briefs=None, limit=5, active=None):
     """T-4202: ([the open concerns the Stop hook holds a stop for, oldest first, at most limit], [the sayings handled])
     for this session: said at or after floor (epoch), with no linked task, whose latest saying (saying(): the message's
     concern id and time) is not in told. Open already means no proof and no answer after the last time it was said.
@@ -475,7 +477,12 @@ def hold(p, session, floor, told=(), briefs=None, limit=5):
     likewise. The Stop hook runs in every session at every stop, so it may not read the whole book and 30 days of ledger
     (T-4202 review: 5,000 rows and 50,000 lines cost 9 s and 6.6 MB per stop). A saying of a concern whose first message
     is older than the tail needs the whole fold (its id, its tasks and its count live there): that one reads all, once
-    per saying."""
+    per saying. T-4218: with active (the id of the session's active task), a concern whose last saying is a steer (the
+    meter's kind: a correction of the work in progress) is not held: the session applies it to that task. A new-request
+    still holds, and a steer with no active task; so does a concern first said as a new-request and said again as a
+    steer (its first saying never got a task). The skipped saying is handled like a released one. Known limits: active
+    is lane-wide (a brief names no session, so a session with no task of its own skips a steer while another session of
+    the lane has one), and a skipped steer is not held again if that task closes without applying it."""
     window = _book_since(p, floor)
     mine = [r for r in window if r.get("session") == session and (_epoch(r.get("at")) or 0) >= floor]
     fresh = [r for r in mine if saying(r) not in told]
@@ -492,7 +499,7 @@ def hold(p, session, floor, told=(), briefs=None, limit=5):
         full = fold(p, briefs)  # a said-again concern whose first message is before the tail
     else:
         full = _fold(p, rows, events, briefs, root, hold=True)
-    wanted = [x for x in full if _wanted(x, session, floor, told)]
+    wanted = [x for x in full if _wanted(x, session, floor, told, active)]
     out = wanted[:limit]
     left = {x["saying"] for x in wanted[limit:]}
     return out, [saying(r) for r in fresh if saying(r) not in left]

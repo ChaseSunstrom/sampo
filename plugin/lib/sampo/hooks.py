@@ -6601,7 +6601,8 @@ def _concern_hold(p, sd, briefs, pl, g):
         return None
     from sampo import concerns
     told = d.get("concerns") or []  # the sayings handled: a concern said again is a new saying, one saying holds once
-    rows, handled = concerns.hold(p, sid, floor, told, briefs, 5)
+    act = sd.get("active")  # T-4218: a steer on the active task is applied there, not held (lane-wide: no brief names a session)
+    rows, handled = concerns.hold(p, sid, floor, told, briefs, 5, active=(act.get("id") if isinstance(act, dict) else None))
     if handled:
         d["concerns"] = (told + handled)[-CONCERNS_TOLD:]
     if not rows:

@@ -32,9 +32,10 @@ class Case(HookCase):
     def prompt(self, session="sess-1"):
         self.hook("UserPromptSubmit", {"prompt": "where can I see it", "session_id": session})
 
-    def book(self, uuid="u1", concern="the work reaches GitHub", session="sess-1", at=None, repeat_of=None, text=None):
+    def book(self, uuid="u1", concern="the work reaches GitHub", session="sess-1", at=None, repeat_of=None, text=None,
+             kind="steer"):
         r = {"session": session, "uuid": uuid, "at": at or stamp(), "model": "fake", "text": text or f"{concern}, why not",
-             "kind": "steer", "avoidable": True, "root": "R7", "missed_thought": "check the push", "why": "said done",
+             "kind": kind, "avoidable": True, "root": "R7", "missed_thought": "check the push", "why": "said done",
              "concern": concern, "surface": "the push"}
         if repeat_of:
             r["repeat_of"] = repeat_of
@@ -137,7 +138,7 @@ class WithTask(Case):
     def test_hold_with_an_open_task_is_carried_by_the_drive_continuation_once(self):
         tid = self.task()
         self.prompt()
-        cid = self.book()
+        cid = self.book(kind="new-request")
         out = self.stop("Continuing with the retry helper next.")
         self.assertTrue(self.held(out), out)
         self.assertIn(cid, out["reason"])
@@ -148,6 +149,67 @@ class WithTask(Case):
         out = self.stop("Continuing with the retry helper next.")
         self.assertFalse(self.held(out), "the concern holds once: the next Stop is the drive alone")
         self.assertIn(f"Sampo drive: {tid}", out.get("reason") or "", out)
+
+
+class Applied(Case):
+    """T-4218: a steer is a correction of the work in progress: with a task active, the session applies it there, so the
+    stop is not held for it. A new ask (new-request) still holds, and so does a steer with no active task."""
+
+    def test_applied_a_steer_on_the_active_task_does_not_hold_the_stop(self):
+        tid = self.task()
+        self.prompt()
+        self.book(kind="steer")
+        out = self.stop("Continuing with the retry helper next.")
+        self.assertFalse(self.held(out), out)
+        self.assertIn(f"Sampo drive: {tid}", out.get("reason") or "", "the drive's own line is not lost")
+
+    def test_applied_a_new_ask_with_an_active_task_still_holds(self):
+        self.task()
+        self.prompt()
+        cid = self.book(kind="new-request")
+        out = self.stop("Continuing with the retry helper next.")
+        self.assertTrue(self.held(out), out)
+        self.assertIn(cid, out["reason"])
+
+    def test_applied_a_steer_with_no_active_task_still_holds(self):
+        self.prompt()
+        cid = self.book(kind="steer")
+        out = self.stop()
+        self.assertTrue(self.held(out), out)
+        self.assertIn(cid, out["reason"])
+
+    def test_applied_a_skipped_steer_is_handled_and_never_read_again(self):
+        self.task()
+        self.prompt()
+        self.book(kind="steer")
+        self.assertFalse(self.held(self.stop("Continuing with the retry helper next.")))
+        self.assertFalse(self.held(self.stop()), "no active task now (a plain stop): the skipped saying is spent")
+
+    def test_applied_a_concern_first_said_as_a_new_request_and_said_again_as_a_steer_still_holds(self):
+        self.prompt()
+        self.book("u1", "the work reaches GitHub", kind="new-request", at=stamp(30))
+        self.book("u2", "the work reaches GitHub", kind="steer", repeat_of="u1", text="it still does not reach GitHub")
+        self.task()
+        out = self.stop("Continuing with the retry helper next.")
+        self.assertTrue(self.held(out), "its first saying never got a task: a steer repeat does not skip it")
+
+    def test_applied_the_skip_is_lane_wide_a_second_sessions_steer_is_skipped_for_the_lanes_active_task(self):
+        self.task()  # the lane's one active task: the brief names no session, so the skip cannot tell whose it is
+        self.prompt("sess-2")
+        self.book("u9", "the work reaches GitHub", session="sess-2", kind="steer")
+        self.assertFalse(self.held(self.stop("Continuing with the retry helper next.", session="sess-2")))
+
+    def test_applied_the_fold_carries_each_concerns_kind(self):
+        self.book("u1", "the work reaches GitHub", kind="steer")
+        self.book("u2", "the login page works", kind="new-request")
+        kinds = {x["text"]: x["kind"] for x in cn.fold(self.p)}
+        self.assertEqual(kinds, {"the work reaches GitHub": "steer", "the login page works": "new-request"})
+
+    def test_applied_hold_skips_a_steer_only_when_told_an_active_task(self):
+        self.book(kind="steer", at=stamp(5))
+        floor = time.time() - 60
+        self.assertEqual(len(cn.hold(self.p, "sess-1", floor, active="T-0001")[0]), 0)
+        self.assertEqual(len(cn.hold(self.p, "sess-1", floor)[0]), 1)
 
 
 class Cost(Case):
