@@ -18,6 +18,7 @@ from sampo import live
 from sampo.watch import COMMANDS_MAX, commands as part_commands  # T-4008: the pane's poll reads it too
 
 FILES_MAX, MINUTES_MAX, LANDED_MAX, TREE_MAX = 24, 30, 8, 12
+BIGS_MAX, BIG_KIDS_MAX = 12, 40  # T-5027: the bigs part's trees, and the children kept of each
 KINDS = ("tests", "claude", "models", "hooks", "other")
 HOT_S = 600  # a leased file written in the last ten minutes is hot
 TICK_S = 10  # the CPU ring reads /proc at most this often
@@ -25,7 +26,7 @@ DAY_S = 86400
 PARKED = {"conflict", "refused"}  # lane_stop kinds that park a lane until someone acts
 GROWS = {"cards_grow": "cards", "moons_grow": "moons"}
 MODELS = re.compile(r"ollama|llama-server|llama_server|\bvllm\b|\bjeff\b", re.I)  # local model servers and their runners
-SLOW = {"train": 30, "library": 30, "state": 10, "deps": 5, "tests": 10, "commands": 3,
+SLOW = {"train": 30, "library": 30, "state": 10, "deps": 5, "tests": 10, "commands": 3, "bigs": 5, "bigs_more": 5,
         "sessions": 2, "asks": 10, "ship": 10, "usage": 10, "guard": 5}  # seconds a part is kept
 
 
@@ -197,6 +198,34 @@ def part_state(p):
     except Exception:  # noqa: BLE001 - a foresight read never breaks the state panel
         pass
     return out
+
+
+def part_bigs(p):
+    """T-5027: the big-task tree (T-4223) for the live page: each big task (open ones first, at most BIGS_MAX) with its
+    done/total, wave, spend and children (at most BIG_KIDS_MAX, "more" the rest). Reads the cached briefs; a read that
+    raises reads None in collect."""
+    from sampo import bigview
+    briefs = live._briefs(p)
+    tops = sorted(bigview._tops(briefs), key=lambda b: (b.status in c.CLOSED, -c.id_num(b.id)))  # open, newest first
+    keep = [b.id for b in tops[:BIGS_MAX]]
+    rows = {t["id"]: t for t in bigview.tree_rows(p, briefs, only=set(keep))}  # only the kept trees are built
+    out = []
+    for t in (rows[i] for i in keep if i in rows):  # id, tier, status, type are brief enums (JSON-escaped), titles go via _t
+        kids = t["children"]
+        out.append({"id": t["id"], "title": _t(t["title"], 80), "tier": t["tier"], "status": t["status"],
+                    "done": t["done"], "total": t["total"], "wave": t["wave"], "waves": t["waves"],
+                    "time_min": t["time_min"], "attempts": t["attempts"], "cost": t["cost"],
+                    "children": [{"id": k["id"], "title": _t(k["title"], 80), "type": k["type"], "tier": k["tier"],
+                                  "status": k["status"], "wave": k["wave"], "minutes": k["minutes"],
+                                  "attempts": k["attempts"]} for k in kids[:BIG_KIDS_MAX]],
+                    "more": max(0, len(kids) - BIG_KIDS_MAX)})
+    return out
+
+
+def part_bigs_more(p):
+    """T-5027: how many big-task trees part_bigs left out at its BIGS_MAX cap (cheap: no tree is built)."""
+    from sampo import bigview
+    return max(0, len(bigview._tops(live._briefs(p))) - BIGS_MAX)
 
 
 def part_tests(p):
@@ -622,6 +651,7 @@ def guard_all(slugs):
 
 PARTS = {"cpu": part_cpu, "lanes": part_lanes, "train": part_train, "loop": part_loop, "library": part_library,
          "commands": part_commands, "deps": part_deps, "state": part_state, "tests": part_tests,
+         "bigs": part_bigs, "bigs_more": part_bigs_more,
          "sessions": part_sessions, "asks": part_asks, "ship": part_ship, "usage": part_usage,
          "guard": part_guard}  # cpu first: its scan is _procs
 

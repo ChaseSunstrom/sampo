@@ -157,12 +157,21 @@ def _need(p, args):
     return b
 
 
+def tree_rows(p, briefs=None, ctx=None, only=None):
+    """T-5027: every big task's tree, the rows big status --all prints (the live Board's bigs part reads them). briefs
+    is what the caller already loaded (the Board's cached read) and ctx its _ctx; without them they are read here.
+    only: a set of ids, to build just those trees (each tree costs a forecast per child)."""
+    briefs = c.load_briefs(p) if briefs is None else briefs
+    ctx = _ctx(p, briefs) if ctx is None else ctx
+    return [_tree(p, b, briefs, ctx) for b in _tops(briefs) if only is None or b.id in only]
+
+
 def task_status(p, args):
     from sampo import cli
     briefs = c.load_briefs(p)
     ctx = _ctx(p, briefs)
     if getattr(args, "all", False):
-        rows = [_tree(p, b, briefs, ctx) for b in _tops(briefs)]
+        rows = tree_rows(p, briefs, ctx)
         text = "\n".join(_line(t) for t in rows) or "No big task yet: sampo task new … --tier XL, then sampo big plan ID"
         return cli.out(args, {"tasks": rows}, text)
     if not args.id:

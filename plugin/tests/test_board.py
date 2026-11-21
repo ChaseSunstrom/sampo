@@ -20,7 +20,7 @@ from sampo import live
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 WEB = os.path.join(ROOT, "plugin", "web", "live")
 FIX = os.path.join(ROOT, "plugin", "tests", "fixtures", "live")
-PARTS = {"lanes", "train", "cpu", "loop", "library", "commands", "deps", "state", "tests",
+PARTS = {"lanes", "train", "cpu", "loop", "library", "commands", "deps", "state", "tests", "bigs", "bigs_more",
          "sessions", "asks", "ship", "usage", "guard"}  # T-3731: the five pictures of the machine and the user's asks
 KEYS = ["lanes", "train", "cpu", "loop", "library", "models", "sampo", "state", "tests",
         "asks", "sessions", "ship", "usage", "guard"]
@@ -455,6 +455,92 @@ class Collect(SampoTestCase):
                    "git checkout my-long-feature-branch-name-here", "curl https://example.test/docs/getting-started-guide?id=42",
                    "open https://example.test/item/a1b2c3"):
             self.assertEqual(board._guard_cmd(ok), ok, ok)
+
+
+class Bigs(SampoTestCase):
+    """T-5027: board.bigs is the big-task tree (T-4223) in the snapshot: each big task with done/total, wave and children."""
+
+    def mk(self, title, tier="S"):
+        out = self.fm("task", "new", title, "--type", "FEATURE", "--tier", tier, "--ac", "x :: true", "--step", "y", "--json")
+        return json.loads(out.stdout)["id"]
+
+    def briefs(self, tree):
+        """The project's briefs with each id in tree {parent: [children]} hung under its parent in memory."""
+        got = c.load_briefs(self.p)
+        for parent, kids in tree.items():
+            for b in got:
+                if b.id in kids:
+                    b.meta["parent"] = parent
+        return got
+
+    def setUp(self):
+        super().setUp()
+        self.fm("task", "new", "Seed", "--type", "FIX", "--tier", "S", "--ac", "x :: true", "--step", "y")
+        self.p = c.find_project(self.repo)
+        live._CACHE.clear()
+
+    def test_bigs_is_a_snapshot_part_listing_each_big_task_with_done_total_wave_and_children(self):
+        big, k1, k2, k3 = self.mk("Rework /home/alice/x", "XL"), self.mk("One"), self.mk("Two"), self.mk("Three")
+        self.mk("Plain")
+        briefs = self.briefs({big: {k1, k2, k3}})
+        by = {b.id: b for b in briefs}
+        by[k1].meta["status"] = "done"
+        by[k3].meta["depends_on"] = [k2]
+        with mock.patch.object(live, "_briefs", return_value=briefs):
+            got = board.part_bigs(self.p)
+            snap = board.collect(self.p)
+        self.assertEqual([t["id"] for t in got], [big])
+        t = got[0]
+        self.assertEqual((t["done"], t["total"], t["wave"], t["tier"]), (1, 3, 1, "XL"))
+        self.assertEqual({k["id"]: k["wave"] for k in t["children"]}, {k1: 1, k2: 1, k3: 2})
+        self.assertEqual({k["id"]: k["status"] for k in t["children"]}[k1], "done")
+        self.assertNotIn("/home/alice", json.dumps(got))
+        self.assertEqual(snap["bigs"], got)
+        json.dumps(got)
+
+    def test_bigs_more_is_kept_like_bigs_not_recounted_every_snapshot(self):
+        self.assertIn("bigs_more", board.SLOW)
+
+    def test_bigs_is_empty_with_no_big_task_and_a_tree_not_yet_expanded_has_no_children(self):
+        self.assertEqual(board.part_bigs(self.p), [])
+        big = self.mk("Alone", "XL")
+        with mock.patch.object(live, "_briefs", return_value=c.load_briefs(self.p)):
+            got = board.part_bigs(self.p)
+        self.assertEqual([(t["id"], t["total"], t["wave"], t["children"]) for t in got], [(big, 0, None, [])])
+
+    def test_bigs_keeps_twelve_trees_open_ones_first_and_forty_children_saying_how_many_more(self):
+        bigs = [self.mk(f"Big {i}", "XL") for i in range(14)]
+        kids = [self.mk(f"Kid {i}") for i in range(45)]
+        briefs = self.briefs({bigs[-1]: set(kids)})
+        for b in briefs:
+            if b.id in bigs[:2]:
+                b.meta["status"] = "done"
+        with mock.patch.object(live, "_briefs", return_value=briefs):
+            got = board.part_bigs(self.p)
+        self.assertEqual(len(got), board.BIGS_MAX)
+        self.assertNotIn(bigs[0], [t["id"] for t in got])  # the closed ones go first when the cap bites
+        last = next(t for t in got if t["id"] == bigs[-1])
+        self.assertEqual((last["total"], len(last["children"]), last["more"]), (45, board.BIG_KIDS_MAX, 5))
+
+    def test_bigs_with_fourteen_open_keeps_the_newest_twelve_builds_only_those_trees_and_counts_the_cut(self):
+        from sampo import bigview
+        bigs = [self.mk(f"Big {i}", "XL") for i in range(14)]
+        briefs = self.briefs({})
+        built = []
+        real = bigview._tree
+        with mock.patch.object(live, "_briefs", return_value=briefs), \
+                mock.patch.object(bigview, "_tree", side_effect=lambda p, b, *a: built.append(b.id) or real(p, b, *a)):
+            got = board.part_bigs(self.p)
+            more = board.part_bigs_more(self.p)
+        newest = sorted(bigs, key=c.id_num, reverse=True)[:board.BIGS_MAX]
+        self.assertEqual([t["id"] for t in got], newest)
+        self.assertEqual(sorted(built), sorted(newest))
+        self.assertEqual(more, 2)
+
+    def test_bigs_never_raises_it_reads_none_in_the_snapshot_when_the_tree_read_breaks(self):
+        with mock.patch("sampo.bigview.tree_rows", side_effect=RuntimeError("down")):
+            self.assertIsNone(board.collect(self.p)["bigs"])
+        self.assertIn("bigs", board.SLOW)
 
 
 NODE = r"""

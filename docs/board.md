@@ -20,6 +20,10 @@ mechanism, on one dark grid. `#view=net` keeps the older network view; the forge
 | 13 | USAGE | the 5-hour and weekly tanks with their projection, spend per hour today, the week's curve | `board.usage`: `budget` windows and samples, `live.spend_today` |
 | 14 | GUARD | the last hour at the Ward gate: allowed and refused per minute, refusals by rule, the newest ones | `board.guard`: the events log's last 6000 lines (`tool`, `tool_fail`, `guard_block`) |
 
+The snapshot's `board` also carries `bigs` (T-5027, no panel draws it yet): the big-task tree of `sampo big status --all`
+(T-4223), up to 12 trees, open ones first, each with its done/total, wave, spend and up to 40 children (`more` counts the
+rest). It reads `bigview.tree_rows` over the cached briefs and is kept 5 s. `bigs_more` is the number of trees cut at the 12-tree cap (also kept 5 s).
+
 ## The kit
 
 Three files under `plugin/web/live/`, no libraries, shared by every panel (and meant for the site demos and SVG card
