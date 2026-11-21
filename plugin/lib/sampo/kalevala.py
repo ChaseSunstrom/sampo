@@ -177,7 +177,8 @@ JOB_TIMEOUT = 3 * 3600  # one genesis step, as night.py's jobs
 SAME_STAGE_RUNS = 3  # T-3265: a tower whose stage stays put after this many ran rounds in a row is paused, not spun
 SEEN_MAX = 32  # T-3265 round 3: the states a tower's revisit check keeps, the newest this many
 IDLE_S = 30  # T-3265 round 3: a round that spends nothing waits this long before the next one (night's deadline caps it)
-JOB_VERBS = {"spec": False, "seed": True, "select": True}  # the stages run as jobs; True: the CLI takes a generation
+JOB_VERBS = {"spec": False, "seed": True, "select": True,  # the stages run as jobs; True: the CLI takes a generation
+             "drift": True, "review": True, "sweep": True}  # T-3843 review: verbs of their own, so jobs too
 
 
 class Busy(RuntimeError):
@@ -346,6 +347,77 @@ def job_argv(name, st):
     return argv + ["--tower", name]
 
 
+# T-3843: the steps no job runs, each one headless Claude session on the cheapest model that does it well: reasoning
+# (the seed a generation climbs from, its critique, the final report) on Opus, the rest on Sonnet. A build is the
+# queue's work (its briefs are tasks); fatal, stopped and done steps wait for a person.
+SESSION_MODELS = {"seed": "opus", "critique": "opus", "report": "opus", "predict": "sonnet", "mission": "sonnet",
+                  "intake": "sonnet", "gap map": "sonnet", "blind spots": "sonnet"}  # confirm is always 'blocked'
+SESSION_USD = {"opus": 8.0, "sonnet": 4.0}  # --max-budget-usd a session; one that dies past it is booked at it
+SESSION_K = 4  # sessions a round, whatever the local model slots (API-bound): bounds a round's spend between share checks
+SESSION_TIMEOUT = 3600
+NO_EDIT = "Edit,Write,MultiEdit,NotebookEdit"  # documents go through sampo genesis put; code is never a tower's to edit
+HELD_AFTER, HELD_H = 2, 6  # a step that failed this many times in a row waits this many hours before one more try
+
+
+def session_prompt(name, st):
+    """T-3843: what a tower's session does: the one step rune.step names, through sampo genesis --tower, then stop."""
+    cmd = re.sub(r"^(fm|sampo) genesis\b", f"sampo genesis --tower {name}", st["command"])
+    return (f"You are the main thread of Kalevala tower `{name}` (one Genesis tower of this Sampo project) for exactly one "
+            f"step. Its next step is {st['stage']} of generation {st['gen']}: {st['action']}. The command that files it: "
+            f"`{cmd}`.\nFirst read what the step builds on: `sampo genesis --tower {name} step`, the tower's gen-0.md and "
+            f"spec.md, and its earlier generations under research/genesis/towers/{name}/.\nDo that one step as well as it "
+            "can be done and nothing else. Write each document to a file under $TMPDIR with Bash (cat > \"$TMPDIR/doc.md\" "
+            f"<<'EOF' … EOF), then file it with sampo genesis --tower {name} put <name> --file \"$TMPDIR/doc.md\"; never "
+            "write the repo or the state folder, never edit code, run test suites, focus, finish or close tasks, or touch "
+            f"another tower. Stop once `sampo genesis --tower {name} step` names a later step, and reply with one line: "
+            "what you filed.")
+
+
+def session_argv(name, st):
+    """T-3843: a tower's next step that no job runs (gen-1's seed, a Mission, its intake, a critique, ...) as one
+    headless session with no file-editing tools and a spend cap, or None (a job's step, a build, or a step that can't
+    go on)."""
+    model = SESSION_MODELS.get(st["stage"])
+    if not model or st.get("kind") != "ok" or job_argv(name, st):
+        return None
+    return ["claude", "-p", session_prompt(name, st), "--model", model, "--output-format", "json",
+            "--disallowedTools", NO_EDIT, "--max-budget-usd", f"{SESSION_USD[model]:g}"]
+
+
+def _why_not(st):
+    """T-3843 review: why a tower's step starts nothing this round, said on its row."""
+    if st.get("kind") != "ok":
+        return f"its step is {st.get('kind')}: {c.fit(st.get('action') or '', 120)}"
+    if st["stage"] == "build":
+        return f"a build: its task waits in the queue ({st.get('command')})"
+    return f"no job or session runs a {st['stage']} step"
+
+
+def _held_why(m, name, stage, now=None):
+    """T-3843: why a tower sits out this round: its step failed HELD_AFTER times in a row at this stage (kept per tower
+    in the manifest, so a long step log rolling over never frees it), the newest under HELD_H hours ago; '' else."""
+    f = (m.get("fails") or {}).get(name) or {}
+    if f.get("stage") != stage or int(f.get("n") or 0) < HELD_AFTER:
+        return ""
+    at = c.parse_ts(f.get("at"))
+    if at and (now or time.time()) - at.timestamp() >= HELD_H * 3600:
+        return ""
+    return f"its {stage} step failed {f['n']} times in a row: {f.get('why') or 'no reason kept'}"
+
+
+def _count_fails(m, done):
+    """The per-tower run of failures _held_why reads: a failed step adds one (same stage) or starts at one; a step that
+    ran clears it."""
+    fails = m.setdefault("fails", {})
+    for r in done:
+        if r["status"] == "ran":
+            fails.pop(r["tower"], None)
+        elif r["status"] == "failed":
+            f = fails.get(r["tower"]) or {}
+            n = int(f.get("n") or 0) + 1 if f.get("stage") == r["stage"] else 1
+            fails[r["tower"]] = {"stage": r["stage"], "n": n, "at": r["at"], "why": r.get("why") or f"exit {r['rc']}"}
+
+
 def plan(names, slots, fit):
     """(run now, queued, K): the first `fit` towers run, the rest wait; at most `slots` run at once."""
     if names and fit < 1:
@@ -378,10 +450,9 @@ def _stage(p, name):
         rune.set_tower(None)
 
 
-def _run(argv, cwd, env, timeout=JOB_TIMEOUT):
-    """(exit code, a failure's last output lines): T-3841, 26 towers failed with only 'rc 1' kept and nobody saw why.
-    timeout: the night's deadline cuts a job short of JOB_TIMEOUT. The job leads its own session, so a cut kills its
-    children too: a claude -p under genesis would otherwise keep spending after the deadline (T-3265)."""
+def _spawn(argv, cwd, env, timeout):
+    """(exit code, stdout, stderr) of a child that leads its own session, so a cut at timeout kills its children too:
+    a claude -p under genesis would otherwise keep spending after the deadline (T-3265). A cut raises TimeoutExpired."""
     proc = subprocess.Popen(argv, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                             start_new_session=True)
     try:
@@ -396,8 +467,34 @@ def _run(argv, cwd, env, timeout=JOB_TIMEOUT):
         except subprocess.TimeoutExpired:  # ponytail: bounded wait, a child that escaped the group is left running
             pass
         raise
+    return proc.returncode, out, err
+
+
+def _run(argv, cwd, env, timeout=JOB_TIMEOUT):
+    """(exit code, a failure's last output lines, USD or None): T-3841, 26 towers failed with only 'rc 1' kept and
+    nobody saw why. T-3843: a session's --output-format json result gives its cost and, failed, its reason.
+    timeout: the night's deadline cuts a job short of JOB_TIMEOUT and a session short of SESSION_TIMEOUT (T-3265). A
+    cut job raises TimeoutExpired; a cut session returns, booked at its cap (it may have spent up to it)."""
+    session = argv[0] == "claude"
+    cap = float(argv[argv.index("--max-budget-usd") + 1]) if session and "--max-budget-usd" in argv else None
+    limit = min(timeout, SESSION_TIMEOUT) if session else timeout
+    try:
+        rc, out, err = _spawn(argv, cwd, env, limit)
+    except subprocess.TimeoutExpired:
+        if not session:
+            raise
+        return -1, f"timed out after {limit:.0f} s", cap
     tail = [ln for x in (out, err) for ln in (x or "").strip().splitlines()[-2:]]  # a reason on either stream
-    return proc.returncode, "" if proc.returncode == 0 else " | ".join(tail)
+    usd = None
+    if session:
+        try:
+            res = json.loads(out)
+            usd = float(res.get("total_cost_usd") or 0)
+            rc = rc or (1 if res.get("is_error") else 0)
+            tail = [str(res.get("result") or "")[-300:]] if rc else tail
+        except (ValueError, TypeError, AttributeError):
+            usd = cap  # no result to read its cost from: booked at its cap, never at nothing
+    return rc, "" if rc == 0 else " | ".join(tail), usd
 
 
 def _held(p, name):
@@ -418,11 +515,16 @@ def _headroom(p, runnable, k):
 
 def _job(p, name, st, argv, env, runner):
     at = c.now()
+    if argv[0] == "claude":  # T-3843: its own session, never nested in the caller's; no drive continues, no dialog asks
+        from sampo import session
+        env = dict({k: v for k, v in env.items() if k not in session._NESTED}, FOREMAN_DRIVE_TASK=f"kalevala-{name}")
     try:
-        got = runner(argv, p.root, env)  # an exit code, or (exit code, why)
-        rc, why = got if isinstance(got, tuple) else (got, "")
+        got = runner(argv, p.root, env)  # an exit code, or (exit code, why), or (exit code, why, USD)
+        rc, why, usd = (tuple(got) + ("", None))[:3] if isinstance(got, tuple) else (got, "", None)
     except Exception as e:  # a timeout or a missing interpreter fails this tower's step; the others go on
-        rc, why = -1, f"{type(e).__name__}: {e}"
+        rc, why, usd = -1, f"{type(e).__name__}: {e}", None
+    if usd:  # a session's own spend; a job's child charges its own under FEATURE
+        budget.record(FEATURE, usd=usd, runs=0, project=p.slug, detail=f"{name} session {st['stage']}")
     row = {"tower": name, "stage": st["stage"], "status": "ran" if rc == 0 else "failed", "rc": rc, "at": at}
     return dict(row, why=c.fit(c.redact(c.plain(why)), 300)) if rc and why else row  # redacted: it lands in the manifest
 
@@ -488,14 +590,21 @@ def step(p, k=None, runner=None, dry_run=False, deadline=None):
         with c.lock(p.dir):  # stages, plan and charges under one lock: no stale stage, no two steps on one headroom
             names = order(rows)
             stages = {n: _stage(p, n) for n in names}
-            argvs = {n: job_argv(n, stages[n]) for n in names}
-            runnable = [n for n in names if argvs[n] and stages[n]["kind"] == "ok" and n not in sat]
+            argvs = {n: job_argv(n, stages[n]) or session_argv(n, stages[n]) for n in names}  # T-3843: or a session
+            m0 = load(p)
+            hold = {n: w for n in names if argvs[n] and (w := _held_why(m0, n, stages[n]["stage"]))}
+            runnable = [n for n in names if argvs[n] and stages[n]["kind"] == "ok" and n not in sat and n not in hold]
             at = c.now()
-            skipped = [{"tower": n, "stage": stages[n]["stage"], "status": sat.get(n, "skipped"), "rc": None, "at": at}
-                       for n in names if n not in runnable]
+            skipped = [dict({"tower": n, "stage": stages[n]["stage"], "status": sat.get(n, "skipped"), "rc": None,
+                             "at": at}, **({} if n in sat or argvs[n] else {"why": _why_not(stages[n])}))
+                       for n in names if n not in runnable and n not in hold]
+            skipped += [{"tower": n, "stage": stages[n]["stage"], "status": "held", "rc": None, "at": at, "why": w}
+                        for n, w in hold.items()]
             skipped += [{"tower": r["name"], "stage": "?", "status": "unreadable", "rc": None, "at": at,
                          "error": r["error"]} for r in allrows if r.get("error")]
             est, run, queued, width = _headroom(p, runnable, k)
+            extra = [n for n in run if argvs[n][0] == "claude"][min(width, SESSION_K):]  # T-3843: one wave a round
+            run, queued = [n for n in run if n not in extra], extra + queued
             slotted = [n for n in queued if byrow[n]["stuck"]]  # a stuck tower's slot goes to one that improves
             if dry_run:
                 results = [{"tower": n, "stage": stages[n]["stage"], "status": "planned"} for n in run]
@@ -526,10 +635,16 @@ def step(p, k=None, runner=None, dry_run=False, deadline=None):
         if x["status"] == "ran":
             _progress(p, x["tower"], stages[x["tower"]])
     done += skipped + [dict(f, stage=None, rc=None, at=at) for f in fenced]
+    for r in done:  # T-3843 review: a session that exits 0 but filed nothing leaves its step where it was
+        if r["status"] == "ran" and argvs.get(r["tower"], [""])[0] == "claude":
+            now_st = _stage(p, r["tower"])
+            if all(now_st.get(x) == stages[r["tower"]].get(x) for x in ("stage", "gen", "action")):
+                r.update(status="failed", rc=1, why="the session ended without filing its step")
     with c.lock(p.dir):
         m = load(p)
         m["rounds"] = m.get("rounds", 0) + 1
         m["steps"] = (m.get("steps", []) + done)[-MAX_STEPS:]
+        _count_fails(m, done)
         _save(p, m)
     _all_failed(p, done)
     return {"dry_run": False, "k": width, "est": est, "share": round(share(), 4), "spent": spent_today(),
