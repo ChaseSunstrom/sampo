@@ -165,7 +165,17 @@ async function kalevala() {
   const r = await page({long: {state: "no common goals", goals: 0, foreman: null, plain: null}});
   const n = await page({long: undefined});
   const says = (x, re) => x.texts.some(t => re.test(t));
-  console.log(JSON.stringify({text: a.texts.includes(bad), markup: a.html.includes("onerror"),
+  // T-3971: the Uplift section: rows with a gap, a skipped generation with a hostile reason, then none (hidden) and junk rows
+  const U = [{gen: 1, parse: 80, gap: 40, classes: {malformed: 80, wrong_tool: 55.5}, cards: {total: 12, filled: 4, grid: 100}},
+    {gen: 2, skipped: "no local profile " + bad, gap: null, cards: null}, null, 7, {gen: "x"}];
+  const ua = await page({uplift: U}), ue = lastEls, ub = await page({uplift: undefined}), uf = lastEls, uc = await page({uplift: [null, {gen: "x"}]}), ug = lastEls;
+  const uplift = {rows: ue["uplift"].children.length === 2 && !ue["uplift"].hidden && !ue["uplift-label"].hidden,
+    text: says(ua, /40 points behind the frontier/) && says(ua, /80% of held-out scenarios parsed/) && says(ua, /weakest: wrong tool 55\.5% clean/)
+      && says(ua, /12 cards in 4 of 100 cells/) && says(ua, /gap not measured yet/) && ua.texts.some(t => t.includes("skipped: no local profile " + bad)),
+    markup: ua.html.includes("onerror"), bar: ue["uplift"].children[0].children[1].children[0].style.width === "100%",
+    hidden: uf["uplift"].hidden === true && uf["uplift-label"].hidden === true && !says(ub, /points behind/)
+      && ug["uplift"].hidden === true && ug["uplift"].children.length === 0};
+  console.log(JSON.stringify({uplift, text: a.texts.includes(bad), markup: a.html.includes("onerror"),
     none: b.texts.concat(b.html.split("\n")).some(t => /not graded yet/i.test(t)),
     docs: a.docs,
     long: says(l, /ahead/) && says(l, /Sampo/) && says(l, /\$1\.50/) && says(l, /cost \?/) && says(l, /2 of 3/),

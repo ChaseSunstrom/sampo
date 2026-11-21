@@ -1367,6 +1367,8 @@ def export(p, out):
                 row[k] = role(row[k])
     if k := _kalevala(p):  # T-3266: the city view; absent before kalevala start
         data["kalevala"] = k
+    if up := _uplift_export(p):  # T-3971: the small-model uplift per generation; absent before any generation closed
+        data["uplift"] = up
     data = scrub(data)
     try:  # T-2084: a doc the last export listed and the tower lost goes; nothing else in DIR is ours to remove
         with open(os.path.join(out, "genesis.json"), encoding="utf-8") as f:
@@ -2614,7 +2616,117 @@ def select(p, n, agent="foreman"):
                                            f"Reason: {r['reason']}\n")
             _log(p, "genesis_select", data={"gen": n, "verdict": r["verdict"], "base": r["base"]},
                         session=scli.session())
-        return r
+    return r  # T-3971: the uplift bench (minutes) is not here: the CLI runs _uplift_after_close after its own output
+
+
+UPLIFT_FILE = os.path.join("research", "uplift.jsonl")  # one row per closed generation (a down model's skipped row is retried)
+
+
+def _uplift_rows(p):
+    """The uplift rows of this tower, oldest first; a damaged line or a row without a generation is skipped."""
+    out = []
+    try:
+        with open(os.path.join(p.root, UPLIFT_FILE), encoding="utf-8", errors="replace") as f:
+            for ln in f:
+                try:
+                    x = json.loads(ln)
+                except ValueError:
+                    continue
+                if isinstance(x, dict) and isinstance(x.get("gen"), int) and (x.get("tower") or None) == _TOWER:
+                    out.append(x)
+    except OSError:
+        pass
+    return out
+
+
+def _uplift_export(p, keep=60):
+    """The page's uplift rows: the newest row of each generation (a retried skipped row replaces its first), oldest
+    generation first, the last `keep`, without the tower's name."""
+    from sampo import models
+    newest = {r["gen"]: r for r in _uplift_rows(p)}
+    out = []
+    for g in sorted(newest)[-keep:]:
+        r = {k: v for k, v in newest[g].items() if k != "tower"}
+        if isinstance(r.get("profiles"), list):  # public: a profile shows as its role, never its name (T-2895)
+            r["profiles"] = sorted({str(models.role(x)) for x in r["profiles"]})
+        if r.get("skipped"):  # a fixed vocabulary: the raw text can name an endpoint
+            r["skipped"] = ("no exam run graded this generation" if str(r["skipped"]).startswith("no exam run")
+                            else "the local models did not answer")
+        out.append(r)
+    return out
+
+
+def _uplift_after_close(p, n):
+    """T-3971: the uplift stage after a generation's record is written. A model advises and never gates: whatever it
+    raises, the close it follows stands. Returns one line saying what it did."""
+    try:
+        r = uplift(p, n)
+    except Exception as e:
+        return f"uplift gen {n}: skipped ({c.fit(str(e), 120)})"
+    if r.get("skipped"):
+        return f"uplift gen {n}: skipped ({c.fit(str(r['skipped']), 120)}); retried at the next close"
+    return (f"uplift gen {n}: parse {r.get('parse')}%, gap {r.get('gap') if r.get('gap') is not None else 'not measured'}"
+            f", {len(r.get('profiles') or [])} local model(s)")
+
+
+def uplift(p, n):
+    """T-3971: the small-model uplift stage of generation n: one round of the exam loop on the local models over the
+    newest exam run that graded gen n, then one row in research/uplift.jsonl: {gen, run, parse, classes, cards, gap,
+    profiles}. parse is the share of held-out scenarios with no malformed tool call, classes the same per failure class
+    (a pass rate: 100 minus the share the class hit), both in percent over the profiles that answered; cards is the
+    card store's coverage; gap is the newest frontier gap (louhi.gap_load, T-3930) of those profiles, in points. A
+    down model, a busy store or a generation no exam line names gives {gen, skipped: why}. A generation with a row that
+    benched is not benched again; a skipped one is retried at the next close. Returns the row."""
+    from sampo import louhi, models, smallcards  # louhi imports this module: here, not at the top
+    have =[r for r in _uplift_rows(p) if r["gen"] == n]
+    if have and not have[-1].get("skipped"):
+        return have[-1]
+    row = {"gen": n, "at": c.now()}
+    if _TOWER:
+        row["tower"] = _TOWER
+    run = next((x.get("run") for x in reversed(_exam(p, "foreman")) if x.get("gen") == n and x.get("run")), None)
+    got = []
+    if not run:
+        row["skipped"] = f"no exam run graded gen {n} (fm exam run RUN --agent foreman, then fm exam grade)"
+    else:
+        row["run"] = run
+        try:
+            got = louhi.exam_loop(p, run=run)
+        except (ValueError, OSError, models.ModelError) as e:
+            row["skipped"] = c.fit(str(e), 160)
+    good = [x for x in got if x.get("class") and isinstance(x.get("rate"), (int, float)) and isinstance(x.get("n"), int)]
+    if run and "skipped" not in row and not good:
+        row["skipped"] = next((x["skipped"] for x in got if x.get("skipped")), "no local model answered")
+    profiles = sorted({str(x.get("model")) for x in good})
+    if good:
+        weight = {}
+        for x in good:
+            w = weight.setdefault(x["class"], [0.0, 0])
+            w[0] += x["rate"] * x["n"]
+            w[1] += x["n"]
+        row["classes"] = {k: round(100.0 * (1 - s / m), 1) for k, (s, m) in weight.items() if m}
+        row["parse"] = row["classes"].get("malformed")
+        row["profiles"] = profiles
+    try:
+        newest = {}  # only a gap measured on this generation's own exam run is this generation's gap
+        for g in sorted(louhi.gap_load(p), key=lambda g: str(g.get("at") or "")):
+            if (isinstance(g.get("gap"), (int, float)) and run and g.get("run") == run
+                    and (not profiles or g.get("profile") in profiles)):
+                newest[g["profile"]] = g
+        row["gap"] = round(sum(g["gap"] for g in newest.values()) / len(newest), 1) if newest else None
+        if newest:
+            row["gap_at"], row["gap_run"] = max(str(g.get("at") or "") for g in newest.values()), run
+    except (ValueError, OSError):
+        row["gap"] = None
+    try:
+        cov = smallcards.coverage()
+        row["cards"] = {k: cov[k] for k in ("total", "filled", "grid")}
+    except (ValueError, OSError, KeyError):
+        row["cards"] = None
+    path = os.path.join(p.root, UPLIFT_FILE)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    c.append_line(path, json.dumps(row) + "\n")
+    return row
 
 
 def _prod(p, n, agent, baseline):
@@ -4615,8 +4727,11 @@ def _cmd_genesis(args):
                 kick(p)
             if action == "seed":
                 return scli.out(args, r, f"Seed: {r['path']} ({r['missions']} Missions, from {r['base']}'s seed)")
-            return scli.out(args, r, f"gen {n}: {r['verdict']}: {r['reason']}"
-                                      + (f"\n  seed base: {r['base']} (lineage.md)" if r["base"] else ""))
+            rc = scli.out(args, r, f"gen {n}: {r['verdict']}: {r['reason']}"
+                                   + (f"\n  seed base: {r['base']} (lineage.md)" if r["base"] else ""))
+            if r["verdict"] != "rerun":  # T-3971: after the verdict is out: a bench of local models can take minutes
+                print(_uplift_after_close(p, n), file=sys.stderr)
+            return rc
         if action == "check":
             r = check(p)
             scli.out(args, r, "\n".join(_check_lines(r)))

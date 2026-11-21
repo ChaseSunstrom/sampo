@@ -176,6 +176,141 @@ class GenesisExport(ForemanTestCase):
         self.assertIn("exam", data)
         self.assertNotIn("scorecard", data)  # T-2154: no graded line yet, so the optional key is left out
 
+    def _uplift_fixture(self):
+        """T-3971: a tower with gens 1 to 3 graded on run r1, plus the stubs of the exam loop, the card store and the gap."""
+        from unittest import mock
+        from sampo import core as c
+        from sampo import louhi, rune, smallcards
+        self.fm("init")
+        self.fm("genesis", "init", "--file", "-", input=GEN0_CAPS)
+        p = c.find_project(self.repo)
+        tower_file(rune.home(p), "exam.jsonl", "".join(json.dumps(
+            {"agent": "foreman", "run": "r1", "gen": g, "model": "sonnet", "closed": {"train": [], "holdout": []}}) + "\n"
+            for g in (1, 2, 3)))
+        def loop(rate):  # the rows exam_loop appends: one per failure class and profile
+            return lambda pp, profiles=None, rounds=1, n=3, run=None: [
+                {"round": 1, "run": run, "model": m, "class": k, "count": 1, "hit": 1, "rate": r, "n": 5, "ids": [], "at": "t"}
+                for m in ("gemma", "qwen") for k, r in (("malformed", rate), ("loop", rate * 2), ("timeout", 0.0))]
+        cards = {"total": 12, "grid": 100, "filled": 4}
+        return p, mock, louhi, rune, smallcards, loop, cards
+
+    def test_a_closed_generation_appends_one_uplift_row_and_a_down_model_a_skipped_one(self):  # T-3971
+        p, mock, louhi, rune, smallcards, loop, cards = self._uplift_fixture()
+        path = os.path.join(p.root, "research", "uplift.jsonl")
+        gap = [{"profile": "gemma", "gap": 40.0, "at": "a", "run": "r1"}, {"profile": "qwen", "gap": 20.0, "at": "a", "run": "r1"}]
+        with mock.patch.object(smallcards, "coverage", return_value=cards), mock.patch.object(louhi, "gap_load", return_value=gap):
+            with mock.patch.object(louhi, "exam_loop", side_effect=loop(0.2)) as lp:
+                r1 = rune.uplift(p, 1)
+            with mock.patch.object(louhi, "exam_loop", side_effect=loop(0.1)):
+                r2 = rune.uplift(p, 2)
+                again = rune.uplift(p, 2)  # a second close of gen 2 doesn't bench again
+            with mock.patch.object(louhi, "exam_loop", side_effect=ValueError("no local profile to loop")):
+                r3 = rune.uplift(p, 3)
+        self.assertEqual(lp.call_args.kwargs["run"], "r1")  # the newest exam run for that generation
+        self.assertEqual((r1["gen"], r1["parse"], r1["gap"]), (1, 80.0, 30.0))  # parse = 1 - malformed; gap = mean over profiles
+        self.assertEqual(r1["classes"], {"malformed": 80.0, "loop": 60.0, "timeout": 100.0})  # held-out pass rate per class
+        self.assertEqual(r1["cards"], {"total": 12, "filled": 4, "grid": 100})
+        self.assertEqual(r1["profiles"], ["gemma", "qwen"])
+        self.assertEqual((r1["gap_at"], r1["gap_run"]), ("a", "r1"))  # the row says which measurement the gap is
+        self.assertEqual((r2["parse"], r2["gen"]), (90.0, 2))
+        self.assertEqual(again, r2)
+        self.assertEqual((r3["gen"], r3["skipped"]), (3, "no local profile to loop"))
+        self.assertNotIn("parse", r3)
+        with open(path) as f:
+            rows = [json.loads(ln) for ln in f]
+        self.assertEqual([r["gen"] for r in rows], [1, 2, 3])  # one row per generation, the repeat added none
+
+    def test_a_gap_measured_on_another_run_is_not_this_generations_gap_and_the_hook_says_what_it_did(self):  # T-3971
+        p, mock, louhi, rune, smallcards, loop, cards = self._uplift_fixture()
+        gap = [{"profile": "gemma", "gap": 40.0, "at": "a", "run": "r0"}]
+        with mock.patch.object(smallcards, "coverage", return_value=cards), mock.patch.object(louhi, "gap_load", return_value=gap):
+            with mock.patch.object(louhi, "exam_loop", side_effect=loop(0.2)):
+                line = rune._uplift_after_close(p, 1)
+        row = rune._uplift_rows(p)[0]
+        self.assertIsNone(row["gap"])  # gap row of run r0, gen 1 is graded on r1
+        self.assertNotIn("gap_at", row)
+        self.assertIn("gen 1", line)
+        with mock.patch.object(rune, "uplift", side_effect=RuntimeError("boom")):
+            self.assertIn("skipped", rune._uplift_after_close(p, 1))
+
+    def test_the_public_uplift_rows_name_no_profile_and_no_free_text(self):  # T-3971
+        p, mock, louhi, rune, smallcards, loop, cards = self._uplift_fixture()
+        with mock.patch.object(louhi, "exam_loop", side_effect=ValueError("profile homelab-4090 is down")):
+            rune.uplift(p, 1)
+        def named(pp, profiles=None, rounds=1, n=3, run=None):
+            return [{"round": 1, "run": run, "model": "homelab-4090", "class": "malformed", "rate": 0.1, "n": 5, "at": "t"}]
+        with mock.patch.object(smallcards, "coverage", return_value=cards), mock.patch.object(louhi, "gap_load", return_value=[]):
+            with mock.patch.object(louhi, "exam_loop", side_effect=named):
+                rune.uplift(p, 2)
+        rows = rune._uplift_export(p)
+        self.assertNotIn("homelab-4090", json.dumps(rows))
+        self.assertTrue(rows[0]["skipped"])
+        self.assertEqual(rows[1]["profiles"], ["a model"])  # an unknown profile fails closed to a role
+
+    def test_export_keeps_this_towers_last_sixty_generations_and_weights_by_n(self):  # T-3971
+        p, mock, louhi, rune, smallcards, loop, cards = self._uplift_fixture()
+        path = os.path.join(p.root, "research", "uplift.jsonl")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            for g in range(1, 63):
+                f.write(json.dumps({"gen": g, "parse": 1.0}) + "\n")
+            f.write(json.dumps({"gen": 70, "parse": 2.0, "tower": "other"}) + "\n")  # another tower's row
+            f.write(json.dumps({"gen": 62, "parse": 3.0, "tower": "other"}) + "\n")
+        got = rune._uplift_export(p)
+        self.assertEqual([r["gen"] for r in got], list(range(3, 63)))  # 60 rows, no other tower's
+        self.assertTrue(all("tower" not in r and r["parse"] == 1.0 for r in got))
+        os.remove(path)
+        def uneven(pp, profiles=None, rounds=1, n=3, run=None):
+            return [{"round": 1, "run": run, "model": m, "class": "malformed", "rate": r, "n": k, "at": "t"}
+                    for m, r, k in (("gemma", 0.2, 5), ("qwen", 0.6, 15))]
+        gap = [{"profile": "gemma", "gap": 40.0, "at": "a", "run": "r1"}, {"profile": "mistral", "gap": 90.0, "at": "a", "run": "r1"}]
+        with mock.patch.object(smallcards, "coverage", return_value=cards), mock.patch.object(louhi, "gap_load", return_value=gap):
+            with mock.patch.object(louhi, "exam_loop", side_effect=uneven):
+                r = rune.uplift(p, 1)
+        self.assertEqual(r["parse"], 50.0)  # (0.2*5 + 0.6*15) / 20 = 0.5 hit, so 50% clean
+        self.assertEqual(r["gap"], 40.0)  # mistral never answered: its gap is not this round's
+        rune.set_tower("other")
+        try:
+            self.assertEqual(rune._uplift_export(p), [])  # the root tower's row is not this tower's
+        finally:
+            rune.set_tower(None)
+
+    def test_uplift_never_fails_a_close_and_names_why_it_skipped(self):  # T-3971
+        p, mock, louhi, rune, smallcards, loop, cards = self._uplift_fixture()
+        with mock.patch.object(louhi, "exam_loop", side_effect=OSError("disk full")):
+            self.assertIn("disk full", rune.uplift(p, 1)["skipped"])
+        self.assertIn("no exam run", rune.uplift(p, 9)["skipped"])  # a generation no exam line names
+        with mock.patch.object(louhi, "exam_loop", return_value=[
+                {"round": 1, "run": "r1", "model": "*", "skipped": "funnel: busy", "at": "t"}]):
+            self.assertEqual(rune.uplift(p, 2)["skipped"], "funnel: busy")  # every profile skipped: the round's reason
+        with mock.patch.object(rune, "uplift", side_effect=RuntimeError("boom")):
+            tower_file(rune.home(p), "exam.jsonl", "")
+            rune._uplift_after_close(p, 1)  # select's hook swallows it: a model advises, it never gates
+
+    def test_export_carries_the_uplift_rows_and_a_tower_without_them_is_unchanged(self):  # T-3971
+        p, mock, louhi, rune, smallcards, loop, cards = self._uplift_fixture()
+        out = os.path.join(self.tmp, "site")
+        rune.export(p, out)
+        before = read_text(os.path.join(out, "genesis.json"))
+        self.assertNotIn("uplift", json.loads(before))
+        gap = [{"profile": "gemma", "gap": 40.0, "at": "a", "run": "r1"}]
+        with mock.patch.object(smallcards, "coverage", return_value=cards), mock.patch.object(louhi, "gap_load", return_value=gap):
+            with mock.patch.object(louhi, "exam_loop", side_effect=loop(0.2)):
+                rune.uplift(p, 1)
+            with mock.patch.object(louhi, "exam_loop", side_effect=ValueError("down " + os.path.expanduser("~") + "/x")):
+                rune.uplift(p, 2)
+            with mock.patch.object(louhi, "exam_loop", side_effect=loop(0.1)):
+                rune.uplift(p, 2)  # the skipped row is retried at the next close; the page shows the newest per generation
+            rune.export(p, out)
+        got = json.loads(read_text(os.path.join(out, "genesis.json")))["uplift"]
+        self.assertEqual([(r["gen"], r["parse"], r["gap"]) for r in got], [(1, 80.0, 40.0), (2, 90.0, 40.0)])
+        self.assertNotIn(os.path.expanduser("~") + "/", json.dumps(got))
+        os.remove(os.path.join(p.root, "research", "uplift.jsonl"))
+        rune.export(p, out)
+        again = json.loads(read_text(os.path.join(out, "genesis.json")))
+        self.assertNotIn("uplift", again)  # no rows: the key is left out, as before
+        self.assertEqual({k: v for k, v in again.items() if k != "updated"}, {k: v for k, v in json.loads(before).items() if k != "updated"})
+
     def test_the_drawer_close_keeps_the_query_string(self):  # T-3376
         js = read_text(os.path.join(os.path.dirname(__file__), "..", "..", "site", "genesis", "genesis.js"))
         close = re.search(r'addEventListener\("close".*', js).group(0)
@@ -2151,6 +2286,18 @@ class GenesisSelect(ForemanTestCase):
         tower_file(self.tower, "exam.jsonl", line("r1", 1, ["a", "b"]) + json.dumps(dict(kid, model="haiku")) + "\n")
         rune.select(self.p, 2)
         self.assertRegex(self.read("lineage.md"), r"(?m)^- provisional: .*from foreman, model haiku: a smoke signal")
+
+    def test_select_never_runs_the_uplift_stage_itself(self):  # T-3971
+        from unittest import mock
+        from sampo import rune
+        mom = line("r1", 1, ["a"])
+        tower_file(self.tower, "exam.jsonl", mom + line("r1", 2, ["a", "b"]))
+        with mock.patch.object(rune, "uplift") as up:
+            self.assertEqual(rune.select(self.p, 2)["verdict"], "rerun")  # one noisy line: no record, no bench
+            up.assert_not_called()
+            tower_file(self.tower, "exam.jsonl", mom + line("r1", 2, ["a", "b"]) + line("r1", 2, ["a", "b", "c"]))
+            self.assertEqual(rune.select(self.p, 2)["verdict"], "keep")
+            up.assert_not_called()  # the bench runs from the CLI after its output, never inside select
 
     def test_a_one_scenario_margin_on_one_line_asks_for_a_rerun(self):
         from sampo import rune

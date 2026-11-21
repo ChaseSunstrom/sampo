@@ -225,6 +225,17 @@ button.chip{cursor:pointer;transition:color var(--dur-small),border-color var(--
 .share span{display:block}
 .note{margin:8px 0 0}
 .tally{color:var(--ash);font-size:15px;max-width:80ch}
+/* T-3971: the Uplift rows: the gap as a bar, then what the local models did that generation */
+#uplift[hidden],#uplift-label[hidden]{display:none}
+.upl{display:grid;grid-template-columns:5.5em minmax(90px,1fr) repeat(4,auto);gap:6px 18px;align-items:center;padding:10px 0;border-bottom:1px solid var(--line);font-size:14px;color:var(--ash)}
+.upl .g{font:500 12px/1.4 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.upl .trk{display:block;height:8px;border-radius:4px;background:var(--line);overflow:hidden}
+.upl .bar{display:block;height:100%;background:var(--accent);border-radius:4px;transform-origin:left;animation:uplgrow .9s cubic-bezier(.2,.7,.2,1) both}
+.upl .w{grid-column:span 2;color:var(--muted)}
+.upl.skip .bar{opacity:.4}
+@keyframes uplgrow{from{transform:scaleX(0)}}
+@media (prefers-reduced-motion:reduce){.upl .bar{animation:none}}
+@media (max-width:760px){.upl{grid-template-columns:5em 1fr}.upl .v,.upl .w{grid-column:1 / -1}}
 .tbl{overflow-x:auto;margin:14px 0 8px;border-top:1px solid var(--rule-2)}
 .tbl table{border-collapse:collapse;width:100%;min-width:680px;font-size:14px}
 .tbl th{font:500 12px/1.35 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--muted);text-align:left;padding:11px 12px 9px;border-bottom:1px solid var(--rule);vertical-align:bottom}

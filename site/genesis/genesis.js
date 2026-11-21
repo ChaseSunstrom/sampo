@@ -563,6 +563,37 @@
       + String(S.harmful) + " harmful addition(s).";  // T-2852: models show by role, never by name
   }
 
+  /* T-3971: the small-model uplift stage of each closed generation: the frontier gap in points (a bar, longer = further behind),
+     the tool-call parse rate, the weakest failure class and the card store's coverage; a skipped generation says why.
+     textContent only; the heading and the box are hidden with no rows */
+  function upliftRows() {
+    var box = $("uplift"), head = $("uplift-label"), U = D.uplift, num = function (v) { return typeof v === "number" && isFinite(v); },
+      pct = function (v) { return Math.round(v * 10) / 10 + "%"; },
+      rows = Array.isArray(U) ? U.filter(function (r) { return r && typeof r === "object" && num(r.gen); }) : [], top = 0;
+    box.textContent = "";
+    box.hidden = head.hidden = !rows.length;
+    if (!rows.length) return;
+    rows.forEach(function (r) { if (num(r.gap) && r.gap > top) top = r.gap; });
+    rows.forEach(function (r) {
+      var line = box.appendChild(document.createElement("div")), track = document.createElement("span"), bar = document.createElement("span"),
+        say = function (cls, t) { var s = line.appendChild(document.createElement("span")); s.className = cls; s.textContent = t; return s; },
+        weak = null, cov = r.cards && typeof r.cards === "object" && num(r.cards.total) && num(r.cards.grid) ? r.cards : null;
+      line.className = "upl" + (r.skipped ? " skip" : "");
+      say("g", "gen " + r.gen);
+      track.className = "trk"; bar.className = "bar";
+      bar.style.width = num(r.gap) && top > 0 ? Math.max(2, Math.round(100 * r.gap / top)) + "%" : "0%";
+      track.appendChild(bar); line.appendChild(track);
+      say("v", num(r.gap) ? "measured gap: " + r.gap + " points behind the frontier" + (typeof r.gap_at === "string" && r.gap_at ? " (" + r.gap_at.slice(0, 10) + ")" : "") : "gap not measured yet");
+      if (r.skipped) { say("w", "skipped: " + String(r.skipped)); return; }
+      if (num(r.parse)) say("v", pct(r.parse) + " of held-out scenarios parsed");
+      Object.keys(r.classes && typeof r.classes === "object" ? r.classes : {}).forEach(function (k) {
+        if (num(r.classes[k]) && (weak === null || r.classes[k] < r.classes[weak])) weak = k;
+      });
+      if (weak !== null) say("v", "weakest: " + weak.replace(/_/g, " ") + " " + pct(r.classes[weak]) + " clean");
+      if (cov) say("v", plural(cov.total, "card") + (num(cov.filled) ? " in " + cov.filled + " of " + cov.grid + " cells" : ""));
+    });
+  }
+
   /* E: rules */
   var RUN = [["Louhi holds out", "A third of the practice repos are never trained on. They decide \"done\"."], ["Subtract as you add", "Each round cuts as much as it adds. Hooks can't get slower."],
     ["Spikes, not vetoes", "\"Too ambitious\" is never a reason. A failed prototype is."], ["Two new tries, then move on", "Stuck tasks get two fresh angles, then a recorded diagnosis."],
@@ -1833,6 +1864,7 @@
     exam();
     try { longRow(); } catch (e) {}
     try { steerRow(); } catch (e) {}
+    try { upliftRows(); } catch (e) {}
     try { moonshotTable(); } catch (e) {}
     try { moonsScale(); } catch (e) {}
     try { moonsCatalogue(); } catch (e) {}
