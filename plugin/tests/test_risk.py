@@ -317,6 +317,22 @@ class RiskOff(HookCase):
         self.assertEqual(self.block("ls", sid="s1").returncode, 0)  # unrelated call: the block stays spent
         self.assertEqual(self.fm_json("risk")["spent"], 1)
 
+    def test_a_monitor_block_the_session_rewrites_and_passes_spends_no_point(self):
+        # T-3360 review: PostToolUse sees tool_name Monitor for a call the guard read as Bash
+        self.fm("init")
+        self.task()
+
+        def mon(cmd):
+            pl = {"tool_name": "Monitor", "tool_input": {"command": cmd}, "session_id": "s1"}
+            r = self.hook("PreToolUse", pl)
+            if r.returncode == 0:
+                self.hook("PostToolUse", dict(pl, tool_response=""))
+            return r
+        self.assertEqual(mon("rm -rf ~/zzz-cache").returncode, 2)
+        self.assertEqual(self.fm_json("risk")["spent"], 1)
+        self.assertEqual(mon("rm -rf ./zzz-cache").returncode, 0)
+        self.assertEqual(self.fm_json("risk")["spent"], 0, "the rewrite, run as a Monitor, takes the point back")
+
     def test_forgiveness_skips_other_programs_and_stops_after_the_days_cap(self):
         # T-3812 (security review of T-3752): an agent probing the guard could clear each point with a similar
         # allowed call; a rewrite runs the same program, and a session is forgiven a few times a day at most.

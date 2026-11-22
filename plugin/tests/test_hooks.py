@@ -2339,8 +2339,11 @@ class FmSwitchPrompt(HookCase):
                     "sleep 5 && tmux paste-buffer -t 0"):
             with self.subTest(cmd=cmd):
                 self.unstamp()
-                self.hook("PreToolUse", {"tool_name": "Monitor", "tool_input": {"command": cmd, "description": "d"},
-                                         "tool_use_id": "toolu_mon"})
+                p = self.hook("PreToolUse", {"tool_name": "Monitor", "tool_input": {"command": cmd, "description": "d"},
+                                             "tool_use_id": "toolu_mon"})
+                if p.returncode == 2 or '"deny"' in p.stdout:  # T-3360: the guard reads a Monitor command as Bash, so it
+                    self.assertEqual(self.stamps(), [], cmd)  # refuses what it refuses there; a refused call never runs
+                    continue
                 self.assertEqual(self.stamps(), ["toolu_mon"])
                 self.assertIn("still running", self.refused())
         self.unstamp()
@@ -5949,6 +5952,54 @@ class Ablate(HookCase):  # T-1375
         r = self.hook("PreToolUse", {"tool_name": "Bash", "tool_input": {"command": "rm -rf ~"}},
                       env={"FOREMAN_ABLATE": "guard"})
         self.assertIn("deny", r.stdout + r.stderr, "the guard still refuses")
+
+    def test_a_monitor_command_is_guarded_like_bash(self):  # T-3360: CC 2.1.314 runs Bash hooks on Monitor commands
+        for cmd in ("rm -rf ~", "git push --force origin main"):
+            b = self.hook("PreToolUse", {"tool_name": "Bash", "tool_input": {"command": cmd}})
+            m = self.hook("PreToolUse", {"tool_name": "Monitor", "tool_input": {"command": cmd}})
+            self.assertIn("deny", m.stdout + m.stderr, cmd)
+            self.assertEqual((m.returncode, m.stdout), (b.returncode, b.stdout), cmd)
+        self.assertEqual(self.hook("PreToolUse", {"tool_name": "Monitor", "tool_input": {"command": "echo hi"}}).returncode, 0)
+        for pl in ({"tool_name": "Monitor", "tool_input": {"ws": "wss://x"}},):  # no command key (a websocket): nothing to guard
+            r = self.hook("PreToolUse", pl)
+            self.assertEqual((r.returncode, r.stdout), (0, ""), pl)
+        # T-3360 review: a command the guard can't read is refused, as a Bash call with no command string is
+        for pl in ({"tool_name": "Monitor"}, {"tool_name": "Monitor", "tool_input": None},
+                   {"tool_name": "Monitor", "tool_input": ["rm", "-rf", "~"]}, {"tool_name": "Monitor", "tool_input": "rm -rf ~"},
+                   {"tool_name": "Monitor", "tool_input": {"command": 5}}, {"tool_name": "Monitor", "tool_input": {"command": None}},
+                   {"tool_name": "Monitor", "tool_input": {"command": ["rm", "-rf", "~"]}}):
+            with self.subTest(pl=pl):
+                r = self.hook("PreToolUse", pl)
+                self.assertEqual(r.returncode, 2, pl)
+                self.assertIn("deny", r.stdout + r.stderr, pl)
+                self.assertNotIn("internal error", r.stdout + r.stderr, pl)
+        for cmd in ("until grep -q done log; do sleep 20; done", "while true; do ls; sleep 30; done"):
+            self.assertEqual(self.hook("PreToolUse", {"tool_name": "Monitor", "tool_input": {"command": cmd}}).returncode,
+                             0, "a Monitor poll loop is what the wait-loop deny recommends")
+            self.assertEqual(self.hook("PreToolUse", {"tool_name": "Bash", "tool_input": {"command": cmd}}).returncode,
+                             2, "while the same loop in the foreground is still denied")
+        r = self.hook("PreToolUse", {"tool_name": "Bash", "tool_input": {}})
+        self.assertIn("deny", r.stdout + r.stderr)
+        self.assertNotIn("internal error", r.stdout + r.stderr, "a Bash call with no command is a denial, not a crash")
+
+    def test_a_monitor_that_runs_sampo_pause_stamps_and_post_spends_the_stamp(self):  # T-3360 review
+        self.fm("init")
+        sid = "sess-mon"
+        pl = {"tool_name": "Monitor", "tool_input": {"command": "sampo pause on"}, "session_id": sid}
+        self.assertEqual(self.hook("PreToolUse", pl).returncode, 0)
+        self.assertIn(sid, c._pause_stamps(), "the Monitor call is the session's own act, as a Bash call is")
+        self.hook("PostToolUse", dict(pl, tool_response=""))
+        self.assertNotIn(sid, c._pause_stamps(), "and its stamp is spent when the call is over")
+
+    def test_a_monitor_is_never_a_stdin_hang(self):  # T-3360 review: a Monitor always runs in the background
+        self.fm("init")
+        self.task()
+        for cmd in ("tee out.txt", "cat > /tmp/x", "python3 -"):
+            b = self.hook("PreToolUse", {"tool_name": "Bash", "tool_input": {"command": cmd}})
+            self.assertEqual(b.returncode, 2, cmd)
+            self.assertIn("stdin", b.stdout)
+            m = self.hook("PreToolUse", {"tool_name": "Monitor", "tool_input": {"command": cmd}})
+            self.assertEqual((m.returncode, m.stdout), (0, ""), cmd)
 
 
 class ClosingMarker(HookCase):  # T-3030

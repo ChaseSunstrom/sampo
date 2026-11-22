@@ -51,6 +51,7 @@ CONTEXT_NOTE_PCT = 60     # context use at a task boundary worth mentioning (con
 CONTEXT_NOTE_TOKENS = 200_000  # T-0703: every turn re-reads the context, so past this a 1M window costs at 20%
 FILE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 GUARDED = FILE_TOOLS | {"Bash"}
+MONITOR_AS_BASH = "Monitor"  # T-3360: the tool whose command the Bash guard also reads (Claude Code 2.1.314)
 # async events (latency irrelevant) and per-batch MessageDisplay are not timed
 UNTIMED = {"MessageDisplay", "PostToolUse", "PostToolUseFailure", "SubagentStart", "SubagentStop"}
 
@@ -3678,6 +3679,18 @@ def _pre_tool_use(raw):
         pl = json.loads(raw)
         tool = pl.get("tool_name", "")
         _TIMING["tool"] = tool if isinstance(tool, str) else ""
+        if tool == MONITOR_AS_BASH:
+            mti = pl.get("tool_input")
+            if isinstance(mti, dict) and isinstance(mti.get("command"), str):
+                tool = pl["tool_name"] = "Bash"  # T-3360: CC 2.1.314 runs Bash hooks on Monitor commands: same guard, same decision
+                pl["via"] = "Monitor"  # a Monitor poll loop is allowed (_wait_loop), and stats tell the two apart
+            elif not isinstance(mti, dict) or "command" in mti:  # a command the guard can't read fails closed, as Bash's does
+                print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                                         "permissionDecisionReason": (
+                    "Sampo: the guard can't read this Monitor call's command (no tool_input object, or a command that "
+                    "isn't a string), so it is refused. Give the command as one string.")}}))
+                return 2
+            # a Monitor with no command key at all (a websocket one) has no command line to guard
         if os.environ.get("FOREMAN_FAULT_LANE"):  # T-2384: an exam's planted stop; one env read when unset
             stop = _lane_fault(pl)
             if stop:
@@ -3839,13 +3852,13 @@ def _pre_tool_use(raw):
             reason += (f" Stop retrying: this exact refusal came 3 times in a row. Instead, {how}record why the task "
                        f"can't go on (sampo task block {tid} \"<why>\") and take the next task.")
         _event({"kind": "guard_block", "session_id": pl.get("session_id"), "category": block.category,
-                "rule": getattr(block, "rule", None), "tool": tool, "target": str(block.detail)[:120], "project": p.slug if p else None,
+                "rule": getattr(block, "rule", None), "tool": tool, "via": pl.get("via"), "target": str(block.detail)[:120], "project": p.slug if p else None,
                 "cmd": _window(c.redact(_target(pl.get("tool_input") or {})), block.detail)})  # T-0172, T-0423
         try:
             if p:
                 c.log_event(p, "guard_block", task=act.id if act else None,
                             data={"category": block.category, "detail": str(block.detail)[:200],
-                                  "rule": getattr(block, "rule", None)},  # T-0672 (committed fallback may lack it)
+                                  "rule": getattr(block, "rule", None), "via": pl.get("via")},  # T-0672 (committed fallback may lack it)
                             session=pl.get("session_id"))
                 for path, why in getattr(guard, "take_unread", lambda: [])():  # T-4758: the refusals are counted too
                     c.log_event(p, "guard_unread", task=act.id if act else None, data={"path": path, "reason": why},
@@ -4708,7 +4721,7 @@ def _wait_loop(pl):
     m = _WAIT_LOOP.search(text)
     while m and _quoted_text(text, m.start()):  # T-3725: quoted data (a title, a commit message) names a loop
         m = _WAIT_LOOP.search(text, m.start() + 1)
-    if not m or ti.get("run_in_background") or (
+    if not m or ti.get("run_in_background") or pl.get("via") == "Monitor" or (
             m.group(1) and float(m.group(1)) * {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}[m.group(2)] < 5):
         return None
     return ("deny", "Sampo: a foreground wait loop holds this session idle until it ends. Run it with "
@@ -4981,7 +4994,7 @@ def _stdin_hang(pl):
     Bash tool's stdin, which never closes, until the call times out. Compound commands are left alone: their < sits
     on the closing word."""
     ti = pl.get("tool_input") or {}
-    if pl.get("tool_name") != "Bash" or ti.get("run_in_background"):
+    if pl.get("tool_name") != "Bash" or ti.get("run_in_background") or pl.get("via") == "Monitor":  # a Monitor always runs in the background
         return None
     import fmguard as g
     try:
@@ -5580,7 +5593,7 @@ def post_tool_use(pl, ok=True):
 
 def _post_tool_use(pl, ok=True):
     tool, ti = pl.get("tool_name", ""), pl.get("tool_input") or {}
-    if tool == "Bash" and _pause_call(pl):  # T-4190: the call is over: its stamp is spent, run or not
+    if tool in ("Bash", "Monitor") and _pause_call(pl):  # T-4190 (T-3360: a Monitor's command is stamped like Bash's): the call is over: its stamp is spent, run or not
         try:
             c.take_pause_stamp(pl.get("session_id"))
         except OSError:
@@ -5606,7 +5619,9 @@ def _post_tool_use(pl, ok=True):
         # this session's pending file, so a session that was never blocked pays that stat and nothing else
         try:
             from sampo import risk
-            risk.forgive(p, pl.get("session_id"), tool, _target(ti))
+            # T-3360: PreToolUse noted a Monitor's block as Bash (the guard read it so), and a rewrite is judged as one
+            risk.forgive(p, pl.get("session_id"), "Bash" if tool == "Monitor" and isinstance(ti.get("command"), str) else tool,
+                         _target(ti))
         except Exception:
             log_error("PostToolUse", _tb())
     if p and ok and tool == "Bash" and "revert" in _target(ti) and "git" in _target(ti):

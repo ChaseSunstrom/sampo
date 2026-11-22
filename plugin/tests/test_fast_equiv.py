@@ -350,7 +350,11 @@ class Outward(Base):
                  ("cron", {"payload": {"tool_name": "CronCreate", "tool_input": {"prompt": "continue"}}}, False),
                  ("remote trigger", {"payload": {"tool_name": "RemoteTrigger", "tool_input": {}}}, False),
                  ("edit", {"payload": {"tool_name": "Edit", "tool_input": {
-                     "file_path": os.path.join(self.repo, "a.py"), "old_string": "a", "new_string": "b"}}}, False)]
+                     "file_path": os.path.join(self.repo, "a.py"), "old_string": "a", "new_string": "b"}}}, False),
+                 # T-3360: Python reads a Monitor command as Bash (the guard's decision); sampo-fast leaves it to Python
+                 ("monitor, safe", {"payload": {"tool_name": "Monitor", "tool_input": {"command": "tail -f x.log"}}}, False),
+                 ("monitor, rm -rf ~", {"payload": {"tool_name": "Monitor", "tool_input": {"command": "rm -rf ~"}}}, False),
+                 ("monitor, no command", {"payload": {"tool_name": "Monitor", "tool_input": {}}}, False)]
         fixtures = os.path.join(PLUGIN, "tests", "fixtures")
         for name in ("guard_cases.jsonl", "guard_allow.jsonl"):
             with open(os.path.join(fixtures, name)) as f:

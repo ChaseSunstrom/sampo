@@ -1541,6 +1541,7 @@ CC_FEATURES = [
     ("plugin monitors", (2, 1, 105), ["monitors/monitors.json"], r"."),
     ("PostToolUse updatedToolOutput", (2, 1, 121), ["lib/sampo/hooks.py"], r"updatedToolOutput"),
     ("UserPromptSubmit sessionTitle", (2, 1, 94), ["lib/sampo/hooks.py"], r"sessionTitle"),
+    ("Monitor under the Bash guard", (2, 1, 314), ["lib/sampo/hooks.py"], r"MONITOR_AS_BASH ="),
     ("worktree.baseRef setting", (2, 1, 133), ["lib/sampo/setup.py"], r"baseRef"),  # wired into ~/.claude (T-0803)
     # T-3384: builder lanes rely on the subagent's worktree surviving its return (2.1.311)
     ("subagent worktree lifetime (builder lanes)", (2, 1, 311), ["agents/fm-builder.md"], r'isolation "worktree"'),

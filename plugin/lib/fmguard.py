@@ -268,10 +268,13 @@ def findings(tool_name, tool_input, ctx):
             found += _cargo_config_hit(path, "\n".join(str(t) for t in text if t), [ctx.cwd], ctx)
         return found
     if tool_name == "Bash":
-        _DISCARDS[:], _DISCARDS_OF[0] = [], tool_input["command"]  # T-1482: filled by this check only
+        cmd = (tool_input or {}).get("command")
+        if not isinstance(cmd, str):  # T-3360: no command to read is a denial, not a crash
+            return [("system", "the guard can't read a Bash call with no command string")]
+        _DISCARDS[:], _DISCARDS_OF[0] = [], cmd  # T-1482: filled by this check only
         _COMMITS.clear()
         _FELL_BACK.clear()
-        return check_bash(tool_input["command"], ctx)
+        return check_bash(cmd, ctx)
     if tool_name == "Read":  # T-1224
         path, real = _walk(_expand(str(tool_input.get("file_path") or ""), ctx), ctx.cwd)
         return _judge(classify_read, path, real, ctx)

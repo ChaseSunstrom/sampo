@@ -345,6 +345,7 @@ class Checks(_TmpDir):
             if "model: haiku" not in head:
                 self.assertRegex(head, r"(?m)^autoCompactWindow: 150000$", f)
         self.assertIn("agent autoCompactWindow", [x[0] for x in d.CC_FEATURES if x[1] == (2, 1, 312)])
+        self.assertIn("Monitor under the Bash guard", [x[0] for x in d.CC_FEATURES if x[1] == (2, 1, 314)])  # T-3360
 
     def test_a_skill_that_breaks_the_agent_skills_spec_fails(self):
         # T-1396: name 1-64 lowercase letters, digits and single hyphens, equal to its folder; description 1-1024
