@@ -10230,6 +10230,13 @@ def _build_parser(only=None):
     s = add("fleet", lazy("sampo.claims", "cmd_fleet"), tier=("Project and settings", 792),
             help="who holds which claim on the shared remote, until when, and whether its drift fingerprint matches (T-3334)")
 
+    s = add("steward", lazy("sampo.steward_dup", "cmd_steward"), tier=("Finding your way", 425), help="steward dup: open tasks "
+            "that say the same thing twice (duplicates and fold candidates), a suggestion only (T-5019)")
+    s.add_argument("action", choices=["dup"])
+    s.add_argument("--dup", type=float, help="cosine at which two tasks are a duplicate (default 0.8)")
+    s.add_argument("--fold", type=float, help="cosine at which one reads as part of the other (default 0.45)")
+    s.add_argument("--limit", help="rows to show (default 50)")
+
     s = add("audit", cmd_audit, tier=("Finding your way", 420), help="prep audits: freeze the task's diff and write one review brief for one reviewer")
     s.add_argument("action", choices=["prep", "scan", "run", "ahead"], help="prep ID: review brief for a task; scan: mechanical "
                                                                     "pre-audit of any diff (--base, default: the main branch); "
