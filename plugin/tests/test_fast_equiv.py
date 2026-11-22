@@ -237,6 +237,15 @@ class Reads(Base):
                                                       "session_id": "a/b"}}, True),
             ("big file, non-ASCII agent id", {"payload": {"tool_name": "Read", "tool_input": {"file_path": big},
                                                           "agent_id": "ägent"}}, False),
+            ("subagent whole read, bypass, over 8 KB and 250 lines: Python rewrites it", {"payload": {
+                "tool_name": "Read", "tool_input": {"file_path": big}, "agent_id": "sub-1",
+                "permission_mode": "bypassPermissions"}}, False),
+            ("subagent whole read over 8 KB, default mode: Python decides", {"payload": {
+                "tool_name": "Read", "tool_input": {"file_path": big}, "agent_id": "sub-1",
+                "permission_mode": "default"}}, False),
+            ("subagent wide file under the line bar", {"payload": {
+                "tool_name": "Read", "tool_input": {"file_path": wide}, "agent_id": "sub-1",
+                "permission_mode": "bypassPermissions"}}, True),
             ("tool_input a list", {"payload": {"tool_name": "Read", "tool_input": ["x"]}}, False),
             ("cwd not a string", {"payload": {"tool_name": "Read", "tool_input": {"file_path": small}, "cwd": 5}},
              False),

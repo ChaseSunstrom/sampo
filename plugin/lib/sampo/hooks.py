@@ -3395,6 +3395,16 @@ def _pre_tool_use(raw):
                 log_error("PreToolUse", _tb())
                 d = ("Ward: the credential-read check failed (sampo doctor shows the error), so this read is "
                      "refused until that check works again.")
+            if not d and pl.get("permission_mode") == "bypassPermissions":  # T-5597: answered in bypass, not refused
+                try:
+                    rw = _big_read_rewrite(pl)
+                except Exception:
+                    log_error("PreToolUse", _tb())
+                    rw = None
+                if rw:
+                    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow",
+                                                             "updatedInput": rw[0], "additionalContext": rw[1]}}))
+                    return 0
             try:
                 d = d or _outline_first(pl)
             except Exception:
@@ -4692,6 +4702,17 @@ def _stdin_hang(pl):
 
 
 OUTLINE_LINES, OUTLINE_ROWS = 600, 6  # rows: packed name lines (header + 6 + "… N more" = 8 lines)
+READ_SHOWN, SUB_READ_BYTES = 250, 8192  # T-5597: a bypass-mode whole Read is answered with its first READ_SHOWN lines
+
+
+def _outline_seen(sid, who):
+    """T-0724: the files this agent's first whole Read has outlined already (cleared at SessionStart)."""
+    seen_at = os.path.join(c.state_dir(), "sessions", f"{sid}.outlined-{who}.json")
+    try:
+        with open(seen_at) as f:
+            return seen_at, json.load(f)
+    except (OSError, ValueError):
+        return seen_at, []
 
 
 def _outline_first(pl):
@@ -4714,12 +4735,7 @@ def _outline_first(pl):
         return None
     if n < OUTLINE_LINES:
         return None
-    seen_at = os.path.join(c.state_dir(), "sessions", f"{sid}.outlined-{who}.json")  # cleared at SessionStart
-    try:
-        with open(seen_at) as f:
-            seen = json.load(f)
-    except (OSError, ValueError):
-        seen = []
+    seen_at, seen = _outline_seen(sid, who)
     key = os.path.realpath(path)
     if key in seen:
         return None
@@ -4749,6 +4765,52 @@ def _outline_first(pl):
     more = f"\n… {len(cells) - k} more" if k < len(cells) else ""
     return (f"Sampo: {os.path.basename(path)} is {total} lines; read a range (offset, limit; names below start at "
             f"their line) or pass allow_large: true for the whole file.\n" + c.plain_lines("\n".join(lines)) + more)
+
+
+def _big_read_rewrite(pl):
+    """T-5597: in bypass mode a whole Read that _outline_first would refuse (the lead's first, of OUTLINE_LINES or more
+    lines with definitions to outline) and a subagent's whole Read of a file over 8 KB and READ_SHOWN lines (every time)
+    are answered with the file's first READ_SHOWN lines. Returns (updated tool_input, one-line trailer) or None: a range,
+    allow_large, a credential path (the guard's), a small or unreadable file, a bad id, or a file the lead outlined."""
+    ti = pl.get("tool_input") or {}
+    path, sid = ti.get("file_path"), str(pl.get("session_id") or "")
+    agent = pl.get("agent_id")
+    who = str(agent or "main")
+    if not isinstance(path, str) or ti.get("allow_large") is True or any(
+            ti.get(k) is not None for k in ("offset", "limit", "pages")) or not (
+            re.fullmatch(r"[\w-]{1,100}", sid) and re.fullmatch(r"[\w-]{1,100}", who)):
+        return None
+    if _credential_like(os.path.join(_cwd(pl), os.path.expanduser(path))):
+        return None
+    try:
+        size = os.path.getsize(path)
+        if (size <= SUB_READ_BYTES) if agent else (size < OUTLINE_LINES * 4):  # too few bytes to be that many lines
+            return None
+        with open(path, "rb") as f:
+            data = f.read(5_000_000)
+    except OSError:
+        return None
+    if b"\x00" in data[:SUB_READ_BYTES] or path.lower().endswith((".pdf", ".ipynb")):  # text only: limit means lines
+        return None
+    n = data.count(b"\n")
+    if (n <= READ_SHOWN) if agent else (n < OUTLINE_LINES):
+        return None
+    if not agent:  # the lead's first whole Read only: the refusal's own rule, per session and file
+        seen_at, seen = _outline_seen(sid, who)
+        key = os.path.realpath(path)
+        if key in seen:
+            return None
+        from sampo import map as smap
+        defs, _total = smap.outline(path)
+        if not defs:
+            return None
+        os.makedirs(os.path.dirname(seen_at), exist_ok=True)
+        c.write_atomic(seen_at, json.dumps((seen + [key])[-200:]), durable=False)
+    shown = c.plain(shlex.quote(re.sub(r"[\x00-\x1f\x7f]", " ", path)[:300]))  # one shell word, one line, printable
+    count = f"{n}+" if size > 5_000_000 else str(n)  # the newlines counted: a file past the read cap is a floor
+    trailer = (f"Sampo: {count} lines, showing 1-{READ_SHOWN}; sampo outline {shown} lists definitions; "
+               f"next offset={READ_SHOWN + 1}, or allow_large: true")
+    return dict(ti, limit=READ_SHOWN), trailer
 
 
 def _ask_prompt(pl, p, fmguard):

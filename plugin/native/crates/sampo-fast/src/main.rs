@@ -31,6 +31,8 @@ const OUTWARD_MCP: &str = "mcp__claude_ai_Claude_Docs__";
 const READS: [&str; 9] = ["export", "get", "guide", "list", "open", "profiles", "query", "quickstart", "read"];
 const DOCS_TOOLS: [&str; 8] = ["batch", "create", "delete", "export", "guide", "query", "read", "update"];
 const OUTLINE_LINES: u64 = 600;
+const READ_SHOWN: u64 = 250; // T-5597: hooks.READ_SHOWN
+const SUB_READ_BYTES: u64 = 8192; // T-5597: hooks.SUB_READ_BYTES
 const SNAP_SPAN: f64 = 21600.0;
 const PACE_FLOOR: f64 = 75.0;
 const READ_STALE_S: f64 = 6.0 * 3600.0; // T-4669: budget.READ_STALE_S
@@ -38,9 +40,9 @@ const MS_EPOCH: f64 = 1e11; // T-4669: budget.MS_EPOCH
 // sha1[:12] of each mirrored Python function's source (_run: less the other events' else branch; _pre_tool_use: up to
 // its GUARDED check; hooks/hook: its event parse and dispatch)
 const MIRRORS: [(&str, &str); 31] = [
-    ("hooks.run", "e9a5910273f5"), ("hooks._run", "b974126f7602"), ("hooks._pre_tool_use", "cc5b79ad2884"),
+    ("hooks.run", "e9a5910273f5"), ("hooks._run", "b974126f7602"), ("hooks._pre_tool_use", "af8abeda86a5"),
     ("hooks._credential_like", "a60da1d880d6"),
-    ("hooks._credential_read", "6ed174ed2226"), ("hooks._outline_first", "249f68c310cb"),
+    ("hooks._credential_read", "6ed174ed2226"), ("hooks._outline_first", "c2ddf4904e58"),
     ("hooks._outward_denial", "1e6d4418ddd5"), ("hooks._event", "6440afe94c6e"), ("hooks._rev", "7ee872410ee6"),
     ("hooks._cwd", "5dfb7c01da10"), ("budget.check_subagent", "4575be89ca9a"),
     ("budget.subagent_pause", "8ea366b833a0"), ("budget.rate_limits", "37cdc34daf37"),
@@ -166,7 +168,8 @@ fn fresh(hook: &Path) -> bool {
 
 // ---------------------------------------------------------------- the tools
 
-/// hooks._pre_tool_use's Read branch: _credential_read finds nothing and _outline_first returns None without state.
+/// hooks._pre_tool_use's Read branch: _credential_read finds nothing and _outline_first and _big_read_rewrite (T-5597)
+/// would not answer; where either could answer, it defers to Python.
 fn read_ok(pl: &Obj) -> Option<()> {
     let empty = Obj::new();
     let ti = match pl.get("tool_input") {
@@ -200,13 +203,24 @@ fn read_ok(pl: &Obj) -> Option<()> {
         _ => return None,
     }
     let Ok(m) = fs::metadata(path) else { return Some(()) };
-    if m.len() < OUTLINE_LINES * 4 {
+    // T-5597: a subagent's whole Read over SUB_READ_BYTES may be Python's rewrite (a trailer, or a decline): defer it
+    let sub = matches!(pl.get("agent_id"), Some(Value::String(s)) if !s.is_empty());
+    let rewrite_due = sub && m.len() > SUB_READ_BYTES;
+    if m.len() < OUTLINE_LINES * 4 && !rewrite_due {
         return Some(());
     }
     let mut buf = Vec::new();
     match File::open(path).and_then(|f| f.take(5_000_000).read_to_end(&mut buf)) {
-        Ok(_) if (newlines(&buf) as u64) < OUTLINE_LINES => Some(()),
-        Ok(_) => None, // its outline is due: Python's (state, the outline, a deny)
+        Ok(_) => {
+            let n = newlines(&buf) as u64;
+            if rewrite_due && n > READ_SHOWN {
+                None // Python's rewrite decides (it may answer with 250 lines and a trailer)
+            } else if n < OUTLINE_LINES {
+                Some(())
+            } else {
+                None // its outline is due: Python's (state, the outline, a deny)
+            }
+        }
         Err(_) => Some(()),
     }
 }
