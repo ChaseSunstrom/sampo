@@ -456,7 +456,8 @@ class KalevalaStep(ForemanTestCase):
 
     def test_a_session_step_runs_as_one_headless_session_per_tower(self):
         # T-3843: every tower waited on gen-1's seed, a step only a session takes, and nothing started one
-        from sampo import kalevala
+        from sampo import budget, kalevala
+        budget.set_caps(day=100.0, run=100.0)  # an Opus session is sized at its 8 USD cap: the default share is under it
         stages = {"memory": self.SEED1, "efficiency": dict(self.SEED1, stage="build", command="fm focus T-0001"),
                   "problem-solving": self.SEED1}
         run, calls = self.advancing(stages)
@@ -485,15 +486,87 @@ class KalevalaStep(ForemanTestCase):
         self.assertEqual(len(wave["queued"]), 1)
 
     def test_a_session_that_files_nothing_failed(self):
-        from sampo import kalevala
+        from sampo import budget, kalevala
+        budget.set_caps(day=100.0, run=100.0)
         with mock.patch.object(kalevala, "_stage", lambda p, n: self.SEED1):
             res = kalevala.step(self.project(), k=2, runner=lambda argv, cwd, env: 0)  # exit 0, the step unmoved
         ran = [r for r in res["results"] if r["stage"] == "seed" and r["rc"] is not None]
         self.assertTrue(ran and all(r["status"] == "failed" for r in ran), res)
         self.assertIn("without filing", ran[0]["why"])
 
+    SPEC = {"stage": "spec", "gen": 0, "action": "write spec.md", "command": "fm genesis spec", "kind": "ok"}
+
+    def test_a_round_never_starts_more_sessions_than_the_share_covers(self):
+        # T-3843 review: a round sized every step at the job estimate (0.25 USD), so 1 USD of the share left still started
+        # 4 sessions, each able to spend its cap (8 USD on Opus): one round could pass the day cap by about 32 USD
+        from sampo import budget, kalevala
+        stages = {n: self.SEED1 for n in ("memory", "efficiency", "problem-solving")}
+        run, calls = self.advancing(stages)
+        budget.set_caps(day=2.0, run=50.0)  # Kalevala's share is half the day cap: 1 USD, no Opus session (8) fits
+        with mock.patch.object(kalevala, "_stage", lambda p, n: stages[n]):
+            with self.assertRaises(budget.BudgetError) as err:
+                kalevala.step(self.project(), k=3, runner=run)
+            self.assertIn("8.00", str(err.exception), "it says what the next step is sized at")
+            self.assertEqual(calls, [], "1 USD left starts no Opus session")
+            budget.set_caps(day=18.0)  # a 9 USD share: one Opus session, never a second
+            res = kalevala.step(self.project(), k=3, runner=run)
+        self.assertEqual(len(calls), 1, "9 USD left starts exactly one Opus session")
+        self.assertEqual(len([r for r in res["results"] if r["status"] == "ran"]), 1, res)
+        self.assertEqual(len(res["queued"]), 2)
+        self.assertEqual(kalevala.spent_today(), 0.0, "the estimate is given back when the session's spend is known")
+        self.assertEqual(budget.estimate(kalevala.FEATURE, 1, kalevala.EST_JOB), kalevala.EST_JOB,
+                         "a session's estimate never lifts the job estimate")
+
+    def test_a_session_that_does_not_fit_leaves_the_job_steps_their_slots(self):
+        from sampo import budget, kalevala
+        stages = {"efficiency": self.SEED1, "memory": self.SPEC, "problem-solving": self.SPEC}
+        budget.set_caps(day=2.0, run=50.0)  # 1 USD: the Opus session (8) waits, both jobs (0.25 each) go
+        with mock.patch.object(kalevala, "_stage", lambda p, n: stages[n]):
+            res = kalevala.step(self.project(), k=3, dry_run=True)
+        self.assertEqual(sorted(r["tower"] for r in res["results"] if r["status"] == "planned"),
+                         ["memory", "problem-solving"], res)
+        self.assertEqual(res["queued"], ["efficiency"])
+
+    def test_a_sessions_estimate_is_the_mean_of_the_recorded_ones_on_its_model(self):
+        from sampo import budget, kalevala
+        p = self.project()
+        self.assertEqual((kalevala.session_est("seed"), kalevala.session_est("mission")), (8.0, 4.0), "no spend yet: its cap")
+        for usd in (1.0, 2.0):
+            budget.record(kalevala.FEATURE, usd=usd, runs=0, project=p.slug, detail="memory session seed")
+        budget.record(kalevala.FEATURE, usd=0.5, runs=0, project=p.slug, detail="memory session gap map")
+        self.assertEqual(kalevala.session_est("seed"), 1.5, "Opus: the mean of its sessions")
+        self.assertEqual(kalevala.session_est("critique"), 1.5, "by model, not by stage")
+        self.assertEqual(kalevala.session_est("mission"), 0.5, "Sonnet: its own")
+        self.assertEqual(budget.estimate(kalevala.FEATURE, 1, kalevala.EST_JOB), kalevala.EST_JOB, "jobs keep theirs")
+        stages = {n: self.SEED1 for n in ("memory", "efficiency", "problem-solving")}
+        run, calls = self.advancing(stages)
+        budget.set_caps(day=11.0, run=50.0)  # share 5.5, 3.5 spent: 2 left, at 1.5 a session fits one, not two
+        with mock.patch.object(kalevala, "_stage", lambda p, n: stages[n]):
+            kalevala.step(p, k=3, runner=run)
+        self.assertEqual(len(calls), 1)
+
+    def test_a_failure_in_another_generation_is_not_twice_in_a_row(self):
+        # T-3843 review: a seed failure in gen 1 and another in gen 2 counted as 'twice in a row'
+        from sampo import budget, kalevala
+        m = {}
+        budget.set_caps(day=100.0, run=100.0)
+
+        def fail(gen):
+            return {"tower": "memory", "stage": "seed", "gen": gen, "status": "failed", "rc": 1, "at": c.now(), "why": "x"}
+        kalevala._count_fails(m, [fail(1)])
+        kalevala._count_fails(m, [fail(2)])
+        self.assertEqual(m["fails"]["memory"]["n"], 1, "another generation starts the count over")
+        kalevala._count_fails(m, [fail(2)])
+        self.assertEqual(m["fails"]["memory"]["n"], 2)
+        self.assertTrue(kalevala._held_why(m, "memory", "seed", gen=2))
+        self.assertEqual(kalevala._held_why(m, "memory", "seed", gen=3), "", "a later generation is not held by it")
+        with mock.patch.object(kalevala, "_stage", lambda p, n: self.SEED1):
+            res = kalevala.step(self.project(), k=1, runner=lambda argv, cwd, env: (1, "no"))
+        self.assertTrue(all(r.get("gen") == 1 for r in res["results"] if r["status"] == "failed"), res)
+
     def test_a_session_prompt_does_one_step_and_its_cost_is_kalevalas(self):
         from sampo import budget, kalevala
+        budget.set_caps(day=100.0, run=100.0)
         prompt = kalevala.session_prompt("memory", dict(self.MISSION, gen=2, action="Mission 3: fm mission",
                                                         command="fm genesis put gen-2/mission-3.md --file -"))
         for want in ("Kalevala tower `memory`", "Mission 3: fm mission", "sampo genesis --tower memory put",
@@ -530,7 +603,8 @@ class KalevalaStep(ForemanTestCase):
         self.assertEqual(spawn.call_args[0][3], 120)  # T-3265: the night's deadline cuts a session too
 
     def test_a_step_that_failed_twice_is_held_and_says_why(self):
-        from sampo import kalevala
+        from sampo import budget, kalevala
+        budget.set_caps(day=100.0, run=100.0)
         boom = lambda argv, cwd, env: (1, "fm: seed refused")  # noqa: E731
         with mock.patch.object(kalevala, "_stage", lambda p, n: self.SEED1), mock.patch.object(kalevala, "SESSION_K", 3):
             kalevala.step(self.project(), k=3, runner=boom)

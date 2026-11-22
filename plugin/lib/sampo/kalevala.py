@@ -354,6 +354,7 @@ SESSION_MODELS = {"seed": "opus", "critique": "opus", "report": "opus", "predict
                   "intake": "sonnet", "gap map": "sonnet", "blind spots": "sonnet"}  # confirm is always 'blocked'
 SESSION_USD = {"opus": 8.0, "sonnet": 4.0}  # --max-budget-usd a session; one that dies past it is booked at it
 SESSION_K = 4  # sessions a round, whatever the local model slots (API-bound): bounds a round's spend between share checks
+SESSION_MEAN, SESSION_DAYS = 20, 7  # the recorded sessions a round's estimate averages: the newest this many, this many days back
 SESSION_TIMEOUT = 3600
 NO_EDIT = "Edit,Write,MultiEdit,NotebookEdit"  # documents go through sampo genesis put; code is never a tower's to edit
 HELD_AFTER, HELD_H = 2, 6  # a step that failed this many times in a row waits this many hours before one more try
@@ -384,6 +385,16 @@ def session_argv(name, st):
             "--disallowedTools", NO_EDIT, "--max-budget-usd", f"{SESSION_USD[model]:g}"]
 
 
+def session_est(stage):
+    """T-3843 review: what a round sizes one more session at this stage at: the mean of the newest recorded sessions on
+    its model (booked under FEATURE as '<tower> session <stage>'), else its own cap (SESSION_USD), the most it can cost.
+    Not EST_JOB: a session costs dollars, a job cents, and sizing both alike let 1 USD left start four Opus sessions."""
+    model = SESSION_MODELS[stage]
+    spent = [float(e["usd"]) for e in budget.ledger(SESSION_DAYS) if e.get("feature") == FEATURE and (e.get("usd") or 0) > 0
+             and SESSION_MODELS.get(str(e.get("detail") or "").partition(" session ")[2]) == model][-SESSION_MEAN:]
+    return round(sum(spent) / len(spent), 4) if spent else SESSION_USD[model]
+
+
 def _why_not(st):
     """T-3843 review: why a tower's step starts nothing this round, said on its row."""
     if st.get("kind") != "ok":
@@ -393,11 +404,12 @@ def _why_not(st):
     return f"no job or session runs a {st['stage']} step"
 
 
-def _held_why(m, name, stage, now=None):
-    """T-3843: why a tower sits out this round: its step failed HELD_AFTER times in a row at this stage (kept per tower
-    in the manifest, so a long step log rolling over never frees it), the newest under HELD_H hours ago; '' else."""
+def _held_why(m, name, stage, now=None, gen=None):
+    """T-3843: why a tower sits out this round: its step failed HELD_AFTER times in a row at this stage (and generation,
+    when given; kept per tower in the manifest, so a long step log rolling over never frees it), the newest under HELD_H
+    hours ago; '' else."""
     f = (m.get("fails") or {}).get(name) or {}
-    if f.get("stage") != stage or int(f.get("n") or 0) < HELD_AFTER:
+    if f.get("stage") != stage or (gen is not None and f.get("gen") != gen) or int(f.get("n") or 0) < HELD_AFTER:
         return ""
     at = c.parse_ts(f.get("at"))
     if at and (now or time.time()) - at.timestamp() >= HELD_H * 3600:
@@ -406,16 +418,17 @@ def _held_why(m, name, stage, now=None):
 
 
 def _count_fails(m, done):
-    """The per-tower run of failures _held_why reads: a failed step adds one (same stage) or starts at one; a step that
-    ran clears it."""
+    """The per-tower run of failures _held_why reads: a failed step adds one (same stage and generation) or starts at
+    one; a step that ran clears it."""
     fails = m.setdefault("fails", {})
     for r in done:
         if r["status"] == "ran":
             fails.pop(r["tower"], None)
         elif r["status"] == "failed":
             f = fails.get(r["tower"]) or {}
-            n = int(f.get("n") or 0) + 1 if f.get("stage") == r["stage"] else 1
-            fails[r["tower"]] = {"stage": r["stage"], "n": n, "at": r["at"], "why": r.get("why") or f"exit {r['rc']}"}
+            same = f.get("stage") == r["stage"] and f.get("gen") == r.get("gen")
+            fails[r["tower"]] = {"stage": r["stage"], "gen": r.get("gen"), "n": int(f.get("n") or 0) + 1 if same else 1,
+                                 "at": r["at"], "why": r.get("why") or f"exit {r['rc']}"}
 
 
 def plan(names, slots, fit):
@@ -505,12 +518,29 @@ def _held(p, name):
         return True
 
 
-def _headroom(p, runnable, k):
-    """(USD per step, run now, queued, K): the least that Kalevala's share, the day's cap and this command's cap leave."""
+def _headroom(p, runnable, k, sessions=None):
+    """(USD per job step, run now, queued, K): the least that Kalevala's share, the day's cap and this command's cap
+    leave, spent tower by tower in order, each on its own step: a job at the recent job estimate, a session (`sessions`:
+    {tower: USD}, from session_est) at its own, and at most min(slots, SESSION_K) sessions a round. A step that doesn't
+    fit waits and a cheaper one behind it may still run, so a round never starts more than the share covers."""
     est = budget.estimate(FEATURE, 1, EST_JOB)
     cur, _ = budget.effective(p)
     left = min(share() - spent_today(), cur["day"] - budget.spent()[0], cur["run"] - budget.RUN["usd"])
-    return (est,) + plan(runnable, k or _slots(p), int(left // est) if left > 0 else 0)
+    slots, sessions = max(k or _slots(p), 1), sessions or {}
+    fit, wave = [], 0
+    for n in runnable:
+        need = sessions.get(n, est)
+        if need > left or (n in sessions and wave >= min(slots, SESSION_K)):
+            continue
+        fit.append(n)
+        left -= need
+        wave += n in sessions
+    if runnable and not fit:
+        raise budget.BudgetError("kalevala: today's share of the budget is spent, no tower step fits (the cheapest is "
+                                 f"sized at ${min(sessions.get(n, est) for n in runnable):.2f}, ${max(left, 0):.2f} "
+                                 "is left); or raise it: fm budget set --day N --because \"<why>\"")
+    run, _, width = plan(fit, slots, len(fit))
+    return est, run, [n for n in runnable if n not in run], width
 
 
 def _job(p, name, st, argv, env, runner):
@@ -525,7 +555,8 @@ def _job(p, name, st, argv, env, runner):
         rc, why, usd = -1, f"{type(e).__name__}: {e}", None
     if usd:  # a session's own spend; a job's child charges its own under FEATURE
         budget.record(FEATURE, usd=usd, runs=0, project=p.slug, detail=f"{name} session {st['stage']}")
-    row = {"tower": name, "stage": st["stage"], "status": "ran" if rc == 0 else "failed", "rc": rc, "at": at}
+    row = {"tower": name, "stage": st["stage"], "gen": st["gen"], "status": "ran" if rc == 0 else "failed", "rc": rc,
+           "at": at}
     return dict(row, why=c.fit(c.redact(c.plain(why)), 300)) if rc and why else row  # redacted: it lands in the manifest
 
 
@@ -592,7 +623,7 @@ def step(p, k=None, runner=None, dry_run=False, deadline=None):
             stages = {n: _stage(p, n) for n in names}
             argvs = {n: job_argv(n, stages[n]) or session_argv(n, stages[n]) for n in names}  # T-3843: or a session
             m0 = load(p)
-            hold = {n: w for n in names if argvs[n] and (w := _held_why(m0, n, stages[n]["stage"]))}
+            hold = {n: w for n in names if argvs[n] and (w := _held_why(m0, n, stages[n]["stage"], gen=stages[n]["gen"]))}
             runnable = [n for n in names if argvs[n] and stages[n]["kind"] == "ok" and n not in sat and n not in hold]
             at = c.now()
             skipped = [dict({"tower": n, "stage": stages[n]["stage"], "status": sat.get(n, "skipped"), "rc": None,
@@ -602,9 +633,8 @@ def step(p, k=None, runner=None, dry_run=False, deadline=None):
                         for n, w in hold.items()]
             skipped += [{"tower": r["name"], "stage": "?", "status": "unreadable", "rc": None, "at": at,
                          "error": r["error"]} for r in allrows if r.get("error")]
-            est, run, queued, width = _headroom(p, runnable, k)
-            extra = [n for n in run if argvs[n][0] == "claude"][min(width, SESSION_K):]  # T-3843: one wave a round
-            run, queued = [n for n in run if n not in extra], extra + queued
+            sess = {n: session_est(stages[n]["stage"]) for n in runnable if argvs[n][0] == "claude"}  # T-3843 review
+            est, run, queued, width = _headroom(p, runnable, k, sess)  # a session is sized at its own cost, one wave a round
             slotted = [n for n in queued if byrow[n]["stuck"]]  # a stuck tower's slot goes to one that improves
             if dry_run:
                 results = [{"tower": n, "stage": stages[n]["stage"], "status": "planned"} for n in run]
@@ -617,7 +647,9 @@ def step(p, k=None, runner=None, dry_run=False, deadline=None):
                 except Busy:
                     busy.append(n)
                     continue
-                budget.record(FEATURE, usd=est, runs=1, project=p.slug, detail=f"{n} {stages[n]['stage']}")
+                # a session's estimate is booked as no run, so it never lifts the job estimate (budget.estimate)
+                budget.record(FEATURE, usd=sess.get(n, est), runs=0 if n in sess else 1, project=p.slug,
+                              detail=f"{n} {stages[n]['stage']}")
                 charged.append(n)
         _hold(p, "slotted", "slot", {n: ("its exam hasn't moved in two generations: this round's slot goes to a tower that "
                                          "improves", "none: it runs the round it has a slot again") for n in slotted})
@@ -630,7 +662,7 @@ def step(p, k=None, runner=None, dry_run=False, deadline=None):
                     done += [f.result() for f in futs]
         finally:  # each job's own spend is charged under FEATURE by its child; the estimate given back leaves the real cost
             for n in charged:
-                budget.record(FEATURE, usd=-est, runs=0, project=p.slug, detail=f"settle {n}")
+                budget.record(FEATURE, usd=-sess.get(n, est), runs=0, project=p.slug, detail=f"settle {n}")
     for x in done:  # T-3265: a ran job that left its tower's stage where it was counts toward a pause
         if x["status"] == "ran":
             _progress(p, x["tower"], stages[x["tower"]])
