@@ -1571,11 +1571,15 @@ def pm_stuck_line(p, minutes=30, bad_minutes=10):
             + (f"sampo lane verify --reset {s[:9]}" if r["state"] == "conflict" else "sampo lane verify (it retries the revert)")
             for s, r in pm_records(p).items()
             if r["state"] in ("red", "conflict") and now - _pm_age_ts(r, "red_at") > bad_minutes * 60]
+    # T-5949: name at most 3 and the count (records are oldest landing first: the 3 named are the longest-held): the hook
+    # notes feed every prompt, and 50 stuck records grew this line to 50+ tasks
+    old_named = ", ".join(old[:3]) + (f" and {len(old) - 3} more" if len(old) > 3 else "")
+    held_named = "; ".join(held[:3]) + (f"; {len(held) - 3} more" if len(held) > 3 else "")
     return " ".join(x for x in (
-        ("Landed merge(s) still unverified after " + str(minutes) + "+ min: " + ", ".join(old)
+        ("Landed merge(s) still unverified after " + str(minutes) + "+ min: " + old_named
          + ". Start the suite: fm lane verify") if old else "",
         ("A red or conflicted merge record holds every land for " + str(bad_minutes) + "+ min (its revert did not apply, "
-         "or trunk is red): " + "; ".join(held) + ".") if held else "") if x)
+         "or trunk is red): " + held_named + ".") if held else "") if x)
 
 
 PIPELINE_LEAD = "Pipeline fix parked"  # T-5735: what a recovery line starts with when a pipeline lane is stuck: it leads

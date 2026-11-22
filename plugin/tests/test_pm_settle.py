@@ -210,5 +210,73 @@ class PmSettle(ForemanTestCase):
         self.assertIn(f"sampo lane verify --reset {sha[:9]}", out)
 
 
+class StuckLineCap(ForemanTestCase):
+    """T-5949: the stuck line names at most 3 records, then a count: with 50 unverified merges the hook notes grew to 50+
+    tasks on every prompt. The 3 oldest (task and sha) and how many more; 3 or fewer are all listed as today. The red and
+    conflict parts are capped the same way."""
+
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        self.p = c.find_project(self.repo)
+        os.environ["FM_POSTMERGE_CMD"] = "exit 0"  # a suite command: pm_record keeps the record
+        self.addCleanup(os.environ.pop, "FM_POSTMERGE_CMD", None)
+        self.tids = []
+
+    def rec(self, i, **kv):
+        """A merge record: its own brief, a unique sha, spawn suppressed (no runner in the test)."""
+        tid = first(self.fm("task", "new", f"cap {i}", "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true",
+                        "--step", "s", "--json").stdout)["id"]
+        self.tids.append(tid)
+        sha = ("c" if i % 2 else "d") + f"{i:03d}" + "0" * (37 - len(f"{i:03d}"))
+        slanes.pm_record(self.p, sha, tid, self.repo, spawn=False)
+        if kv:
+            slanes.pm_set(self.p, sha, **kv)
+        return sha
+
+    def test_50_pending_records_name_the_3_oldest_and_the_count(self):
+        shas = [self.rec(i) for i in range(50)]  # oldest landing first
+        for i, s in enumerate(shas):
+            slanes.pm_set(self.p, s, at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 3600 - i * 30)))
+        line = slanes.pm_stuck_line(self.p)
+        self.assertLess(len(line), 300, line)
+        for i in (0, 1, 2):  # the 3 oldest by landing, task and sha
+            self.assertIn(f"{self.tids[i]} ({shas[i][:9]})", line)
+        self.assertIn("47 more", line)
+        for s in shas[3:]:
+            self.assertNotIn(s[:9], line)
+        self.assertIn("fm lane verify", line)
+
+    def test_3_or_fewer_pending_records_are_all_listed(self):
+        shas = [self.rec(60), self.rec(61)]  # 2 stuck, old enough to qualify
+        for s in shas:
+            slanes.pm_set(self.p, s, at=OLD)
+        line = slanes.pm_stuck_line(self.p)
+        for s in shas:
+            self.assertIn(f"({s[:9]})", line)
+        self.assertNotIn("more", line, "3 or fewer: all listed, no count")
+
+    def test_12_red_records_cap_at_3_with_their_verbs(self):
+        shas = [self.rec(i, state="red", classes=["m.B"], red_at=OLD) for i in range(12)]
+        line = slanes.pm_stuck_line(self.p)
+        for i in (0, 1, 2):
+            self.assertIn(f"{self.tids[i]} ({shas[i][:9]}", line)
+        self.assertNotIn(shas[3][:9], line)
+        self.assertIn("9 more", line)
+        self.assertEqual(line.count("it retries the revert"), 3, line)  # the red verb, capped
+
+    def test_conflict_and_red_records_are_capped_together(self):
+        # the red and conflict records are one list (oldest first): 1 conflict + 4 reds name 3, count 2
+        self.rec(80, state="conflict", classes=["m.B"], red_at=OLD)
+        reds = [self.rec(81 + i, state="red", classes=["m.B"], red_at=OLD) for i in range(4)]
+        line = slanes.pm_stuck_line(self.p)
+        self.assertIn(f"({reds[0][:9]}", line)
+        self.assertIn(f"({reds[1][:9]}", line)
+        self.assertNotIn(reds[2][:9], line)
+        self.assertIn("sampo lane verify --reset", line)  # the conflict is the oldest held: still offered
+        self.assertEqual(line.count("it retries the revert"), 2, line)
+        self.assertIn("2 more", line)
+
+
 if __name__ == "__main__":
     unittest.main()
