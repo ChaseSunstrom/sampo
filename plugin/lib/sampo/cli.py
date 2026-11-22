@@ -10618,6 +10618,13 @@ def _build_parser(only=None):
     s.add_argument("--sweep", action="store_true", help=argparse.SUPPRESS)  # T-1810: the Stop hook's detached sweep
     s.add_argument("--lead", action="store_true", help="the lead's cache-read tokens per turn (median), 24 h before and "
                    "24 h after the keeper's first compact (T-5769)")
+    s.add_argument("--per-lane", action="store_true", help="per landed lane: input, cache read, cache write and output "
+                   "tokens of its lead, builder, reviewer and fixer shares, a median per role, and the runs that fit "
+                   "no lane (T-5950)")
+    s.add_argument("--save-baseline", action="store_true", help="save the medians per role as the baseline "
+                   "(implies --per-lane)")
+    s.add_argument("--compare-baseline", action="store_true", help="the change per role against the saved baseline "
+                   "(implies --per-lane)")
     s.add_argument("--sessions", action="store_true",
                    help="per session: turns, context per turn, the cache read/write/output split and cache busts")
     s.add_argument("--outputs", action="store_true", help="context by how often later calls re-read it: share of cache "

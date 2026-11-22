@@ -3,6 +3,7 @@ its rules, skill and agent listing lines and output style, read from the transcr
 import datetime
 import json
 import os
+import subprocess
 import unittest
 
 from test_hooks import HookCase
@@ -492,6 +493,301 @@ class LeadCacheRead(HookCase):
         self.assertEqual(got["last_24h"]["median_cache_read"], 200000)
         text = self.fm("cost", "--lead", env={"CLAUDE_CONFIG_DIR": self.cfg}).stdout
         self.assertIn("no compact", text)
+
+
+class PerLane(HookCase):
+    """T-5950: `sampo cost --per-lane`: per landed lane the four token kinds of its lead, builder, reviewer and fixer
+    shares, a median per role, a saved baseline to compare against, and the runs that fit no lane shown."""
+
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        self.cfg = os.path.join(self.tmp, "cfg")
+        self.folder = os.path.join(self.cfg, "projects", "".join(ch if ch.isalnum() else "-" for ch in self.repo))
+        os.makedirs(os.path.join(self.folder, "lead-1", "subagents"))
+        self.t0 = datetime.datetime.now(datetime.timezone.utc).timestamp() - 10 * 3600
+        self.p = self.project()
+        self.addCleanup(lambda: os.environ.pop("FOREMAN_NOW", None))
+
+    def at(self, hours):
+        return self.t0 + hours * 3600
+
+    def ev(self, hours, event, task=None, data=None):
+        from sampo import core as c
+        os.environ["FOREMAN_NOW"] = c.iso(self.at(hours))
+        try:
+            c.log_event(self.p, event, task=task, data=data or {})
+        finally:
+            os.environ.pop("FOREMAN_NOW", None)
+
+    def reply(self, mid, i, cr, cw, out, model="claude-x", ts=None):
+        row = {"type": "assistant", "sessionId": "lead-1", "message": {
+            "id": mid, "model": model, "usage": {"input_tokens": i, "cache_read_input_tokens": cr,
+                                                 "cache_creation_input_tokens": cw, "output_tokens": out}, "content": []}}
+        if ts is not None:
+            row["timestamp"] = datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        return row
+
+    def write(self, path, rows):
+        with open(path, "w") as f:
+            f.write("\n".join(json.dumps(r) for r in rows) + "\n")
+
+    def run_file(self, name, rows):
+        path = os.path.join(self.folder, "lead-1", "subagents", name + ".jsonl")
+        self.write(path, rows)
+        return path
+
+    def merge(self, subject, hours, repo=None):
+        """A commit on the repo's HEAD, dated `hours` after t0: the trunk's record of a landing."""
+        from sampo import core as c
+        when = c.iso(self.at(hours))
+        subprocess.run(["git", "-C", repo or self.repo, "commit", "-q", "--allow-empty", "-m", subject], check=True,
+                       env=dict(os.environ, GIT_COMMITTER_DATE=when, GIT_AUTHOR_DATE=when))
+
+    def prompt(self, text):
+        """A reviewer transcript's first row: the lead's prompt, as a string or as text blocks."""
+        content = text if isinstance(text, str) else [{"type": "text", "text": t} for t in text]
+        return {"type": "user", "message": {"role": "user", "content": content}}
+
+    def stop(self, hours, kind, aid, rows, task=None):
+        path = self.run_file(aid, rows) if rows is not None else os.path.join(self.tmp, "gone", aid + ".jsonl")
+        self.ev(hours, "subagent", task=task, data={"agent_type": kind, "agent_id": aid, "transcript": path})
+
+    def rig(self):
+        """Lane A (T-0001, hours 0 to 3) and lane B (T-0002, hours 1 to 4) overlap between hours 1 and 3."""
+        self.ev(0, "lane_builder", "T-0001", {"path": "/x/.claude/worktrees/agent-aaa"})
+        self.ev(1, "lane_builder", "T-0002", {"path": "/x/.claude/worktrees/agent-bbb/"})
+        self.ev(1.5, "reviewer_bound", "T-0001", {"agent_id": "rrr"})
+        # a builder's own stop names no task: its worktree path in the lane_builder event binds it
+        self.stop(2, "sampo:fm-builder", "aaa", [self.reply("m1", 100, 5000, 500, 50), self.reply("m2", 100, 5000, 500, 50),
+                                                  self.reply("m2", 100, 5000, 500, 50)])  # m2 twice: one reply
+        # the lead's focus (T-0099) at the reviewer's stop is a guess: the reviewer_bound row wins
+        self.stop(2.5, "sampo:fm-reviewer", "rrr", [self.reply("m1", 10, 2000, 0, 5)], task="T-0099")
+        self.stop(2.6, "sampo:fm-fixer", "fff", [self.reply("m1", 5, 100, 0, 1)], task="T-0001")
+        self.stop(3.2, "sampo:fm-builder", "bbb", [self.reply("m1", 300, 9000, 800, 80)], task="T-0002")
+        self.stop(3.5, "sampo:fm-reviewer", "rrb", [self.reply("m1", 20, 4000, 0, 10)], task="T-0002")
+        self.stop(3.6, "sampo:fm-scout", "zzz", [self.reply("m1", 7, 70, 7, 7)])  # no task, bound to nothing
+        self.stop(3.7, "sampo:fm-reviewer", "rgone", None, task="T-0002")  # its transcript is gone
+        self.ev(3, "lane_landed", "T-0001", {"tasks": ["T-0001"]})
+        self.ev(4, "lane_landed", "T-0002", {"tasks": ["T-0002"]})
+        self.merge("Merge T-0001: lane A", 3)
+        self.merge("Merge T-0002: lane B", 4)
+        lead =[self.reply(f"l{i}", 10, 1000, 100, 20, "claude-lead", self.at(h))
+                for i, h in enumerate((0.5, 0.6, 2, 2.1, 5))]  # A alone, A alone, A and B, A and B, no lane
+        self.write(os.path.join(self.folder, "lead-1.jsonl"), lead)
+
+    def per_lane(self, *flags):
+        return self.fm_json("cost", "--per-lane", *flags, env={"CLAUDE_CONFIG_DIR": self.cfg})
+
+    def test_per_lane_splits_each_landed_lane_by_role(self):
+        self.rig()
+        got = self.per_lane()
+        self.assertEqual(got["landed"], 2)
+        a, b = got["lanes"]["T-0001"], got["lanes"]["T-0002"]
+        self.assertEqual({k: a["builder"][k] for k in ("input", "cache_read", "cache_write", "output")},
+                         {"input": 200, "cache_read": 10000, "cache_write": 1000, "output": 100},
+                         "two replies; the one repeated by message id counts once")
+        self.assertEqual(a["reviewer"]["cache_read"], 2000, "the reviewer_bound row, not the focused T-0099")
+        self.assertNotIn("T-0099", got["lanes"])
+        self.assertEqual(a["fixer"]["input"], 5)
+        self.assertEqual((b["builder"]["input"], b["reviewer"]["cache_read"]), (300, 4000))
+        self.assertNotIn("fixer", b)
+        self.assertEqual((a["lead"]["input"], a["lead"]["cache_read"], a["lead"]["cache_write"], a["lead"]["output"]),
+                         (30, 3000, 300, 60), "two replies alone and half of two shared with lane B")
+        self.assertEqual((b["lead"]["input"], b["lead"]["turns"]), (10, 1), "the other halves")
+        self.assertEqual(a["lead"]["models"], {"claude-lead": 3})
+        self.assertEqual(a["builder"]["models"], {"claude-x": 2})
+
+    def test_per_lane_median_per_role(self):
+        self.rig()
+        m = self.per_lane()["median"]
+        self.assertEqual(m["builder"]["n"], 2)
+        self.assertEqual(m["builder"]["input"], 250)  # the median of 200 and 300
+        self.assertEqual(m["builder"]["cache_read"], 9500)
+        self.assertEqual(m["reviewer"]["n"], 2)
+        self.assertEqual(m["fixer"]["n"], 1)
+        self.assertEqual(m["lead"]["input"], 20)
+        self.assertEqual(m["builder"]["equiv"], round((250 + 9500 * 0.1 + 900 * 1.25 + 90 * 5)))
+
+    def test_per_lane_shows_the_runs_and_replies_that_fit_no_lane(self):
+        self.rig()
+        got = self.per_lane()
+        un = got["unattributed"]
+        by = {u["agent_id"]: u for u in un["subagents"]}
+        self.assertEqual(set(by), {"zzz", "rgone"})
+        self.assertEqual(by["zzz"]["why"], "no task found")
+        self.assertEqual(by["zzz"]["input"], 7)
+        self.assertEqual(by["rgone"]["why"], "transcript not read")
+        self.assertEqual((un["lead"]["input"], un["lead"]["turns"]), (10, 1), "the reply at hour 5 is in no lane's window")
+        text = self.fm("cost", "--per-lane", env={"CLAUDE_CONFIG_DIR": self.cfg}).stdout
+        self.assertIn("Unattributed", text)
+        self.assertIn("T-0001", text)
+        self.assertIn("Median per role", text)
+
+    def test_per_lane_reads_no_transcript_outside_the_projects_folder(self):
+        self.rig()
+        outside = os.path.join(self.tmp, "elsewhere.jsonl")
+        self.write(outside, [self.reply("m1", 999, 0, 0, 0)])
+        self.ev(3.8, "subagent", task="T-0001", data={"agent_type": "sampo:fm-builder", "agent_id": "xxx",
+                                                      "transcript": outside})
+        got = self.per_lane()
+        self.assertEqual(got["lanes"]["T-0001"]["builder"]["input"], 200, "a path outside the folder is not opened")
+        self.assertIn("xxx", [u["agent_id"] for u in got["unattributed"]["subagents"]])
+
+    def test_per_lane_baseline_saved_and_compared_per_role(self):
+        self.rig()
+        none = self.fm("cost", "--per-lane", "--compare-baseline", env={"CLAUDE_CONFIG_DIR": self.cfg})
+        self.assertEqual(none.returncode, 0, none.stderr)
+        self.assertIn("No baseline saved", none.stdout)
+        saved = self.per_lane("--save-baseline")
+        self.assertTrue(saved["baseline_saved"])
+        again = self.per_lane("--compare-baseline")
+        self.assertEqual(again["baseline"]["change"]["builder"]["equiv"], 0.0)
+        # the builder's work on lane B doubles; every other role is as it was
+        self.run_file("bbb", [self.reply("m1", 300, 9000, 800, 80), self.reply("m2", 300, 9000, 800, 80)])
+        got = self.per_lane("--compare-baseline")
+        ch = got["baseline"]["change"]
+        self.assertEqual(ch["builder"]["input"], 60.0)  # the median of 200 and 600 (400) against 200 and 300 (250)
+        self.assertGreater(ch["builder"]["equiv"], 0)
+        self.assertEqual(ch["reviewer"]["equiv"], 0.0)
+        self.assertEqual(ch["lead"]["equiv"], 0.0)
+        text = self.fm("cost", "--per-lane", "--compare-baseline", env={"CLAUDE_CONFIG_DIR": self.cfg}).stdout
+        self.assertIn("builder: ", text)
+        self.assertIn("+", text)
+
+    def test_per_lane_counts_a_lane_once_by_its_merge_on_the_trunk_and_prints_git_beside_it(self):
+        self.rig()
+        # the ledger says T-0001 landed twice and T-0003 landed; the trunk has T-0001's merge twice (a re-landing), a
+        # revert of T-0002's merge (no landing), an old merge outside the window and no merge of T-0003
+        self.ev(3.5, "lane_landed", "T-0001", {"tasks": ["T-0001"]})
+        self.ev(3.6, "lane_landed", "T-0003", {"tasks": ["T-0003"]})
+        self.merge("Merge T-0001: lane A again", 3.9)
+        self.merge('Revert "Merge T-0002: lane B"', 4.1)
+        self.merge("Merge T-0004: long ago", -24 * 40)
+        got = self.per_lane()
+        self.assertEqual(got["landed"], 2, "by tasks with a merge commit in the window, a re-landed one once")
+        self.assertEqual(sorted(got["lanes"]), ["T-0001", "T-0002"])
+        self.assertEqual(got["git"], {"source": "git", "merges": 3, "tasks": 2})
+        self.assertEqual(got["ledger"], {"tasks": 3, "events": 4})
+        text = self.fm("cost", "--per-lane", env={"CLAUDE_CONFIG_DIR": self.cfg}).stdout
+        self.assertIn("2 lane(s) landed", text)
+        self.assertIn("git: 3 Merge T-", text)
+        self.assertIn("ledger: 3 task(s)", text)
+
+    def test_per_lane_from_a_worktree_reads_the_main_projects_lead_and_trunk(self):
+        wt = os.path.join(self.tmp, "wt")
+        subprocess.run(["git", "-C", self.repo, "worktree", "add", "-q", "-b", "side", wt], check=True)
+        self.rig()  # the merges land on the main checkout's branch: the worktree's own HEAD lacks them
+        got = self.fm_json("cost", "--per-lane", cwd=wt, env={"CLAUDE_CONFIG_DIR": self.cfg})
+        self.assertEqual(got["landed"], 2)
+        self.assertEqual(got["lanes"]["T-0001"]["lead"]["input"], 30, "the lead's transcripts are the main folder's")
+        self.assertEqual(got["median"]["lead"]["n"], 2)
+
+    def test_per_lane_binds_a_run_by_the_brief_or_task_its_first_message_names(self):
+        self.rig()
+        ask = "Read /s/audits/T-0002.review.md and do the review it describes. Also see T-0001 for context."
+        self.stop(2.7, "sampo:fm-reviewer", "pbrief", [self.prompt(ask), self.reply("m1", 11, 100, 0, 1)], task="T-0099")
+        self.stop(2.8, "sampo:fm-reviewer", "pblocks", [self.prompt(["hello", "The branch is worktree-agent-aaa (tip 1)."]),
+                                                         self.reply("m1", 12, 100, 0, 1)])
+        self.stop(2.9, "sampo:fm-reviewer", "pbare", [self.prompt("Review T-0001 and then T-0002."),
+                                                       self.reply("m1", 13, 100, 0, 1)])
+        self.stop(2.95, "sampo:fm-reviewer", "pnone", [self.prompt("Review the thing."), self.reply("m1", 14, 100, 0, 1)])
+        self.stop(2.96, "sampo:fm-reviewer", "pold", [self.prompt("Read /s/audits/T-0009.review.md"),
+                                                       self.reply("m1", 15, 100, 0, 1)])
+        got = self.per_lane()
+        a, b = got["lanes"]["T-0001"]["reviewer"], got["lanes"]["T-0002"]["reviewer"]
+        self.assertEqual(b["input"], 20 + 11, "the review brief it names, not the focused T-0099 and not the T-0001 it mentions")
+        self.assertEqual(a["input"], 10 + 12 + 13, "rrr (bound), the worktree its prompt names and the first bare task")
+        by = {u["agent_id"]: u for u in got["unattributed"]["subagents"]}
+        self.assertEqual(by["pnone"]["why"], "no task found")
+        self.assertEqual(by["pold"]["why"], "T-0009 not landed in the window")
+        self.assertNotIn("pbrief", by)
+
+    def test_per_lane_counts_the_lead_replies_of_sessions_in_lane_worktrees(self):
+        self.rig()
+        # a session run inside a lane's worktree has its own project folder beside the main one
+        for name in (self.folder + "--claude-worktrees-agent-zzz", self.folder + "-lanes-t1"):
+            os.makedirs(name)
+            self.write(os.path.join(name, "s.jsonl"), [self.reply("w-" + name[-3:], 7, 0, 0, 0, "claude-lead", self.at(0.55))])
+        other = self.folder + "x"  # another project whose name only starts with this one's
+        os.makedirs(other)
+        self.write(os.path.join(other, "s.jsonl"), [self.reply("o1", 1000, 0, 0, 0, "claude-lead", self.at(0.55))])
+        a = self.per_lane()["lanes"]["T-0001"]["lead"]
+        self.assertEqual((a["input"], a["turns"]), (30 + 14, 5), "both worktree folders count; the sibling project does not")
+
+    def test_per_lane_keeps_the_early_lead_replies_of_a_lane_that_began_before_the_lookback(self):
+        self.ev(-24 * 9, "lane_new", "T-0005", {})  # nine days back: before days 1 + the 7 days the ledger is read earlier
+        self.ev(0, "lane_builder", "T-0005", {"path": "/x/.claude/worktrees/agent-eee"})
+        self.ev(1, "lane_landed", "T-0005", {"tasks": ["T-0005"]})
+        self.merge("Merge T-0005: slow lane", 1)
+        self.write(os.path.join(self.folder, "lead-1.jsonl"), [
+            self.reply("early", 40, 0, 0, 0, "claude-lead", self.at(-24 * 7)), self.reply("late", 2, 0, 0, 0, "claude-lead", self.at(0.5))])
+        got = self.per_lane("--days", "1")
+        self.assertEqual(got["lanes"]["T-0005"]["lead"]["input"], 42, "the reply from the lane's first days is in its window")
+
+    def test_per_lane_shows_an_unplaced_run_from_before_the_window(self):
+        self.rig()
+        self.stop(-72, "sampo:fm-scout", "oldscout", [self.reply("m1", 9, 0, 0, 0)])  # no task, three days before the window
+        self.stop(-71, "sampo:fm-reviewer", "oldrev", [self.reply("m1", 8, 0, 0, 0)], task="T-0077")  # another lane's
+        got = self.per_lane("--days", "1")
+        by = {u["agent_id"]: u for u in got["unattributed"]["subagents"]}
+        self.assertIn("oldscout", by, "it fits no lane and says nothing of another: shown, not dropped")
+        self.assertEqual((by["oldscout"]["input"], by["oldscout"]["why"]), (9, "no task found"))
+        self.assertNotIn("oldrev", by, "a run bound to a task that isn't this window's is that lane's")
+
+    def test_per_lane_names_the_other_role(self):
+        self.rig()
+        text = self.fm("cost", "--per-lane", env={"CLAUDE_CONFIG_DIR": self.cfg}).stdout
+        self.assertIn("other = any agent that is not a builder, reviewer or fixer", text)
+
+    def test_per_lane_baseline_flags_imply_per_lane_and_the_help_says_so(self):
+        self.rig()
+        got = self.fm_json("cost", "--save-baseline", env={"CLAUDE_CONFIG_DIR": self.cfg})
+        self.assertTrue(got["baseline_saved"])
+        self.assertIn("lanes", got)
+        helped = self.fm("cost", "--help").stdout
+        self.assertIn("implies --per-lane", " ".join(helped.split()))
+
+    def test_per_lane_compare_says_when_a_role_has_no_earlier_figure(self):
+        from sampo import cost
+        self.rig()
+        self.per_lane("--save-baseline")
+        path = cost._baseline_path(self.p)
+        with open(path) as f:
+            saved = json.load(f)
+        del saved["median"]["reviewer"]
+        with open(path, "w") as f:
+            json.dump(saved, f)
+        got = self.per_lane("--compare-baseline")
+        self.assertIsNone(got["baseline"]["change"]["reviewer"]["was"])
+        text = self.fm("cost", "--per-lane", "--compare-baseline", env={"CLAUDE_CONFIG_DIR": self.cfg}).stdout
+        self.assertIn("reviewer: no earlier figure", text)
+        self.assertNotIn("≈ 0 →", text)
+        self.assertIn("builder: ≈", text)
+
+    def test_per_lane_ignores_a_baseline_file_of_the_wrong_shape_and_says_why(self):
+        from sampo import cost
+        self.rig()
+        path = cost._baseline_path(self.p)
+        for raw, why in (("null", "not a JSON object"), ("[1]", "not a JSON object"), ('"x"', "not a JSON object"),
+                         ('{"median": []}', "no median"), ('{"saved": 1}', "no median"), ("{oops", "not valid JSON")):
+            with self.subTest(raw=raw):
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w") as f:
+                    f.write(raw)
+                proc = self.fm("cost", "--per-lane", "--compare-baseline", env={"CLAUDE_CONFIG_DIR": self.cfg})
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertNotIn("Traceback", proc.stderr)
+                self.assertIn("ignored", proc.stdout)
+                self.assertIn(why, proc.stdout)
+                got = self.per_lane("--compare-baseline")
+                self.assertEqual(got["baseline"]["change"], {})
+
+    def test_per_lane_with_nothing_landed_is_a_sentence_not_a_traceback(self):
+        proc = self.fm("cost", "--per-lane", env={"CLAUDE_CONFIG_DIR": os.path.join(self.tmp, "none")})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertNotIn("Traceback", proc.stderr)
+        self.assertIn("0 lane(s) landed", proc.stdout)
 
 
 if __name__ == "__main__":

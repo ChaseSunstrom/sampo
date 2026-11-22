@@ -148,14 +148,7 @@ def _folders(p):
     """T-3921 review (T-3938): a project's sessions run in its worktrees and lanes, each with its own transcript folder
     (`<root>--claude-worktrees-…`, `<root>-lanes-…`), so the walk reads the main checkout's family of folders."""
     from sampo import cost
-    base = cost.transcripts_dir(c.main_worktree(p.root) or p.root)
-    parent, name = os.path.split(base)
-    try:
-        names = sorted(os.listdir(parent))
-    except OSError:
-        return [base]
-    return [os.path.join(parent, n) for n in names
-            if n == name or n.startswith((name + "--claude-worktrees-", name + "-lanes-"))]
+    return cost.project_folders(p)
 
 
 def _units(p, since):

@@ -36,6 +36,20 @@ def transcripts_dir(root):
     return os.path.join(base, "projects", re.sub(r"[^A-Za-z0-9]", "-", root))
 
 
+def project_folders(p):
+    """T-3921 review (T-3938), moved here by T-5950 so repeats and the per-lane report share it: a project's sessions run
+    in its worktrees and lanes, each with its own transcript folder (`<root>--claude-worktrees-…`, `<root>-lanes-…`), so a
+    walk reads the main checkout's family of folders."""
+    base = transcripts_dir(c.main_worktree(p.root) or p.root)
+    parent, name = os.path.split(base)
+    try:
+        names = sorted(os.listdir(parent))
+    except OSError:
+        return [base]
+    return [os.path.join(parent, n) for n in names
+            if n == name or n.startswith((name + "--claude-worktrees-", name + "-lanes-"))]
+
+
 def _since(days):
     return (c.clock() - datetime.timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%S")
 
@@ -1253,9 +1267,353 @@ def _lead(folder, cli, args):
                               f"{a['median_cache_creation']}: a compact rewrites the cache once, so it shows here.")
 
 
+PER_LANE_ROLES = ("lead", "builder", "reviewer", "fixer", "other")
+PER_LANE_KINDS = {"input": "input_tokens", "cache_read": "cache_read_input_tokens",
+                  "cache_write": "cache_creation_input_tokens", "output": "output_tokens"}
+PER_LANE_WEIGHT = {"input": 1, "cache_read": 0.1, "cache_write": 1.25, "output": 5}  # WEIGHTS, by the short names
+PER_LANE_BASELINE = "cost-per-lane-baseline.json"
+PER_LANE_MAX_BYTES = 50 << 20  # a subagent transcript larger than this is a run with no tokens read (shown, not read)
+PER_LANE_LOOKBACK_DAYS = 7  # a landed lane's work began before the window: its events are read this much earlier
+PER_LANE_PROMPT_BYTES = 256 << 10  # how much of a run's transcript is read for the prompt that started it
+TRUNK_MERGE = re.compile(r"Merge (T-\d+(?:[\s,&]+T-\d+)*)\b")  # the subject of a landing's merge commit
+
+
+def _tids(task):
+    return [t.strip() for t in str(task or "").split(",") if t.strip()]
+
+
+def _share_new():
+    return {**{k: 0.0 for k in PER_LANE_KINDS}, "turns": 0.0, "models": {}}
+
+
+def _share_add(rec, usage, model, f=1.0):
+    """Add f of one reply's usage (and of its turn, under its model) to a role's share of a lane."""
+    for k, name in PER_LANE_KINDS.items():
+        rec[k] += f * (usage.get(name) or 0)
+    rec["turns"] += f
+    if model:
+        rec["models"][model] = rec["models"].get(model, 0) + f
+
+
+def _equiv(rec):
+    """A share in input-equivalent tokens (WEIGHTS: reads ×0.1, writes ×1.25, output ×5)."""
+    return sum(rec.get(k, 0) * w for k, w in PER_LANE_WEIGHT.items())
+
+
+def _role_of(agent_type):
+    from sampo import spawn
+    return {"fm-builder": "builder", "fm-reviewer": "reviewer", "fm-fixer": "fixer"}.get(spawn.base_type(agent_type) or "", "other")
+
+
+def _safe(path, base):
+    """The real path of a ledger's transcript path when it is a readable file under `base` (the projects folder) and not
+    over PER_LANE_MAX_BYTES, else None: a ledger path is data, nothing outside the projects folder is opened."""
+    try:
+        real = os.path.realpath(str(path))
+        if os.path.commonpath([real, base]) != base or os.path.getsize(real) > PER_LANE_MAX_BYTES:
+            return None
+        return real
+    except (OSError, ValueError):
+        return None
+
+
+def _prompt_tasks(path, base, bound):
+    """[task] a run's first user message names, from the head of its transcript: the briefs it is told to read
+    (audits/T-X.review.md, T-X.builder.md), else the lane worktree it names (worktree-agent-ID, via `bound`), else the
+    first T-X in it; [] when it names none or can't be read."""
+    real = _safe(path, base)
+    text = ""
+    if real:
+        try:
+            with open(real, "rb") as f:
+                head = f.read(PER_LANE_PROMPT_BYTES).decode("utf-8", errors="replace")
+        except OSError:
+            head = ""
+        for line in head.splitlines():
+            try:
+                e = json.loads(line)
+            except ValueError:  # a line the read cut
+                continue
+            if not isinstance(e, dict) or e.get("type") != "user":
+                continue
+            m = e.get("message")
+            content = m.get("content") if isinstance(m, dict) else None
+            if isinstance(content, list):
+                content = "\n".join(x.get("text") or "" for x in content if isinstance(x, dict) and x.get("type") == "text")
+            if isinstance(content, str) and content.strip():
+                text = content
+                break
+    briefs = list(dict.fromkeys(re.findall(r"audits/(T-\d+)\.[a-z]+\.md", text)))
+    if briefs:
+        return briefs
+    for w in re.findall(r"worktree-agent-([A-Za-z0-9]+)", text):
+        if bound.get(w):
+            return bound[w]
+    m = re.search(r"\bT-\d+\b", text)
+    return [m[0]] if m else []
+
+
+def _trunk_merges(root, floor):
+    """([([task], second)] one per `Merge T-X` commit on HEAD's first-parent line since `floor` (UTC ISO), the first-parent
+    commits there), or None when git can't read the log. A landing is its merge commit on the trunk: a lane landed twice
+    or reverted is one task there."""
+    r = c._git(root, "log", "--first-parent", "-n", "20000", "--format=%ct%x09%s", "HEAD", timeout=60, proc=True)  # no
+    # --since: git stops at the first commit it finds older, and a commit dated out of order would hide those below it
+    if r.returncode != 0:
+        return None
+    merges, n = [], 0
+    for line in r.stdout.splitlines():
+        ts, _, subject = line.partition("\t")
+        if not ts.isdigit() or c.iso(int(ts))[:19] < floor[:19]:
+            continue
+        n += 1
+        if m := TRUNK_MERGE.match(subject):
+            merges.append((re.findall(r"T-\d+", m[1]), c.iso(int(ts))[:19]))
+    return merges, n
+
+
+def _replies(path, base=None):
+    """[(usage, model)] of one transcript, a reply once per message id; None when `base` is given and the file is not
+    under it, is over PER_LANE_MAX_BYTES or can't be read (_safe)."""
+    try:
+        if base is not None:
+            path = _safe(path, base)
+            if path is None:
+                return None
+        seen = {}
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for n, line in enumerate(f):
+                if '"usage"' not in line:
+                    continue
+                try:
+                    e = json.loads(line)
+                except ValueError:
+                    continue
+                m = e.get("message") if isinstance(e, dict) and e.get("type") == "assistant" else None
+                if isinstance(m, dict) and isinstance(m.get("usage"), dict):
+                    seen[m.get("id") or n] = (m["usage"], str(m.get("model") or ""))
+        return list(seen.values())
+    except (OSError, ValueError):
+        return None
+
+
+def _lead_replies(folder, since):
+    """[(ts, usage, model)] of the lead's own replies (a subagent's are left out), once per message id."""
+    seen = {}
+    folders = [folder] if isinstance(folder, str) else list(folder)  # the project's folder and its lane worktrees'
+    for path, e in _entries([f for f in folders if os.path.isdir(f)], since, need='"usage"'):
+        m = e.get("message")
+        if f"{os.sep}subagents{os.sep}" in path or e.get("type") != "assistant" or not isinstance(m, dict) \
+                or not isinstance(m.get("usage"), dict) or str(e.get("timestamp") or "")[:19] < since[:19]:
+            continue
+        seen[m.get("id") or (path, e.get("timestamp"))] = (str(e["timestamp"]), m["usage"], str(m.get("model") or ""))
+    return list(seen.values())
+
+
+def per_lane(p, days, now=None):
+    """T-5950: the tokens of each lane that landed in the window, by role. A lane landed once per task: its `Merge T-X`
+    commit on the main checkout's HEAD first-parent line in the window (a re-landed or reverted lane is one; the ledger's
+    lane_landed count is returned beside it, and stands in only when git can't read the log). The lead's share is each
+    of its replies (the main project's transcripts, whatever worktree this runs from) between the lane's start (its
+    first lane_new, focus or run event) and its landing, split among the lanes open then; the builder's, reviewer's and
+    fixer's are their own runs (the ledger's `subagent` events name each run's transcript). A run belongs to the lane of
+    the first of: the task its agent id was bound to (reviewer_bound, a builder's mark, a lane_builder worktree path, the
+    worktree in its transcript's path), the task its first message names (a brief file, a lane worktree, a bare T-X), the
+    task the stop recorded (the lead's focus then: a guess). Runs and lead replies that fit no landed lane are returned
+    under `unattributed`, never dropped. {days, landed, git: {source, merges, tasks}, ledger: {tasks, events}, lanes:
+    {task: {role: share}}, median: {role: {n, input, cache_read, cache_write, output, equiv}}, unattributed: {subagents:
+    [...], lead: share}}; a share is the four token kinds, `turns`, `models` (turns by model)."""
+    since = _since(days + PER_LANE_LOOKBACK_DAYS)
+    floor = _since(days)
+    kinds = ("lane_landed", "lane_new", "lane_builder", "focus", "builder_mark", "subagent", "reviewer_bound")
+    events = [e for e in c.ledger_events(p, kinds, since=since) if isinstance(e, dict)]
+    root = c.main_worktree(p.root) or p.root  # the lead's transcripts and the trunk are the main checkout's, not a lane's
+    ledger, ledger_events, start, bound, began = {}, 0, {}, {}, set()
+    for e in events:
+        ts, d, kind = str(e.get("ts") or "")[:19], e.get("data") if isinstance(e.get("data"), dict) else {}, e.get("event")
+        tids = _tids(e.get("task"))
+        if kind == "lane_landed":
+            for t in tids:
+                if ts >= floor:
+                    ledger[t] = max(ledger.get(t, ""), ts)
+            ledger_events += ts >= floor
+            continue
+        for t in tids:
+            start[t] = min(start.get(t, ts), ts)
+        if kind in ("lane_new", "focus"):
+            began.update(tids)
+        if kind == "reviewer_bound" and d.get("agent_id") and tids:
+            bound.setdefault(str(d["agent_id"]), tids)
+        elif kind == "builder_mark" and d.get("agent") and tids:
+            bound.setdefault(str(d["agent"]), tids)
+        elif kind == "lane_builder" and tids and (m := re.search(r"agent-([\w-]+)/?$", str(d.get("path") or ""))):
+            bound.setdefault(m[1], tids)
+    trunk = _trunk_merges(root, floor)
+    if trunk is None:  # no readable trunk: the ledger's own landings, said so
+        landed, git = dict(ledger), {"source": "ledger", "merges": 0, "tasks": 0}
+    else:
+        landed = {}
+        for tasks, ts in trunk[0]:
+            for t in tasks:
+                landed[t] = max(landed.get(t, ""), ts)
+        git = {"source": "git", "merges": len(trunk[0]), "tasks": len(landed)}
+    lanes = {t: {} for t in landed}
+    if late := [t for t in landed if t not in began]:  # no start in the window: it began before the lookback, so its last
+        prior = {}  # lane_new at or before its landing is read without the cutoff (its start, not an older landing's)
+        for e in c.ledger_events(p, ("lane_new",)):
+            ts = str(e.get("ts") or "")[:19]
+            for t in _tids(e.get("task")):
+                if t in late and ts <= landed[t]:
+                    prior[t] = max(prior.get(t, ""), ts)
+        for t, ts in prior.items():
+            start[t] = min(start.get(t, ts), ts)
+    unattr = {"subagents": [], "lead": _share_new()}
+    base = os.path.dirname(os.path.realpath(transcripts_dir(root)))
+    seen = set()
+    for e in events:
+        d = e.get("data") if isinstance(e.get("data"), dict) else {}
+        if e.get("event") != "subagent" or not d.get("agent_type") or (d.get("agent_id"), d.get("transcript")) in seen:
+            continue
+        seen.add((d.get("agent_id"), d.get("transcript")))
+        aid, path = str(d.get("agent_id") or ""), str(d.get("transcript") or "")
+        wt = re.search(r"worktrees-agent-([A-Za-z0-9]+)", path)
+        tids = bound.get(aid) or (wt and bound.get(wt[1]))
+        if not tids and path:  # the prompt that started the run names its brief: better than the focus at its stop
+            tids = _prompt_tasks(path, base, bound)
+        tids = tids or _tids(e.get("task"))
+        role = _role_of(d["agent_type"])
+        replies = _replies(path, base) if path else None
+        mine = [t for t in tids if t in lanes]
+        if mine and replies is not None:
+            for t in mine:
+                rec = lanes[t].setdefault(role, _share_new())
+                for usage, model in replies:
+                    _share_add(rec, usage, model, 1 / len(mine))
+        elif str(e.get("ts") or "")[:19] >= floor or not tids:  # before the window, a run with a task is that lane's
+            rec = _share_new()
+            for usage, model in replies or ():
+                _share_add(rec, usage, model)
+            why = ("transcript not read" if replies is None else "no task found" if not tids
+                   else f"{', '.join(tids)} not landed in the window")
+            unattr["subagents"].append({"agent_type": str(d["agent_type"]), "agent_id": aid, "task": ",".join(tids) or None,
+                                        "why": why, **rec})
+    for ts, usage, model in _lead_replies(project_folders(p), since):
+        open_ = [t for t, z in landed.items() if start.get(t, z) <= ts[:19] <= z]
+        for t in open_:
+            _share_add(lanes[t].setdefault("lead", _share_new()), usage, model, 1 / len(open_))
+        if not open_ and ts[:19] >= floor:
+            _share_add(unattr["lead"], usage, model)
+    lanes = {t: r for t, r in sorted(lanes.items()) if r}
+    return {"days": days, "landed": len(landed), "git": git,
+            "ledger": {"tasks": len(ledger), "events": ledger_events},
+            "lanes": lanes, "median": _medians(lanes), "unattributed": unattr}
+
+
+def _medians(lanes):
+    """{role: {n lanes with the role, the median of each token kind, equiv: of its input-equivalent tokens}}."""
+    out = {}
+    for role in PER_LANE_ROLES:
+        rows = [r[role] for r in lanes.values() if role in r]
+        if rows:
+            out[role] = {"n": len(rows), **{k: round(statistics.median(r[k] for r in rows)) for k in PER_LANE_KINDS},
+                         "equiv": round(statistics.median(_equiv(r) for r in rows))}
+    return out
+
+
+def _baseline_path(p):
+    return os.path.join(p.dir, PER_LANE_BASELINE)
+
+
+def _pct(now, was):
+    return round((now - was) * 100 / was, 1) if was else None
+
+
+def _per_lane_text(r, base=None):
+    fmt = lambda s: " · ".join(f"{k.replace('_', ' ')} {_human(s[k])}" for k in PER_LANE_KINDS)  # noqa: E731
+    g, led = r["git"], r["ledger"]
+    out = [f"Tokens per landed lane, last {r['days']:g} day(s): {r['landed']} lane(s) landed "
+           + (f"(git: {g['merges']} Merge T-… commit(s) on the trunk's first-parent line, {g['tasks']} task(s); "
+              if g["source"] == "git" else "(no trunk log to read, counted from the ledger; ")
+           + f"ledger: {led['tasks']} task(s) in {led['events']} lane_landed event(s)); "
+           "input · cache read · cache write · output tokens by role; ≈ input-equivalent",
+           "Roles: lead = the main session's replies split among the lanes open then; builder, reviewer, fixer = those "
+           "agents' own runs; other = any agent that is not a builder, reviewer or fixer (a scout, an auditor)"]
+    for t, roles in r["lanes"].items():
+        out.append(f"  {t} (≈ {_human(sum(_equiv(s) for s in roles.values()))}):")
+        out += [f"    {role}: {fmt(roles[role])} · ≈ {_human(_equiv(roles[role]))}"
+                for role in PER_LANE_ROLES if role in roles]
+    if r["median"]:
+        out.append("Median per role over the lanes that have it:")
+        out += [f"  {role} (n {m['n']}): {fmt(m)} · ≈ {_human(m['equiv'])}" for role, m in r["median"].items()]
+    un = r["unattributed"]
+    lead = un["lead"]
+    if un["subagents"] or lead["turns"]:
+        out.append("Unattributed (fit no landed lane, shown and not dropped):")
+        out += [f"  {u['agent_type']} {u['agent_id'][:8]}: {fmt(u)} · {u['why']}" for u in un["subagents"]]
+        if lead["turns"]:
+            out.append(f"  lead, outside any landed lane's window ({lead['turns']:.0f} replies): {fmt(lead)}")
+    if base is not None:
+        out.append(base["line"] if "line" in base else "")
+        for role, ch in base.get("change", {}).items():
+            if ch["was"] is None:
+                out.append(f"  {role}: no earlier figure (now ≈ {_human(ch['now'])} median per lane)")
+                continue
+            out.append(f"  {role}: ≈ {_human(ch['was'])} → {_human(ch['now'])} median per lane "
+                       + ("(no earlier figure)" if ch["equiv"] is None else f"({ch['equiv']:+g}%)")
+                       + " · " + " · ".join(f"{k.replace('_', ' ')} {'-' if ch[k] is None else format(ch[k], '+g') + '%'}"
+                                            for k in PER_LANE_KINDS))
+    return "\n".join(x for x in out if x)
+
+
+def _per_lane(p, args, cli):
+    r = per_lane(p, args.days)
+    base, wrote = None, False
+    if getattr(args, "compare_baseline", False):
+        saved, why = None, None
+        try:
+            with open(_baseline_path(p), encoding="utf-8") as f:
+                saved = json.load(f)
+        except FileNotFoundError:
+            base = {"line": "No baseline saved yet: sampo cost --per-lane --save-baseline writes one.", "change": {}}
+        except (OSError, ValueError, RecursionError) as e:
+            why = "not valid JSON" if isinstance(e, ValueError) else f"unreadable ({e.__class__.__name__})"
+        else:
+            if not isinstance(saved, dict):
+                why = "not a JSON object"
+            elif not isinstance(saved.get("median"), dict):
+                why = "no median object"
+        if why:
+            base = {"line": f"Baseline file {_baseline_path(p)} ignored: {why}; sampo cost --per-lane --save-baseline "
+                            "writes a new one.", "change": {}}
+        if saved is not None and not why:
+            was = saved["median"]
+            change = {}
+            for role, m in r["median"].items():
+                w = was.get(role) if isinstance(was.get(role), dict) else {}
+                nums = lambda x, k: x.get(k) if isinstance(x.get(k), (int, float)) else None  # noqa: E731
+                change[role] = {"was": nums(w, "equiv"), "now": m["equiv"],
+                                "equiv": _pct(m["equiv"], nums(w, "equiv")),
+                                **{k: _pct(m[k], nums(w, k)) for k in PER_LANE_KINDS}}
+            gone = [role for role in was if role not in r["median"]]
+            base = {"saved": saved.get("saved"), "days": saved.get("days"), "change": change, "gone": gone,
+                    "line": f"Against the baseline saved {saved.get('saved')} ({saved.get('landed')} lane(s), "
+                            f"{saved.get('days')} day(s)); median per lane by role"
+                            + (f"; no longer present: {', '.join(gone)}" if gone else "") + ":"}
+    if getattr(args, "save_baseline", False):
+        c.write_atomic(_baseline_path(p), json.dumps({"saved": c.now(), "days": r["days"], "landed": r["landed"],
+                                                       "git": r["git"], "ledger": r["ledger"], "median": r["median"]}, indent=1))
+        wrote = True
+    text = _per_lane_text(r, base) + (f"\nBaseline saved to {_baseline_path(p)}." if wrote else "")
+    data = dict(r, baseline=base, baseline_saved=wrote)
+    return cli.out(args, data, text)
+
+
 def cmd_cost(args):
     from sampo import cli
     p = cli.resolve(args)
+    if any(getattr(args, k, False) for k in ("per_lane", "save_baseline", "compare_baseline")):  # T-5950
+        args.per_lane = True  # the baseline flags imply it (the help says so)
+        return _per_lane(p, args, cli)
     if getattr(args, "refresh_cache", False):  # T-1083 review: the Stop hook's detached refresh
         old = _read_cache(p)
         if old and time.time() - old["ts"] < 60:  # another refresh just ran
