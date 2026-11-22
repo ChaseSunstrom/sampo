@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- `kalevala gen` now also writes a GIANT task for the generation, with Design from the setup, one XL milestone per tower and a plan that passes `big check`, and keeps its id on the gen record (T-5014).
 - Hook caches (breaker, lock-busy record, leads, seen-marks, session and boot marks) are written without an fsync via write_atomic(durable=False), cutting the fsync stalls in slow hooks while state files keep the durable default (T-5000).
 - SVG technique cards: a technique-by-work-type grid with a writer prompt per cell, keeping a card only when its example SVG passes the works gates and shows the technique (T-4996).
 - Two art cards, art-abstract and art-landscape, draw a seeded picture from the design tokens in dark and light with at most 8 typed slots, and their check passes only once both render through works (T-4995).
