@@ -53,7 +53,8 @@ def corpus(days=DAYS, cap=MAX):
 
 
 def events(days=DAYS):
-    """T-1058: every tool call in recent session logs as {session, text (what it did), result (its output), errored}."""
+    """T-1058: every tool call in recent session logs as {session, tool (its name), text (what it did), command (a
+    Bash call's command line, else ""), result (its output), errored}."""
     for path in _logs(days):
         calls, order = {}, []
         try:
@@ -69,7 +70,10 @@ def events(days=DAYS):
                             continue
                         if b.get("type") == "tool_use" and isinstance(b.get("input"), dict):
                             text = " ".join(str(v) for v in b["input"].values())
-                            calls[b.get("id")] = {"session": path, "text": text, "result": "", "errored": False}
+                            cmd = b["input"].get("command")  # T-5612: a description or other input is not the command
+                            calls[b.get("id")] = {"session": path, "tool": b.get("name"), "text": text,
+                                                  "command": cmd if isinstance(cmd, str) else "", "result": "",
+                                                  "errored": False}
                             order.append(b.get("id"))
                         elif b.get("type") == "tool_result" and b.get("tool_use_id") in calls:
                             r = b.get("content")

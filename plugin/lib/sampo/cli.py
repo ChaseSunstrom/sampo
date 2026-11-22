@@ -10461,7 +10461,8 @@ def _build_parser(only=None):
                                                                  "fired on recent real sessions, read-only (T-1058)")
     s.add_argument("--rule", metavar="REGEX", help="calls (command, path, pattern) the regex matches")
     s.add_argument("--fix", metavar="SIG", help="failed calls whose output contains this error signature")
-    s.add_argument("--card", metavar="NAME", help="calls that mention this library card by name")
+    s.add_argument("--card", metavar="NAME", help="calls that mention this library card by name; a calling card's "
+                   "by-hand Bash runs its \"hand\" regexes match, with the result bytes they read (T-5612)")
     s.add_argument("--days", type=int, default=14, help="how far back the session logs are read (default 14)")
     s = add("fold", lazy("sampo.foldpage", "cmd_fold"), tier=("Reports", 1081), help="the fold ledger (T-5020): one verdict for every "
                                                              "captured and planned task: set ID VERDICT, page, or counts with the standalone")
