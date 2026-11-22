@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- The train's map union refuses a symlinked, hard-linked or non-regular target, or one behind a symlinked folder, and parks the lane instead of writing through it (T-5836).
 - Sampo pulse and the Board report a train as running while it holds the train lock, so a train inside a lane land shows as running (T-5820).
 - The terminal panel view draws animations at rest and reads arc commands, and the README claims and Kalevala landed tests read live state again (T-5552).
 - `sampo panels plan ROOT` reads any project into a panel spec of its real parts, and the new board-panels skill takes a session from plan to rendered, checked panels whenever a diagram or dashboard is drawn (T-3733).
