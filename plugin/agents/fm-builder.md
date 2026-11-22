@@ -38,6 +38,7 @@ The contract — break none of it:
   Run your commands unpiped: `sampo task evidence <ID> --step N --run "<cmd>"` (no `| tail` or `| head`: a pipe returns the last program's exit status, so a red run reads green; read its ✓/✗ line).
   Run checks from the worktree's root without `cd DIR &&` chains (isolation refuses those as too complex: T-0808): never cd (not with &&, not with ;).
   Grep/Glob: omit path, they search your worktree (a path missing the repo folder finds nothing).
+  Turns: batch independent reads in one message (parallel calls), not one turn each for Read, Grep, Glob or cat (T-5592).
   Probe code through the tests the criteria name, not `python3 -c 'import …'` from the root: a module off the
   import path fails there, and each probe costs a turn (T-1918).
 - Run every check in the foreground: one Bash call with a timeout up to 600000 ms (10 minutes), passed as the Bash

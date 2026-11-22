@@ -3004,6 +3004,126 @@ def _big_read_note(pl, ti):
             f"line ranges; then Read only the range you need (offset/limit).")
 
 
+NAV_RUN = 3  # T-5592: single-read turns in a row before the lead is told to batch its reads
+NAV_QUIET = 40  # T-5592: calls after a nav note with no nav note, whatever the calls are
+_NAV_SHELL = c.lazy(r"[;&|<>`\n]|\$\(")  # a compound, redirected or substituted Bash command is not a plain read
+_NAV_READ_VERBS = ("cat", "ls", "head", "tail", "grep", "rg")
+_NAV_FIND_ACTS = ("-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fprintf", "-fls")
+
+
+def _read_call(tool, ti):
+    """T-5592: whether a call only reads: Read, Grep, Glob, or a Bash cat, sed -n, ls, head, tail, grep, rg or find
+    with no write in it (sed -i, find's actions) and no shell operator; anything else is not a read."""
+    if tool in ("Read", "Grep", "Glob"):
+        return True
+    cmd = str(ti.get("command") or "") if tool == "Bash" and isinstance(ti, dict) else ""
+    if not cmd.strip() or _NAV_SHELL.search(cmd):
+        return False
+    verb, rest = cmd.split()[0], cmd.split()[1:]
+    if verb == "sed":
+        return "-n" in rest and not any(w == "--in-place" or (w[:1] == "-" and w[1:2] != "-" and "i" in w[1:])
+                                        for w in rest)
+    if verb == "find":
+        return not any(w in _NAV_FIND_ACTS for w in rest)
+    return verb in _NAV_READ_VERBS
+
+
+def _turn_shapes(path, cap=262_144):
+    """T-5592: the transcript's turns since the user's last prompt, each a tuple of its (tool, input) calls: an assistant
+    message's content blocks share its id, so a parallel batch is one turn; a text-only message is an empty turn. Reads
+    at most the last cap bytes; [] when the file can't be read."""
+    try:
+        with open(path, "rb") as f:
+            size = os.path.getsize(path)
+            f.seek(max(0, size - cap))
+            lines = f.read().decode("utf-8", "replace").splitlines()
+    except (OSError, TypeError, ValueError):
+        return []
+    if size > cap:
+        lines = lines[1:]  # the first line may begin mid-record
+    turns = {}
+    for i, ln in enumerate(lines):
+        try:
+            e = json.loads(ln)
+        except ValueError:
+            continue
+        if not isinstance(e, dict):
+            continue
+        msg = e.get("message") if isinstance(e.get("message"), dict) else {}
+        content = msg.get("content")
+        if e.get("type") == "user":
+            said = content if isinstance(content, str) else " ".join(
+                str(x.get("text") or "") for x in content if isinstance(content, list) and isinstance(x, dict)
+                and x.get("type") == "text")
+            if said and not e.get("isMeta") and (not c.machine_text(said) or said.lstrip().startswith("<command-")):
+                turns = {}  # a new prompt starts the count again
+            continue
+        if e.get("type") != "assistant":
+            continue
+        calls = turns.setdefault(msg.get("id") or f"#{i}", [])
+        for x in content if isinstance(content, list) else []:
+            if isinstance(x, dict) and x.get("type") == "tool_use":
+                calls.append((x.get("name"), x.get("input") or {}))
+    return [tuple(v) for v in turns.values()]
+
+
+NAV_TAIL = 262_144  # T-5592: the most transcript a check parses: the session's last bytes
+NAV_TURN_MAX = 16_384  # T-5592: the most growth a check waits for: a turn of big results can't hide the streak for long
+
+
+def _nav_state(path):
+    """T-5592: the .nav state file's three numbers: calls left in the quiet window, the transcript's size at the last
+    check, and the bytes a turn took then. Missing or old one-number files read as no window and no check yet."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            quiet, size_at, per_turn = (int(x) for x in f.read().split()[:3])
+        return quiet, size_at, per_turn
+    except (OSError, ValueError):
+        return 0, -1, 0
+
+
+def _nav_note(pl, ti):
+    """T-5592: the lead's NAV_RUN single-read turns in a row get one note to batch independent reads in one message,
+    then quiet for NAV_QUIET calls (every lead call counts down the window, a read or not). A read is checked against
+    the transcript only when no window is open and the transcript has grown by a turn's bytes since the last check
+    (an unchanged or barely grown file is not parsed again). Never a subagent's: its note would land in the main
+    thread's context."""
+    sid = pl.get("session_id")
+    if pl.get("agent_id") or not sid or not re.fullmatch(r"[\w-]{1,100}", sid):
+        return None
+    path = os.path.join(c.state_dir(), "sessions", f"{sid}.nav")
+    quiet, size_at, per_turn = _nav_state(path)
+    if quiet > 0:
+        try:
+            c.write_atomic(path, f"{quiet - 1} {size_at} {per_turn}", durable=False)
+        except OSError:
+            pass
+        return None
+    tool = pl.get("tool_name", "")
+    tr = pl.get("transcript_path")
+    if not isinstance(tr, str) or not tr or not _read_call(tool, ti):  # an int would open a file descriptor
+        return None
+    try:
+        size = os.path.getsize(tr)
+    except OSError:
+        return None
+    if size_at >= 0 and size_at <= size < size_at + max(per_turn, 1):
+        return None  # no turn's bytes since the last check: no new turn to read
+    turns = _turn_shapes(tr, NAV_TAIL)
+    hit = len(turns) >= NAV_RUN and not any(len(t) != 1 or not _read_call(*t[0]) for t in turns[-NAV_RUN:])
+    per_turn = min(NAV_TURN_MAX, min(size, NAV_TAIL) // len(turns)) if turns else 0
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        # a hit records no size, so the first check after the window always parses (the window may end on a still file)
+        c.write_atomic(path, f"{NAV_QUIET} -1 0" if hit else f"0 {size} {per_turn}", durable=False)
+    except OSError:
+        return None
+    if not hit:
+        return None
+    return (f"Sampo: the last {NAV_RUN} turns each made one read. Independent reads and searches batch: put them in one "
+            f"message as parallel calls, so one turn answers them all.")
+
+
 def _same_note(sid, text, record=True):
     """Whether this session was last told exactly this state; records it when not, unless record is False
     (SessionStart clears it)."""
@@ -5180,10 +5300,11 @@ def _post_tool_use(pl, ok=True):
         m = re.search(r"resumedAgentId\W+([\w-]+)", json.dumps(pl.get("tool_response")))  # a dict or its JSON text
         if m:
             _event({"kind": "bg_start", "session_id": pl.get("session_id"), "id": m.group(1), "agent": True})
+    nav = _nav_note(pl, ti) if ok and p else None  # T-5592: before the Bash branch, so every call counts in its window
     if ok and p and tool == "Bash":
         _grant_prompted(pl, p)
         routine = _by_hand_note(pl)  # T-3923: read first, so the session's last call is kept whatever _bash_touches says
-        note = "\n\n".join(filter(None, [_bash_touches(pl, p), routine]))
+        note = "\n\n".join(filter(None, [_bash_touches(pl, p), routine, nav]))
         if note:
             return {"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": note}}
     if ok and p and tool in FILE_TOOLS:
@@ -5210,7 +5331,7 @@ def _post_tool_use(pl, ok=True):
         note = _generated_note(pl, path) or (_thrash_note(pl, p, act, path) if act else None)
         if note:
             return {"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": note}}
-    note = _big_read_note(pl, ti) if ok and tool == "Read" else None
+    note = "\n\n".join(filter(None, [_big_read_note(pl, ti) if ok and tool == "Read" else None, nav]))
     return {"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": note}} if note else None
 
 
