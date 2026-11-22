@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- The forced-edit test in test_code_loop_break allows the routine tool `do` that T-3923 offers a run that can act, so trunk is green again (T-5797).
 - The Claude worker gate judges a built-in non-Claude worker name by the file it resolves to (a PATH shim running claude, an aider on a Claude model), refuses a declaration of an interpreter, shell or wrapper, and runs the file it hashed instead of the name (T-5849).
 - SessionStart's one-call routines line is shorter (a shorter head and a 40-character about), so every session start stays under the 1000-byte context cap (T-5819).
 - Workflow calls whose agent() stages name no sampo:fm-* type and no haiku or sonnet model are refused before they can run uncapped on Opus (T-5680).
