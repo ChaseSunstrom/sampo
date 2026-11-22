@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- `sampo misses --why` now scores itself on a hand-answered golden set of real asks with held-out rows, re-fits its cosine gate on train rows only, matches "used" asks to the usage verb, and gives the judge a second look on a recovery or measuring theme (T-3959).
 - `sampo lane start ID` runs a builder's opening in one call (base check, focus, brief path and steps) and `sampo check --evidence ID --all-steps` records one gate run on every step that has no evidence, collapsing the two most repeated routines (T-3958).
 - `sampo lane land` settles the mechanical blockers of a merged, audited lane itself (a scope reason naming the reviewed tip, follow-ups captured to the inbox, a step's run taken from the first criterion), one Log line each, and counts the settled closes as "N closed (M settled)" (T-5535).
 - `sampo outcomes --panel` prints the fixed-or-reverted-after-close rate of tasks that adopted a Dissent item against tasks with none, each with its n, from the briefs and a panel_outcome row logged at close, with no model call (T-3951).
