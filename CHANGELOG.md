@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- test_bench_hooks.HotPathImports no longer fails in cached batch runs, where run.py's recording venv python (runcover.pth imports contextlib) sat first on PATH under the hook; the test now runs the hook under the real interpreter and has a planted-venv witness (T-5762).
 - Calling cards may carry kinds, the yardstick task kinds they serve (suite:kind), cardgap.carded_kinds reads them over the plugin and admitted cards and names a card whose entry is bad, and the six code cards name exam:bug (T-5133).
 - Trunk's Portable check passes again: the Compact test that runs a card for real skips where calls cannot be confined, as the other card-run tests do (T-5813).
 - The forced-edit test in test_code_loop_break allows the routine tool `do` that T-3923 offers a run that can act, so trunk is green again (T-5797).
