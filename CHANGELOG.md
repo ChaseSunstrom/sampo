@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- A test now compares the README's counts of stack cards, areas, named looks, Board panels, deny rules and the lite CLAUDE.md's length with the live ones and names README.md:line when one drifts; the README's "20 deny rules" is corrected to 11 (T-5032).
 - `sampo jobs add NAME --why WHY` registers a background job started by hand in the running-jobs journal, `end ID [RESULT]` closes it and `sampo jobs` lists them beside the running long jobs, and `sampo recover` never restarts one (T-5031).
 - Every Rust decision (keep, port, rejected) is now recorded in plugin/native/DECISIONS.json with its python and native milliseconds, and a test fails a row missing a number or one its numbers contradict (T-5030).
 - `kalevala select` writes a Landed section into gen-N/select.md and lineage.md, listing each child of the gen's GIANT task with its status and its tower's score delta from the scores select already holds (T-5025).
