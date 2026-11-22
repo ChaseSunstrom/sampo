@@ -959,6 +959,7 @@ class Compact(Base):
         self.assertEqual(got, {"n": 0, "ok": False, "nest": {"b": {"z": 0}}, "items": [{"v": 1}]})
         self.assertEqual(callcards._compact("text"), "text")
 
+    @confined
     def test_compact_facts_a_py_callers_payload_is_at_least_a_fifth_smaller_than_indent_two(self):
         self.write("cart.py", "def total(items):\n    return sum(items)\n\n\nprint(total([1]))\n")
         r = callcards.call("py-callers", {"name": "total"}, self.repo, cache=False)
