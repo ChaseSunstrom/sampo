@@ -232,8 +232,12 @@ def cmd_steers(args):
         got = tick(p)
         from sampo import concerns  # T-4189: model-free, so it runs whether or not a local model is up
         got["repeats"] = len(concerns.safe_tick(p)["repeats"])
+        from sampo import steerrecur  # T-4191: model-free too: a class of steer that recurs 3 times in 7 days files a meta-task
+        got["recurring"] = [x for x in steerrecur.safe_tick(p) if x["new"]]
         return cli.out(args, got, f"steers: {got['read']} read, {got['unread']} unread, {got['left']} left"
-                       + ("" if got["model"] else " (no local model up)"))
+                       + ("" if got["model"] else " (no local model up)")
+                       + (f"; {len(got['recurring'])} recurring filed ({', '.join(x['task'] for x in got['recurring'])})"
+                          if got["recurring"] else "; 0 recurring filed"))
     r = report(p)
     lines = _lines(p.slug, r)
     for x in r["newest"]:

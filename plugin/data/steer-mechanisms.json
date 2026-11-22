@@ -1,0 +1,14 @@
+{
+  "_note": "T-4191: which mechanism should have caught each steer root (plugin/data/steer-roots.json), and the ledger event kinds it writes when it acts. When one root or one concern recurs 3 times in 7 days the recurrence pass (steerrecur.py) files 'why did <short> not catch it' and lists the mechanism's last firings from these kinds; the fix is to that mechanism, never a new one beside it. A root is a row here, no code. short: the name in the task's title; mechanism: what it is; match: an optional {data key: value} a firing's data must hold (several mechanisms share one kind).",
+  "roots": {
+    "R1": {"short": "prompt hold", "mechanism": "the prompt hold that carries the standing instructions and the user's earlier corrections into a turn (UserPromptSubmit hook, steer expansion)", "kinds": ["steer_expand", "correction"]},
+    "R2": {"short": "sibling sweep", "mechanism": "the sibling sweep that looks for the same fault elsewhere after a fix (miss ledger, fm miss)", "kinds": ["miss", "miss_checked"]},
+    "R3": {"short": "idle-stop hook", "mechanism": "the idle-stop hook that keeps a session going while the queue holds work it may do", "kinds": ["idle_stop", "stop_gate"]},
+    "R4": {"short": "guard", "mechanism": "the guard that blocks an action taken on state it never read (PreToolUse guard)", "kinds": ["guard_block", "guard_unread"]},
+    "R5": {"short": "correction hook", "mechanism": "the correction hook that records a rejected approach and shows it again", "kinds": ["correction"]},
+    "R6": {"short": "stop gate", "mechanism": "the stop gate that holds a turn while a complaint or question of the user is waiting", "kinds": ["stop_gate", "ask_queued"]},
+    "R7": {"short": "unproven-claim check", "mechanism": "the unproven-claim check that reads a 'done' against the task's evidence", "kinds": ["unproven_claim", "close_steps"]},
+    "R8": {"short": "ship gate", "mechanism": "the ship gate that checks the work is reachable by the user (merge, push, release)", "kinds": ["ship_done", "enforce"]}
+  },
+  "concern": {"short": "concerns repeat pass", "mechanism": "the concerns repeat pass (sampo concerns act, run by sampo steers --tick), which files or reopens a task when a concern is said again", "kinds": ["capture"], "match": {"source": "discovered"}}
+}

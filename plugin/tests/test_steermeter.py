@@ -379,6 +379,16 @@ class Report(Meter):
         self.assertEqual(both["machine"]["windows"]["7d"]["read"], 2)
         self.assertIn(self.p.slug, [x["project"] for x in both["projects"]])
 
+    def test_report_the_tick_runs_the_recurrence_pass_and_says_how_many_it_filed(self):
+        # T-4191: three avoidable R7 steers in the week file one meta-task; a second tick files none
+        self.book([(1, True, "R7"), (2, True, "R7"), (3, True, "R7"), (4, False, "none")])
+        self.assertIn("1 recurring filed", self.fm("steers", "--tick").stdout)
+        again = self.fm("steers", "--tick", "--json")
+        self.assertEqual(json.loads(again.stdout)["recurring"], [])
+        self.assertIn("0 recurring filed", self.fm("steers", "--tick").stdout)
+        titles = [b.title for b in c.load_briefs(self.p)]
+        self.assertEqual(sum("unproven-claim check" in t for t in titles), 1)
+
     def test_report_status_shows_a_line_only_after_twenty_messages(self):
         self.fm("capture", "a request so status has a task to show")
         self.book([(h, h % 2 == 0, "R1" if h % 2 == 0 else "none") for h in range(1, 20)])
