@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- Added review-fix and merge-conflict agents with short contracts, so these jobs no longer launch a general-purpose agent that re-reads the whole skill each turn (T-5681).
 - The dead train helper _map_only is deleted: T-5937's union already merges map-only clashes, and the DeadFunctions hygiene test is green on trunk again (T-5995).
 - `sampo lane brief` now builds a task from the tip of a finished, unlanded dependency's lane (and `lane start` merges it in), holds the brief while that lane is still building, and warns when an unlanded lane's diff changes a function the scope names (T-5725).
 - The cloud-profile tests now reach a remote host name through an HTTP proxy, since 0.0.0.0 is a loopback spelling, and ideas.safe_root is reviewed into the real-home list (T-5997).
