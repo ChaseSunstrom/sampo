@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- The Ward reads bash arithmetic `$((…))` as arithmetic, so a sampo path in a command that also uses `$((n+22))` (a sed range) is no longer refused as a computed verb; a `$(…)` inside the arithmetic is still read (T-4931).
 - `sampo big adopt` makes an open task a child of a big task and `sampo big fold` merges an inbox item into it, and `sampo big check` refuses a plan that leaves a folded ask unnamed (T-4246).
 - The Stop hook no longer holds a stop for a steer the session applies to its active task, and the concerns fold carries each concern's kind; a new ask still holds (T-4218).
 - `sampo next`, `queue --replan` and the STATE.md regen now lead with the top open concern, ahead of lane-merge and friction actions, so the written state shows what the user is waiting on (T-4217).
