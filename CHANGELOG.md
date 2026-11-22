@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- Art-card fill harness: `sampo.artfill.fill_slots` fills an art card's slots from a one-line brief, refuses bad JSON or out-of-range slots, retries twice on the refusal text, then falls back to defaults, with a 20-brief fixture (T-4994).
 - The live page's first frame arrives at once from the last built or kept frame, marked stale, with one shared builder per view (T-5549).
 - `CHANGELOG: \`sampo task show\` and \`sampo task ls\` take several task ids at once, with a missing id named and the rest still printed (T-5599).
 - sampo pulse shows the load, the disk, the lanes, the train and the long jobs with their logs' last lines, and --wait N returns early when a job ends or the board changes (T-5591).
