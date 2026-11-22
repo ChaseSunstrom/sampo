@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- A land closes a builder's lane from the close lines its last commit carries when its brief has none, so no hand close is needed (T-5496).
 - Builder briefs carry the code their steps name with its nearest test, and the reviewer head carries the bodies a diff touched, both capped (T-5498).
 - sampo lane accept now queues a workflow-built lane on its first accept: the review of its tip counts as the return its live launcher never marks, and a later commit makes it wait for the next accept (T-5359).
 - Moved the fmgenesis, fmgrants and fmgraph map entries from docs/map/files-lib-2.md to a new files-lib-7.md, taking files-lib-2 from 86.9 KB to 51.3 KB so the waiting lanes' additions fit under the 90 KB read limit (T-5346).
