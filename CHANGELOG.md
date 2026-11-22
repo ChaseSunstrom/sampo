@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- Card grow's local proposer now gets the fit rules (one file kind, deterministic, no cross-file judgement) and two admitted examples, so it files fewer requests the writer turns down as unfit (T-5829).
 - The file map names plugin/agents/fm-resolver.md by its full path, so the release check's doctor finds every listed file again (T-5822).
 - The ModelSwitchBack tests answer as an idle Claude Code pane again, so the switch-back is tested through the T-5794 ready gate, with a case that a shell, a foreign or a busy pane gets no keys (T-5821).
 - sampo claude-bench worker NAME (user-only) declares a custom --worker command non-Claude so it runs while claude-bench is off, and a smith bench child gets the parent's switch and declarations through its seed meta, not an env var or flag (T-5812).
