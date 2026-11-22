@@ -695,6 +695,59 @@ def landing(p):
             "turns_per_lane": round(sum(turns) / len(turns), 1)}
 
 
+STAGE_KINDS = ("lane_builder", "builder_mark", "reviewed", "accepted", "lane_merge", "task_done")
+STAGE_WINDOW = 20000  # T-5839: the newest ledger lines stage_times reads: an open lane's events are recent, the read is bounded
+
+
+def stage_events(p):
+    """T-5839: the ledger events stage_times reads, one bounded read for any number of lanes."""
+    return c.ledger_tail(p, STAGE_WINDOW, kinds=STAGE_KINDS)
+
+
+def _stage_gap(s):
+    return f"{s:.0f}s" if s < 120 else f"{s / 60:.0f}m" if s < 7200 else f"{s / 3600:.1f}h"
+
+
+def stage_times(p, tid, events=None):
+    """T-5839: a lane's stage times, derived on read from events the ledger already holds, so no writer can drift from the
+    real instant: [{"stage", "at", "gap_s"}] in order, for built (the builder's latest return, builder_mark returned),
+    reviewed, accepted, landed (lane_merge, an undone one left out) and closed (task_done). Each stage is the first event at
+    or after the one before it, so a review that findings sent back to the builder is not read as the new build's; gap_s is
+    the seconds since the stage before (the brief, lane_builder, for the first), None when that has no time. A stage not
+    reached is left out (a lane merged by hand shows no review); a task with no events gives []. `events` is the result of
+    stage_events, for many lanes at once. Never raises."""
+    tid = str(tid or "").strip()
+    if not tid:
+        return []
+    try:  # a ts that is not a time would sort as text among real ones: such an event is not read
+        mine = [e for e in (stage_events(p) if events is None else events) if isinstance(e, dict)
+                and tid in [x.strip() for x in str(e.get("task") or "").split(",")] and c.parse_ts(e.get("ts"))]
+    except (OSError, ValueError, TypeError):
+        return []
+    data = lambda e: e.get("data") if isinstance(e.get("data"), dict) else {}
+    starts = [e["ts"] for e in mine if e.get("event") == "lane_builder"]
+    cursor = starts[-1] if starts else ""
+    rows = []
+    for stage, kind in (("built", "builder_mark"), ("reviewed", "reviewed"), ("accepted", "accepted"),
+                        ("landed", "lane_merge"), ("closed", "task_done")):
+        hits = [e["ts"] for e in mine if e.get("event") == kind and e["ts"] >= cursor
+                and (kind != "builder_mark" or data(e).get("returned"))
+                and (kind != "lane_merge" or not data(e).get("undone"))]
+        if not hits:
+            continue
+        at = max(hits) if stage == "built" else min(hits)  # the build is the latest return; the rest follow it
+        a, z = c.parse_ts(cursor), c.parse_ts(at)
+        rows.append({"stage": stage, "at": at, "gap_s": round((z - a).total_seconds()) if a and z else None})
+        cursor = at
+    return rows
+
+
+def stage_text(rows):
+    """T-5839: stage_times as one line: the gap before each stage ('built 12m, reviewed 3m, landed 40m'); a stage whose
+    gap is unknown (no brief event before it) is named alone."""
+    return ", ".join(r["stage"] + ("" if r["gap_s"] is None else " " + _stage_gap(max(r["gap_s"], 0))) for r in rows)
+
+
 def refusals(p):
     """T-4139: this project's isolation refusals (failed calls whose error opens with the harness's words), in all and in
     the last 7 days, from the event log. A row carries no lane id, so the count is per project: the next mining shows
@@ -892,6 +945,12 @@ def cmd_lane(args):
                              "tasks": [{"id": b.id, "status": b.status, "title": b.title}]})
                 lines.append(f"{b.meta['lane']} [missing]: {b.id} {b.status} {c.fit(b.title, 50)} — fm lane rm {b.id} "
                              f"frees it")
+        if rows:  # T-5839: each lane's stage times, derived from one read of the ledger
+            seen = stage_events(p)
+            for i, r in enumerate(rows):
+                r["stages"] = stage_times(p, r["tasks"][0]["id"], seen) if r["tasks"] else []
+                if r["stages"]:
+                    lines[i] += f" — {stage_text(r['stages'])}"
         # T-3268: which open lanes would conflict with main or with each other, before a lane merge finds out. Every
         # present lane with a branch (builder lanes too: worktree-agent-*), not just foreman/*
         s = None if getattr(args, "no_preview", False) else lane_preview.scan(
