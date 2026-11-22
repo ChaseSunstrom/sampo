@@ -11055,7 +11055,8 @@ def _build_parser(only=None):
     s.add_argument("action", nargs="?", choices=["set"], help="set NAME: change a trigger's row (T-2355; the user's to run)")
     s.add_argument("name", nargs="?", help="set: the trigger")
     s.add_argument("--route", choices=["inbox", "queue", "lane", "muted"], help="set: where its captures go")
-    s.add_argument("--budget", type=int, help="set: captures a day before it adds to its open one (0: none)")
+    s.add_argument("--budget", type=lazy("sampo.triggers", "budget_arg"), metavar="N|unlimited",
+                   help="set: captures a day before it adds to its open one (0: none; unlimited: no cap, T-5897)")
     s.add_argument("--burst", type=int, help="set: seconds after a filing in which it adds to its open one (0: none)")
     s.add_argument("--tier-cap", type=str.upper, choices=c.TIERS, help="set: the largest tier it may queue")
     s.add_argument("--held", action="store_true", help="the discovered and followup items over today's allowance, "

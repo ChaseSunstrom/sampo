@@ -316,6 +316,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmtraces` (T-2995: green exam Smith runs as training data: the journal kept beside… [→ files-lib-8](docs/map/files-lib-8.md)
 - `fmtrials` (T-1059: a self-change as a pre-registered trial, graded by the… [→ files-lib-8](docs/map/files-lib-8.md)
 - `fmtriggers` (`sampo triggers [--days N] [--json]`, T-2276): capture events… [→ files-lib-8](docs/map/files-lib-8.md)
+- `fmuserwords` (T-5897: `sampo/userwords.py`, the user's own prompt words to one guarded verb, one use, logged; first verb: a trigger's daily budget… [→ files-lib-8](docs/map/files-lib-8.md)
 - `fmtripwire` (T-3949: the reply tripwire reader, `sampo tripwire ab`: a Haiku pass over builder and reviewer returns… [→ files-lib-8](docs/map/files-lib-8.md)
 - `fmupdate` (T-3881: `sampo update [--check] [--dry-run] [--undo]`, fetch origin and fast-forward, migrations only… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmverifier` (T-2977: the close-holds verifier, `sampo exam models --verifier`: a text-free logistic head on lake… [→ files-lib-4](docs/map/files-lib-4.md)

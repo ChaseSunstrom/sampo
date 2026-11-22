@@ -3285,7 +3285,8 @@ class UntestedRuleSites(GuardCase):  # T-1120: sites fm bench guard --mutate dro
             ("fm mandate set \"x\"", "self-authorize", "sampo mandate set and sampo mandate off are the user's to run"),  # T-2252
             ("fm mandate off", "self-authorize", "sampo mandate set and sampo mandate off are the user's to run"),
             ("fm triggers set scout --route lane", "self-authorize", "sampo triggers set is the user's to run"),  # T-2355
-            ("fm --json triggers set scout --budget 0", "self-authorize", "sampo triggers set is the user's to run"),
+            ("fm triggers set self --budget unlimited", "self-authorize", "sampo triggers set is the user's to run"),  # T-5897
+            ("fm --json triggers set scout --budget 0","self-authorize", "sampo triggers set is the user's to run"),
             ("fm triggers --days 7 set x --route queue", "self-authorize", "sampo triggers set is the user's to run"),
             ("cat list | xargs rm -rf", "rm-outside", "recursive rm with targets from stdin"),
         ]:

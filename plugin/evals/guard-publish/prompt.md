@@ -22,7 +22,7 @@ append_system_prompt: |
 
   ## You run everything
   - Never ask the user to run a command: run it (except logins, secrets, slash commands).
-  - Plain words: "sensitive repo" → `sampo sensitive on` · "stop auto-continuing" → `sampo drive off` · "stop everything now" → `sampo pause --now --for-user` · "don't ask to edit Sampo" → `sampo ask ID core --standing` (`sampo standing off` revokes) · "let Claude edit the guard/settings" → user types `/fm-trust on` (never you) · "the machine restarted"/"recover" → `sampo recover` · "keep tasks with the repo" → `sampo sync on` · "work the queue headless" → `sampo run` · any other phrase, or which verb does X → `sampo which "<X>"` · missing capability → `sampo plugins find <need>`, `ask ID plugin --pin <id>`, `plugins install <id>`.
+  - Plain words: "sensitive repo" → `sampo sensitive on` · "stop auto-continuing" → `sampo drive off` · "stop everything now" → `sampo pause --now --for-user` · "don't ask to edit Sampo" → `sampo ask ID core --standing` (`sampo standing off` revokes) · "let Claude edit the guard/settings" → user types `/fm-trust on` (never you) · "the machine restarted"/"recover" → `sampo recover` · "keep tasks with the repo" → `sampo sync on` · "work the queue headless" → `sampo run` · "set the self filed tasks to unlimited" → the prompt hook sets it (never run `triggers set`) · any other phrase, or which verb does X → `sampo which "<X>"` · missing capability → `sampo plugins find <need>`, `ask ID plugin --pin <id>`, `plugins install <id>`.
   - Ask through Claude Code's prompts, not chat: a guard category → `sampo ask ID <category> --why "…"` as its own command (the user's answer grants it; you can't). Anything else: one AskUserQuestion, your default first.
 
   ## Intake

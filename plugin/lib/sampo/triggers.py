@@ -4,6 +4,7 @@ closed captures were mostly dropped files at low priority (demote, never silence
 ledger and the briefs and writes nothing. T-2355: one table routes every trigger (inbox, queue, lane, muted) with a tier
 cap, a daily budget and a burst window; the user sets rows (fm triggers set, the user's to run), the digest moves
 routes on outcomes Sampo didn't author (settle_routes), each move an fm decide row."""
+import argparse
 import datetime
 import hashlib
 import json
@@ -21,6 +22,7 @@ ROUTES = ("inbox", "queue", "lane", "muted")
 DEFAULT = {"route": "inbox", "tier_cap": "M", "budget": None, "burst": 0}  # T-2355: the defaults change nothing
 PROMOTE, PROMOTE_MIN, MUTE, MUTE_MIN = 0.7, 10, 0.1, 10  # queue: 0.7 of 10+ closed S/M held; muted: under 0.1 of 10+
 TIERS = c.TIERS  # T-4220: every tier name; the cap compares by rank
+UNLIMITED = "unlimited"  # T-5897: a user's budget with no cap (row["budget"]; allowance() is None, nothing is held for it)
 
 
 def _since(days):
@@ -98,18 +100,37 @@ def noisiest(p):
     return n
 
 
+def budget_arg(text):
+    """T-5897: --budget's value: a whole number (0 clears it) or the word unlimited."""
+    if str(text).strip().lower() == UNLIMITED:
+        return UNLIMITED
+    try:
+        n = int(text)
+    except ValueError:
+        n = -1
+    if n < 0:
+        raise argparse.ArgumentTypeError(f"{text!r}: a whole number (0 clears it) or {UNLIMITED}")
+    return n
+
+
+def set_row(p, name, route=None, budget=None, burst=None, tier_cap=None):
+    """The user's row for a trigger, the fields given changed under the project lock. The one writer: fm triggers set
+    (the user's to run) and the user's own words in the prompt hook (T-5897: sampo.userwords) both come here."""
+    with c.lock(p.dir):
+        rows = _load(p, "trigger-table.json")
+        cur = _override(rows.get(name))
+        for k, v in (("route", route), ("budget", budget), ("burst", burst), ("tier_cap", tier_cap)):
+            if v is not None:
+                cur[k] = v
+        rows[name] = dict(_override(cur), set_at=c.now())
+        c.write_atomic(os.path.join(p.dir, "trigger-table.json"), json.dumps(rows, sort_keys=True))
+
+
 def cmd_set(p, args, cli):
     """T-2355: the user's row for a trigger (the guard keeps fm triggers set the user's to run)."""
     if not args.name:
         raise cli.UsageError("fm triggers set NAME [--route R] [--budget N] [--burst S] [--tier-cap T]")
-    with c.lock(p.dir):
-        rows = _load(p, "trigger-table.json")
-        cur = _override(rows.get(args.name))
-        for k, v in (("route", args.route), ("budget", args.budget), ("burst", args.burst), ("tier_cap", args.tier_cap)):
-            if v is not None:
-                cur[k] = v
-        rows[args.name] = dict(_override(cur), set_at=c.now())
-        c.write_atomic(os.path.join(p.dir, "trigger-table.json"), json.dumps(rows, sort_keys=True))
+    set_row(p, args.name, route=args.route, budget=args.budget, burst=args.burst, tier_cap=args.tier_cap)
     r = row(p, args.name)
     cli.out(args, r, f"{args.name}: route {r['route']}, tier cap {r['tier_cap']}, budget {r['budget'] or 'none'}, "
                        f"burst {r['burst'] or 0} s")
@@ -163,7 +184,7 @@ def cmd_held(p, args, cli):
             (f"{len(items)} held" + (f", {over} overdue (held over {MAX_WAIT_DAYS} days: they file first, past the allowance)"
                                      if over else "")
              + f", filed best-first as each trigger's daily allowance has room "
-             f"(allowance a day: {', '.join(f'{s} {a}' for s, a in allow.items())}):\n" + "\n".join(lines))
+             f"(allowance a day: {', '.join(f'{s} {UNLIMITED if a is None else a}' for s, a in allow.items())}):\n" + "\n".join(lines))
             if items else "Nothing is held.")
 
 
@@ -200,7 +221,9 @@ def _override(v):
         out["tier_cap"] = v["tier_cap"]
     for k in ("budget", "burst"):
         x = v.get(k)
-        if isinstance(x, int) and not isinstance(x, bool) and x >= 0:
+        if k == "budget" and x == UNLIMITED:
+            out[k] = x
+        elif isinstance(x, int) and not isinstance(x, bool) and x >= 0:
             out[k] = x or (None if k == "budget" else 0)
     return out
 
@@ -230,7 +253,8 @@ def table(p, status=None):
 def over_budget(p, trigger, r):
     """Why a firing joins the trigger's open capture instead of filing another: past its daily budget (local day) or
     within its burst window of the last filing; None when it files (always for an urgent trigger)."""
-    if trigger in URGENT or not (r.get("budget") or r.get("burst")):
+    cap = r.get("budget") if r.get("budget") != UNLIMITED else None  # T-5897: unlimited is no cap
+    if trigger in URGENT or not (cap or r.get("burst")):
         return None
     now = datetime.datetime.now().astimezone()
     day = now.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(datetime.timezone.utc)
@@ -238,8 +262,8 @@ def over_budget(p, trigger, r):
                                                   - datetime.timedelta(seconds=r["burst"])))
     ts = [str(e.get("ts") or "") for e in c.ledger_events(p, ["capture"], since=since.strftime("%Y-%m-%dT%H:%M:%SZ"))
           if str((e.get("data") or {}).get("trigger") or "") == trigger]
-    if r.get("budget") and sum(t >= day.strftime("%Y-%m-%dT%H:%M:%SZ") for t in ts) >= r["budget"]:
-        return f"past its daily budget of {r['budget']}"
+    if cap and sum(t >= day.strftime("%Y-%m-%dT%H:%M:%SZ") for t in ts) >= cap:
+        return f"past its daily budget of {cap}"
     edge = (now.astimezone(datetime.timezone.utc) - datetime.timedelta(seconds=r.get("burst") or 0)).strftime(
         "%Y-%m-%dT%H:%M:%SZ")
     if r.get("burst") and ts and max(ts) >= edge:
@@ -389,14 +413,14 @@ def _utc(dt):
 def allowance(p, trigger):
     """How many tasks a day this trigger may file: DAILY_MAX until TRAIL_DAYS of its captures hold MIN_CLOSED closed
     ones, then DAILY_MAX times its precision (done of done and dropped), not under MIN_ALLOW; a budget the user set is
-    the allowance instead, raising it past the record or capping it under (T-5722). None for an urgent trigger and for
-    one that isn't folded."""
+    the allowance instead, raising it past the record or capping it under (T-5722). None for an urgent trigger, for
+    one the user set to unlimited (T-5897) and for one that isn't folded."""
     trigger = _AS.get(trigger, trigger)
     if trigger in URGENT:
         return None
     budget = row(p, trigger).get("budget")
     if budget:
-        return budget
+        return None if budget == UNLIMITED else budget  # T-5897: the user lifted the limit
     caps = [(t, i) for t, i in _captures(p, TRAIL_DAYS) if _AS.get(t, t) == trigger]
     n = DAILY_MAX
     if len(caps) >= MIN_CLOSED:
@@ -782,7 +806,7 @@ def replay(p, days):
                   and tid in recs and recs[tid]["status"] in c.CLOSED and (recs[tid]["close"] or "") <= t]
         budget = row(p, trig).get("budget")
         if budget:  # T-5722: the user's budget is the allowance, as in allowance()
-            return budget
+            return float("inf") if budget == UNLIMITED else budget
         return DAILY_MAX if len(closed) < MIN_CLOSED else max(MIN_ALLOW, round(DAILY_MAX * closed.count("done") / len(closed)))
 
     def settle(kind, trig):

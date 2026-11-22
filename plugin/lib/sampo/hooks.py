@@ -2698,6 +2698,23 @@ WHICH_HINT = 'Unsure which skill fits: sampo which "<the task>"'  # T-1699
 _NAMES_SKILL = c.lazy(r"/[\w-]+:[\w-]+|\bskills?\b|\bplaybooks?\b|\b(?:fm|sampo) which\b", re.I)  # a request naming its own
 
 
+def _user_grants(p, pl, text, sid, hc, program):
+    """T-5897: what the user's own words ask of a guarded verb (sampo.userwords), done here because the guard keeps the
+    command the user's: the lines to add to the turn's note. Only a person's prompt in the main session counts: not one a
+    program sent (claude -p), a subagent's, a claude run inside another claude, nor one typed after a terminal typer ran
+    (c.typed_refuse: the line may not be theirs). A failure is logged and grants nothing."""
+    try:
+        from sampo import userwords
+        if program or pl.get("agent_id") or not hc or not userwords.find(text):  # most prompts match nothing: no /proc walk
+            return []
+        if _nested_claude(hc) or c.typed_refuse():
+            return []
+        return userwords.apply(p, text, session=sid)
+    except Exception:
+        log_error("UserPromptSubmit", _tb())
+        return []
+
+
 def user_prompt_submit(pl):
     sid = pl.get("session_id")
     p = c.find_project(_cwd(pl), create=not os.environ.get("FOREMAN_WORKER_OF"))  # T-1438: a worker sets up nothing
@@ -2793,6 +2810,7 @@ def user_prompt_submit(pl):
                                  stderr=subprocess.DEVNULL, start_new_session=True)
         except Exception:  # an expansion that can't start never costs the message
             log_error("UserPromptSubmit", _tb())
+    words = _user_grants(p, pl, text, sid, hc, program)
     asks = _asks(text)
     try:
         hashes = _pin_hashes(a.get("pin") for a in c.read_meta(p).get("pending_approvals") or [] if isinstance(a, dict))
@@ -2835,7 +2853,7 @@ def user_prompt_submit(pl):
                 "no approval, override word or heartbeat was applied. Pending approvals are unchanged."}}
     briefs = c.load_briefs(p)  # T-2024: one load for the state and the Next line; T-3582: never under the project lock
     sd = c.regen_views(p, mirror=False) if regen else c.state_dict(p, briefs)  # T-3556: regen reads under its own lock
-    parts = list(approvals) + ([c.rewind_note(rewind)] if rewind else []) + veto_notes
+    parts = list(approvals) + ([c.rewind_note(rewind)] if rewind else []) + veto_notes + words
     secret = _secret_note(pl.get("prompt") or "")  # pasted blocks included: the likeliest place for one
     if secret:
         parts.append(secret)

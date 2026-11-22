@@ -240,6 +240,61 @@ class TriggerTable(ForemanTestCase):
         self.assertEqual(sum(1 for x in c.load_briefs(self.p) if x.meta.get("trigger") == "noise"), 1)
 
 
+class UnlimitedBudget(ForemanTestCase):
+    """T-5897: --budget unlimited is a user's budget with no cap: allowance() is None, nothing is held or folded for it."""
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        self.p = c.find_project(self.repo)
+        self.n = 0
+
+    def fire(self, trigger):
+        self.n += 1
+        return eco.capture_once(self.p, f"FIX: {trigger} finding {self.n}", "FIX", "discovered", trigger=trigger)
+
+    def test_unlimited_is_stored_and_allowance_is_none(self):
+        from sampo import triggers
+        self.fm("triggers", "set", "discovered", "--budget", "unlimited")
+        self.assertEqual(triggers.row(self.p, "discovered")["budget"], "unlimited")
+        self.assertIsNone(triggers.allowance(self.p, "discovered"))
+        self.assertIsNone(triggers._room(self.p, "discovered", triggers._local_now()))
+        self.assertIn("unlimited", self.fm("triggers", "set", "discovered", "--budget", "unlimited").stdout)
+
+    def test_an_unlimited_trigger_never_files_into_its_open_capture(self):
+        self.fm("triggers", "set", "scout", "--budget", "unlimited")
+        self.assertTrue(all(self.fire("scout")[1] for _ in range(6)))
+
+    def test_held_says_unlimited_not_none(self):
+        import types
+        from unittest import mock
+        from sampo import triggers
+        self.fm("triggers", "set", "discovered", "--budget", "unlimited")
+        shown = []
+        cli = types.SimpleNamespace(out=lambda args, data, text: shown.append(text))
+        item = {"source": "discovered", "type": "FIX", "text": "a held finding", "held_at": "2026-01-01T00:00:00Z"}
+        with mock.patch.object(triggers, "held", lambda p: [item]):
+            triggers.cmd_held(self.p, types.SimpleNamespace(), cli)
+        self.assertIn("discovered unlimited", shown[0])
+        self.assertNotIn("None", shown[0])
+
+    def test_a_number_still_caps_and_zero_still_clears(self):
+        from sampo import triggers
+        self.fm("triggers", "set", "discovered", "--budget", "7")
+        self.assertEqual(triggers.allowance(self.p, "discovered"), 7)
+        self.fm("triggers", "set", "discovered", "--budget", "unlimited")
+        self.fm("triggers", "set", "discovered", "--budget", "0")
+        self.assertEqual(triggers.allowance(self.p, "discovered"), triggers.DAILY_MAX)
+
+    def test_a_bad_budget_word_is_refused(self):
+        r = self.fm("triggers", "set", "discovered", "--budget", "lots", check=False)
+        self.assertNotEqual(r.returncode, 0)
+
+    def test_a_hand_edited_row_with_another_word_is_dropped(self):
+        from sampo import triggers
+        self.assertNotIn("budget", triggers._override({"budget": "lots"}))
+        self.assertEqual(triggers._override({"budget": "unlimited"})["budget"], "unlimited")
+
+
 class MutedTriggerDoctor(ForemanTestCase):
     def test_fm_doctor_names_each_muted_trigger_with_its_unmute_command(self):  # T-2355
         import json
