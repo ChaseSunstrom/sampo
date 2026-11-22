@@ -1323,6 +1323,7 @@ def task_close(p, args):
              f"sampo big close {b.id} again")
     if _g(p, "rev-parse", "HEAD").stdout.strip() != head or _ref(p, name) != tip:
         raise c.PolicyError(moved)
+    # T-4805 exempt: the landing is logged by _record below (lanes.log_merged on the merge commit), on the resumed path too
     hold = lanes.land_holds(p, b, main, tip, base=head)  # the same holds every trunk move makes (private terms, guard, self)
     if hold:
         raise c.PolicyError(f"{b.id}: {hold.bare or hold}; nothing was merged")
