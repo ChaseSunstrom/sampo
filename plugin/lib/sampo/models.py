@@ -347,8 +347,11 @@ def _config():
 
 
 def configured():
-    """(models.json's default name or None, {name: profile}); ModelError when the file is unreadable."""
-    return _config()
+    """(models.json's default name or None, {name: profile}); ModelError when the file is unreadable. T-5504: while the
+    user's machine switch is on (sampo models local off), the profiles served on this machine aren't listed."""
+    default, full = _config()
+    conf = _away(full)
+    return (None if default in full and default not in conf else default), conf
 
 
 def _cloud(name=None, keyed=True):
@@ -413,7 +416,7 @@ def _tags(base_url):
 def systemone_profiles(base_url="http://127.0.0.1:11434"):
     """T-2887: a systemone profile per Ollama model whose /api/tags capabilities include 'decision' (none when the
     server is down or lists no capabilities). Jeff and SelfJev come from models.json (kind systemone)."""
-    if os.environ.get("FOREMAN_NO_LOCAL_MODELS"):  # T-3598: as embedding_profiles: tests polled the box's Ollama here
+    if local_off():  # T-3598: as embedding_profiles: tests polled the box's Ollama here; T-5504: the machine switch too
         return []
     base = base_url.rstrip("/") + ("" if base_url.rstrip("/").endswith("/v1") else "/v1")
     return [{"name": r["name"], "kind": "systemone", "base_url": base, "model": r["name"], "key_env": None,
@@ -424,7 +427,7 @@ def systemone_profiles(base_url="http://127.0.0.1:11434"):
 def embedding_profiles(base_url="http://127.0.0.1:11434"):
     """T-2887: an openai profile per Ollama model whose /api/tags capabilities include 'embedding' (embed() speaks its
     /v1/embeddings)."""
-    if os.environ.get("FOREMAN_NO_LOCAL_MODELS"):  # T-2880: as LOCAL discovery: a server on the box is no model in tests
+    if local_off():  # T-2880: as LOCAL discovery: a server on the box is no model in tests; T-5504: the switch too
         return []
     base = base_url.rstrip("/") + ("" if base_url.rstrip("/").endswith("/v1") else "/v1")
     return [{"name": r["name"], "kind": "openai", "base_url": base, "model": r["name"], "key_env": None,
@@ -617,9 +620,47 @@ def context_variant(profile, served=False):
     return out, f"{profile['name']}: {made} {name} ({want} tokens of context) for {base}, which serves {served or 'an unknown context'}"
 
 
+def local_flag():
+    """T-5504: the machine-local switch file beside models.json (so a test's own Sampo home never sees the machine's);
+    while it exists no model served on this machine is used."""
+    return os.path.join(foreman_home(), "local-models-off")
+
+
+def local_off():
+    """True while models served on this machine are off: the flag file (`sampo models local off`, the user's "stop
+    running the local models here") or FOREMAN_NO_LOCAL_MODELS (tests: a server on the box is no model)."""
+    return bool(os.environ.get("FOREMAN_NO_LOCAL_MODELS")) or _flag_set()
+
+
+def _flag_set():
+    """The flag file exists; a folder that can't be read counts as set (a stop switch fails closed)."""
+    try:
+        os.stat(local_flag())
+        return True
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+
+
+def flag_off():
+    """The user's switch alone: the flag is set and the tests' env isn't (tests keep their loopback fake profiles)."""
+    return not os.environ.get("FOREMAN_NO_LOCAL_MODELS") and _flag_set()
+
+
+def _here(prof):
+    """True for a profile served on this machine (a loopback base_url)."""
+    return is_loopback(urllib.parse.urlsplit(prof.get("base_url") or "").hostname or "")
+
+
+def _away(conf):
+    """conf without the profiles served on this machine while the user's switch is on (T-5504)."""
+    return {n: x for n, x in conf.items() if not _here(x)} if flag_off() else conf
+
+
 def _local(name=None):
     """Reachable local servers, probed lazily in LOCAL's order (up to 0.3 s each on a filtered port)."""
-    for n, u in LOCAL if not os.environ.get("FOREMAN_NO_LOCAL_MODELS") else ():  # tests: a server on the box is no model
+    for n, u in LOCAL if not local_off() else ():
         if name is None or n == name:
             p = _probe(n, u)
             if p:
@@ -639,7 +680,8 @@ def _env_profiles():
 
 def profiles():
     _, conf = _config()
-    return list(conf.values()) + _env_profiles() + list(_local()) + _cloud()
+    return list(_away(conf).values()) + [x for x in _env_profiles() if not (flag_off() and _here(x))] \
+        + list(_local()) + _cloud()
 
 
 def role(name):
@@ -684,9 +726,13 @@ def for_purpose(profs, purpose):
 
 def resolve(name=None):
     default, conf = _config()
+    if not name and flag_off() and (_here(conf[default]) if default in conf else default in {n for n, _ in LOCAL}):
+        default = None  # T-5504: a default served here, while the machine switch is off, falls to the next choice
     name = name or default
     if name:
         if name in conf:
+            if flag_off() and _here(conf[name]):
+                raise ModelError(f"{name!r} is served on this machine and models here are off (sampo models local on)")
             return conf[name]
         found = next(iter(_cloud(name, keyed=False)), None) or next(_local(name), None)
         if not found:

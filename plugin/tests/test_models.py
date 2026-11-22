@@ -722,6 +722,49 @@ class Profiles(Base):
         self.write_models({"default": "mine", "profiles": {"mine": {"base_url": "http://h/v1", "model": "x"}}})
         self.assertEqual(m.resolve()["name"], "mine")
 
+    def test_local_switch_lists_no_loopback_model_and_its_verb_writes_the_flag(self):
+        # T-5504: the user's "stop running the local models here" held only until the hourly night found Ollama again
+        local = self.fake((200, {"data": [{"id": "qwen"}]}, None))
+        m.LOCAL = [("ollama", local.url)]
+        self.write_models({"profiles": {"loop": {"base_url": "http://127.0.0.1:8080/v1", "model": "small"},
+                                        "box": {"base_url": "https://gpu.example.com/v1", "model": "big", "own": True}}})
+        self.assertFalse(m.local_off())
+        self.assertIn("ollama", [p["name"] for p in m.profiles()])
+        flag = os.path.join(self._tmp.name, "local-models-off")
+        import contextlib
+        import io
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            mu.cmd_models(type("A", (), {"words": ["local", "off"], "codex": False})())
+        self.assertTrue(os.path.exists(flag), "the flag sits beside models.json, machine-local")
+        self.assertIn("local models here: off", out.getvalue())
+        self.assertTrue(m.local_off())
+        names = [p["name"] for p in m.profiles()]
+        self.assertNotIn("ollama", names, "no loopback server is probed")
+        self.assertNotIn("loop", names, "no loopback profile from models.json")
+        self.assertIn("box", names, "an own remote box (JARVIS) stays")
+        self.assertEqual(set(m.configured()[1]), {"box"})
+        with self.assertRaises(m.ModelError):
+            m.resolve("loop")
+        self.assertEqual(m.embedding_profiles(local.url), [])
+        self.assertEqual(m.systemone_profiles(local.url), [])
+        self.write_models({"default": "loop", "profiles": {
+            "loop": {"base_url": "http://127.0.0.1:8080/v1", "model": "small"},
+            "box": {"base_url": "https://gpu.example.com/v1", "model": "big", "own": True}}})
+        self.assertIsNone(m.configured()[0], "a default served here isn't the default while the switch is on")
+        os.environ["OPENAI_API_KEY"] = "k"
+        self.assertNotEqual(m.resolve()["name"], "loop", "a default served here falls to the next choice")
+        self.write_models({"default": "openai", "profiles": {}})
+        self.assertEqual(m.configured()[0], "openai", "a built-in default isn't touched by the switch")
+        self.write_models({"default": "ollama", "profiles": {}})
+        self.assertNotEqual(m.resolve()["name"], "ollama")
+        with contextlib.redirect_stdout(io.StringIO()):
+            mu.cmd_models(type("A", (), {"words": ["local", "on"], "codex": False})())
+        self.assertFalse(os.path.exists(flag))
+        self.assertFalse(m.local_off())
+        os.environ["FOREMAN_NO_LOCAL_MODELS"] = "1"
+        self.assertTrue(m.local_off(), "the tests' env switch still works")
+
     def test_local_beats_keyed_cloud(self):
         local = self.fake((200, {"data": [{"id": "qwen"}, {"id": "other"}]}, None))
         m.LOCAL = [("dead", "http://127.0.0.1:9/v1"), ("lmstudio", local.url)]
