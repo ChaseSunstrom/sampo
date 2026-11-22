@@ -3154,10 +3154,11 @@ class LaneRecovery(ForemanTestCase):
         self.stall_env()
         os.environ["FM_STALL_MIN"] = "15"
         tid, _ = self.stopped_builder()  # a dead process: recover is proof enough
-        self.mark(tid, "conflict", accepted_at=time.time(), builder_returned=c.now(), reviewed_tip="a" * 40)
+        self.mark(tid, "conflict", accepted_at=time.time(), builder_returned=c.now(), reviewed_tip="a" * 40,
+                  accepted_tip="b" * 40)  # T-5968: the old builder's accept is no review of the new builder's work
         self.fm("lane", "recover", tid)
         meta = c.find_brief(p, tid).meta
-        for k in ("accepted_at", "builder_returned", "reviewed_tip"):
+        for k in ("accepted_at", "builder_returned", "reviewed_tip", "accepted_tip"):
             self.assertNotIn(k, meta, k)
         self.relaunch_stopped(tid)  # the new builder: a lane again, its process here alive
         b = c.find_brief(p, tid)
@@ -3585,6 +3586,38 @@ class RaceEvidence(RaceBase):
         self.assertIn("use what exists", approach.split("Race:")[1], "the loser's option")
         self.assertIn("lost", approach.split("Race:")[1], "and why")
         self.assertIn("race", out)
+
+    def test_pick_of_a_winner_with_no_review_asks_the_pilot_and_merges_and_drops_nothing(self):  # T-5968 review 5
+        from sampo import pilotsig
+        tid, other = self.started()
+        self.side(tid, "a", {"win.txt": "good\n", "test_a.py": self.GOOD})
+        self.side(other, "b", {"win.txt": "bad\n"})
+        asked = []
+        self.merge_reviewed = False
+        p = c.find_project(self.repo)
+        with mock.patch.object(pilotsig, "_off", return_value=False), mock.patch.object(pilotsig, "held", return_value=False), \
+                mock.patch.object(pilotsig, "spawn", lambda p_, t, again=False: asked.append(t) or 4242):
+            with self.assertRaises(c.PolicyError) as e:
+                slanes.pick(p, self.brief(tid), self.repo, argparse.Namespace(json=False))
+        self.assertEqual(asked, [tid], "the lane pilot is asked, once")
+        self.assertIn("not reviewed at this tip", str(e.exception))
+        self.assertIn("[lane pilot: asked]", str(e.exception))
+        self.assertIn("nothing was merged", str(e.exception))
+        self.assertNotIn("win.txt", self.git(self.repo, "ls-files"))
+        self.assertNotEqual(self.brief(other).status, "dropped", "the other side stays in the race")
+
+    def test_pick_waits_for_a_running_trains_lock_and_says_so_when_it_is_held(self):  # T-5968 review 5
+        tid, other = self.started()
+        self.side(tid, "a", {"win.txt": "good\n", "test_a.py": self.GOOD})
+        self.side(other, "b", {"win.txt": "bad\n"})
+        self.stamp_review(tid)
+        p = c.find_project(self.repo)
+        with c.lock(os.path.join(p.dir, "train"), timeout=1), mock.patch.object(slanes, "TRUNK_WAIT_S", 0.2):
+            with self.assertRaises(c.PolicyError) as e:
+                slanes.pick(p, self.brief(tid), self.repo, argparse.Namespace(json=False))
+        self.assertIn("a land's train holds trunk", str(e.exception))
+        self.assertNotIn("win.txt", self.git(self.repo, "ls-files"))
+        self.assertNotEqual(self.brief(other).status, "dropped")
 
     def test_a_builders_test_sees_none_of_this_shells_secrets(self):
         tid, other = self.started()

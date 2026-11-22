@@ -1346,7 +1346,7 @@ def _dep_hold(p, b, main):
     return f"held: built on {dep_id}, whose lane tip is not on main yet; it joins once {dep_id} has landed"
 
 
-def _lane_hold(p, b, sha, main):
+def _lane_hold(p, b, sha, main, memo=None):
     """Why the land leaves this lane out at `sha`, or None. A lane stacked on an unlanded dependency waits for it
     (_dep_hold, T-5725). Gated: its own check running, queued, red or missing
     (_check_hold, _unchecked). Live (T-5444): only a red check that its current checker gave; the behind suite judges
@@ -1355,7 +1355,7 @@ def _lane_hold(p, b, sha, main):
     from sampo import lanes
     if dep := _dep_hold(p, b, main):
         return dep
-    if why := lanes.review_hold(b, sha):
+    if why := lanes.review_hold(b, sha, memo):  # memo: the land's own (one look per lane and tip, not one per poll)
         return why
     why = _check_hold(b, sha, main) or (None if live_mode(p) else _unchecked(b, sha, main))
     if why and live_mode(p) and not (why.startswith("held: check red") and "has changed since it ran" not in why):
@@ -3819,15 +3819,44 @@ def _pilot_parks(p, parked, tick=True):
         print(f"lane pilot: tick: {c.fit(str(e), 200)}", file=sys.stderr)
 
 
-def _ask_pilot(p, tid):
+def _ask_pilot(p, tid, again=False):
     """T-5968: a lane the land holds as not reviewed at its tip is asked of the lane pilot: one detached headless review
     under its single-flight claim, 2 h cap and SAMPO_LANE_PILOT switch (pilotsig.spawn is quiet where none starts, and for
-    a return it already reported). Never raises into the land: the lane waits for its review, as it did."""
+    a return it already reported unless `again`: the tip moved since). The pid, or None. Never raises into the land: the
+    lane waits for its review, as it did."""
     from sampo import pilotsig
     try:
-        pilotsig.spawn(p, tid)
+        return pilotsig.spawn(p, tid, again=again)
     except Exception as e:  # noqa: BLE001
         print(f"lane pilot: {tid}: no review started: {c.fit(c.plain(str(e)), 200)}", file=sys.stderr)
+        return None
+
+
+def _review_ask(p, b, sha, background, asked):
+    """T-5968: ask the lane pilot to review `b` at `sha` and say what stands, as (a note for the hold line, whether a pilot
+    is at work on it now). A live pilot is waited for (the land's `checking`); one that reported this return at this very
+    tip and left it unreviewed is not asked again (it said what it could: the note names its outcome); one that reported
+    at another tip is asked again, once per land (`asked`). Off (no background, the switch, a pause): said so."""
+    from sampo import pilotsig
+    try:
+        if not background or pilotsig._off(p):
+            return " [lane pilot: off; review it by hand]", False
+        if pilotsig.held(b):
+            return " [lane pilot: reviewing it now]", True
+        m = b.meta
+        returned = str(m.get("builder_returned") or "")
+        done = bool(returned) and m.get("pilot_done_for") == returned
+        if done and m.get("pilot_done_tip") == sha:
+            return f" [lane pilot: reported {m.get('pilot_outcome') or 'done'} at this tip and recorded no review]", False
+        if b.id in asked:
+            return " [lane pilot: asked, none running now]", False
+        asked.add(b.id)  # once per land: pilotsig.spawn is single-flight and quiet where none starts
+        pid = _ask_pilot(p, b.id, again=done)
+        if not pid:
+            return " [lane pilot: not started]", False
+        return (" [lane pilot: asked again, the tip moved since it reported]" if done else " [lane pilot: asked]"), True
+    except Exception as e:  # noqa: BLE001 - the land goes on; the lane waits for its review
+        return f" [lane pilot: unknown ({type(e).__name__})]", False
 
 
 def announce_skills(root, before, after):
@@ -4518,7 +4547,7 @@ def _land_trains(p, main, batch, owed, closer=None):
             if _park_kind(w)[0] == "conflict":  # T-5876: the resolver starts now, not 30 to 60 minutes later at the land's end
                 _pilot_parks(p, [(i, w)], tick=False)  # (never raises into the land; the end pass asks again and ticks)
 
-    pilot_asked = set()  # T-5968: lanes whose review the land asked the lane pilot for
+    pilot_asked, review_memo = set(), {}  # T-5968: lanes whose review the land asked the lane pilot for; one review look per lane and tip
     held = set()  # T-4767: lanes the check hold left out: read again when a train starts or one is named --first
     checking, mine = set(), set()  # T-5561: lanes whose check this land started, and those still running (or waiting for a
     # slot): a land with nothing else to train waits for the second set
@@ -4533,10 +4562,11 @@ def _land_trains(p, main, batch, owed, closer=None):
         """T-4767's hold, and T-5561: a stale lane with no check at its tip gets its check started here (not in a no-background
         or paused land: those hold it as before); `checking` follows the lanes whose check is in flight."""
         sha = tip(b)
-        why = _lane_hold(p, b, sha, main)
-        if why and why.startswith(lanes.REVIEW_HELD) and background and b.id not in pilot_asked:
-            pilot_asked.add(b.id)  # T-5968: asked once per land (pilotsig.spawn is single-flight and quiet where none starts)
-            _ask_pilot(p, b.id)
+        why = _lane_hold(p, b, sha, main, review_memo)
+        reviewing = False
+        if why and why.startswith(lanes.REVIEW_HELD):  # T-5968: the pilot is asked (once per land); the line says what became of it
+            note, reviewing = _review_ask(p, b, sha, background, pilot_asked)
+            why += note
         # live mode trains a stale lane at once with its note (sort): the land does not wait hours for a niced check there
         if (background and not live_mode(p) and failed.get(b.id, 0) <= time.monotonic()
                 and (why is None or why.startswith("held: no passing affected check"))):
@@ -4545,9 +4575,9 @@ def _land_trains(p, main, batch, owed, closer=None):
                 if "the land started its check" in got:
                     census[:] = [running() + 1]
                 why = got
-        if why and b.id in mine and (why.startswith(("held: check running", "held: check queued", "held: shape queued"))
-                                     or "predates the lane tip" in why):
-            checking.add(b.id)
+        if reviewing or (why and b.id in mine and (why.startswith(("held: check running", "held: check queued", "held: shape queued"))
+                                                   or "predates the lane tip" in why)):
+            checking.add(b.id)  # T-5968: and a lane whose review is in flight: a land of only those waits for its pilot
         else:
             checking.discard(b.id)
         return why
@@ -6815,9 +6845,6 @@ def accept(p, b, main, args):
         # that is its return, so the awaiting test below counts it; accepted_at is still stamped only when the lane really
         # queues (T-4239). T-5516 item 8: an accept that recorded and counted no audit saw nothing, so it stamps nothing
         cli.mutate(p, b.id, lambda x: x.meta.__setitem__("reviewed_tip", tip), "reviewed", {"tip": tip[:12]})
-    if tip:  # T-5968: the close's own audit rule passed at this tip (a self-alone tier asks no audit, so none may be on the
-        # brief): every path to a trunk reads this stamp (lanes.review_hold), and a lane whose tip moves needs a new accept
-        cli.mutate(p, b.id, lambda x: x.meta.__setitem__("accepted_tip", tip), "accepted_tip", {"tip": tip[:12]})
     ptier, ptier_why = tier.get("ptier") or "", tier.get("why") or []
     # T-5715: the tier the review judged the lane at, raise-only (the close reads it as a floor); written and logged
     # only when the stamp rises
@@ -6837,6 +6864,11 @@ def accept(p, b, main, args):
         lines.append(f"  not queued: {b.id} is not a finished lane waiting on a merge (commits, a clean tree); "
                      "fm lane list says what it waits on")
         return cli.out(args, {"id": b.id, "queued": False, "audits": len(rows)}, "\n".join(lines))
+    if tip:  # T-5968: the close's own audit rule passed at this tip (a self-alone tier asks no audit, so none may be on the
+        # brief) and the lane is going to the land (queued below, or on its check's green): every path to a trunk reads
+        # this stamp (lanes.review_hold), a lane whose tip moves needs a new accept, and an accept that queued nothing
+        # (not awaiting a merge) stamps nothing
+        cli.mutate(p, b.id, lambda x: x.meta.__setitem__("accepted_tip", tip), "accepted_tip", {"tip": tip[:12]})
     if not skip_check and not live_mode(p) and (not clean or _check_hold(b, tip, main)):
         # T-4286: no clean run at its tip, or its check holds it (running, red, cut off: what the land would skip it for):
         # the lane's own check decides, then it queues; a hold is said as "held", never as queued. T-5447: a live

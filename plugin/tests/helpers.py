@@ -509,8 +509,8 @@ class SampoTestCase(unittest.TestCase):
                 b = _core.find_brief(p, tid) if tid.startswith("T-") else None
                 if b and not (b.meta.get("accepted_tip") or b.meta.get("reviewed_tip")):
                     self.stamp_review(tid, cwd)
-        except Exception:  # a fixture that is no project yet: the merge itself says so
-            pass
+        except Exception as e:  # a fixture that is no project yet: the merge itself says so
+            print(f"helpers._review_merging: no review stamped for {list(ids)}: {type(e).__name__}: {e}", file=sys.stderr)
 
     def stamp_review(self, tid, cwd=None):
         """T-5968: tid's accepted_tip stamped at its lane branch's tip now (what a merge reads), as `sampo lane accept`

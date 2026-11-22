@@ -2321,7 +2321,7 @@ class ReviewBeforeTrain(LeftoverBase):
         self.assertTrue((self.hold(tid) or "").startswith(self.HELD), self.hold(tid))
         asked = []
         env = {k: v for k, v in os.environ.items() if k != "FOREMAN_NO_BACKGROUND"}  # the ask is made only where a land may background
-        with mock.patch.object(train, "_ask_pilot", lambda p, t: asked.append(t)), mock.patch.dict(os.environ, env, clear=True):
+        with mock.patch.object(train, "_ask_pilot", lambda p, t, again=False: asked.append(t)), mock.patch.dict(os.environ, env, clear=True):
             got, err, events = self.run_land()
         self.assertEqual(asked, [tid], "the land asks the lane pilot once")
         self.assertNotIn(("train", [tid]), events)
@@ -2354,6 +2354,20 @@ class ReviewBeforeTrain(LeftoverBase):
         self.stamp_accepted(accepted)
         self.assertFalse(self.hold(accepted))
 
+    def test_audits_for_a_later_tree_never_release_an_earlier_tip(self):  # T-5968 review 1: the tip argument is read
+        tid = self.unreviewed()
+        path = self.brief(tid).meta["lane"]
+        old = self.git("rev-parse", "HEAD", cwd=path)
+        with open(os.path.join(path, "later.txt"), "w") as f:
+            f.write("later\n")
+        self.git("add", "later.txt", cwd=path)
+        self.git("commit", "-qm", "later", cwd=path)
+        self.fm("task", "audit", tid, "self", "one fm-reviewer pass on the branch", "no findings", cwd=path)
+        new = self.git("rev-parse", "HEAD", cwd=path)
+        b = self.brief(tid)
+        self.assertEqual(slanes.review_hold(b, new), "", "the audits cover the tip they were recorded at")
+        self.assertTrue(slanes.review_hold(b, old).startswith(self.HELD), "but never the tip before it")
+
     def test_an_accepted_lane_trains_as_before(self):
         self.fm("lane", "mode", "live")
         tid = self.lane(1, "ok.txt", when=test_lane_land.OLD)
@@ -2381,11 +2395,95 @@ class ReviewBeforeTrain(LeftoverBase):
         from sampo import pilotsig
         with mock.patch.object(pilotsig, "spawn", return_value=None) as sp:
             train._ask_pilot(self.p, "T-1")
-        sp.assert_called_once_with(self.p, "T-1")
+        sp.assert_called_once_with(self.p, "T-1", again=False)
         err = io.StringIO()
         with mock.patch.object(pilotsig, "spawn", side_effect=OSError("no fork")), contextlib.redirect_stderr(err):
             train._ask_pilot(self.p, "T-1")
         self.assertIn("no review started", err.getvalue())
+
+    def test_a_returned_but_unaccepted_lane_is_never_trained_by_the_live_land(self):
+        # the 16:44 land trained T-5968's own first commit this way: the builder had returned, nothing had accepted it
+        self.fm("lane", "mode", "live")
+        tid = self.unreviewed()
+        self.assertFalse(self.brief(tid).meta.get("accepted_tip"))
+        got, err, events = self.run_land()
+        self.assertEqual([e for e in events if e[0] in ("train", "trained")], [], err)
+        self.assertNotIn("rev1.txt", self.git("ls-files"), "nothing reached trunk")
+        self.assertIn("not reviewed at this tip", err + str(got))
+
+    def ask_state(self, tid, **meta):
+        b = self.brief(tid)
+        b.meta.update(meta)
+        return b
+
+    def test_the_hold_line_says_what_became_of_the_pilot(self):  # T-5968 review 3
+        from sampo import pilotsig
+        self.fm("lane", "mode", "live")
+        tid = self.unreviewed()
+        tip = train._lane_tip(self.repo, self.brief(tid))
+        env = {k: v for k, v in os.environ.items() if k != "FOREMAN_NO_BACKGROUND"}
+        with self.in_project(), mock.patch.dict(os.environ, env, clear=True):
+            b = self.brief(tid)
+            self.assertEqual(train._review_ask(self.p, b, tip, False, set())[0], " [lane pilot: off; review it by hand]")
+            with mock.patch.object(pilotsig, "held", return_value=True):
+                note, reviewing = train._review_ask(self.p, b, tip, True, set())
+            self.assertEqual((note, reviewing), (" [lane pilot: reviewing it now]", True))
+            asked = set()
+            with mock.patch.object(pilotsig, "held", return_value=False), \
+                    mock.patch.object(pilotsig, "spawn", return_value=4242) as sp:
+                self.assertEqual(train._review_ask(self.p, b, tip, True, asked), (" [lane pilot: asked]", True))
+                sp.assert_called_once_with(self.p, tid, again=False)
+                note, reviewing = train._review_ask(self.p, b, tip, True, asked)
+                self.assertEqual((note, reviewing), (" [lane pilot: asked, none running now]", False))
+                self.assertEqual(sp.call_count, 1, "once per land")
+            with mock.patch.object(pilotsig, "held", return_value=False), mock.patch.object(pilotsig, "spawn", return_value=None):
+                self.assertEqual(train._review_ask(self.p, b, tip, True, set()), (" [lane pilot: not started]", False))
+            ret = "2026-11-22T16:00:00"
+            reported = self.ask_state(tid, builder_returned=ret, pilot_done_for=ret, pilot_done_tip=tip, pilot_outcome="changes")
+            with mock.patch.object(pilotsig, "held", return_value=False), mock.patch.object(pilotsig, "spawn") as sp:
+                note, reviewing = train._review_ask(self.p, reported, tip, True, set())
+            self.assertEqual((note, reviewing), (" [lane pilot: reported changes at this tip and recorded no review]", False))
+            sp.assert_not_called()
+            moved = self.ask_state(tid, builder_returned=ret, pilot_done_for=ret, pilot_done_tip="0" * 40, pilot_outcome="changes")
+            with mock.patch.object(pilotsig, "held", return_value=False), \
+                    mock.patch.object(pilotsig, "spawn", return_value=4243) as sp:
+                note, reviewing = train._review_ask(self.p, moved, tip, True, set())
+            self.assertEqual((note, reviewing), (" [lane pilot: asked again, the tip moved since it reported]", True))
+            sp.assert_called_once_with(self.p, tid, again=True)
+
+    def test_a_land_of_only_review_held_lanes_waits_for_the_pilot_and_trains_the_lane_it_accepted(self):  # T-5968 review 3
+        self.fm("lane", "mode", "live")
+        tid = self.unreviewed()
+        env = {k: v for k, v in os.environ.items() if k != "FOREMAN_NO_BACKGROUND"}
+        looks = []
+
+        def ask(p, b, sha, background, asked):
+            looks.append(len(looks))
+            if len(looks) == 3:
+                self.stamp_accepted(tid)  # the pilot's accept lands while the land waits
+            return " [lane pilot: reviewing it now]", True
+        with mock.patch.object(train, "_review_ask", ask), mock.patch.object(train, "STALE_POLL_S", 0.0), \
+                mock.patch.object(train, "CLOSE_POLL_S", 0.01), mock.patch.dict(os.environ, env, clear=True):
+            got, err, events = self.run_land()
+        self.assertGreaterEqual(len(looks), 3, "the land kept looking while the pilot was at work")
+        self.assertIn(("train", [tid]), events, err)
+        self.assertIn("rev1.txt", self.git("ls-files"))
+
+    def test_the_review_look_is_made_once_per_lane_and_tip_in_a_land(self):  # T-5968 review 4
+        tid = self.unreviewed()
+        b = self.brief(tid)
+        tip = train._lane_tip(self.repo, b)
+        memo, calls = {}, []
+        real = slanes._review_hold
+        with self.in_project(), mock.patch.object(slanes, "_review_hold", lambda *a, **k: calls.append(1) or real(*a, **k)):
+            first = train._lane_hold(self.p, b, tip, self.repo, memo)
+            for _ in range(5):
+                train._lane_hold(self.p, b, tip, self.repo, memo)
+        self.assertTrue(first.startswith(self.HELD))
+        self.assertEqual(len(calls), 1, "five more polls read the memo")
+        self.stamp_accepted(tid)
+        with self.in_project():
+            self.assertFalse(train._lane_hold(self.p, self.brief(tid), tip, self.repo, memo), "an accept is seen at once")
 
 
 class EveryPathToTrunkIsReviewed(unittest.TestCase):
@@ -2484,10 +2582,34 @@ class EveryPathToTrunkIsReviewed(unittest.TestCase):
         lanes_src = src[("lanes.py", "land_holds")]
         self.assertIn("review_hold(b, tip)", lanes_src)
         self.assertIn("land_holds(p, b, main, tip)", src[("lanes.py", "merge")])
-        self.assertIn("lanes.review_hold(b, sha)", src[("train.py", "_lane_hold")])
+        self.assertIn("lanes.review_hold(b, sha", src[("train.py", "_lane_hold")])
         self.assertIn("land_holds(", src[("train.py", "_held")])
         self.assertNotIn("review=False", src[("train.py", "_held")])
         self.assertIn("review_hold(", src[("serve.py", "_integrate_lane")])
+
+    # T-5968 review 8: the paths a reader asks about that never put a lane's commits on a trunk, each with its reason; the
+    # test below keeps the reason true (no call site in the file, no review stamp written by it)
+    NOT_PATHS = {
+        "smith.py": "smith undo puts a worker's own edits and commits back in its scratch tree; it merges nothing to a trunk",
+        "recover.py": "recover and its holds (release, refuse_held) relaunch a builder in the lane, whose work is reviewed again "
+                      "(the reset pops accepted_tip and reviewed_tip) before any path above lets it through",
+        "pilotsig.py": "the resolver and the stopped-lane builder commit in the lane's worktree: the lane tip moves, so the "
+                       "review hold holds it until the pilot or a lead accepts that tip; it stamps no review itself",
+    }
+
+    def test_the_paths_that_reach_no_trunk_stay_that_way(self):
+        sites, _ = self._sites()
+        root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib", "sampo")
+        for f, why in self.NOT_PATHS.items():
+            self.assertEqual([k for k in sites if k[0] == f], [], f"{f}: {why}")
+        with open(os.path.join(root, "pilotsig.py"), encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        stamps = {n.slice.value for n in ast.walk(tree) if isinstance(n, ast.Subscript) and isinstance(n.slice, ast.Constant)
+                  and n.slice.value in ("accepted_tip", "reviewed_tip")
+                  and isinstance(n.ctx, ast.Store)}
+        self.assertEqual(stamps, set(), "a pilot's resolver or stopped-lane run never stamps a review: only an accept does")
+        with open(os.path.join(root, "recover.py"), encoding="utf-8") as fh:
+            self.assertNotIn("accepted_tip", fh.read(), "recover never stamps one")
 
     def test_the_bypasses_are_only_the_allowed_ones(self):
         root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib", "sampo")

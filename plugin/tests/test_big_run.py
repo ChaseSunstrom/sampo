@@ -185,6 +185,14 @@ class Wave(Base):
         text = self.fm("big", "run", tid).stdout
         self.assertNotIn(kids["c1"] + ": Agent", text, "a second call hands out nothing again")
 
+    def test_a_launch_records_the_commit_the_childs_lane_was_cut_at(self):  # T-5968 security review 1
+        tid, kids = self.big()
+        cut = self.git("rev-parse", "HEAD")  # big/ID is cut from the build head, and so are the children's lanes
+        out = self.run_json(tid)
+        self.assertTrue(out["wave"])
+        for x in out["wave"]:
+            self.assertEqual(self.meta(x["id"]).get("lane_cut"), cut, "the close counts a child's own commits from here")
+
     def test_wave_is_capped_by_the_free_slots_and_the_rest_are_next_wave(self):
         tid, kids = self.big(slots=1)
         out = self.run_json(tid)

@@ -845,7 +845,11 @@ def _integrate_lane(p, tid, path):
     if brief is None:
         return f"kept in {path}: no brief for {tid} to judge the lane by"
     try:
-        unreviewed = lanes.review_hold(brief, git(path, "rev-parse", "HEAD").stdout.strip())
+        reviewed_at = git(path, "rev-parse", "HEAD").stdout.strip()
+        unreviewed = lanes.review_hold(brief, reviewed_at)
+        reviewed_ids = lanes.patch_ids(path, reviewed_at, branch) if not unreviewed else None
+        if not unreviewed and reviewed_ids is None:
+            unreviewed = "the reviewed commits could not be read"
     except Exception as e:  # a review that can't be read is a hold, never a landing
         unreviewed = f"the review could not be read ({type(e).__name__})"
     if unreviewed:
@@ -861,6 +865,15 @@ def _integrate_lane(p, tid, path):
     if why:
         return f"kept in {path}: {why} while the gates ran"
     tip = git(path, "rev-parse", "HEAD").stdout.strip() or f"foreman/{tid}"
+    # T-5968: the review is carried over the rebase only for the very changes it covered: each commit's patch id, in
+    # order (a commit added, dropped or changed since the check, by the rebase, a gate or a hand, is not reviewed)
+    try:
+        now_ids = lanes.patch_ids(p.root, tip, branch)
+    except Exception:
+        now_ids = None
+    if now_ids is None or now_ids != reviewed_ids:
+        return (f"kept in {path}: {lanes.REVIEW_HELD}: the lane's commits changed after its review (rebase, gate or "
+                f"a new commit); sampo lane pilot {tid}, or sampo lane accept {tid} --audit LENS HOW RESULT")
     # T-2352: fm serve's merge is gated like fm lane merge, on the same commit it lands
     # T-4785: and held by what the train holds (private term, guard, a failed git call or scan)
     try:

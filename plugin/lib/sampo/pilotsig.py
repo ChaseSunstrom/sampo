@@ -160,10 +160,12 @@ def _log(p):
     return path
 
 
-def spawn(p, tid):
+def spawn(p, tid, again=False):
     """The one detached pilot for a task's lane: its pid, or None when none starts (background off, sampo paused, the
     switch off, the task closed or gone, a live pilot already holds the claim, or this return was reported already). The
-    claim is written after the start, under the project lock, and names the return it serves (pilot_for)."""
+    claim is written after the start, under the project lock, and names the return it serves (pilot_for). T-5968: `again`
+    is the land asking for a review of a tip that moved since the pilot reported this return: the report's stamps are
+    cleared and the pilot starts again (the caller says when the tip moved; a lane is asked once per land)."""
     if _off(p):
         return None
 
@@ -174,7 +176,10 @@ def spawn(p, tid):
                 return None
             served = str(b.meta.get("builder_returned") or "")
             if served and b.meta.get("pilot_done_for") == served:
-                return None  # the pilot of this return settled: a retake would report it twice
+                if not again:
+                    return None  # the pilot of this return settled: a retake would report it twice
+                for k in ("pilot_done_for", "pilot_done_tip", "pilot_outcome"):
+                    b.meta.pop(k, None)
             argv = c.nice_argv([sys.executable, "-m", "sampo.pilotsig", tid], NICE)
             with open(_log(p), "a", encoding="utf-8") as log:
                 proc = subprocess.Popen(argv, cwd=_cwd(p), stdin=subprocess.DEVNULL, stdout=log,
@@ -299,6 +304,16 @@ def _answer(text, tid):
     return {"outcome": outcome, "rounds": rounds if type(rounds) is int and rounds >= 0 else 0, "why": _why(why)}
 
 
+def lane_tip(p, b):
+    """T-5968: the commit the brief's lane branch is at ('' when it can't be read): what a pilot's report speaks for."""
+    try:
+        r = c._git(_cwd(p), "rev-parse", "--verify", "-q", f"{b.meta.get('lane_branch') or 'foreman/' + b.id}^{{commit}}",
+                   timeout=30, fail="")
+        return (r or "").strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _settle(p, tid, res, served):
     """Under one project lock: the pilot_done event, the stamp that this return is reported, the exception on the task's
     Log, and the claim dropped when it is still this pilot's. False when this return was reported already."""
@@ -312,6 +327,8 @@ def _settle(p, tid, res, served):
             b.meta.pop("pilot_pid", None)
         if served:
             b.meta["pilot_done_for"] = served
+            b.meta["pilot_done_tip"] = lane_tip(p, b)  # T-5968: the tip it reported at: the land asks again once it moves
+            b.meta["pilot_outcome"] = str(res["outcome"])[:20]
         if res["outcome"] == "exception":
             b.append_log(f"lane pilot: {res['why']}")
         c.save_brief(p, b)

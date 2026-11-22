@@ -468,6 +468,42 @@ class IntegrateHolds(ForemanTestCase):
         self.assertIn("not reviewed at this tip", self.integrate(path))
         self.assertFalse(os.path.exists(os.path.join(self.repo, "more.py")))
 
+    def test_a_commit_added_between_the_review_check_and_the_merge_is_held(self):
+        # T-5968 review: the review was read on the pre-rebase tip; a commit added while the gates ran rode the merge
+        path = self.lane()
+        add = os.path.join(self.tmp, "add-commit.sh")  # outside both trees
+        with open(add, "w") as f:
+            f.write(f"echo 'EVIL = 1' > {path}/evil.py\ngit -C {path} add evil.py\ngit -C {path} commit -qm late\n")
+        self.fm("check", "add", f"sh {add}")
+        how = self.integrate(path)
+        self.held(how, path)
+        self.assertIn("not reviewed at this tip", how)
+        self.assertFalse(os.path.exists(os.path.join(self.repo, "evil.py")), "the late commit never reached the trunk")
+
+    def test_a_merge_with_content_of_its_own_added_while_the_gates_ran_is_held(self):  # T-5968 security review 2
+        path = self.lane()
+        add = os.path.join(self.tmp, "add-merge.sh")
+        with open(add, "w") as f:
+            f.write(f"cd {path}\nme=$(git rev-parse --abbrev-ref HEAD)\ngit checkout -q -b side HEAD~1\n"
+                    "echo S=1 > s.py\ngit add s.py\ngit commit -qm side\ngit checkout -q $me\n"
+                    "git merge --no-ff --no-commit side\necho EVIL=1 > evil.py\ngit add evil.py\ngit commit -qm merge\n")
+        self.fm("check", "add", f"sh {add}")
+        how = self.integrate(path)
+        self.held(how, path)
+        self.assertIn("not reviewed at this tip", how)
+        self.assertFalse(os.path.exists(os.path.join(self.repo, "evil.py")), "the merge's own content never reached the trunk")
+
+    def test_a_rebase_keeps_the_review_of_the_same_changes(self):
+        # T-5968: main moved, the lane is rebased (every sha changes); the same patches stay reviewed and land
+        path = self.lane()
+        with open(os.path.join(self.repo, "other.txt"), "w") as f:
+            f.write("o\n")
+        self.git("add", "other.txt")
+        self.git("commit", "-qm", "main moved")
+        how = self.integrate(path)
+        self.assertIn("merged into", how)
+        self.assertTrue(os.path.exists(os.path.join(self.repo, "x.py")))
+
     def test_a_lane_that_landed_is_reported_merged_when_removing_its_folder_raises(self):
         # T-4785 re-check: the fast-forward had landed, then `lane rm` raised and _integrate reported the lane "kept"
         from unittest import mock

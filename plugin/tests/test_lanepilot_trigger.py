@@ -213,6 +213,31 @@ class LanePilot(ForemanTestCase):
         with mock.patch.object(subprocess, "Popen", side_effect=AssertionError("a second pilot for one return")):
             self.assertIsNone(pilotsig.spawn(self.p, TID))
 
+    def test_a_land_asking_again_after_the_tip_moved_clears_the_report_and_starts_a_pilot(self):  # T-5968 review 3
+        self.background()
+        b = c.find_brief(self.p, TID)
+        b.meta.update({"pilot_done_for": RETURNED, "pilot_done_tip": "a" * 40, "pilot_outcome": "changes"})
+        b.meta.pop("pilot_pid", None)
+        c.save_brief(self.p, b)
+        with mock.patch.object(subprocess, "Popen", side_effect=AssertionError("a return reported once is not retaken")):
+            self.assertIsNone(pilotsig.spawn(self.p, TID))
+        with mock.patch.object(subprocess, "Popen", return_value=mock.Mock(pid=781)) as popen:
+            self.assertEqual(pilotsig.spawn(self.p, TID, again=True), 781)
+        self.assertEqual(popen.call_count, 1)
+        for k in ("pilot_done_for", "pilot_done_tip", "pilot_outcome"):
+            self.assertIsNone(self.meta(k), k)
+        self.assertEqual(self.claimed(), "781")
+
+    def test_the_report_stamps_the_tip_and_outcome_it_was_made_at(self):  # T-5968 review 3
+        self.stub(out='{"tid": "T-0001", "outcome": "queued", "rounds": 1, "why": ""}')
+        self.background(on=False)
+        self.claim(os.getpid(), served=RETURNED)
+        with mock.patch.object(pilotsig, "lane_tip", return_value="c" * 40):
+            pilotsig.run(self.p, TID)
+        self.assertEqual(self.meta("pilot_done_tip"), "c" * 40)
+        self.assertEqual(self.meta("pilot_outcome"), "queued")
+        self.assertEqual(self.meta("pilot_done_for"), RETURNED)
+
     def test_the_pilot_log_is_rotated_past_its_cap(self):  # review 6
         log = os.path.join(self.p.dir, "pilot.log")
         with open(log, "w", encoding="utf-8") as f:

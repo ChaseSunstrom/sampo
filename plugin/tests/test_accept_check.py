@@ -338,6 +338,13 @@ class LiveLauncher(AcceptCase):
         c.save_brief(self.p, b)
         return tid
 
+    def unstamp(self, tid):
+        """The lane fixture stamps the accept a lane merge reads (T-5968): the accept under test makes its own."""
+        b = self.brief(tid)
+        for k in ("accepted_tip", "reviewed_tip"):
+            b.meta.pop(k, None)
+        c.save_brief(self.p, b)
+
     def commit_in(self, n, name):
         lane = os.path.join(self.tmp, f"lane{n}")
         with open(os.path.join(lane, name), "w") as f:
@@ -361,6 +368,7 @@ class LiveLauncher(AcceptCase):
 
     def test_an_accept_that_queues_nothing_leaves_no_accepted_at(self):  # T-4239: accepted_at means queued
         tid = self.launched()
+        self.unstamp(tid)
         lane = os.path.join(self.tmp, "lane1")
         with open(os.path.join(lane, "wip.txt"), "w") as f:
             f.write("uncommitted\n")  # work in hand
@@ -368,6 +376,13 @@ class LiveLauncher(AcceptCase):
         self.assertIn("not queued", out)
         self.assertEqual(self.queued(), [])
         self.assertNotIn("accepted_at", self.meta_of(tid))
+        self.assertNotIn("accepted_tip", self.meta_of(tid), "T-5968 review 6: no queue, no review stamp a land could read")
+
+    def test_a_queued_accept_stamps_the_tip_it_reviewed(self):  # T-5968 review 6
+        tid = self.launched()
+        self.unstamp(tid)
+        self.assertNotIn("not queued", self.accept(tid, no_check=True))
+        self.assertEqual(self.meta_of(tid).get("accepted_tip"), self.git("rev-parse", "HEAD", cwd=os.path.join(self.tmp, "lane1")))
 
     def test_a_refused_accept_marks_no_review(self):
         tid = self.launched()

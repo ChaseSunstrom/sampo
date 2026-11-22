@@ -2189,7 +2189,7 @@ def resume(p, b, main, args, ended=False, recover=None, after=""):
     def reset(x):
         # T-5850 review: the old builder's report marks go with it; a new builder's lane has none until it reports
         for k in ("lane", "lane_branch", "builder", "builder_proc", "lane_stop",
-                  "accepted_at", "builder_returned", "reviewed_tip"):
+                  "accepted_at", "builder_returned", "reviewed_tip", "accepted_tip"):  # T-5968: a new builder's lane has no review
             x.meta.pop(k, None)
         if recover:
             x.meta["recoveries"] = [*_recoveries(x), f"{recover['cause']}@{c.now()}"]
@@ -2803,7 +2803,22 @@ def pick(p, b, main, args):
     opt_of = lambda x: int(own(x)) if own(x).isdigit() else (stated if x.id == orig.id and len(opts) > 1 else None)
     said = lambda x: f"option {opt_of(x)} ({opts[opt_of(x) - 1]})" if opt_of(x) and opt_of(x) <= len(opts) else x.id
     evidence = "; ".join(f"{x.id} {_why(rows.get(x.id))}" for x in sides if rows.get(x.id))
-    merge(p, win, main)
+    # T-5968 review 5: the winner is reviewed like any lane (merge holds it too): one that is not is asked of the lane pilot,
+    # here, before anything is merged or dropped, and the pick says so; the race's other side stays as it was
+    tip = _git(main, "rev-parse", "--verify", f"{win.meta.get('lane_branch') or 'foreman/' + win.id}^{{commit}}").stdout.strip()
+    if tip and (why := review_hold(win, tip)):
+        from sampo import train
+        note = train._review_ask(p, win, tip, True, set())[0]
+        raise c.PolicyError(f"{win.id}: {why}{note}; nothing was merged and no side was dropped: pick {win.id} again once "
+                            f"it is reviewed")
+    # and the merge is a trunk commit like a train's: it takes the train's lock, so a detached land's running train ends
+    # first and the pick merges after it (the land's next look sees the race winner on trunk), never beside it
+    try:
+        with train_lock(p):
+            merge(p, win, main)
+    except c.LockTimeout:
+        raise c.PolicyError(f"{win.id}: a land's train holds trunk (waited {TRUNK_WAIT_S:.0f}s): nothing was merged and no "
+                            f"side was dropped; pick {win.id} again when the train ends") from None
     bus.release(p, win.id)
     reasons = [_lost(rows.get(x.id), rows.get(win.id)) for x in losers]
     notes = [f"{said(x)} lost: {r}" for x, r in zip(losers, reasons)]
@@ -5739,7 +5754,27 @@ def private_refusal(p, b, main, tip, base="HEAD"):
 REVIEW_HELD = "held: not reviewed at this tip"  # T-5968: the words of the review hold (the land asks the pilot on them)
 
 
-def review_hold(b, tip):
+REVIEW_MEMO_S = 30.0  # a land's memo of a lane held as unreviewed is read again after this long (the tree may have changed)
+
+
+def review_hold(b, tip, memo=None):
+    """T-5968: _review_hold, remembered for one land: `memo` is the dict the land passes to every call of its own (sort,
+    recheck, readmit and the waiting poll ask for each lane again). A review recorded for (lane, tip) stays recorded, so
+    '' is kept for the land; a hold is kept only while the lane's stamps and audit count are the same and for
+    REVIEW_MEMO_S, so a pilot's accept or audit, or a cleaned tree, is seen at the next look. No memo: no cache."""
+    if memo is None or not tip:
+        return _review_hold(b, tip)
+    m = b.meta
+    sig = (str(m.get("accepted_tip") or ""), str(m.get("reviewed_tip") or ""), len(b.audits()), str(m.get("lane") or ""))
+    hit, now = memo.get((b.id, tip)), time.monotonic()
+    if hit and (hit[0] == "" or (hit[1] == sig and now - hit[2] < REVIEW_MEMO_S)):
+        return hit[0]
+    why = _review_hold(b, tip)
+    memo[(b.id, tip)] = (why, sig, now)
+    return why
+
+
+def _review_hold(b, tip):
     """T-5968: '' when the lane `b` was reviewed at `tip`, else why it must not reach a trunk yet (REVIEW_HELD first).
     Reviewed is the accept's own stamp for this very commit (meta accepted_tip, or reviewed_tip: the audits it recorded),
     else audits on the brief recorded against the lane's tree while the lane sits clean on that tip (the same rule
@@ -5753,7 +5788,10 @@ def review_hold(b, tip):
     if tip in (str(m.get("accepted_tip") or ""), str(m.get("reviewed_tip") or "")):
         return ""
     path, why = str(m.get("lane") or ""), "no review is recorded at this tip"
-    if path and os.path.isdir(path) and _lane_tree(path, m.get("lane_branch") or f"foreman/{b.id}"):
+    # the audits speak for the worktree as it sits now: they count for `tip` only when that worktree is clean ON `tip`
+    # (a later commit with audits of its own must not release an earlier tip: the tip argument is read, never assumed)
+    if (path and os.path.isdir(path) and _lane_tree(path, m.get("lane_branch") or f"foreman/{b.id}")
+            and _git(path, "rev-parse", "HEAD").stdout.strip() == tip):
         tree = c.worktree_id(path)
         if tree and any(t == tree for _, _, t in b.audits()):
             ptier = c.ptier_now(b)[0]
@@ -5763,6 +5801,68 @@ def review_hold(b, tip):
             why = "; ".join(gaps)
     return (f"{REVIEW_HELD}: {why}; the lane pilot reviews it (sampo lane pilot {b.id}), or sampo lane accept {b.id} "
             "--audit LENS HOW RESULT")
+
+
+def merge_own_content(root, sha):
+    """T-5968: '' when the merge commit `sha` holds nothing of its own (its tree is what re-merging its two parents gives:
+    git merge-tree --write-tree), else why not: a conflict resolved by hand, a change slipped into the merge, an octopus, or
+    a re-merge git could not run. Fails closed: an unreadable merge counts as one with content of its own."""
+    parents = _git(root, "rev-list", "--parents", "-n", "1", sha)
+    ids = parents.stdout.split() if not parents.returncode else []
+    if len(ids) < 3:
+        return "its parents could not be read" if len(ids) < 2 else ""  # not a merge: no content of its own to look for
+    if len(ids) > 3:
+        return "an octopus merge"
+    tree = _git(root, "rev-parse", "--verify", "-q", f"{sha}^{{tree}}")
+    again = _git(root, "merge-tree", "--write-tree", "--no-messages", ids[1], ids[2])
+    if tree.returncode or again.returncode == 1:
+        return "a conflict resolved by hand" if not tree.returncode else "its tree could not be read"
+    if again.returncode or not again.stdout.split():
+        return "its parents could not be re-merged"
+    return "" if again.stdout.split()[0] == tree.stdout.strip() else "content of its own beyond its parents' merge"
+
+
+def merges_with_content(root, rev, base):
+    """T-5968: the merge commits in `base..rev` that carry content of their own, as (sha, why) pairs oldest first; None when
+    git could not list them."""
+    log = _git(root, "rev-list", "--reverse", "--merges", f"{base}..{rev}")
+    if log.returncode:
+        return None
+    return [(sha, why) for sha in log.stdout.split() if (why := merge_own_content(root, sha))]
+
+
+def patch_ids(root, rev, base, no_merges=False, first_parent=False):
+    """T-5968: the content of the commits `base..rev` as a list of one patch id per commit (git patch-id --stable, oldest
+    first; an empty commit has no patch, so it counts as 'empty'; a merge counts as 'merge', or 'merge-own:TREE' when it
+    carries content of its own), or None when git could not say. A rebase moves every commit's sha but keeps each patch id:
+    two lists are equal when the same changes, in the same order, are there, so a review recorded for one carries to the
+    other, and a commit added, dropped or changed in between does not.
+    no_merges leaves the merge commits out. first_parent walks only the line `rev` itself was committed on (a merge's other
+    parent, what was merged in, is not that line's own work)."""
+    log = _git(root, "rev-list", "--reverse", "--parents", *(["--no-merges"] if no_merges else []),
+               *(["--first-parent"] if first_parent else []), f"{base}..{rev}")
+    if log.returncode:
+        return None
+    out = []
+    for row in log.stdout.splitlines():
+        sha = row.split()[0]
+        if len(row.split()) > 2:  # a merge: it has no patch, it has the content of its own or none
+            why = merge_own_content(root, sha)
+            out.append("merge-own:" + _git(root, "rev-parse", f"{sha}^{{tree}}").stdout.strip() if why else "merge")
+            continue
+        diff = _git(root, "diff-tree", "-p", "--root", "--no-commit-id", sha)
+        if diff.returncode:
+            return None
+        if not diff.stdout.strip():
+            out.append("empty")
+            continue
+        pid = subprocess.run(["git", "-C", root, "patch-id", "--stable"], input=diff.stdout, capture_output=True,
+                             text=True, timeout=120)
+        line = pid.stdout.split()
+        if pid.returncode or not line:
+            return None
+        out.append(line[0])
+    return out
 
 
 def land_holds(p, b, main, tip, base="HEAD", timing=True, review=True):

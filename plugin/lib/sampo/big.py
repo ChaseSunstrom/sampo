@@ -25,6 +25,7 @@ import json
 import os
 import posixpath
 import re
+import sys
 
 from sampo import core as c
 
@@ -1325,9 +1326,12 @@ def task_close(p, args):
         raise c.PolicyError(moved)
     # T-4805 exempt: the landing is logged by _record below (lanes.log_merged on the merge commit), on the resumed path too
     hold = lanes.land_holds(p, b, main, tip, base=head, review=False)  # the same holds every trunk move makes (private terms, guard, self)
-    # T-5968: no review hold here: big/ID has no lane tip of its own, it integrates children each reviewed when they merged in
+    # T-5968: big/ID has no lane tip of its own: its review is the children's, each reviewed when it merged in, so every
+    # commit it adds (a patch of its own, not a merge) must match one a child's accepted tip carries; any other is a
+    # hand commit on the integration branch that nobody reviewed
+    hold = hold or _unreviewed(p, b, head, tip)
     if hold:
-        raise c.PolicyError(f"{b.id}: {hold.bare or hold}; nothing was merged")
+        raise c.PolicyError(f"{b.id}: {getattr(hold, 'bare', None) or hold}; nothing was merged")
     os.makedirs(lanes._pm_dir(p), exist_ok=True)
     try:
         with lanes.train_lock_closing(p):  # stage 4: no train runs beside the commit (T-4540), then the lock a lane's merge takes
@@ -1342,6 +1346,62 @@ def task_close(p, args):
     finally:  # T-5981: a hand revert the check above settled under those locks reopens its task now they are down
         lanes._pm_reopen_due(p, main)
     return _record(p, args, b, sha, tip, gate)  # outside the locks: pm_record and pm_set take the pm one themselves
+
+
+def _record_lane_cut(p, kid, cut):
+    """T-5968: the commit a child's lane starts from (`lane_cut` on its brief, set once at launch: the integration branch's
+    tip its brief names as <BASE>, which the builder's `sampo lane start` holds its lane to), where its own work starts: the
+    close counts the child's reviewed commits from here, never from whatever the build branch holds."""
+    from sampo import cli
+    if kid.meta.get("lane_cut"):
+        return
+    if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", cut or ""):
+        try:
+            cli.mutate(p, kid.id, lambda x: x.meta.setdefault("lane_cut", cut), "big_lane_cut", {"cut": cut})
+            kid.meta["lane_cut"] = cut
+        except Exception as e:  # noqa: BLE001 — the lane is cut; a cut not recorded only makes the close hold this child's work
+            print(f"big: {kid.id}: its lane cut was not recorded ({type(e).__name__}); the close will hold its commits",
+                  file=sys.stderr)
+
+
+def _unreviewed(p, b, head, tip):
+    """T-5968: '' when every non-merge commit big/ID adds over the build branch (`head..tip`) carries the patch of a commit
+    some child of `b` was accepted or reviewed at (its accepted_tip / reviewed_tip stamp; patch ids, so a rebase of the child
+    keeps it), and every merge commit among them holds nothing of its own (its tree is its parents' re-merge), else why the
+    close must not merge them. Unreadable history is a hold (fails closed). A child's reviewed commits are counted from where
+    its lane was cut (`lane_cut`, else the base on its brief), along its own line only: never `head..stamp`, which holds
+    whatever else the build branch carried (a hand commit a lane then started on). A child with neither recorded counts none."""
+    from sampo import lanes
+    mine = lanes.patch_ids(_main(p), tip, head, no_merges=True)
+    if mine is None:
+        return "the commits on the integration branch could not be read; nothing was merged"
+    own = lanes.merges_with_content(_main(p), tip, head)
+    if own is None:
+        return "the merges on the integration branch could not be read; nothing was merged"
+    if own:
+        return (f"{len(own)} merge commit(s) on {b.meta.get('big_branch') or 'big/' + b.id} carry content of their own "
+                f"({own[0][0][:9]}: {own[0][1]}): a hand edit made inside a merge is nobody's reviewed work; nothing was merged")
+    mine = [i for i in mine if i != "empty"]  # a commit with no change carries nothing to review
+    if not mine:
+        return ""
+    seen = set()
+    for kid in c.load_briefs(p, include_archive=True):
+        if kid.meta.get("parent") != b.id:
+            continue
+        for stamp in (kid.meta.get("accepted_tip"), kid.meta.get("reviewed_tip")):
+            cut = str(kid.meta.get("lane_cut") or "")
+            if stamp and not cut:  # a child launched before the cut was recorded: the base its brief kept, when it is behind the stamp
+                base = str(kid.meta.get("base") or "")
+                if re.fullmatch(r"[0-9a-f]{7,64}", base) and _g(p, "merge-base", "--is-ancestor", base, str(stamp)).returncode == 0:
+                    cut = base
+            if stamp and cut:
+                got = lanes.patch_ids(_main(p), str(stamp), cut, no_merges=True, first_parent=True)
+                seen.update(got or [])
+    extra = [i for i in mine if i not in seen]
+    if extra:
+        return (f"{len(extra)} commit(s) on {b.meta.get('big_branch') or 'big/' + b.id} are no child's reviewed work "
+                f"(a hand commit on the integration branch): review it through a child task; nothing was merged")
+    return ""
 
 
 def _merge(p, args, b, head, tip, gate):
@@ -1539,6 +1599,7 @@ def _hand_out(p, args):
                 with contextlib.redirect_stdout(buf):  # builder_brief's own text is replaced by the block below
                     lanes.builder_brief(p, kid, argparse.Namespace(json=True, model=None))
                 data = json.loads(buf.getvalue())
+                _record_lane_cut(p, kid, _ref(p, f"big/{b.id}"))  # the brief's <BASE>: the tip the child's lane starts from
             except Exception as e:  # noqa: BLE001 — one child's lane failing to cut is its own report; the rest go on
                 if getattr(e, "batch", False):
                     held = str(e)

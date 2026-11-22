@@ -214,6 +214,127 @@ class Stages(Base):
         self.assertIn("moved", r.stdout + r.stderr)
         self.assertEqual(self.git("rev-parse", "HEAD"), head, "the build branch did not move")
 
+    def hand_commit(self, tid, name="hand.py"):
+        """A commit made on big/<ID> by hand: a patch no child was reviewed at."""
+        alias = os.path.join(self.tmp, "bigwt")
+        self.git("worktree", "add", "-q", alias, f"big/{tid}")
+        with open(os.path.join(alias, name), "w") as f:
+            f.write("HAND = 1\n")
+        self.git("add", name, cwd=alias)
+        self.git("commit", "-qm", "by hand", cwd=alias)
+        return alias
+
+    def test_a_hand_commit_on_the_integration_branch_is_refused_and_merges_nothing(self):  # T-5968
+        tid, kids = self.parent()
+        self.finish(tid, kids)
+        self.hand_commit(tid)
+        head = self.git("rev-parse", "HEAD")
+        r = self.close(tid)
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("no child's reviewed work", r.stdout + r.stderr)
+        self.assertEqual(self.git("rev-parse", "HEAD"), head, "nothing reached the build branch")
+
+    def test_a_commit_a_child_was_accepted_at_is_carried_into_the_close(self):  # T-5968
+        tid, kids = self.parent()
+        self.finish(tid, kids)
+        cut = self.git("rev-parse", f"big/{tid}")
+        alias = self.hand_commit(tid)
+        self.child_stamps(next(iter(kids.values())), cut, accepted=self.git("rev-parse", f"big/{tid}"))  # accepted at this work
+        r = self.close(tid)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(os.path.exists(os.path.join(self.repo, "hand.py")))
+        self.assertTrue(alias)
+
+    def child_stamps(self, kid, cut, accepted="", reviewed=""):
+        """The brief of a child as its launch and its review leave it: the commit its lane was cut at, the tips accepted."""
+        b = c.find_brief(self.p, kid)
+        b.meta["lane_cut"] = cut
+        for k, v in (("accepted_tip", accepted), ("reviewed_tip", reviewed)):
+            if v:
+                b.meta[k] = v
+        c.save_brief(self.p, b)
+
+    def commit_in(self, alias, name, body="X = 1\n", msg="work"):
+        with open(os.path.join(alias, name), "w") as f:
+            f.write(body)
+        self.git("add", name, cwd=alias)
+        self.git("commit", "-qm", msg, cwd=alias)
+        return self.git("rev-parse", "HEAD", cwd=alias)
+
+    def test_a_hand_commit_below_a_childs_stamp_is_held_not_carried_by_it(self):  # T-5968 security review 1
+        tid, kids = self.parent()
+        self.finish(tid, kids)
+        alias = self.hand_commit(tid)  # nobody's work ...
+        hand = self.git("rev-parse", f"big/{tid}")
+        own = self.commit_in(alias, "child.py", msg="the child's own commit on top of it")  # ... under a child's reviewed one
+        self.child_stamps(next(iter(kids.values())), hand, accepted=own)  # its lane was cut after the hand commit
+        head = self.git("rev-parse", "HEAD")
+        r = self.close(tid)
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("1 commit(s)", r.stdout + r.stderr, "only the hand commit is unreviewed: the child's own is carried")
+        self.assertIn("no child's reviewed work", r.stdout + r.stderr)
+        self.assertEqual(self.git("rev-parse", "HEAD"), head, "nothing reached the build branch")
+
+    def merged_pair(self, tid, kids, extra=False):
+        """big/<ID> takes a merge of two commits two reviews cover (a child's accepted tip, another's reviewed tip); with
+        `extra` the merge also adds a file of its own."""
+        alias = os.path.join(self.tmp, "mergewt")
+        self.git("worktree", "add", "-q", alias, f"big/{tid}")
+        cut = self.git("rev-parse", "HEAD", cwd=alias)
+        self.git("checkout", "-q", "-b", "side", cwd=alias)
+        side = self.commit_in(alias, "side.py", msg="side work")
+        self.git("checkout", "-q", f"big/{tid}", cwd=alias)
+        main = self.commit_in(alias, "main.py", msg="main work")
+        self.git("merge", "--no-ff", "--no-commit", "side", cwd=alias)
+        if extra:
+            with open(os.path.join(alias, "smuggled.py"), "w") as f:
+                f.write("EVIL = 1\n")
+            self.git("add", "smuggled.py", cwd=alias)
+        self.git("commit", "-qm", "merge side", cwd=alias)
+        self.child_stamps(next(iter(kids.values())), cut, accepted=main, reviewed=side)
+
+    def test_a_merge_that_adds_content_of_its_own_is_held(self):  # T-5968 security review 2
+        tid, kids = self.parent()
+        self.finish(tid, kids)
+        self.merged_pair(tid, kids, extra=True)
+        head = self.git("rev-parse", "HEAD")
+        ids = lanes.patch_ids(self.repo, f"big/{tid}", head)  # the serve rebase check reads the same tokens
+        self.assertTrue(ids[-1].startswith("merge-own:"), ids)
+        r = self.close(tid)
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("carry content of their own", r.stdout + r.stderr)
+        self.assertEqual(self.git("rev-parse", "HEAD"), head, "nothing reached the build branch")
+
+    def test_a_clean_merge_of_reviewed_work_passes(self):  # T-5968 security review 2
+        tid, kids = self.parent()
+        self.finish(tid, kids)
+        self.merged_pair(tid, kids)
+        self.assertEqual(lanes.patch_ids(self.repo, f"big/{tid}", self.git("rev-parse", "HEAD"))[-1], "merge")
+        r = self.close(tid)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(os.path.exists(os.path.join(self.repo, "side.py")))
+        self.assertTrue(os.path.exists(os.path.join(self.repo, "main.py")))
+
+    def test_a_merge_with_a_hand_resolved_conflict_is_held(self):  # T-5968 security review 2
+        tid, kids = self.parent()
+        self.finish(tid, kids)
+        alias = os.path.join(self.tmp, "conflictwt")
+        self.git("worktree", "add", "-q", alias, f"big/{tid}")
+        cut = self.git("rev-parse", "HEAD", cwd=alias)
+        self.git("checkout", "-q", "-b", "side", cwd=alias)
+        side = self.commit_in(alias, "same.py", "A = 1\n", "side")
+        self.git("checkout", "-q", f"big/{tid}", cwd=alias)
+        main = self.commit_in(alias, "same.py", "A = 2\n", "main")
+        self.git("merge", "--no-ff", "--no-commit", "side", cwd=alias, check=False)
+        with open(os.path.join(alias, "same.py"), "w") as f:
+            f.write("A = 3\n")
+        self.git("add", "same.py", cwd=alias)
+        self.git("commit", "-qm", "merge side by hand", cwd=alias)
+        self.child_stamps(next(iter(kids.values())), cut, accepted=main, reviewed=side)
+        r = self.close(tid)
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("a conflict resolved by hand", r.stdout + r.stderr)
+
     def test_a_dirty_main_checkout_is_refused_before_any_gate_runs(self):
         tid, kids = self.parent()
         self.finish(tid, kids)
