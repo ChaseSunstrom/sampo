@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- The lane pilot's --json answer for one lane is now one compact line {tid, outcome, rounds, why}, so the trigger reads accepted and changes-needed answers instead of logging 'no JSON answer', and a reviewer with no verdict names its bounded reason in the error (T-6011).
 - sampo cost --cpu prints test CPU seconds per landed lane by origin (builder, land, verify, ship, probe) and what reuse saved, and the land gate and the ship skip a class already green at the same import closure and name it (T-6006).
 - The state-write inventory reviews the five real-home reads added since its last review, so the trunk red clears (T-5978).
 - A land writes a parked lane's lane_stop and Log line the moment it parks it, so lane recover and the lane pilot see the park while the land still runs (T-5852).
