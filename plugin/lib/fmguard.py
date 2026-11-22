@@ -9052,7 +9052,8 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
                                             "only the user types them"))
         rm_vars = env or fixed  # T-0190: a literal set once before a branch holds for rm as for a write
         names, val = [name], None
-        if re.search(r"[$`]", name):  # T-0587: a name bash computes, read every way it may run
+        if re.search(r"[$`]", name) and not _after_stray_close(cmds, idx):  # T-0587: a name bash computes, read every way
+            # it may run (T-5867: not the words a tail read finds after a stray ")": they are arguments, not a command)
             m = re.fullmatch(r"\$(?:\{(\w+)\}|(\w+))", argv[0])
             val = ({**lits, **known}.get(m.group(1) or m.group(2)) if m else None)
             if val is None and not m:  # round 9 (a): a word of several parts ($x$y, "$x"po) every one a credited literal
@@ -11919,6 +11920,17 @@ def _stub_rests(cmds, idx):
             if rest and rest[0] in _NET_VERBS:  # a literal verb chain only: an unknown word is the (b) reading's
                 out.append((w, rest))
     return out
+
+
+def _after_stray_close(cmds, idx):
+    """T-5867: whether cmds[idx] starts right after a ")" that closes more than the text opened and no `case` came before
+    it. _subst_bodies also reads each $( … ) to the end of the line (a case pattern's ) or a comment can end one early),
+    and in that tail the ")" that really ended an inner substitution ('…$(du "$d" | cut -f1)M $d $(…)') leaves the
+    words after it as arguments of the enclosing command, not a command: the $d there is text. A command stands after a
+    ")" only as a case pattern's (a `case` word earlier in the text keeps this unread); a comment ends a body at a
+    newline, so what follows that has the newline's operator."""
+    c = cmds[idx]
+    return c.op == ")" and c.depth < 0 and not any("case" in x.argv for x in cmds[:idx])
 
 
 def _is_argument_stub(cmds, idx):

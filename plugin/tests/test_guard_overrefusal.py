@@ -463,6 +463,63 @@ class VisibleVariables(NoTaskCase):
         self.assertIsNone(self.refusal(f'for w in agent-a agent-b; do python3 -c "{scratch}"; done'))
 
 
+class LoopVar(GuardCase):
+    """T-5867: a $var inside an echo string, a heredoc body or a loop's argument words is text, not a command word that
+    may be sampo. The loops that were refused tonight pass; a $var in a real command position still refuses."""
+    LOOP1 = ('cd /x; for d in ~/.cache/ops/merged/*/; do echo "$(du -sm "$d" | cut -f1)M '
+             '$(ls -ld "$d" | awk \'{{print $6}}\') $d $(test -e "$d/.git" && echo git)"; done')
+    BODY2 = ('while read -r p; do b=$(git -C "$p" rev-parse --abbrev-ref HEAD); '
+             'if git merge-base --is-ancestor "$b" foreman/build; then m=merged; fi; echo "$m $b $p"; done')
+    LOOP3 = ('while read p; do b=$(git -C "$p" rev-parse HEAD); s=$(du -sm "$p" | cut -f1); '
+             'echo "$m dirty=$d ${{s}}M $b $p"; done < list.txt')
+
+    JQ = "jq -r '.lanes[] | select((.tasks|length)==0) | .path'"
+    LIVE2 = ("cat > /tmp/s/orphan_wt.sh <<'EOF'\n#!/bin/bash\ncd /x || exit 1\nS=/tmp/s\n"
+             + JQ + " $S/lanes.json | grep '.claude/worktrees' > $S/orphans.txt\n"
+             "while read -r p; do\n"
+             '  b=$(git -C "$p" rev-parse --abbrev-ref HEAD 2>/dev/null)\n'
+             '  if git merge-base --is-ancestor "$b" foreman/build 2>/dev/null; then m=merged; else m=notmerged; fi\n'
+             '  d=$(git -C "$p" status --porcelain 2>/dev/null | grep -vc \'^??\')\n'
+             '  sz=$(du -sm "$p" | cut -f1)\n'
+             '  echo "$m $d $sz $b $p"\n'
+             "done < $S/orphans.txt | sort > $S/orphans_class.txt\n"
+             "awk '{t[$1]+=$3; n[$1]++} END {for (k in t) print k, n[k], t[k] \"M\"}' $S/orphans_class.txt\n"
+             "EOF\nbash /tmp/s/orphan_wt.sh")
+    LIVE3 = ("cd /x; " + JQ + " /tmp/s/lanes.json | grep '.claude/worktrees' > /tmp/s/orphans.txt; "
+             "wc -l < /tmp/s/orphans.txt; while read p; do b=$(git -C \"$p\" rev-parse --abbrev-ref HEAD 2>/dev/null); "
+             'm=$(git merge-base --is-ancestor "$b" foreman/build 2>/dev/null && echo merged || echo notmerged); '
+             'd=$(git -C "$p" status --porcelain 2>/dev/null | grep -v \'^??\' | wc -l); s=$(du -sm "$p" | cut -f1); '
+             'echo "$m dirty=$d ${s}M $b $p"; done < /tmp/s/orphans.txt | sort | '
+             "awk '{print} {split($3,a,\"M\"); t[$1]+=a[1]} END {for (k in t) print k, t[k]\"M\"}' | tail -40")
+
+    def test_loop_var_the_live_refusals_pass(self):
+        """the two forms refused live (round 1), the jq program's parens inside single quotes included"""
+        for cmd in (self.LIVE2, self.LIVE3):
+            cmd = cmd.replace("{", "{{").replace("}", "}}")
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(self.bash(cmd, cwd=self.repo), cmd)
+                self.assertIsNone(self.bash(cmd), cmd)
+
+    def test_loop_var_the_refused_loops_pass(self):
+        for cmd in (self.LOOP1, f"cat > /tmp/x.sh <<'EOF'\n{self.BODY2}\nEOF", self.LOOP3):
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(self.bash(cmd, cwd=self.repo), cmd)
+
+    def test_loop_var_in_command_position_stays_refused(self):
+        for cmd in ("$v serve", "$X $Y", "x=sampo; $x serve", 'for d in ~/a/*/; do $d serve; done',
+                    'while read p; do b=$(git -C "$p" rev-parse HEAD); $b serve; done < list.txt',
+                    'for d in ~/a/*/; do echo "$(du -sm "$d" | cut -f1)M $(ls "$d") $d"; done; $v serve',
+                    'for d in ~/a/*/; do echo "$(ls "$d" | cut -f1)M $(ls "$d") $d"; $d serve; done',
+                    LoopVar.LIVE3.replace("{", "{{").replace("}", "}}") + "; $v serve",
+                    'echo "$(ls | cut -f1) $(ls) ${{s}}M $b $p"; $b $p',
+                    "x=rm; $(true) $x -rf ~", 'x=rm; echo "$(true)"; $x -rf ~', "x=sampo; $(true) $x lane land",
+                    "$(echo) $v serve", "case a in a) x=rm;; esac; $x -rf ~",
+                    'echo "$(case x in a) $v serve;; esac)"', 'echo "$(case x in a) $v $w;; esac)"',
+                    'echo "$(du -sm x | cut -f1)M"; $v serve'):
+            with self.subTest(cmd=cmd):
+                self.assertIsNotNone(self.bash(cmd, cwd=self.repo), cmd)
+
+
 class PrintfFirstWord(GuardCase):
     """T-3223: printf sets a variable only through -v as its first word; a later -v (command -v inside a substitution
     among its arguments) beside an unquoted $t was refused as 'IFS may be changed' though nothing names IFS."""
