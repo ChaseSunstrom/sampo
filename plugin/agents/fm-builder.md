@@ -44,7 +44,7 @@ The contract — break none of it:
   `timeout 590 tail --pid=PID -f /dev/null` (repeat while it runs), then read its output (T-4826).
 - Before your report, run the repo-shape modules in your lane, unpiped, as one run: `python3 plugin/tests/run.py <SHAPE>` (T-4542). They are cheap and catch what your own modules never touch (a docs/map line over 2000 characters, a MASTER.md count, hooks.json's handler rule); `sampo lane accept` starts the lane's check, and its first stage runs them: a red one is recorded on the lane before the long check starts, naming the failing classes (T-4563).
 - Commit on your branch: `git add <the task's files>`, `git commit -m "<what> (<ID>)"`.
-- Never push, never merge another branch (the fast-forward above aside), never rebase, never close the task, never
+- Never push, never merge another branch (the fast-forward above and the branch a Resume section names aside), never rebase, never close the task, never
   launch agents.
 - Before editing, claim what you plan to change: `sampo lease take FILE[::SYMBOL]...` (T-1068). It fails naming the
   session and task that already claimed an overlap: work elsewhere or message it. `sampo lease drop` when done.

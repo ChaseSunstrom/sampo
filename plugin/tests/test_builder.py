@@ -53,6 +53,27 @@ class Brief(_Tasks):
         self.assertIn("For a FIX record `sampo task prove T-9 --run", copy)
         self.assertIn("lane accept", copy)  # why: the close refuses a FIX with no proof
 
+    def test_a_recovered_builder_may_merge_the_branch_its_resume_section_names(self):  # T-5475
+        """2026-11-21: recovered builders read 'git merge <old branch>' in the Resume section and 'never merge another
+        branch' in the contract, obeyed the contract and re-authored their lanes from scratch."""
+        import argparse
+        import contextlib
+        import io
+        flat = " ".join(read_text(os.path.join(PLUGIN, "agents", "fm-builder.md")).split())
+        self.assertIn("never merge another branch (the fast-forward above and the branch a Resume section names aside)",
+                      flat)
+        from sampo import core as c, lanes as slanes
+        self.assertIn("the branch a Resume section names aside", " ".join(slanes.contract("T-9", "abc", "/m").split()))
+        tid = self.task("Parse dates")
+        p = c.find_project(self.repo)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            slanes.builder_brief(p, c.find_brief(p, tid), argparse.Namespace(json=True, model=None, why=None),
+                                 resume_branch="worktree-old-lane")
+        brief = " ".join(read_text(json.loads(buf.getvalue())["path"]).split())
+        self.assertIn("run `git merge worktree-old-lane`", brief)
+        self.assertIn("the one merge besides the fast-forward that the rules allow", brief)
+
     def test_a_self_contained_brief_and_the_agent_call(self):
         tid = self.task("Parse dates")
         res = json.loads(self.fm("lane", "brief", tid, "--json").stdout)

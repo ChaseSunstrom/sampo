@@ -2909,8 +2909,9 @@ def builder_brief(p, b, args, resume_branch=None, after=""):
     if resume_branch:
         parts += ["## Resume", f"A builder worked this task before and stopped. Its work, including a WIP commit of its "
                   f"unfinished files, is on branch `{resume_branch}`. Right after `fm focus {b.id}`, run "
-                  f"`git merge {resume_branch}` (never rebase), read `git log {base}..{resume_branch}` and the Steps "
-                  f"already ticked, and carry on from there.", ""]
+                  f"`git merge {resume_branch}` (never rebase; the one merge besides the fast-forward that the rules allow, "
+                  f"T-5475), read `git log {base}..{resume_branch}` and the Steps already ticked, and carry on from "
+                  f"there: build on that work, never re-author it.", ""]
     if after:  # T-2354: a recovery says why the lane came back
         parts += ["## Why it came back", after.strip(), ""]
     try:
