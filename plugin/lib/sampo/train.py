@@ -3699,7 +3699,11 @@ def _land_trains(p, main, batch, owed, closer=None):
         return _git(main, "rev-parse", "--verify", "-q",
                     f"{b.meta.get('lane_branch') or 'foreman/' + b.id}^{{commit}}").stdout.strip()
     def merged(b):
-        return (b.meta.get("lane") and lanes._stop(b)[0] == "merged" and (t := tip(b))
+        # T-5861: a lane the accept reviewed at its tip (reviewed_tip) that a stacked lane's merge carried to trunk has no
+        # lane_stop of its own and no commit past main (finished.json holds it with no commit time): it is merged too.
+        # The lane's tip must be the reviewed one: a fresh lane's tip (the base) is on trunk as well.
+        return (b.meta.get("lane") and (t := tip(b))
+                and (lanes._stop(b)[0] == "merged" or b.meta.get("reviewed_tip") == t)
                 and not _git(main, "merge-base", "--is-ancestor", t, "HEAD").returncode)
     # a land cut short (or a train by hand) left these merged and open: they only need their close
     landed = [b.id for b in briefs if b.status not in c.CLOSED and merged(b)]

@@ -1020,6 +1020,46 @@ class ParkLines(LandCase):
         c.save_brief(p, x)
         self.assertNotRegex(self.land("--first", a).stderr, "still building")
 
+    def stacked_on_trunk(self, n, name):
+        """T-5861: a reviewed lane whose tip another lane merged into main (no lane_stop of its own, no commit past
+        main), its launcher's session alive: the shape of T-5715 on 2026-11-22."""
+        a = self.lane(n, name, when=OLD)
+        self.audited(a)
+        self.returned(a, f"Lane {n}")
+        self.git("merge", "-q", "--no-ff", "--no-edit", f"foreman/lane{n}")  # a stacked lane's merge brought it in
+        p = c.find_project(self.repo)
+        from sampo import bus
+        x = c.find_brief(p, a)
+        x.meta["builder_proc"] = f"{bus.host_id()}|{os.getpid()}|{bus._proc(os.getpid())[1]}"
+        x.meta["reviewed_tip"] = self.git("rev-parse", f"foreman/lane{n}")
+        for k in ("builder_returned", "lane_stop"):
+            x.meta.pop(k, None)
+        c.save_brief(p, x)
+        return a
+
+    def test_first_tip_on_trunk_names_the_lane_merged_and_the_land_closes_it(self):
+        a = self.stacked_on_trunk(1, "a.txt")
+        r = self.land("--first", a)
+        self.assertRegex(r.stderr, rf"--first {a}: merged already", r.stdout + r.stderr)
+        self.assertNotRegex(r.stderr, "still building")
+        self.assertEqual(self.brief(a).status, "done", r.stdout + r.stderr)
+
+    def test_tip_on_trunk_is_closed_by_a_plain_land_too(self):
+        a = self.stacked_on_trunk(1, "a.txt")
+        r = self.land()
+        self.assertEqual(self.brief(a).status, "done", r.stdout + r.stderr)
+
+    def test_tip_on_trunk_is_not_said_of_a_fresh_lane_or_one_with_a_commit_past_it(self):
+        fresh = self.lane(1, "a.txt")  # no reviewed tip: its builder may be about to commit
+        past = self.stacked_on_trunk(2, "b.txt")
+        with open(os.path.join(self.tmp, "lane2", "more.txt"), "w") as f:
+            f.write("after the merge\n")
+        self.git("add", "more.txt", cwd=os.path.join(self.tmp, "lane2"))
+        self.git("commit", "-qm", "past the merged tip", cwd=os.path.join(self.tmp, "lane2"))
+        for t in (fresh, past):
+            self.assertNotRegex(self.land("--first", t).stderr, rf"--first {t}: merged already")
+            self.assertNotEqual(self.brief(t).status, "done")
+
 
 class ParkMarks(LandCase):
     """T-5852: a lane the land parks has its lane_stop at once, not at the land's end: four lanes parked at 07:20 by a
