@@ -211,7 +211,7 @@ class PmShapeFirst(PmCase):
                 unittest.mock.patch.object(slanes, "_pm_first_red", return_value=1), \
                 unittest.mock.patch.object(slanes, "_pm_cmd_green_at", return_value=False), \
                 unittest.mock.patch.object(slanes, "_pm_cover") as cover:
-            def stopped(p, main, sha, reds=None, short=None):
+            def stopped(p, main, sha, reds=None, short=None, **_):  # T-5936: part, since, heads
                 if reds is not None:
                     reds.append("m.B")
                 if short is not None:

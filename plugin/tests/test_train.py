@@ -22,8 +22,12 @@ import test_lane_land
 from test_accept_check import AcceptCase, stub
 from test_express_lane import ExpressBase
 from test_lane_train import TrainCase
+from test_postmerge import PmCase
 
+from sampo import cli
 from sampo import core as c
+from sampo import lanes as slanes
+from sampo import map as smap
 from sampo import train
 
 LIB = os.path.dirname(os.path.dirname(os.path.abspath(train.__file__)))
@@ -556,6 +560,221 @@ class ExpressTrainsTogether(ExpressBase):
         r = self.land("--batch", "3")
         self.assertIn(f"{ids[1]} is express (performance, security or urgent): it trains next, first in the train, ahead of the ordinary lanes",
                       r.stderr)
+
+
+class BehindAffected(PmCase):
+    """T-5936: the behind verify of a merged head ran the whole suite (13,000 tests, 100% of the CPU for hours) after every
+    merge. Now it runs the shape modules and only the classes cli.affected picks from the head's own change, and the whole
+    suite once per sweep: when PM_SWEEP_S or PM_SWEEP_EVERY merged heads have passed since the last one. A partial verify is
+    recorded `partial`: it never stands as a full run (sampo ship's pass list, a close's proof, the sentinel). Over a fake
+    map and stand-ins for the runners: run.py writes `full` (and its argv) to the mark, the shape pass `shape`, the affected
+    template `part` and the module names it was given."""
+    MAP = {"tests": {"plugin/tests/test_a.py": ["plugin/lib/sampo/a.py"], "plugin/tests/test_b.py": ["plugin/lib/sampo/b.py"]},
+           "gates": [], "pairs": {}, "broke": {}}
+    RUNNER = "import os, sys\nwith open(os.environ['PM_MARK'], 'a') as f:\n    f.write(' '.join(['full'] + sys.argv[1:]) + '\\n')\n" \
+             "if os.environ.get('PM_FAIL'):\n    print('FAIL: t (test_a.A.t)')\n    sys.exit(1)\n"
+
+    def setUp(self):
+        super().setUp()
+        self.env(FM_POSTMERGE_SHAPE=f"echo shape >> {self.mark}", PM_MARK=self.mark)
+        for rel, text in {"plugin/tests/run.py": self.RUNNER, "plugin/tests/test_a.py": "a\n", "plugin/tests/test_b.py": "b\n",
+                          "plugin/lib/sampo/a.py": "a\n", "plugin/lib/sampo/b.py": "b\n", "notes/readme.txt": "n\n"}.items():
+            os.makedirs(os.path.dirname(os.path.join(self.repo, rel)), exist_ok=True)
+            with open(os.path.join(self.repo, rel), "w") as f:
+                f.write(text)
+        self.git("add", "-A")
+        self.git("commit", "-qm", "suite")
+        self.template("echo part {names} >> $PM_MARK")  # $PM_MARK, not the path: cli.affected reads a word that is a file as the runner
+        load =mock.patch.object(smap, "load", return_value=self.MAP)
+        load.start()
+        self.addCleanup(load.stop)
+        self.n = 0
+
+    def template(self, cmd):
+        self.fm("check", "affected", cmd)
+
+    def head(self, rel):
+        """A lane that appends a line to rel, merged on trunk with a --no-ff merge and recorded pending: the merged head."""
+        self.n += 1
+        self.git("checkout", "-qb", f"b-h{self.n}", self.trunk)
+        with open(os.path.join(self.repo, rel), "a") as f:
+            f.write(f"{self.n}\n")
+        self.git("add", "-A")
+        self.git("commit", "-qm", f"h{self.n}")
+        self.git("checkout", "-q", self.trunk)
+        return self.merge(f"h{self.n}", self.task())
+
+    def verify(self):
+        """pm_run over what is pending; what ran, in order (the mark is cleared for the next one)."""
+        slanes.pm_run(self.p, self.repo)
+        ran = self.ran()
+        if os.path.exists(self.mark):
+            os.remove(self.mark)
+        return ran
+
+    def swept(self):
+        """The first head is the sweep (no record of one: due); the next ones are the test's."""
+        self.head("plugin/lib/sampo/a.py")
+        self.assertEqual(self.verify(), ["shape", "full"], "the first head runs the whole suite")
+
+    def sweep_state(self):
+        with open(os.path.join(slanes._pm_dir(self.p), ".sweep")) as f:
+            return json.load(f)
+
+    def test_behind_affected_a_head_that_changes_one_module_runs_its_classes_and_the_shape_pass_only(self):
+        self.swept()
+        sha = self.head("plugin/lib/sampo/b.py")
+        self.assertEqual(self.verify(), ["shape", "part", "test_b"], "test_a, which reaches nothing b.py has, does not run")
+        r = self.rec(sha)
+        self.assertEqual((r["state"], r.get("partial")), ("green", True))
+
+    def test_behind_affected_the_tenth_head_since_the_last_full_run_is_a_full_run(self):
+        self.swept()
+        runs = [self.verify() if self.head("plugin/lib/sampo/a.py") else None for _ in range(10)]
+        self.assertEqual(runs[:9], [["shape", "part", "test_a"]] * 9, "heads 2 to 10 run what they reach")
+        self.assertEqual(runs[9], ["shape", "full"], "the 11th head: ten have passed since the last full run")
+        self.assertEqual(self.head("plugin/lib/sampo/a.py") and self.verify(), ["shape", "part", "test_a"], "and the count starts over")
+
+    def test_behind_affected_every_sweep_is_an_uncached_full_pass_sampo_ship_can_push(self):
+        # round 2 (HIGH): a sweep that ran cached left ship no fully verified commit: it ran its own suite
+        self.swept()
+        self.assertEqual(len(slanes.pm_full_passes(self.p)), 1)
+        for rounds in (2, 3):
+            for _ in range(9):
+                self.head("plugin/lib/sampo/a.py")
+                self.assertEqual(self.verify(), ["shape", "part", "test_a"])
+                self.assertEqual(len(slanes.pm_full_passes(self.p)), rounds - 1, "a partial verify adds no pass")
+            sha = self.head("plugin/lib/sampo/a.py")
+            self.assertEqual(self.verify(), ["shape", "full"])
+            passes = slanes.pm_full_passes(self.p)
+            self.assertEqual(len(passes), rounds, "the sweep (the 11th head, the 21st) is a pass ship can push")
+            self.assertEqual(passes[-1]["sha"], sha)
+
+    def test_behind_affected_a_partial_green_is_logged_partial_and_a_sweeps_is_not(self):
+        self.swept()
+        self.head("plugin/lib/sampo/b.py")
+        self.verify()
+        done = [e["data"] for e in c.ledger_tail(self.p, 500) if e.get("event") == "lane_verified"]
+        self.assertEqual([bool(d.get("partial")) for d in done], [False, True], "the sentinel reads the sweep as a full run only")
+
+    def test_behind_affected_the_probe_resets_the_sweep_counts_only_after_its_full_run_is_green(self):
+        self.swept()
+        for _ in range(9):
+            self.head("plugin/lib/sampo/a.py")
+            self.verify()
+        self.assertEqual(self.sweep_state()["k"], 9)
+        self.assertTrue(slanes._pm_sweep_due(self.p, 5), "ten heads: due")
+        self.assertEqual(self.sweep_state()["k"], 9, "asking restarts nothing: a sweep that does not go green is due again")
+        passes = len(slanes.pm_full_passes(self.p))
+        shas = [self.head("plugin/lib/sampo/a.py"), self.head("plugin/lib/sampo/b.py")]
+        self.assertEqual(self.verify(), ["shape", "full"], "two pending heads, a sweep due: one probe, the whole suite at HEAD")
+        self.assertEqual(self.sweep_state()["k"], 0, "the probe's green full run restarted the counts")
+        self.assertEqual(len(slanes.pm_full_passes(self.p)), passes + 1, "an uncached pass of HEAD for ship")
+        for sha in shas:
+            self.assertFalse(self.rec(sha).get("partial"))
+
+    def test_behind_affected_a_requeued_merges_full_run_is_no_pass_so_it_leaves_the_sweep_counts(self):
+        self.swept()
+        for _ in range(4):
+            self.head("plugin/lib/sampo/a.py")
+            self.verify()
+        self.assertEqual(self.sweep_state()["k"], 4)
+        passes = len(slanes.pm_full_passes(self.p))
+        sha = self.head("plugin/lib/sampo/a.py")
+        slanes.pm_set(self.p, sha, after_reverts=[sha])
+        self.assertEqual(self.verify(), ["shape", "full"], "a requeued merge runs the whole suite")
+        self.assertEqual(len(slanes.pm_full_passes(self.p)), passes, "another tree: no pass for ship")
+        self.assertEqual(self.sweep_state()["k"], 4, "and no pass, so the counts are not reset")
+
+    def test_behind_affected_a_flaky_excused_sweep_leaves_the_counts_due_and_the_next_head_sweeps_again(self):
+        # round 3: a sweep that ends flaky records no pm_full_pass; resetting left ship no new commit for 10 heads
+        self.swept()
+        for _ in range(9):
+            self.head("plugin/lib/sampo/a.py")
+            self.verify()
+        passes = len(slanes.pm_full_passes(self.p))
+        self.env(PM_FAIL="1", FM_POSTMERGE_RERUN="exit 0")  # the whole suite red on test_a.A, green alone
+        sha = self.head("plugin/lib/sampo/b.py")
+        self.assertEqual(self.verify(), ["shape", "full"], "the 11th head: the sweep")
+        r = self.rec(sha)
+        self.assertEqual((r["state"], r.get("flaky")), ("green", ["test_a.A"]), "excused as flaky")
+        self.assertEqual(len(slanes.pm_full_passes(self.p)), passes, "an excused run is no pass")
+        self.assertTrue(slanes._pm_sweep_due(self.p, 1), "so the counts stay due")
+        self.env(PM_FAIL="")
+        nxt = self.head("plugin/lib/sampo/b.py")
+        self.assertEqual(self.verify(), ["shape", "full"], "the next head sweeps again")
+        self.assertEqual(len(slanes.pm_full_passes(self.p)), passes + 1)
+        self.assertEqual(slanes.pm_full_passes(self.p)[-1]["sha"], nxt)
+        self.assertEqual(self.sweep_state()["k"], 0)
+
+    def test_behind_affected_three_hours_since_the_last_full_run_make_the_next_head_a_full_run(self):
+        self.swept()
+        st = self.sweep_state()
+        c.write_atomic(os.path.join(slanes._pm_dir(self.p), ".sweep"), json.dumps({**st, "t": st["t"] - 3 * 3600 - 5}))
+        self.head("plugin/lib/sampo/a.py")
+        self.assertEqual(self.verify(), ["shape", "full"])
+        self.head("plugin/lib/sampo/a.py")
+        self.assertEqual(self.verify(), ["shape", "part", "test_a"], "the sweep restarted the clock")
+
+    def test_behind_affected_a_partial_verify_is_no_full_pass_for_ship_nor_proof_of_its_tree(self):
+        self.swept()
+        passes = slanes.pm_full_passes(self.p)
+        self.assertEqual(len(passes), 1, "the sweep is the full pass sampo ship may push")
+        sha = self.head("plugin/lib/sampo/b.py")
+        self.verify()
+        self.assertEqual(slanes.pm_full_passes(self.p), passes, "a partial verify adds none: ship keeps its fully verified commit")
+        ctree = c.code_tree(self.repo, sha)
+        self.assertIsNone(cli._pm_green_rec(self.p, ctree), "the partial record proves no full run on its tree")
+        self.assertFalse(cli._pm_covers(self.p), "and the sentinel's full run is not skipped for it")
+        self.assertEqual(self.rec(sha)["state"], "green")
+
+    def test_behind_affected_a_head_no_test_reaches_runs_the_shape_pass_alone(self):
+        self.swept()
+        sha = self.head("notes/readme.txt")
+        self.assertEqual(self.verify(), ["shape"])
+        self.assertEqual((self.rec(sha)["state"], self.rec(sha).get("partial")), ("green", True))
+
+    def test_behind_affected_no_affected_command_or_a_failing_selection_runs_the_whole_suite(self):
+        self.swept()
+        self.head("plugin/lib/sampo/a.py")
+        with mock.patch.object(cli, "affected", side_effect=RuntimeError("no map")):
+            self.assertEqual(self.verify(), ["shape", "full"])
+        sha = self.head("plugin/lib/sampo/a.py")
+        self.assertEqual(self.verify(), ["shape", "part", "test_a"], "a head that fell back to full counted as a sweep")
+        self.assertTrue(self.rec(sha).get("partial"))
+
+    def test_behind_affected_an_own_verify_command_is_never_narrowed(self):
+        self.swept()
+        self.env(FM_POSTMERGE_CMD=f"echo whole >> {self.mark}")
+        self.head("plugin/lib/sampo/a.py")
+        self.assertEqual(self.verify(), ["shape", "whole"], "the operator's command is the suite: cli.affected's template is not it")
+
+    def test_behind_affected_several_pending_heads_are_covered_by_one_partial_probe_marked_partial(self):
+        self.swept()
+        a, b = self.head("plugin/lib/sampo/a.py"), self.head("plugin/lib/sampo/b.py")
+        self.assertEqual(self.verify(), ["shape", "part", "test_a", "test_b"], "one probe of the range, both modules")
+        for sha in (a, b):
+            r = self.rec(sha)
+            self.assertEqual((r["state"], r.get("partial"), r.get("narrowed")), ("green", True, False))
+        self.assertIsNone(cli._pm_green_rec(self.p, c.code_tree(self.repo, b)))
+
+    def test_behind_affected_a_red_affected_class_is_judged_and_reverted_as_a_full_run_red_is(self):
+        self.swept()
+        self.template("echo part {names} >> $PM_MARK; echo 'FAIL: t (test_a.A.t)'; exit 1")
+        self.env(FM_POSTMERGE_RERUN="exit 1")
+        sha = self.head("plugin/lib/sampo/a.py")
+        self.verify()
+        r = self.rec(sha)
+        self.assertIn(r["state"], ("red", "reverted"))
+        self.assertEqual(r.get("classes"), ["test_a.A"])
+        self.assertTrue(r.get("partial"))
+
+    def test_behind_affected_a_timed_out_sweep_is_a_sweep_again_on_its_retry(self):
+        self.swept()
+        sha = self.head("plugin/lib/sampo/a.py")
+        slanes.pm_set(self.p, sha, sweep=True)
+        self.assertEqual(self.verify(), ["shape", "full"], "a record that was to be a full run stays one")
+        self.assertFalse(self.rec(sha).get("partial"))
 
 
 class SlimGate(TrainCase):

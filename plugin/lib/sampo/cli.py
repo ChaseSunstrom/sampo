@@ -2568,7 +2568,8 @@ def _sentinel(p):
         pass
     events, last, closes = c.ledger_tail(p, 5000), None, 0
     for e in reversed(events):
-        if e.get("event") in ("check_run", "lane_verified"):  # T-3576: a post-merge verify is a full run too
+        # T-3576: a post-merge verify is a full run too; T-5936: not a partial one (a head's affected classes only)
+        if e.get("event") == "check_run" or (e.get("event") == "lane_verified" and not (e.get("data") or {}).get("partial")):
             last = c.parse_ts(e.get("ts"))
             break
         closes += e.get("event") == "task_done"
@@ -2622,7 +2623,7 @@ def _pm_covers(p):
     if any(r["state"] == "running" and not lanes._pm_dead(r) or r["state"] == "pending" and fresh(r, SENTINEL_MIN / 1440)
            for r in recs):
         return True
-    g = next((r for r in reversed(recs) if r["state"] == "green"), None)
+    g = next((r for r in reversed(recs) if r["state"] == "green" and not r.get("partial")), None)  # T-5936: a partial verify ran no full suite
     return bool(g and not g.get("after_reverts") and fresh(g, CACHE_DAYS) and (now := c.code_tree(p.root))
                 and c.code_tree(p.root, g.get("covered_by") or g["sha"]) == now)
 
@@ -2651,7 +2652,7 @@ def _pm_green_rec(p, ctree, own=False, names=()):
         return None
 
     def proves(r):
-        if r.get("state") != "green" or r.get("after_reverts"):
+        if r.get("state") != "green" or r.get("after_reverts") or r.get("partial"):  # T-5936: partial = affected classes only
             return False
         if not own:
             return True

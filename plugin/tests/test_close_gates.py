@@ -292,6 +292,11 @@ class CloseGates(ForemanTestCase):
         c.log_event(self.p, "lane_verified", task="T-0001", data={"sha": "b" * 40})
         self.assertIsNone(self.sentinel())
 
+    def test_a_partial_post_merge_verify_is_no_full_run_for_the_sentinel(self):
+        # T-5936: a head's behind verify ran its affected classes only: it says nothing of the rest of the suite
+        c.log_event(self.p, "lane_verified", task="T-0001", data={"sha": "b" * 40, "partial": True})
+        self.assertEqual(self.sentinel(), "ran")
+
     def test_the_sentinel_still_runs_when_no_verify_covers_this_tree(self):
         old = self.head()
         self.write("calc.py", SRC + "# changed\n")
