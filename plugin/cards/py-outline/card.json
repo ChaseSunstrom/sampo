@@ -1,6 +1,7 @@
 {
   "name": "py-outline",
   "kind": "py",
+  "kinds": ["exam:bug"],
   "read": true,
   "deterministic": true,
   "purpose": "Outline a Python file: its imports, classes, methods and functions with signatures, start and end lines, decorators and first doc line, so you read only the lines you need.",

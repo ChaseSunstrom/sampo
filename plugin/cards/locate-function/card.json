@@ -1,6 +1,7 @@
 {
   "name": "locate-function",
   "kind": "chain",
+  "kinds": ["exam:bug"],
   "purpose": "Find where the function, method or class a request in words concerns is defined: a local model picks the name (pick-function, held to a definition the file has), then py-outline gives its signature and exact line span.",
   "examples": ["where is the function that retries the upload", "locate the method this bug report concerns in app.py",
                "which lines does the code for computing the total span"],

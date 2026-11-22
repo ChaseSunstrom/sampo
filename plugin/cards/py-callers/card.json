@@ -1,6 +1,7 @@
 {
   "name": "py-callers",
   "kind": "py",
+  "kinds": ["exam:bug"],
   "read": true,
   "deterministic": true,
   "purpose": "Find every place a Python function, method or class is defined, called, imported or referenced across the worktree, each with its file, line, enclosing function and code, so you know what a change to it breaks.",

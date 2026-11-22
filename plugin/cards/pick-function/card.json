@@ -1,6 +1,7 @@
 {
   "name": "pick-function",
   "kind": "model",
+  "kinds": ["exam:bug"],
   "read": true,
   "purpose": "A local model names the one function, method or class of a Python file that a request in words concerns; the checker holds the answer to a definition the file really has.",
   "examples": ["which function in app.py handles the retry", "find the method that computes the total in billing.py",

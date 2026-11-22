@@ -1,6 +1,7 @@
 {
   "name": "py-none-guard",
   "kind": "py",
+  "kinds": ["exam:bug"],
   "deterministic": true,
   "purpose": "Add an 'if PARAM is None:' guard as the first statement of a Python function (after its docstring) that returns a value, raises an error or sets a default, with the file's own indentation and line endings, and nothing else changed.",
   "examples": ["handle None input in the function", "the function crashes when the argument is None", "return early if the parameter is None",

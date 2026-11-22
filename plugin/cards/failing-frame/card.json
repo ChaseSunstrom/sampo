@@ -1,6 +1,7 @@
 {
   "name": "failing-frame",
   "kind": "py",
+  "kinds": ["exam:bug"],
   "read": true,
   "purpose": "Run the tests in a sandboxed copy and return the first failure: the exception, its message, every project frame with its code, and the exact line where the code under test raised it, with numbered lines around it, so you fix the right line.",
   "examples": ["why does the test fail", "run the tests and show where the failing test breaks", "find the line that raises the error in the traceback",

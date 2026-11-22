@@ -289,6 +289,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmcardauthor` (T-4838, T-3157 part 4: `sampo card author "<request>" [--writer local|haiku|sonnet] [--model P]`… [→ files-lib-5](docs/map/files-lib-5.md)
 - `fmcardmine` (T-4920, T-4838 part B: `sampo.cardmine.mine(p, write=True, bench=None)` turns Sampo's own records into… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmexamgrade` (T-5055: `examgrade.grade(result, events)`, the hard exam's grade, pure… [→ files-lib-4](docs/map/files-lib-4.md)
+- `fmcardgap` (T-5133: a card.json's `kinds`, the yardstick task kinds it serves (suite:kind)… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmlocalruns` (T-5017: `sampo localruns [PATH] [--since DATE]` scores the local-model runs per arm… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmbenchswe` (sampo/bench_swe, T-3746: `sampo bench swe`, SWE-bench Verified through Smith in each… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmsteward_dup` (T-5019: `sampo steward dup` finds duplicate and foldable open tasks by TF-IDF cosine… [→ files-lib-4](docs/map/files-lib-4.md)
