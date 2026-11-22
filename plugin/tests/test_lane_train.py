@@ -5,6 +5,7 @@ tree (minus CHANGELOG.md and the sync mirror) is the same."""
 import json
 import math
 import os
+import shutil
 import subprocess
 import time
 import types
@@ -576,6 +577,158 @@ class Train(TrainCase):
         self.assertIn("Main adds that.", text)
         self.assertNotRegex(text, r"(?m)^(<<<<<<<|=======|>>>>>>>)")
         self.assertEqual(text.count("`ops.py`"), 1, "one entry line carries both (T-5472)")
+
+    def union_conflict(self, merged=True):
+        """T-5836: a scratch repo whose merge of two lanes is conflicted in MAP alone (the key-aware union's case, both
+        sides rewrote the entry), plus a folder outside it holding a file a write through a link would change.
+        (the scratch tree, the outside file)."""
+        wt = os.path.join(self.tmp, "union-wt")
+        os.makedirs(wt)
+        ident = ("-c", "user.name=t", "-c", "user.email=t@localhost")
+
+        def git(*a):
+            return subprocess.run(["git", "-C", wt, *ident, *a], capture_output=True, text=True)
+        git("init", "-q", "-b", "main")
+        os.makedirs(os.path.join(wt, "docs", "map"))
+        for branch, text in (("main", self.ENTRY), ("one", "- `ops.py`: one.\n"), ("two", "- `ops.py`: two.\n")):
+            git(*(("checkout", "-q", "-b", branch, "main") if branch != "main" else ("checkout", "-q", "main")))
+            with open(os.path.join(wt, self.MAP), "w") as f:
+                f.write(text)
+            git("add", self.MAP)
+            git("commit", "-qm", branch)
+        git("checkout", "-q", "one")
+        if merged:
+            self.assertEqual(git("merge", "--no-ff", "-m", "m", "two").returncode, 1)
+        outside = os.path.join(self.tmp, "outside")
+        os.makedirs(outside)
+        target = os.path.join(outside, "ops.md")
+        with open(target, "w") as f:
+            f.write("outside\n")
+        return wt, target
+
+    def test_union_symlink_parent_folder_is_refused_and_the_target_unchanged(self):
+        """T-5836: the leaf is no link but its folder is (docs/map -> a folder outside the scratch tree): a write
+        through it changed a file outside. The union parks (None) and the file there stays as it was."""
+        from sampo import train
+        wt, target = self.union_conflict()
+        shutil.rmtree(os.path.join(wt, "docs", "map"))
+        os.symlink(os.path.dirname(target), os.path.join(wt, "docs", "map"))
+        self.assertIsNone(train._union_map(wt, [self.MAP]))
+        self.assertEqual(open(target).read(), "outside\n")
+
+    def test_union_symlink_leaf_is_refused_and_the_target_unchanged(self):
+        """T-5836: the conflicted map file itself replaced by a link to a file outside the scratch tree."""
+        from sampo import train
+        wt, target = self.union_conflict()
+        os.remove(os.path.join(wt, self.MAP))
+        os.symlink(target, os.path.join(wt, self.MAP))
+        self.assertIsNone(train._union_map(wt, [self.MAP]))
+        self.assertEqual(open(target).read(), "outside\n")
+
+    def test_union_symlink_non_regular_target_is_refused(self):
+        """T-5836: a folder where the file was parks the lane; it never raises out of the train's merge."""
+        from sampo import train
+        wt, _ = self.union_conflict()
+        os.remove(os.path.join(wt, self.MAP))
+        os.mkdir(os.path.join(wt, self.MAP))
+        self.assertIsNone(train._union_map(wt, [self.MAP]))
+
+    def test_union_symlink_write_helper_never_follows_a_link_swapped_in_after_the_check(self):
+        """T-5836: the open itself refuses a link (O_NOFOLLOW), so a swap between check and write changes nothing."""
+        from sampo import train
+        wt, target = self.union_conflict()
+        real = train._plain_file
+
+        def swap(root, rel):
+            got = real(root, rel)  # the check passes on the real file ...
+            os.remove(os.path.join(root, rel))  # ... then a link takes its place
+            os.symlink(target, os.path.join(root, rel))
+            return got
+        with mock.patch.object(train, "_plain_file", swap):
+            self.assertFalse(train._write_plain(wt, self.MAP, b"changed\n"))
+        self.assertEqual(open(target).read(), "outside\n")
+
+    def test_union_symlink_hard_linked_target_is_refused_and_the_target_unchanged(self):
+        """T-5836 review: the conflicted file made a hard link of a file outside the scratch tree: a write through it
+        changes that file too, so it is refused."""
+        from sampo import train
+        wt, target = self.union_conflict()
+        os.remove(os.path.join(wt, self.MAP))
+        os.link(target, os.path.join(wt, self.MAP))
+        self.assertIsNone(train._union_map(wt, [self.MAP]))
+        self.assertEqual(open(target).read(), "outside\n")
+
+    def test_union_symlink_a_hard_link_made_after_the_check_is_refused_at_the_write(self):
+        """T-5836 review: the same inode gets a second link between check and open: only the opened file's link count
+        sees it, and nothing is written."""
+        from sampo import train
+        wt, target = self.union_conflict()
+        real = train._plain_file
+
+        def link(root, rel):
+            got = real(root, rel)
+            os.link(os.path.join(root, rel), target + ".link")
+            return got
+        before = open(os.path.join(wt, self.MAP)).read()
+        with mock.patch.object(train, "_plain_file", link):
+            self.assertFalse(train._write_plain(wt, self.MAP, b"changed\n"))
+        self.assertEqual(open(os.path.join(wt, self.MAP)).read(), before)
+
+    def test_union_symlink_a_folder_swapped_for_a_link_after_the_check_is_refused_by_the_inode_compare(self):
+        """T-5836 review: docs/map becomes a link to a folder outside once the check has passed. The leaf is no link,
+        so O_NOFOLLOW lets the open through; the file it got is not the one checked, and nothing is written."""
+        from sampo import train
+        wt, target = self.union_conflict()
+        real = train._plain_file
+
+        def swap(root, rel):
+            got = real(root, rel)
+            shutil.rmtree(os.path.join(root, "docs", "map"))
+            os.symlink(os.path.dirname(target), os.path.join(root, "docs", "map"))
+            return got
+        with mock.patch.object(train, "_plain_file", swap):
+            self.assertFalse(train._write_plain(wt, self.MAP, b"changed\n"))
+        self.assertEqual(open(target).read(), "outside\n")
+
+    def test_union_symlink_a_failing_write_parks_the_lane_and_aborts_the_merge(self):
+        """T-5836 review: no space (or any OSError) on the write is a refusal, not an exception out of the train's
+        merge: _merge_in logs the conflict, aborts, and leaves no half-written file or merge behind."""
+        from sampo import train
+        wt, _ = self.union_conflict(merged=False)
+        log = []
+        b = types.SimpleNamespace(id="T-1", title="lane")
+
+        def full(*a, **k):
+            raise OSError(28, "No space left on device")
+        with mock.patch.object(train.os, "fdopen", full):
+            self.assertIsNone(train._merge_in(wt, b, "two", log, kept={}))
+        self.assertEqual(log[0][0], "T-1")
+        self.assertIn("conflicts", log[0][1])
+        self.assertEqual(self.git("ls-files", "-u", cwd=wt), "")
+        self.assertEqual(self.git("status", "--porcelain", "--untracked-files=no", cwd=wt), "")
+        self.assertEqual(open(os.path.join(wt, self.MAP)).read(), "- `ops.py`: one.\n")
+
+    def test_union_symlink_a_lane_whose_map_file_is_a_link_parks_and_the_target_is_unchanged(self):
+        """T-5836: two lanes that each turn the map entry into a link to a file outside the repo conflict; the train
+        parks the second (a link is no plain file) and writes through neither."""
+        self.map_base()
+        outs, ids = [], []
+        for n in (1, 2):
+            outs.append(os.path.join(self.tmp, f"outside-ops{n}.md"))
+            with open(outs[-1], "w") as f:
+                f.write("outside\n")
+            tid = self.lane(n, self.MAP, f"lane {n}\n")
+            path = os.path.join(self.tmp, f"lane{n}")
+            os.remove(os.path.join(path, self.MAP))
+            os.symlink(outs[-1], os.path.join(path, self.MAP))
+            self.git("add", self.MAP, cwd=path)
+            self.git("commit", "-qm", "link", cwd=path)
+            ids.append(tid)
+        r = self.train(*ids, check=False)
+        for outside in outs:
+            self.assertEqual(open(outside).read(), "outside\n")
+        self.assertFalse((self.meta(ids[1]).get("lane_stop") or "").startswith("merged"), r.stdout)
+        self.assertIn("conflicts", r.stdout + r.stderr)
 
     def cap_base(self, left):
         """T-4980: a map file `left` bytes under its cap: two entries with a filler line between, so two lanes each

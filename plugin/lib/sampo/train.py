@@ -18,6 +18,7 @@ import re
 import shlex
 import shutil
 import signal
+import stat
 import statistics
 import subprocess
 import sys
@@ -479,6 +480,51 @@ def _map_only(files):
     return bool(files) and all(_MAP_FILE.fullmatch(f) for f in files)
 
 
+def _plain_file(wt, rel):
+    """T-5836: the lstat of `rel` in the scratch tree `wt` when it is a plain file the train may write: a regular file
+    (no link, folder, fifo or device), with one hard link, whose real path is `wt`/`rel` itself (no folder on the way
+    is a link, inside the tree or out of it). Else None. A lane's tree is the lane's text: a map or test file it made
+    a link, or a folder it made a link, would have the union's write change a file outside the scratch tree."""
+    path = os.path.join(wt, rel)
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return None
+    if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+        return None
+    if os.path.realpath(path) != os.path.join(os.path.realpath(wt), os.path.normpath(rel)):
+        return None
+    return st
+
+
+def _write_plain(wt, rel, data):
+    """T-5836: write `data` over the plain file `rel` in `wt` (_plain_file), True when written, False when refused:
+    the one write every train union goes through. The open refuses a link (O_NOFOLLOW) and never waits on a fifo
+    (O_NONBLOCK), and the file it got must be the one the check saw (device and inode), so a swap between the check
+    and the write writes nothing; it still has one hard link then too. It truncates only after that. A failing write
+    (no space, say) is a refusal as well: False, never an exception, so the caller parks the lane and aborts the
+    merge (the file may then be half written, which the abort undoes)."""
+    st = _plain_file(wt, rel)
+    if st is None:
+        return False
+    try:
+        fd = os.open(os.path.join(wt, rel), os.O_WRONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return False
+    try:
+        now = os.fstat(fd)
+        if not stat.S_ISREG(now.st_mode) or now.st_nlink != 1 or (now.st_dev, now.st_ino) != (st.st_dev, st.st_ino):
+            return False
+        os.ftruncate(fd, 0)
+        with os.fdopen(os.dup(fd), "wb") as fh:
+            fh.write(data)
+    except OSError:
+        return False
+    finally:
+        os.close(fd)
+    return True
+
+
 def _union_map(wt, files):
     """T-4375: resolve the merge in `wt`, conflicted only in map files `files`: each file's three index stages through
     the key-aware map merge (T-5472, sampo.mapmerge, keep_both: a line both sides rewrote is kept twice, never a line
@@ -497,8 +543,8 @@ def _union_map(wt, files):
     for f in files:
         got = stages.get(f, {})
         if "2" not in got or "3" not in got or any(m not in ("100644", "100755") for m in got.values()) \
-                or os.path.islink(os.path.join(wt, f)):
-            return None  # deleted on one side, or not a plain file: a real disagreement
+                or _plain_file(wt, f) is None:
+            return None  # deleted on one side, or not a plain file (T-5836: a link, a link on the way): a real disagreement
         texts = []
         for n in ("1", "2", "3"):
             out = subprocess.run(["git", "-C", wt, "show", f":{n}:{f}"], capture_output=True) if n in got else None
@@ -512,9 +558,7 @@ def _union_map(wt, files):
         if twice:
             doubled.append(f)
     for f, data in done.items():
-        with open(os.path.join(wt, f), "wb") as fh:
-            fh.write(data)
-        if _git(wt, "add", "--", f).returncode:
+        if not _write_plain(wt, f, data) or _git(wt, "add", "--", f).returncode:
             return None
     return doubled
 
