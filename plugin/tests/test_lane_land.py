@@ -1357,5 +1357,34 @@ class OffTrain(LandCase):
         self.assertLess(got["waited"], 10, got)
 
 
+class AcceptDuringMerge(LandCase):
+    """T-5816: a land started while a `sampo lane merge` (a train) holds the train lock found it held and exited with a
+    refusal in land.log. Accept queues the lane (first_ids) and starts no land, saying the merge is running."""
+
+    def accept(self, tid):
+        import io
+        import types
+        p = c.find_project(self.repo)
+        args = types.SimpleNamespace(audit=[["self", "read the diff", "no findings"]], json=False, no_check=False)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.in_project():
+            train.accept(p, c.find_brief(p, tid), self.repo, args)
+        return out.getvalue()
+
+    def test_accept_during_merge_queues_the_lane_and_starts_no_land(self):
+        a = self.lane(1, "a.txt", when=OLD)
+        p = c.find_project(self.repo)
+        with mock.patch.object(train, "spawn_land", return_value=(4242, "land.log")) as spawn:
+            with c.lock(os.path.join(p.dir, "train"), timeout=1):  # a lane merge's train holds it
+                out = self.accept(a)
+            spawn.assert_not_called()
+            self.assertIn("merge is running", out)
+            self.assertIn(a, train.first_ids(p), "queued first for the next land")
+            self.assertNotIn("land started in the background", out)
+            out = self.accept(a)  # the merge is over: the same accept starts the land
+            spawn.assert_called_once()
+            self.assertIn("land started in the background", out)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -4233,11 +4233,14 @@ def _add_audit_once(x, lens, how, result, tree):
 
 def _queue(p, main, tid):
     """T-3922: the lane queued first: ('running', None) into a running land at its next train boundary; else a detached
-    land starts and trains it first, ('started', (pid, log)), or ('not started', None) in the tests and when paused.
+    land starts and trains it first, ('started', (pid, log)), or ('not started', None) in the tests and when paused;
+    T-5816: ('merging', None) while a lane merge holds the train lock (no land starts; the lane waits in the queue).
     T-4528: `tid` may be a list (a batch's members, in order): one call, so one land is started for all of them."""
     first_ids(p, [tid] if isinstance(tid, str) else list(tid))
     if landing(p):
         return "running", None
+    if train_live(p):  # T-5816: a lane merge (a train by hand) holds the train lock: a land started now is refused at once
+        return "merging", None  # and logs a refusal; the lane waits in first_ids for the next land
     started = spawn_land(p, main)  # a land takes hours: never waited on
     return ("started", started) if started else ("not started", None)
 
@@ -5027,6 +5030,10 @@ def accept(p, b, main, args):
     if how == "running":
         lines.append(f"  {b.id} queued first in the running land: it trains at the land's next train boundary.")
         return cli.out(args, {"id": b.id, "queued": True, "land": "running"}, "\n".join(lines))
+    if how == "merging":  # T-5816
+        lines.append(f"  {b.id} queued first, no land started: a sampo lane merge is running (it holds the train lock); "
+                     "run sampo lane land once it ends and it trains this lane first.")
+        return cli.out(args, {"id": b.id, "queued": True, "land": "merge running"}, "\n".join(lines))
     if started is None:
         lines.append("  land not started in the background (FOREMAN_NO_BACKGROUND or paused): sampo lane land runs it here")
         return cli.out(args, {"id": b.id, "queued": True, "land": "not started"}, "\n".join(lines))
