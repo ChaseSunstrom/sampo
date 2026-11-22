@@ -1463,12 +1463,19 @@ def _first_prompt(path):
     return None
 
 
+def _not_intake(p):
+    """T-5898: a prompt Sampo sent, not one the user typed: the lane pilot's headless claude -p (HEADLESS_ENV) or a
+    session whose cwd is a lane worktree (a builder's probe). Its words are the lane's work, never intake for the main
+    project: no task is made from them (T-5889's probe prompt became T-5892, source user, active)."""
+    return c.headless_pilot() or bool(getattr(p, "lane", None))
+
+
 def _first_brief(p, sid, transcript=None):
     """T-1231: the first edit of a full-autonomy session whose only request so far is the one being worked makes its
     task: a brief from that request (its tag's type, a guessed tier, its DONE-WHEN lines as criteria), focused. The
     duel's Sampo sessions each spent two turns on the refusal and fm task new. Returns the note for the agent, or
     None. Review: one request with one item that reads as work; parallel edits make one task (a lock)."""
-    if not sid or c.effective_autonomy(p) != "full":
+    if not sid or c.effective_autonomy(p) != "full" or _not_intake(p):
         return None
     if c.active_brief_fast(p, getattr(p, "lane", None)):
         return ""  # review: a parallel edit's hook made it a moment ago; the caller re-runs the guard with it
@@ -2886,7 +2893,7 @@ def user_prompt_submit(pl):
     elif c.is_broad(text):
         parts.append("Broad request: sweep the whole space before planning (sampo ideas --lens 'capability map' "
                      "--lens approaches, or a capability list in the brief)")
-    if not r.items and not r.overrides and c.is_friction(text):  # T-1332: friction starts a round unasked
+    if not r.items and not r.overrides and not _not_intake(p) and c.is_friction(text):  # T-1332; T-5898: not a lane's: friction starts a round unasked
         try:
             if c.friction_area(text) == "this":  # nothing Foreman named: a bug in their project, not a round on Foreman
                 parts.append("Friction: fix the cause now")

@@ -1910,6 +1910,31 @@ class NoTaskGateRefusals(NoTaskGateKit, HookCase):
         self.assertIn("LRUCache", act.title)
 
 
+class HeadlessNoIntake(NoTaskGateKit, HookCase):
+    """T-5898: a pilot's headless `claude -p` and a session whose cwd is a lane worktree run a prompt Sampo sent, not
+    one the user typed: T-5889's probe prompt became T-5892 (source user, active) in the main project."""
+
+    def prompted(self, cwd, env=None):
+        self.fm("init")
+        self.fm("autonomy", "full")
+        self.hook("UserPromptSubmit", {"prompt": "FIX: write scratch probe file a.txt", "cwd": cwd}, env=env)
+        self.hook("PreToolUse", {"tool_name": "Write", "cwd": cwd, "tool_input": {
+            "file_path": os.path.join(cwd, "a.txt"), "content": "x"}, "scratchpad_dir": os.path.join(self.tmp, "scratch")},
+            env=env)
+        return c.load_briefs(self.project())
+
+    def test_a_headless_pilot_run_makes_no_task(self):
+        self.assertEqual([b.id for b in self.prompted(self.repo, env={c.HEADLESS_ENV: "1"})], [])
+
+    def test_a_session_in_a_lane_worktree_makes_no_task(self):
+        lane = os.path.join(self.tmp, "lane-wt")
+        subprocess.run(["git", "worktree", "add", "-q", "-b", "lane-x", lane], cwd=self.repo, check=True)
+        self.assertEqual([b.id for b in self.prompted(lane)], [])
+
+    def test_a_user_prompt_in_the_main_checkout_still_makes_its_task(self):
+        self.assertEqual(len(self.prompted(self.repo)), 1)
+
+
 class NoTaskGateKinds(NoTaskGateKit, HookCase):
     def test_a_security_request_gets_an_m_task_that_passes_the_plan_gate(self):
         # T-2335: the hook makes SECURITY briefs tier M; the gate's readings and outcomes must not leave them unfocused
