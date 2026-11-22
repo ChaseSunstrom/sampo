@@ -22,7 +22,16 @@ def _files(p, b, given):
     if scope:
         return sorted(f for f in tracked if any(fnmatch.fnmatch(f, g) or f.startswith(g.rstrip("*/") + "/")
                                                 for g in scope))
-    return sorted(f for f, _ in graph.pack(p, b.title + " " + b.section("Interpretation"), top=12))
+    # T-5830: a lane's worktree copy under .claude/worktrees/ is the repo's own files touched by a builder, never a part
+    # of this one: filtered before the cut at 12, so the twelve are repo files
+    ranked = [f for f, _ in graph.pack(p, b.title + " " + b.section("Interpretation"), top=10**6)
+              if not _worktree_copy(f)]
+    return sorted(ranked[:12])
+
+
+def _worktree_copy(f):
+    """True for a path inside a lane's worktree copy (T-5830): .claude/worktrees/ anywhere in the repo-relative path."""
+    return "/.claude/worktrees/" in "/" + f
 
 
 def _weights(p, files):
