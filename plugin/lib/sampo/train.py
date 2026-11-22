@@ -2594,6 +2594,7 @@ def land_key(b):
 def is_express(b):
     """T-5023: a performance fix, a security fix or an urgent lane (the ones land_key sorts first): named --first, it
     trains next and alone, a batch of one, so no ordinary lane's gate holds it back. The gate itself is never skipped.
+    T-5726: in live mode the express lanes at the head train together instead (one train, up to the batch size).
     Several express lanes train in the order they were named --first (FIFO), not re-sorted by land_key."""
     return b.type in ("PERFORMANCE", "SECURITY") or b.priority == "urgent"
 
@@ -2897,8 +2898,8 @@ def _land_trains(p, main, batch, owed, closer=None):
             fast = [t for t in front if is_express(by[t]) and (t not in carried["ready"] or t in carried["alone"])]
             for t in fast:
                 if t not in alone:
-                    print(f"sampo lane land: {t} is express (performance, security or urgent): it trains next, alone",
-                          file=sys.stderr, flush=True)
+                    print(f"sampo lane land: {t} is express (performance, security or urgent): it trains next, "
+                          + ("with the other express lanes" if live_mode(p) else "alone"), file=sys.stderr, flush=True)
             alone.update(fast)
             front = fast + [t for t in front if t not in fast]
             ready = front + [t for t in ready if t not in front]
@@ -2916,8 +2917,12 @@ def _land_trains(p, main, batch, owed, closer=None):
             if wait_closes():
                 continue
             break
-        # T-5444: live, one train for all; T-5023: an express lane at the head trains alone, live or not
-        cut = 1 if ready[0] in alone else len(ready) if live_mode(p) else batch
+        # T-5444: live, one train for all. T-5023: an express lane at the head leaves the ordinary lanes' train; T-5726:
+        # gated it trains alone, live the express lanes at the head (up to `batch`) train together: twenty performance
+        # lanes were twenty trains, each with its own gate and bench; a red one is bisected as in any train
+        live = live_mode(p)
+        cut = ((max(1, min(batch, next((i for i, t in enumerate(ready) if t not in alone), len(ready)))) if live else 1)
+               if ready[0] in alone else len(ready) if live else batch)
         ids, ready = ready[:cut], ready[cut:]
         print(f"sampo lane land: train {trains + 1}: {', '.join(ids)}", file=sys.stderr, flush=True)
         tested.update({i: tip(by[i]) for i in ids})  # train() reads the same heads as it starts

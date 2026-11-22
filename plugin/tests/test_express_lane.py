@@ -59,8 +59,9 @@ class ExpressLand(ExpressBase):
         r = self.land("--batch", "4")
         self.assertEqual(self.trains(r), [ids[1], ids[3], f"{ids[0]}, {ids[2]}"], r.stderr)
 
-    def test_an_express_lane_still_trains_alone_when_the_project_is_live(self):
+    def test_an_express_lane_still_trains_ahead_of_the_ordinary_ones_when_the_project_is_live(self):
         # T-5444: live mode trains every ready lane as one train; an express lane at the head is cut out of it
+        # (T-5726: several express lanes train together there: test_train.ExpressTrainsTogether)
         ids = self.made(3)
         self.fm("lane", "mode", "live")
         self.fm("task", "set", ids[2], "type=PERFORMANCE")

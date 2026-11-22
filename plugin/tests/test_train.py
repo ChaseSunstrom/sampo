@@ -11,6 +11,7 @@ import sys
 import time
 
 from test_accept_check import AcceptCase, stub
+from test_express_lane import ExpressBase
 
 from sampo import train
 
@@ -115,3 +116,45 @@ class CheckLog(AcceptCase):
         self.child(tid, 1, [sys.executable, "-c", "print('boom')"], tries=2)
         said = [x for x in self.brief(tid).section("Log").splitlines() if "no result" in x]
         self.assertTrue(said and os.path.join(self.tmp, "check.log") in said[-1], said)
+
+
+class ExpressTrainsTogether(ExpressBase):
+    """T-5726: live, the express lanes (performance, security, urgent) named --first train together as one train, capped
+    at the batch size, ahead of the ordinary lanes; gated, each still trains alone (T-5023)."""
+
+    def test_express_live_lanes_train_together_ahead_of_the_ordinary_ones(self):
+        ids = self.made(5)
+        self.fm("lane", "mode", "live")
+        self.fm("task", "set", ids[1], "type=PERFORMANCE")
+        self.fm("task", "set", ids[3], "type=SECURITY")
+        self.fm("task", "set", ids[4], "priority=urgent")
+        self.queue(ids[0], ids[1], ids[3], ids[4])
+        r = self.land("--batch", "5")
+        self.assertEqual(self.trains(r), [f"{ids[1]}, {ids[3]}, {ids[4]}", f"{ids[0]}, {ids[2]}"], r.stderr)
+        self.assertEqual([self.brief(t).status for t in ids], ["done"] * 5, r.stdout + r.stderr)
+
+    def test_express_live_train_is_capped_at_the_batch_size(self):
+        ids = self.made(4)
+        self.fm("lane", "mode", "live")
+        for t in ids[:3]:
+            self.fm("task", "set", t, "type=PERFORMANCE")
+        self.queue(*ids[:3])
+        r = self.land("--batch", "2")
+        self.assertEqual(self.trains(r), [f"{ids[0]}, {ids[1]}", ids[2], ids[3]], r.stderr)
+
+    def test_express_gated_lanes_still_train_alone(self):
+        ids = self.made(4)
+        self.fm("task", "set", ids[1], "type=PERFORMANCE")
+        self.fm("task", "set", ids[3], "type=SECURITY")
+        self.queue(ids[0], ids[1], ids[3])
+        r = self.land("--batch", "4")
+        self.assertEqual(self.trains(r), [ids[1], ids[3], f"{ids[0]}, {ids[2]}"], r.stderr)
+
+    def test_express_live_log_line_says_it_trains_with_the_other_express_lanes(self):
+        ids = self.made(3)
+        self.fm("lane", "mode", "live")
+        self.fm("task", "set", ids[1], "type=PERFORMANCE")
+        self.queue(ids[1])
+        r = self.land("--batch", "3")
+        self.assertIn(f"{ids[1]} is express (performance, security or urgent): it trains next, with the other express lanes",
+                      r.stderr)
