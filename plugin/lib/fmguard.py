@@ -6494,7 +6494,7 @@ _READS = {
 _GIT_READS = {"status", "log", "diff", "show", "blame", "rev-parse", "ls-files", "describe", "shortlog", "grep"}
 # T-3713: Sampo verbs that only read or record its state (never lane, tidy, or evidence --run, which runs a command)
 _FM_KEEPS = {"capture", "decide", "status", "which", "find", "outline", "queue", "inbox", "next", "focus"}
-_FM_TASK_KEEPS = {"log", "new", "set", "show", "list"}
+_FM_TASK_KEEPS = {"log", "new", "set", "show", "list", "ls"}
 _GIT_BAD = ("-o", "--output", "--ext-diff", "--textconv", "--open-files-in-pager", "-O")
 
 
@@ -7225,7 +7225,9 @@ _BRACES = lazy(r"\{[^{}]*(?:,|\.\.)[^{}]*\}")  # a brace expansion bash would tu
 
 # T-4154: the read verbs of Sampo that print and write nothing in the folder python runs in (never evidence --run, lane,
 # tidy: _FM_KEEPS also holds verbs that record), with the only flags they take here
-_FM_PRINTS = {("task", "show"), ("task", "list"), ("status",), ("next",), ("queue",), ("inbox",)}
+_FM_PRINTS = {("task", "show"), ("task", "ls"), ("task", "list"), ("status",), ("next",), ("queue",), ("inbox",)}
+_ID_PRINTS = {("task", "show"), ("task", "ls")}  # T-5599: these take ids, several at once, and nothing else
+_ID_LIST = r"T-\d+(?:\.\.(?:T-)?\d+)?(?:,T-\d+(?:\.\.(?:T-)?\d+)?)*"  # T-3, T-3..T-7, T-1,T-3 (cli's _TASK_IDS)
 _READ_ONLY_NAMES = (set(_READS) | {"git", "sampo", "fm"}) - {"which"}
 
 
@@ -7248,9 +7250,8 @@ def _reads_only(name, args):
                 words.append(args[i])
             i += 1
         # the whole reader form: the verb words, then only the id a show takes (`inbox swipe`, `queue X` are others)
-        return any(tuple(words[:len(v)]) == v and (len(words) == len(v) or v == ("task", "show") and len(words) ==
-                                                   len(v) + 1 and re.fullmatch(r"T-\d+", words[-1]) is not None)
-                   for v in _FM_PRINTS)
+        return any(tuple(words[:len(v)]) == v and (len(words) == len(v) or v in _ID_PRINTS and all(
+            re.fullmatch(_ID_LIST, w) for w in words[len(v):])) for v in _FM_PRINTS)
     bad = _READS.get(name)
     if bad is None or _bad_flag(args, bad):
         return False

@@ -328,11 +328,13 @@ class DataRead(GuardCase):
         # a Sampo verb passes only as an exact reader: no extra positionals, no flag beyond --json / -p VALUE
         self.run_table([(self.line(b), None) for b in (
             "sampo task show T-1", "sampo status", "sampo next --json", "sampo -p proj task list",
-            "sampo task list --json", "fm queue", "sampo inbox")], self.bash)
+            "sampo task list --json", "fm queue", "sampo inbox",
+            "sampo task show T-1 T-2", "sampo task ls T-1,T-3..T-5")], self.bash)  # T-5599: several ids, read only
         # the nearest twins share the matched words but run something else
         self.run_table([(self.line(b), "pipe-shell") for b in (
             "sampo inbox swipe", "sampo queue X", "sampo task list extra", "sampo status foo",
-            "sampo task show T-1 extra", "sampo task show notanid", "sampo next --apply", "sampo status --out json.py",
+            "sampo task show T-1 extra", "sampo task show notanid", "sampo task ls T-1 extra",
+            "sampo next --apply", "sampo status --out json.py",
             "sampo -p proj inbox swipe", "echo x | uniq - json.py", "echo x | uniq -c - json.py",
             "uniq a json.py")], self.bash)  # uniq IN OUT writes OUT; a bare - is stdin, an operand (the friction twin)
 

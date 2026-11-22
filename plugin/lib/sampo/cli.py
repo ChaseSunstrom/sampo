@@ -835,24 +835,10 @@ def cmd_task(args):
     if sub in ("split", "capsule"):  # T-0709
         from sampo import split
         return (split.task_split if sub == "split" else split.task_capsule)(p, args)
-    if sub == "show":
-        b = need_brief(p, args.id)
-        if getattr(args, "full", False):  # T-4924: the brief, then its story, in one call (also with --story)
-            from sampo import cost, recall
-            s = recall.story(p, b)
-            if args.json:
-                return out(args, dict(c.brief_detail(b), meta=b.meta, blockers=b.done_blockers(), story=s), None)
-            line = cost.cost_line(p, b)
-            story = c.as_loaded(recall.render_story(s), c.ns())  # the same text --story prints (T-2879)
-            return print(b.render() + (f"\n{line}\n" if line else "") + "\n" + story)
-        if args.story:  # T-0483
-            from sampo import recall
-            s = recall.story(p, b)
-            return out(args, s, recall.render_story(s))
-        if args.json:
-            return print(json.dumps(dict(c.brief_detail(b), meta=b.meta, blockers=b.done_blockers()), indent=2))
-        from sampo import cost
-        return print(b.render() + (f"\n{line}\n" if (line := cost.cost_line(p, b)) else ""), end="")  # T-1083
+    if sub == "show":  # T-5599: one id prints as it always did; several, each under its header (task_show)
+        return task_show(p, args)
+    if sub == "ls":  # T-5599: one line per task named; bare `task ls` is the queue (ALIASES)
+        return task_ls(p, args)
     if sub == "card":  # T-1541: a proved task's title card
         b = need_brief(p, args.id)
         if not b.red_green():
@@ -3846,6 +3832,99 @@ def _task_each(args, ids):
             failed.append({"id": tid, "error": str(said)})
     done = {"drop": "dropped", "defer": "deferred", "unblock": "unblocked"}[args.task_cmd]
     out(args, {"ok": ok, "failed": failed}, f"{len(ok)} of {len(ids)} {done}.")
+    return 1 if failed else 0
+
+
+def _task_words(p, words, verb):
+    """T-5599: the ids several words name (T-1 T-3..T-5 T-9,T-11), in order and once each, for show and ls. A word that
+    isn't an id is named before anything prints."""
+    bad = [w for w in words if not _TASK_IDS.match(w)]
+    if bad:
+        raise UsageError(f"task {verb}: {bad[0]!r} isn't a task id (T-3, T-3..T-7 or T-1,T-3)")
+    return task_ids(p, ",".join(words))
+
+
+def _show_section(b, name):
+    """T-5599: one section's body, named as the brief names it or by its short name ('Approach' for 'Approach (…)')."""
+    heads = [c._short_heading(h.strip()) for h, _ in b.sections]
+    if not any(c._short_heading(name) == h for h in heads):
+        raise UsageError(f"no section {name!r}; it has {', '.join(heads)}")
+    return b.section(name).strip()
+
+
+def _show_one(p, b, args):
+    """T-5599: one task's show, printed as it always was (the brief, --full, --story, --json); --section prints only
+    that section's body (with --json: its id, section and text)."""
+    if args.section:
+        text = _show_section(b, args.section)
+        if args.json:
+            return print(json.dumps({"id": b.id, "section": args.section, "text": text}, indent=2))
+        return print(text)
+    if getattr(args, "full", False):  # T-4924: the brief, then its story, in one call (also with --story)
+        from sampo import cost, recall
+        s = recall.story(p, b)
+        if args.json:
+            return out(args, dict(c.brief_detail(b), meta=b.meta, blockers=b.done_blockers(), story=s), None)
+        line = cost.cost_line(p, b)
+        story = c.as_loaded(recall.render_story(s), c.ns())  # the same text --story prints (T-2879)
+        return print(b.render() + (f"\n{line}\n" if line else "") + "\n" + story)
+    if args.story:  # T-0483
+        from sampo import recall
+        s = recall.story(p, b)
+        return out(args, s, recall.render_story(s))
+    if args.json:
+        return print(json.dumps(dict(c.brief_detail(b), meta=b.meta, blockers=b.done_blockers()), indent=2))
+    from sampo import cost
+    return print(b.render() + (f"\n{line}\n" if (line := cost.cost_line(p, b)) else ""), end="")  # T-1083
+
+
+def task_show(p, args):
+    """T-5599: `task show ID` prints as it always did. Several ids (T-1 T-3, T-1,T-3, T-3..T-7) each print under a
+    `# ID title` header, in order; a missing one is named on stderr and the rest still print (exit 1); --json is one
+    array. Nothing prints when a word isn't an id."""
+    if len(args.id) == 1 and not re.search(r"[.,]", args.id[0]):
+        return _show_one(p, need_brief(p, args.id[0]), args)
+    import contextlib
+    import io
+    shown, failed = [], []
+    for tid in _task_words(p, args.id, "show"):
+        buf = io.StringIO()
+        try:
+            b = need_brief(p, tid)
+            with contextlib.redirect_stdout(buf):
+                _show_one(p, b, args)
+        except (UsageError, c.PolicyError, c.LockTimeout, KeyError, ValueError, OSError) as e:  # one missing or
+            said = e.args[0] if isinstance(e, KeyError) and e.args else e  # unreadable brief fails that id, not all
+            print(f"sampo: task show {tid}: {said}", file=sys.stderr)
+            failed.append(tid)
+            continue
+        shown.append((b, buf.getvalue()))
+    if args.json:
+        out(args, [json.loads(text) for _, text in shown], None)
+    else:
+        for b, text in shown:
+            print(f"# {b.id} {b.title}\n{text.rstrip(chr(10))}\n")
+    return 1 if failed else 0
+
+
+def task_ls(p, args):
+    """T-5599: one line per task named (`task ls T-1 T-3..T-5`): id, status, type, tier, title, criteria and steps
+    met. A missing id is named on stderr and the rest still print (exit 1); --json is one array."""
+    rows, failed = [], []
+    for tid in _task_words(p, args.id, "ls"):
+        try:
+            b = need_brief(p, tid)
+        except (UsageError, c.PolicyError, c.LockTimeout, KeyError, ValueError, OSError) as e:
+            said = e.args[0] if isinstance(e, KeyError) and e.args else e
+            print(f"sampo: task ls {tid}: {said}", file=sys.stderr)
+            failed.append(tid)
+            continue
+        acc = b.acceptance()
+        rows.append(dict(c.brief_summary(b), criteria_met=sum(a.checked for a in acc), criteria_total=len(acc)))
+    lines = [f"{r['id']} {r['status']} {r['type'] or '-'} {r['tier'] or '-'} {r['title']}  "
+             f"criteria {r['criteria_met']}/{r['criteria_total']}  steps {r['steps_done']}/{r['steps_total']}"
+             for r in rows]
+    out(args, rows, "\n".join(lines) if lines else None)
     return 1 if failed else 0
 
 
@@ -9422,7 +9501,8 @@ def _build_parser(only=None):
         "follow": "list, settle (done, capture or drop with a why) the follow-ups captured on a task", "finding": "record one reviewer finding and if it held",
         "revert": "what undoing the task would touch, and the command that undoes it",
         "packet": "one redacted markdown handoff of the task", "new": "plan a task: its type, tier, criteria and steps",
-        "show": "print a task's brief", "card": "write a proved task's SVG title card",
+        "show": "print a task's brief (several ids, or one --section)", "ls": "one line per task named, several at once",
+        "card": "write a proved task's SVG title card",
         "receipt": "what a reviewer reads, with the before and after numbers",
         "set": "change a task's fields or a section", "step": "add a step, or mark one current or done",
         "ac": "add, check, edit, rm or list acceptance criteria", "evidence": "run a step's check and record it as evidence",
@@ -9500,12 +9580,15 @@ def _build_parser(only=None):
                                                          "gate skips its readings and options (not for hand-written plans)")
     t.add_argument("--focus", action="store_true", help="focus it right away (the plan gate still applies)")
     t.add_argument("--goal", metavar="ITEM", help="it builds item ITEM of the standing goal (sampo goal show)")
-    t = tadd("show")
-    t.add_argument("id")
+    t = tadd("show")  # T-5599: several ids at once (T-1 T-3, T-1,T-3, T-3..T-7)
+    t.add_argument("id", nargs="+", help="a task id, or several: T-1 T-3, T-1,T-3, T-3..T-7")
+    t.add_argument("--section", metavar="NAME", help="print only this section's body (e.g. Approach)")
     t.add_argument("--story", action="store_true", help="the ledger as chapters (plan, steps, evidence, reviews, "
                                                         "close) with their times")
     t.add_argument("--full", action="store_true", help="the brief, then its story (what --story prints), one call; "
                                                        "with --json, the brief's JSON plus a story key")
+    t = tadd("ls")  # T-5599: one line per task; bare `task ls` is still the queue (ALIASES)
+    t.add_argument("id", nargs="+", help="task ids: T-1 T-3, T-1,T-3, T-3..T-7")
     t = tadd("card")  # T-1541
     t.description = ("A proved task's title card: an SVG with its title hand-lettered, its type, size and day, and the "
                      "command that failed before the work and passed after (written by sampo task finish too).")
@@ -11980,6 +12063,8 @@ def _alias(argv):
     if argv[lead:lead + 1] and argv[lead] in RENAMES:
         return argv[:lead] + RENAMES[argv[lead]] + argv[lead + 1:], None
     for guess, real in ALIASES:
+        if guess == ("task", "ls") and any(_TASK_IDS.match(a) for a in argv[lead + 2:]):  # T-5599: `task ls T-1` lists
+            continue  # the tasks named; only a bare `task ls` (no id) is the queue
         if tuple(argv[lead:lead + len(guess)]) == guess:
             return argv[:lead] + real + argv[lead + len(guess):], " ".join(real)
     return argv, None
@@ -12027,6 +12112,16 @@ def _task_shape(parser, argv):
             return argv  # argparse says the id is required
         print(f"(task {act.id}, the active one)", file=sys.stderr)
         rest = [act.id] + rest
+    if sub in ("show", "ls"):  # T-5599: the ids come first, whatever options sit among them (one run for nargs="+")
+        ids_, opts, i = [], [], 0
+        while i < len(rest):
+            if rest[i] == "--section" and i + 1 < len(rest):
+                opts += rest[i:i + 2]
+                i += 2
+            else:
+                (opts if rest[i].startswith("-") else ids_).append(rest[i])
+                i += 1
+        rest = ids_ + opts
     import difflib
     if acts and len(rest) > 1 and ACT_SYNONYMS.get(rest[1]) in acts:  # T-2540: `step T-1 remove 4` is rm, not add
         rest[1] = ACT_SYNONYMS[rest[1]]
@@ -12047,7 +12142,7 @@ def _task_shape(parser, argv):
 # ponytail: a worker that unsets the variable gets past this; the judge and the CLI's own sandbox stay the outer walls.
 # T-1388 review: log appends ledger events (a forged check_run passes a gate); recall and map write with some flags.
 WORKER_READS = {"state", "next", "queue", "help", "outline", "gates", "why", "show", "glance"}
-WORKER_SUBREADS = {"task": ("task_cmd", {"show", "list"}), "lib": ("action", {"search", "show", "list", "suggest"}),
+WORKER_SUBREADS = {"task": ("task_cmd", {"show", "list", "ls"}), "lib": ("action", {"search", "show", "list", "suggest"}),
                    "timeline": ("out", {None}),  # printed only: --out would write past the run's own write guard
                    "playbooks": ("action", {"show", "route", "preview"}),  # T-1621: prints, but can rebuild fm
                    # map's map.json cache; route (T-1833) also writes the playbook index in state and one event; not blame (T-1622): git in a FOREMAN_PLAYBOOKS repo runs its filters
