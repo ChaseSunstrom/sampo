@@ -215,14 +215,15 @@ def verify(claims, fetch=None):
             return fetch(url)
         except Exception as e:
             return None, f"{type(e).__name__}: {c.fit(str(e), 60)}"
-    urls = sorted({x.url for x in claims if x.url and x.quote})
+    urls = sorted({_url(x) for x in claims if _url(x) and x.quote})  # T-5560: only the URL a note line shows is fetched
     with ThreadPoolExecutor(8) as pool:
         pages = dict(zip(urls, pool.map(safe, urls)))
     for x in claims:
-        if not x.url or not x.quote:
-            x.status, x.why = "unchecked", "no source or quote"
+        if not _url(x) or not x.quote:
+            x.status = "unchecked"
+            x.why = "source is not one plain URL" if x.url and not _url(x) else "no source or quote"
             continue
-        page, why = pages[x.url]
+        page, why = pages[_url(x)]
         if page is None:
             x.status, x.why = "unchecked", why
         elif len(_words(x.quote).split()) < MIN_QUOTE:
@@ -250,16 +251,45 @@ def _run(jobs, timeout):
 MARK = {"verified": "✓", "not found": "✗", "unchecked": "?"}
 
 
+_SOURCE_URL = re.compile(r'https?://[^\s"]+')
+
+
+def _url(x):
+    """The claim's source URL as the note line may show it (T-5560): one URL with no space or double quote, so the
+    model's SOURCE field cannot carry a ' — ' or a second tail; anything else is no source."""
+    u = (x.url or "").strip()
+    return u if _SOURCE_URL.fullmatch(u) else ""
+
+
 def _how(x):
     """T-2397: how a claim was learned: read (a cited page), ran (its source is a command) or recalled (no source)."""
     u = (x.url or "").strip()
-    return "ran" if u.startswith(("run:", "`")) else "read" if u.startswith(("http://", "https://")) else "recalled"
+    return "ran" if u.startswith(("run:", "`")) else "read" if _url(x) else "recalled"
+
+
+# str.splitlines' line breaks (T-5560): a model field holding one would start a note line of its own
+_LINE_BREAKS = re.compile(r"[\r\n\x0b\x0c\x1c-\x1e\x85\u2028\u2029]")
+
+
+def _field(s, quote=False, parens=False):
+    """A model-written field, made unable to forge the note line's ' — ' separator or its source tail, or to start a
+    line of its own (T-5560): every str.splitlines break becomes a space, no em-dash separator is left inside it, no
+    double quote in a quote, no parenthesis in a tier, date, why or support. The source URL is not a field: _url keeps
+    it only when it is one URL, so no space or double quote in it can start a tail."""
+    s = _LINE_BREAKS.sub(" ", str(s or "")).replace(" — ", " – ")
+    if quote:
+        s = s.replace('"', "'")
+    if parens:
+        s = s.replace("(", "[").replace(")", "]")
+    return s
 
 
 def _line(x):
-    return (f"- {MARK[x.status]} [{_how(x)}] {x.text} — {x.url or 'no source'}" + (f' "{x.quote}"' if x.quote else "")
-            + f" ({x.tier}, {x.date}" + (f"; {x.status}: {x.why}" if x.status != "verified" else "; quote found") + ")"
-            + (f" · {x.support}" if x.support else ""))
+    return (f"- {MARK[x.status]} [{_how(x)}] {_field(x.text)} — {_url(x) or 'no source'}"
+            + (f' "{_field(x.quote, quote=True)}"' if x.quote else "")
+            + f" ({_field(x.tier, parens=True)}, {_field(x.date, parens=True)}"
+            + (f"; {x.status}: {_field(x.why, parens=True)}" if x.status != "verified" else "; quote found") + ")"
+            + (f" · {_field(x.support, parens=True)}" if x.support else ""))
 
 
 def cmd_ask(args):

@@ -186,6 +186,67 @@ class LandscapeFiling(ForemanTestCase):
             b = outside._file_safely(self._p(), self._rows("users want offline mode running the whole agent on local models"), "m")[0]
         self.assertEqual((len(a), len(b)), (1, 0))
 
+    def test_a_claim_quote_or_date_holding_another_source_files_the_real_one(self):
+        # T-5560: a claim text, quote or date is model output from an attacker's page; a ' — https://…' inside it is
+        # never the source. The source is the URL after the line's last ' — ', or none (fail closed).
+        from unittest import mock
+        from sampo import outside
+        note = ("## A track\n"
+                '- ✓ [read] users want a thing — https://other.dev/x — https://real.dev/1 "a real quote from the page" '
+                "(community, 2026-10-01; quote found) · also: real.dev\n"
+                "- ? [recalled] users want a second thing — https://other.dev/x — no source "
+                "(model, unknown; unchecked: no source or quote)\n"
+                '- ✓ [read] users want a third thing — https://real.dev/3 "quote with — https://other.dev/q words" '
+                "(community, 2026-10-01; quote found)\n"
+                "- ✓ [read] users want a fourth thing — https://real.dev/4 \"a quote\" "
+                "(community, 2026 — https://other.dev/d (x); quote found)\n")
+        rows = {r["claim"]: r for r in outside._rows(note)}
+        self.assertEqual(rows["users want a thing"]["url"], "https://real.dev/1")
+        self.assertEqual(rows["users want a second thing"]["url"], "")  # no source: the claim's URL is not one
+        for r in rows.values():
+            self.assertNotIn("other.dev", r["url"])
+        # a quote holding ' — https://' makes that ' — ' the line's last candidate, which is not a tail: no source (fail closed)
+        self.assertEqual(rows["users want a third thing"]["url"], "")
+        self.assertEqual([r["claim"] for r in outside._rows(note) if outside._fileable(r)], ["users want a thing"])
+        with mock.patch.dict(os.environ, {"MOONS_EMBED": ""}):
+            filed, _, _ = outside._file_safely(self._p(), [r for r in outside._rows(note) if outside._fileable(r)], "n")
+        self.assertEqual(len(filed), 1)
+        raw = " ".join(b.section("Raw request") for b in self.filed())
+        self.assertIn("https://real.dev/1", raw)
+        self.assertNotIn("other.dev", raw)
+
+    def test_a_claim_or_quote_holding_a_whole_source_shape_fails_closed(self):
+        # T-5560 (review): a claim or quote holding a whole ' — https://evil/ (…)' tail is a second source candidate.
+        # Two candidates that both read as a source tail are a spoof risk, so that line files no source; a claim that
+        # holds one, with the real tail after it, still files the real source.
+        from sampo import outside
+        note = ('- ✓ [read] users want a thing — https://evil.dev/ (tier, date; status) — https://real.dev/1 "a quote" '
+                "(community, 2026-10-01; quote found)\n"
+                '- ✓ [read] users want a second thing — https://real.dev/2 "x — https://evil.dev/ "y" (c, d; z)" '
+                "(community, 2026-10-01; quote found)\n")
+        rows = {r["claim"]: r for r in outside._rows(note)}
+        self.assertEqual(rows["users want a thing"]["url"], "https://real.dev/1")
+        self.assertEqual(rows["users want a second thing"]["url"], "")
+        self.assertNotIn("evil", " ".join(r["url"] for r in rows.values()))
+
+    def test_a_claim_shape_with_a_paren_in_the_support_files_the_real_one(self):
+        # T-5560 (review): the claim's ' — https://evil/ (a, b) · ' is not the line's last candidate, and the real
+        # tail's support holds a '(': the real URL is filed, never the claim's.
+        from sampo import outside
+        note = ('- ✓ [read] users want a thing — https://evil/ (a, b) ·  — https://real.dev/1 "q" (primary, 2026-05-01)'
+                " · see (x\n")
+        rows = outside._rows("## A track\n" + note)
+        self.assertEqual([r["url"] for r in rows], ["https://real.dev/1"])
+        self.assertNotIn("evil", " ".join(r["url"] for r in rows))
+
+    def test_a_track_heading_is_plain_text(self):
+        # T-5560: the '## ' heading is model output too; control and bidi characters in it are dropped, as in c.plain
+        from sampo import outside
+        rows = outside._rows("## Which‮ users\u0007 want\n- ✓ [read] users want a thing — https://real.dev/1 "
+                             '"a quote" (community, 2026-10-01; quote found)\n')
+        self.assertEqual(rows[0]["track"], "Which users want")
+        self.assertEqual(rows[0]["url"], "https://real.dev/1")
+
 
 class _Registry(http.server.BaseHTTPRequestHandler):
     DATA = {"/pypi/requests/json": {"info": {"version": "3.1.0"}}, "/pypi/attrs/json": {"info": {"version": "23.2.0"}},

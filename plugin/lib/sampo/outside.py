@@ -25,27 +25,42 @@ LANDSCAPE_DAYS = 7  # T-3362: weekly, in Sampo's home project only (night.jobs)
 _NOTE = re.compile(r"^(?:harness-)?landscape-(\d{8})(?:-\d+)?$")
 
 
+# T-5560: the renderer's source tail, to the line end: URL, optional quote (no double quote inside), then (tier, date;
+# status) with no parenthesis inside, then an optional ' · support' that holds no other ' — http'. Group 1 is the URL.
+_TAIL = re.compile(r'(https?://[^\s"]+)(?:(?: "[^"]*")? \([^()"]*\)(?: · (?:(?! — https?://).)*)?)?\s*')
+
+
+def _source(text):
+    """The source of a research line (T-5560): the URL after the line's LAST ' — http', when the rest of the line is
+    exactly the renderer's tail: an optional quote, then (tier, date; status), then an optional support that holds no
+    other ' — http'; or nothing. Model output (claim, quote, date, support) can hold a ' — https://…' of its own, so a
+    URL before the last candidate, or a tail that does not fit the grammar, is never the source (fail closed)."""
+    starts = [m.start() for m in re.finditer(r"(?<= — )https?://", text)]
+    m = _TAIL.fullmatch(text, starts[-1]) if starts else None
+    return m.group(1) if m else ""
+
+
 def _rows(text):
     """[{item, claim, mark, url, track}] for the bullet and numbered lines of a note — fm research's or a hand-written
     one: item is the line with marks, bold and links stripped and cut at ' — ' (the claim, not its source); claim is
-    item less its [read] tag; mark is ✓, ✗, ? or ''; url the first http(s) source; track the '## ' heading above it.
-    Recall hits and an earlier diff section are left out."""
+    item less its [read] tag; mark is ✓, ✗, ? or ''; url the source (_source); track the '## ' heading above it, as
+    plain text. Recall hits and an earlier diff section are left out."""
     text = re.split(r"\n## (?:Since |First scan)", text or "", maxsplit=1)[0]
     text = re.sub(r"## (?:Already known|Possible conflicts).*?(?=\n## |\Z)", "", text, flags=re.S)
     text = re.sub(r"(?m)^(?:Against|Open):\n(?:[-*] .*\n?)*", "", text)  # review: claims, not what argues with them
     out, track = [], ""
     for line in text.splitlines():
         if line.startswith("## "):
-            track = line[3:].strip()
+            track = c.plain(line[3:].strip())
         m = re.match(r"^\s*(?:[-*]|\d+\.)\s+(?:([✓✗?])\s+)?(.+)$", line)
         if not m:
             continue
         t = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", m.group(2)).replace("**", "").split(" — ")[0].strip()
         if len(t) >= 12 and not t.startswith("("):
             item = c.fit(c.plain(t), 200)
-            url = re.search(r" — (https?://[^\s\"]+)", m.group(2))
+            url = _source(m.group(2))
             out.append({"item": item, "claim": re.sub(r"^\[(?:read|ran|recalled)\]\s*", "", item), "mark": m.group(1) or "",
-                        "url": c.fit(c.plain(url.group(1)), 200) if url else "", "track": track})
+                        "url": c.fit(c.plain(url), 200) if url else "", "track": track})
     return out
 
 
