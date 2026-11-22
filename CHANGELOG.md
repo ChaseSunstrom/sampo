@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- sampo lane recover takes an accepted, returned or reviewed lane the land parked for a conflict or red at once, not after 15 quiet minutes (T-5850).
 - sampo measure review-cost prints, per UTC day, the lanes reviewed, lenses run, review tokens and dollars from the review_cost events and the estimated saving against the five-lens default, with --json rows and no bound (T-5843).
 - sampo lane list shows each lane's stage times (built, reviewed, accepted, landed, closed) as the gap before each stage and a stages field in --json, derived on read from events the ledger already holds (T-5839).
 - The Agent/Task hook is now the one spawn chokepoint: it fills a missing model from the spawn table, denies a lookup that should go to the typed scout, logs a spawn event, and sampo-fast defers the calls this could change (T-5837).
