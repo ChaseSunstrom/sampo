@@ -40,6 +40,12 @@ class Snapshot(ForemanTestCase):
         self.assertEqual(set(pace["per_hour"]), {"1h", "6h", "24h"})
         json.dumps(pace)
 
+    def test_stats_carry_the_card_fill_kept_rate_and_eta_for_the_page(self):  # T-3105: the fill to 30,000 kept
+        fill = live.stats(self.p)["cards"]["fill"]
+        self.assertEqual((fill["kept"], fill["target"], fill["eta_hours"]), (0, 30000, None))
+        self.assertEqual(set(fill), {"kept", "target", "per_hour", "eta_hours"})
+        json.dumps(fill)
+
     def test_the_snapshot_never_waits_on_the_slow_stats_and_two_clients_compute_them_once(self):  # T-4071
         gate, calls = threading.Event(), []
 
@@ -356,6 +362,24 @@ class JobProgress(ForemanTestCase):  # T-3044: the loops the page shows write do
         self.assertEqual(len(seen), 3, "the keep bar is there each time the funnel hands over")
         self.assertEqual(len({x["t0"] for x in seen}), 1, "one rate over the whole run: an inner end doesn't restart it")
         self.assertEqual(inner, ["kept 0/2 · grow"] * 3, "review: the keep count shows while the inner bar runs too")
+        self.assertIsNone(self._prog())
+
+    def test_a_card_fill_keeps_its_own_bar_after_the_grow_inside_it_ends(self):  # T-3105: the fill's kept count on the page
+        from sampo import smallcards as sc
+        seen, inner = [], []
+
+        def grow(p, target=None, **kw):  # a round as the real one writes it, with the fill's bar already up
+            seen.append(self._prog())
+            c.progress(5, 5, "cards", "grow")
+            inner.append(self._prog()["note"])
+            c.progress_end()
+            return {"calls": 1, "added": 5, "kept": 0, "rejected": 0, "stopped": "target", "error": "",
+                    "models": {}, "total": 0, "reasons": {}}
+        with mock.patch.object(sc, "grow", grow):
+            r = sc._keep(self.p, 2)
+        self.assertEqual(r["stopped"], "stalled")
+        self.assertEqual([(x["done"], x["total"], x["unit"], x["note"]) for x in seen if x], [(0, 2, "cards", "kept")] * 3)
+        self.assertEqual(inner, ["kept 0/2 · grow"] * 3, "the kept count shows while the inner bar runs too")
         self.assertIsNone(self._prog())
 
 

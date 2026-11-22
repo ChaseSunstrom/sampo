@@ -508,7 +508,7 @@ def stats(p, wait=True):
         from sampo import moonscale, smallcards
         cov, st = smallcards.coverage(), moonscale.status(p)
         return {"cards": {"general": cov["total"], "ui": cov["ui"].get("total", 0), "ui_cells": cov["ui"].get("filled", 0),
-                          "grid_ui": cov["ui"].get("grid", 0)},
+                          "grid_ui": cov["ui"].get("grid", 0), "fill": smallcards.fill_pace()},  # T-3105: the fill to 30,000
                 "moons": {"candidates": st["total"], "stages": st["stages"], "pace": moonscale.pace(p)},
                 "spend": spend_today(), "bench": []}  # ponytail: the bench table is a model read away; the page shows none until a cheap one exists
     from sampo import louhi

@@ -4,6 +4,7 @@ with two workers, and coverage by cells. Every model call is mocked."""
 import collections
 import contextlib
 import io
+import itertools
 import json
 import os
 import re
@@ -306,6 +307,97 @@ def ui_card(**kw):
 
 def ui_cell(**kw):
     return {"component": "button", "platform": "react", "concern": "accessibility", "stage": "verify", "grid": "ui", **kw}
+
+
+_TITLES = itertools.count()
+
+
+def fresh_reply(n):  # T-3105: n cards whose titles no earlier reply of this run used (a repeat is a dup, not a card)
+    return "Cards:\n```json\n" + "\n".join(json.dumps(good(title=f"Card number {next(_TITLES)}")) for _ in range(n)) + "\n```\n"
+
+
+def unadmitted_reply(n):  # T-3105: cards with no check, which admit refuses: a round keeps nothing
+    bad = {k: v for k, v in good().items() if k != "check"}
+    return "Cards:\n```json\n" + "\n".join(json.dumps(dict(bad, title=f"Bad card {next(_TITLES)}")) for _ in range(n)) + "\n```\n"
+
+
+class KeepCards(_Cards):  # T-3105: grow --grid all --keep N rounds until N cards are kept across every grid
+    def grid_file(self):  # a two-by-two general grid, so every reply lands in a cell
+        path = os.path.join(self.tmp, "keep-grids.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"grids": [grid_entry("general", prompt="general", fields=[
+                ("kind", ["bugs", "docs"]), ("stack", ["python", "rust"]), ("stage", ["verify"]), ("surface", ["code"])])]}, f)
+        return path
+
+    def test_keep_rounds_grow_until_the_kept_cards_reach_keep(self):
+        with mock.patch.object(self.sc, "GRIDS_FILE", self.grid_file()), \
+                mock.patch.object(self.sc.ms, "_ask", side_effect=lambda *a, **k: (fresh_reply(3), "gpu-qwen9")):
+            r = self.sc._keep(self.p, 20, batch=3, workers=1)
+        self.assertEqual(r["stopped"], "keep")
+        self.assertEqual(r["total"], len(self.sc._grid("all")), "the count is the kept cards across the grids")
+        self.assertGreaterEqual(r["total"], 20)
+        self.assertEqual(r["rounds"], 2, "a round of ROUND cards is not enough for 20 at 3 a call")
+
+    def test_a_local_writer_answers_first_and_haiku_is_never_called_while_one_answers(self):
+        ms = self.sc.ms
+        with mock.patch.object(self.sc, "GRIDS_FILE", self.grid_file()), \
+                mock.patch.object(ms, "_locals", return_value=[{"name": "loc"}]), \
+                mock.patch.object(ms.models, "complete", side_effect=lambda *a, **k: {"text": fresh_reply(3)}), \
+                mock.patch.object(ms.ideas, "run_child") as run, mock.patch.object(ms.budget, "check"):
+            r = self.sc._keep(self.p, 3, batch=3, workers=1)
+        self.assertEqual((r["stopped"], list(r["models"])), ("keep", ["loc"]))
+        run.assert_not_called()
+
+    def test_a_busy_local_model_is_waited_out_and_asked_again(self):  # T-3096, for cards
+        ms, sleeps, calls = self.sc.ms, [], []
+
+        def ask(*a, **k):
+            calls.append(1)
+            if len(calls) == 1:
+                raise ms.LocalOnly("local-only: no local model answered")
+            return fresh_reply(3), "loc"
+        with mock.patch.object(self.sc, "GRIDS_FILE", self.grid_file()), mock.patch.object(self.sc, "_sleep", sleeps.append), \
+                mock.patch.object(ms, "_ask", side_effect=ask):
+            r = self.sc._keep(self.p, 3, batch=3, workers=1, local_only=True)
+        self.assertEqual((r["stopped"], sleeps, r["waited"]), ("keep", [30], 30))
+
+    def test_a_local_model_silent_through_every_backoff_stops_the_run_as_local(self):
+        ms, sleeps = self.sc.ms, []
+
+        def ask(*a, **k):
+            raise ms.LocalOnly("local-only: no local model answered")
+        with mock.patch.object(self.sc, "GRIDS_FILE", self.grid_file()), mock.patch.object(self.sc, "_sleep", sleeps.append), \
+                mock.patch.object(ms, "_ask", side_effect=ask):
+            r = self.sc._keep(self.p, 3, batch=3, workers=1, local_only=True)
+        self.assertEqual((r["stopped"], sleeps, r["waited"]), ("local", [30, 60, 120, 240], 450))
+
+    def test_three_rounds_that_keep_nothing_stop_as_stalled_and_each_round_is_capped(self):
+        with mock.patch.object(self.sc, "GRIDS_FILE", self.grid_file()), \
+                mock.patch.object(self.sc.ms, "_ask", side_effect=lambda *a, **k: (unadmitted_reply(3), "loc")):
+            r = self.sc._keep(self.p, 1000, batch=3, workers=1)
+        self.assertEqual((r["stopped"], r["rounds"], r["total"]), ("stalled", 3, 0))
+        self.assertLessEqual(r["calls"], 3 * self.sc.ROUND_CALLS, "a round that keeps nothing is capped, never endless")
+
+    def test_haiku_is_asked_only_inside_the_budget_and_never_for_a_sensitive_project(self):
+        from sampo import core as c
+        ms = self.sc.ms
+        c.write_meta(self.p, {**c.read_meta(self.p), "sensitive": True})
+        with mock.patch.object(self.sc, "GRIDS_FILE", self.grid_file()), mock.patch.object(ms, "_locals", return_value=[]), \
+                mock.patch.object(ms.ideas, "run_child", return_value=fresh_reply(3)) as run:
+            r = self.sc._keep(self.p, 3, batch=3, workers=1)
+        run.assert_not_called()
+        self.assertEqual(r["stopped"], "failed", "no local model and a sensitive project: nothing is sent")
+        c.write_meta(self.p, {**c.read_meta(self.p), "sensitive": False})
+        with mock.patch.object(self.sc, "GRIDS_FILE", self.grid_file()), mock.patch.object(ms, "_locals", return_value=[]), \
+                mock.patch.object(ms.budget, "check", side_effect=ms.budget.BudgetError("over today's cap")):
+            r = self.sc._keep(self.p, 3, batch=3, workers=1)
+        self.assertEqual(r["stopped"], "budget")
+
+    def test_the_cli_takes_grid_all_with_keep_and_refuses_a_negative_keep(self):
+        self.assertEqual(self.fm("playbooks", "small", "grow", "--grid", "all", "--keep", "0").returncode, 0)
+        r = self.fm("playbooks", "small", "grow", "--keep", "-1", check=False)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("--keep can't be negative", r.stdout + r.stderr)
 
 
 class UiGrid(_Cards):

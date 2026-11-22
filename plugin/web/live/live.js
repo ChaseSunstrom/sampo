@@ -1456,6 +1456,12 @@ function renderCounters(s, first) {
   setText($("c-pace"), num(pace.kept) == null ? "kept per hour: —"
     : fmt(rate) + " kept/hour · " + fmt(num(pace.kept)) + " of " + fmt(num(pace.target) || 10000) + " kept"
       + (fin.from ? " · 10,000 by " + (fin.from === fin.to ? str(fin.from) : str(fin.from) + " to " + str(fin.to)) : ""));
+  // T-3105: the card fill to 30,000 kept across every grid (smallcards.fill_pace on the server)
+  const fill = obj(cards.fill), fillKept = num(fill.kept), fillTarget = num(fill.target) || 30000;
+  const fillRate = num(fill.per_hour), fillEta = num(fill.eta_hours);
+  setText($("c-fill"), fillKept == null ? "fill: —"
+    : fmt(fillKept) + " of " + fmt(fillTarget) + " kept · " + (fillRate ? fmt(fillRate) + " kept/hour" : "no rate yet")
+      + " · " + (fillEta == null ? "ETA —" : fillKept >= fillTarget ? "filled" : fillEta < 48 ? "ETA " + fmt(Math.round(fillEta)) + " h" : "ETA " + fmt(Math.round(fillEta / 24)) + " days"));
   const stages = Object.entries(obj(moons.stages)).slice(0, 8).map(([k, v]) => {
     const o = obj(v), kept = num(o.kept) || 0, rej = num(o.rejected) || 0, wait = num(o.waiting) || 0;
     return {name: k, kept, rej, wait, total: kept + rej + wait};

@@ -9447,6 +9447,10 @@ def _build_parser(only=None):
                    "`small grids` lists them, from plugin/data/card-grids.json, T-3103); grow also takes all")
     s.add_argument("--source", help="small grids add GRID FIELD VALUE: why the value belongs (default: the proposal's own source)")
     s.add_argument("--writer", choices=("haiku", "sonnet", "local"), help="small grow: who writes the cards (default: the local model, then Haiku)")
+    s.add_argument("--keep", type=int, help="small grow --grid all: round until N cards are kept across the grids, the local "
+                   "writer first and a busy one waited on; three rounds that keep none stop it (T-3105)")
+    s.add_argument("--local-only", action="store_true", help="small grow: nothing is sent to a paid model; a local writer that does "
+                   "not answer stops the run (or, with --keep, is waited on and asked again) (T-3105)")
     s.add_argument("--briefs", help="eval: the brief set (default plugin/evals/playbooks/<stage>/<name>.json)")
     s.add_argument("--real", action="store_true", help="eval: ask a model (claude -p, budgeted) instead of reading "
                    "the playbook literally")

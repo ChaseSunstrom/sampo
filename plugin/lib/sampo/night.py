@@ -30,10 +30,10 @@ LAND_POLL_S = 30  # T-4278: how often the wait looks at the land's lock
 HEAVY = ("evolve", "bench", "exam", "sentinel")  # T-4278: a replayed session, exam arms or a bisect's test suites: by a
 # job's first word; such a job never starts while a land runs
 _LEASE = None  # T-0921: the open lock file of a running night
-NAMES = ("scout", "dream", "spar", "cold files", "guard cases", "steer checks", "compost", "consolidate", "sentinel", "moons grow", "moons funnel", "model bench", "long exam", "next request", "smoke", "pre-plan", "model lesion", "second session", "landscape", "research debt", "court", "evolve candidate", "queue", "draft", "kalevala rounds", "fits", "headroom")
+NAMES = ("scout", "dream", "spar", "cold files", "guard cases", "steer checks", "compost", "consolidate", "sentinel", "moons grow", "moons funnel", "cards grow", "model bench", "long exam", "next request", "smoke", "pre-plan", "model lesion", "second session", "landscape", "research debt", "court", "evolve candidate", "queue", "draft", "kalevala rounds", "fits", "headroom")
 
 
-GENERATORS = ("moons grow", "moons funnel", "headroom")  # T-3296: the bulk CPU users; they take the project lock only briefly per row; T-3328: headroom's git log and local-model calls, at idle too
+GENERATORS = ("moons grow", "moons funnel", "cards grow", "headroom")  # T-3296: the bulk CPU users; they take the project lock only briefly per row; T-3328: headroom's git log and local-model calls, at idle too
 
 
 def priority(name):
@@ -126,6 +126,10 @@ def jobs(p, warn=None):
                                    "--local-only"], 0.0))
     if "funnel" in ready:
         out.append(("moons funnel", ["moons", "funnel", "--max-calls", "400", "--local-only"], 0.0))
+    from sampo import smallcards
+    if not meta.get("sensitive") and moonscale._local(False) and smallcards.kept_count() < smallcards.KEEP:  # T-3105: free: cards
+        out.append(("cards grow", ["playbooks", "small", "grow", "--grid", "all", "--keep", str(smallcards.KEEP),
+                                   "--local-only"], 0.0))  # kept across the grids, a local writer only, up to 30,000
     from sampo import louhi
     if not meta.get("sensitive") and moonscale._local(False) and louhi.bench_due(p):  # T-3093: free: once a Rune generation
         out.append(("model bench", ["exam", "models", "run", "--night"], 0.0))  # T-3487: its own exam lock; it runs beside a grow

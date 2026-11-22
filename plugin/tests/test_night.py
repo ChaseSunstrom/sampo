@@ -499,6 +499,31 @@ class NightMoons(ForemanTestCase):  # T-2916: zero-dollar Moons jobs on the loca
                 mock.patch.object(self.ms, "fate", return_value={"C-1": {"stage": "kill", "verdict": "rejected"}}):
             self.assertEqual(self.names(), {}, "every row judged and the target met: nothing to do")
 
+    def test_the_card_grow_is_a_free_night_job_while_a_local_writer_answers_and_kept_cards_are_under_30000(self):  # T-3105
+        from sampo import night, smallcards
+
+        def cards():
+            return {n: (argv, usd) for n, argv, usd in night.jobs(self.p) if n == "cards grow"}
+        self.assertIn("cards grow", night.NAMES)
+        self.assertIn("cards grow", night.GENERATORS, "a generator: it runs at nice 19 beside the user's work")
+        with mock.patch.object(self.ms, "_local", return_value={"name": "jarvis"}), \
+                mock.patch.object(smallcards, "kept_count", return_value=29999):
+            argv, usd = cards()["cards grow"]
+            self.assertEqual(argv[:3], ["playbooks", "small", "grow"])
+            self.assertEqual(argv[argv.index("--grid") + 1], "all")
+            self.assertEqual(argv[argv.index("--keep") + 1], "30000")
+            self.assertIn("--local-only", argv)
+            self.assertEqual(usd, 0.0)
+            c.write_meta(self.p, {**c.read_meta(self.p), "sensitive": True})
+            self.assertEqual(cards(), {}, "a sensitive project is not grown by night")
+            c.write_meta(self.p, {**c.read_meta(self.p), "sensitive": False})
+        with mock.patch.object(self.ms, "_local", return_value={"name": "jarvis"}), \
+                mock.patch.object(smallcards, "kept_count", return_value=30000):
+            self.assertEqual(cards(), {}, "the fill is at 30,000: nothing to grow")
+        with mock.patch.object(self.ms, "_local", return_value=None), \
+                mock.patch.object(smallcards, "kept_count", return_value=5):
+            self.assertEqual(cards(), {}, "no local writer answers")
+
     def test_the_model_bench_is_a_free_night_job_once_per_rune_generation(self):  # T-3093
         from sampo import louhi, night, rune
         names = lambda: [n for n, _, _ in night.jobs(self.p)]  # noqa: E731
