@@ -224,8 +224,66 @@ class LouhiModels(ForemanTestCase):
         got = [(j[1]["base_url"], j[1]["model"]) for j in louhi._bench_order(jobs, {r: "qwen3.8-27b"})]
         self.assertEqual(got, [(o, "d3"), (o, "kev"), (r, "qwen3.8-27b"), (r, "aaa"), (r, "big-35b")])
 
+    def _remote_cast(self):
+        mk = lambda name, kind, own=False: {  # noqa: E731
+            "name": name, "kind": kind, "base_url": "https://models.example.test/v1", "model": name, "key_env": "REMOTE_KEY",
+            "context": 8192, "tools": False, **({"own": True} if own else {})}
+        return (self.srv.profile("near", "systemone"), mk("far", "systemone"), mk("mine", "systemone", True),
+                self.srv.profile("near-emb", "openai"), mk("far-emb", "openai"), mk("far-gen", "systemone"))
+
+    def _spy(self):
+        """Every profile name the bench asks (decision, embedding, generation, retrieval); fake answers, no network."""
+        from unittest import mock
+        asked = []
+        ans = {"choice": "FIX", "probability": 0.9}
+        self.enterContext(mock.patch.object(models, "systemone", side_effect=lambda pr, *a, **k: asked.append(pr["name"]) or ans))
+        self.enterContext(mock.patch.object(models, "embed", side_effect=lambda pr, xs, **k: asked.append(pr["name"]) or [[1.0]] * len(xs)))
+        self.enterContext(mock.patch.object(louhi, "bench_generation", side_effect=lambda p, gens, *a, **k: asked.extend(
+            g["name"] for g in gens) or []))
+        return asked
+
+    def test_the_night_bench_asks_only_loopback_or_own_profiles_and_logs_a_skipped_row_for_each_other(self):  # T-5376
+        near, far, mine, near_e, far_e, far_g = self._remote_cast()
+        asked = self._spy()
+        res = louhi.bench_night(self.p, decision=[near, far, mine], embedders=[near_e, far_e], generators=[far_g, mine])
+        for bad in ("far", "far-emb", "far-gen"):
+            self.assertNotIn(bad, asked)
+        for good in ("near", "mine", "near-emb"):
+            self.assertIn(good, asked)
+        skipped = {r["backend"]: r for r in res["rows"] if r["arm"] == "skipped"}
+        self.assertEqual(set(skipped), {"far", "far-emb", "far-gen"})
+        self.assertTrue(all("loopback or own" in r["why"] and r["use"] == "*" for r in skipped.values()))
+        self.assertEqual({r["backend"] for r in self.rows() if r["arm"] == "skipped"}, {"far", "far-emb", "far-gen"})
+        self.assertNotIn("skipped", res)  # a bench that ran is no skipped run: its last good rows are replaced
+
+    def test_the_night_bench_reads_models_json_and_skips_its_remote_profile(self):  # T-5376
+        from unittest import mock
+        far = self._remote_cast()[1]
+        asked = self._spy()
+        with mock.patch.object(models, "configured", return_value=(None, {"far": far})), mock.patch.object(
+                models, "systemone_profiles", return_value=[]), mock.patch.object(models, "embedding_profiles", return_value=[]):
+            louhi.bench_night(self.p)
+        self.assertEqual(asked, [])
+        self.assertIn("far", [r["backend"] for r in self.rows() if r["arm"] == "skipped"])
+
+    def test_a_manual_bench_still_asks_a_remote_profile_and_a_skipped_row_leaves_the_others_fresh(self):  # T-5376
+        far = self._remote_cast()[1]
+        asked = self._spy()
+        louhi.bench_models(self.p, decision=[far], embedders=[])
+        self.assertIn("far", asked)
+        self.assertFalse([r for r in self.rows() if r["arm"] == "skipped"])
+        rows = [{"arm": "decision", "use": "intake-type", "backend": "near", "run": "m1", "n": 3, "errors": 0, "accuracy": 1.0, "gen": 1},
+                {"arm": "skipped", "use": "*", "backend": "far", "run": "m2", "why": "not local", "gen": 1}]
+        view = louhi.models_view(rows)
+        self.assertIsNone(view["uses"]["intake-type"]["backends"][0]["stale_since"])
+        self.assertEqual(view["skips"], [], "a named profile's skip is no skipped run")
+        rows.insert(1, {"arm": "decision", "use": "intake-type", "backend": "far", "run": "m0", "n": 3, "errors": 0, "accuracy": 1.0, "gen": 0})
+        by = {b["backend"]: b for b in louhi.models_view(rows)["uses"]["intake-type"]["backends"]}
+        self.assertEqual(by["far"]["stale_since"], "gen 1", "the skipped profile's own last good row goes stale")
+        self.assertIsNone(by["near"]["stale_since"])
+
     def test_a_failing_backend_counts_errors_and_a_second_run_appends_a_new_run(self):
-        dead = {"name": "gone", "kind": "systemone", "base_url": "http://127.0.0.1:1/v1", "model": "gone", "key_env": None}
+        dead ={"name": "gone", "kind": "systemone", "base_url": "http://127.0.0.1:1/v1", "model": "gone", "key_env": None}
         louhi.bench_models(self.p, decision=[dead], embedders=[])
         r = {(x["backend"], x["use"]): x for x in self.rows()}[("gone", "intake-type")]
         self.assertEqual((r["n"], r["errors"], r["accuracy"]), (0, len(self.held), None))

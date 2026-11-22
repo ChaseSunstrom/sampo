@@ -1237,15 +1237,30 @@ def _trained_on(p, prof):
     return f"{name} trained on this project's tasks (the lake read them): scored here it would be tested on its own training data"
 
 
+def _bench_allowed(prof, local_only):
+    """T-5376: whether a bench may ask `prof` (task text, and its key, go there): always, unless `local_only` (the night
+    rerun, nobody watching), which asks a loopback profile or one the user owns (own=True), never another host."""
+    from sampo import models
+    return not local_only or bool(prof.get("own")) or models.profile_local(prof)
+
+
+def _bench_split(profs, local_only):
+    """(profiles a bench may ask, one skipped row's worth of {name, why} per profile it may not)."""
+    keep = [x for x in profs if _bench_allowed(x, local_only)]
+    return keep, [{"name": x.get("name"), "why": "not a loopback or own endpoint: the night bench sends no task text there"}
+                  for x in profs if x not in keep]
+
+
 def bench_models(p, decision=None, embedders=None, cap=BENCH_CAP, serving=None, generators=(), k=GEN_K, grow_fn=None,
-                 funnel_fn=None, smith_fn=None, deadline=None):
+                 funnel_fn=None, smith_fn=None, deadline=None, local_only=False):
     """T-2887: the decision arm (intake type and tier, from the raw request of every held-out closed task up to `cap`,
     each choice with its description, through each systemone backend) and the embedding arm (title to brief recall),
     one row per backend and use appended to research/models/bench.jsonl, beside two baselines per use: 'majority' (the
     train split's most common class) and 'orchestrator' (the intake call Sampo's own path made, where a shadow row
     exists: not a no-model path). Held out by a hash of the task id, so a prompt never carries a label. T-2894: with
     `generators`, the generation arm (bench_generation). Backends run grouped by base_url, one model at a time (see
-    _bench_order); a sensitive project asks loopback backends only. Returns {run, rows}."""
+    _bench_order); a sensitive project asks loopback backends only. T-5376: `local_only` (bench_night's) asks loopback or
+    own=True profiles only, in every arm; each other one is never called and gets one 'skipped' row naming it. Returns {run, rows}."""
     from sampo import models
     try:
         conf = [x for x in models.configured()[1].values() if x["kind"] == "systemone"]
@@ -1254,6 +1269,9 @@ def bench_models(p, decision=None, embedders=None, cap=BENCH_CAP, serving=None, 
     decision = list(conf) + models.systemone_profiles() if decision is None else list(decision)
     embedders = models.embedding_profiles() if embedders is None else list(embedders)
     sensitive = bool(c.read_meta(p).get("sensitive"))
+    decision, no_d = _bench_split(decision, local_only)  # before _serving: nothing is probed on a host the bench won't ask
+    embedders, no_e = _bench_split(embedders, local_only)
+    generators, no_g = _bench_split(list(generators), local_only)
     jobs = [("decision", x) for x in decision] + [("embedding", x) for x in embedders]
     data, run, rows = _bench_data(p, cap, frozen_ids(p)), time.strftime("m%Y%m%d-%H%M%S") + f"{time.time_ns() // 1_000_000 % 1000:03d}", []
     stamp = {"run": run, "at": c.now(), "gen": current_gen(p)}
@@ -1263,6 +1281,8 @@ def bench_models(p, decision=None, embedders=None, cap=BENCH_CAP, serving=None, 
     def put(r):  # T-5377: a row is on disk as soon as it is made, so a kill or a cut keeps what finished
         rows.append(r)
         c.append_line(path, json.dumps(r) + "\n")
+    for x in no_d + no_e + no_g:  # T-5376: a profile the local-only bench won't ask is a named row, never a call
+        put({**stamp, "arm": "skipped", "use": "*", "backend": x["name"], "why": x["why"]})
     for use in BENCH_USES:
         got, held, train = data[use]
         top = max(sorted(set(train)), key=train.count) if train else None
@@ -1712,6 +1732,13 @@ def models_view(rows, frozen=None, p=None):
     for r in rows:
         if not isinstance(r, dict):
             continue
+        if r.get("arm") == "skipped" and r.get("backend") not in (None, "*"):
+            # T-5376: one profile the night bench left out (a remote one), not a run that didn't happen: it only
+            # marks that profile's own backend stale, and is no skipped run
+            for (_u, bk), s in state.items():
+                if bk == r["backend"]:
+                    s["miss"] = s["miss"] or r
+            continue
         if r.get("arm") == "skipped":
             skips.append(r)
             named = r.get("cut") if isinstance(r.get("cut"), list) else None
@@ -1863,12 +1890,14 @@ def bench_night(p, limit=None, **kw):
     down or hung backend is already an error row, which never replaces them. T-5377: a wall-clock deadline (`limit`
     seconds, BENCH_DEADLINE by default, under the night job's own timeout) cuts the run: what finished stays, and a
     skipped row names the backends not begun; the exit is clean, so the night's breaker never counts a cut as a failure.
-    Returns bench_models' result (with `cut`), or {skipped, rows}."""
+    T-5376: it asks loopback or own=True profiles only (bench_models' local_only); every other one is a named 'skipped'
+    row, never called. Returns bench_models' result (with `cut`), or {skipped, rows}."""
     gen = current_gen(p)
     try:
         with _exam_lock(p):
             freeze_set(p)
-            res = bench_models(p, deadline=time.monotonic() + (BENCH_DEADLINE if limit is None else limit), **kw)
+            res = bench_models(p, deadline=time.monotonic() + (BENCH_DEADLINE if limit is None else limit),
+                               **{**kw, "local_only": True})  # T-5376: nobody watches: no task text leaves the box or the user's own servers
     except ExamBusy as e:
         row = {"run": time.strftime("m%Y%m%d-%H%M%S") + f"{time.time_ns() // 1_000_000 % 1000:03d}", "at": c.now(),
                "arm": "skipped", "use": "*", "backend": "*", "why": c.fit(str(e), 160), "gen": gen}
