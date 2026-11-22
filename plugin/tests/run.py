@@ -78,6 +78,7 @@ SLOT_ENV = "SAMPO_SLOT"  # T-3252: set in a class's children, so a run.py inside
 OPERATOR_SWITCHES.add("LANE_PREVIEW_BUDGET_S")  # T-3268: the lane list preview's time budget; a test sets its own
 OPERATOR_SWITCHES.add("LAND_NICE")  # T-5527: the nice level a land or train lowers itself to; a test sets its own
 OPERATOR_SWITCHES.add("NO_JOIN")  # T-4267: a run's own switch, never a test's
+OPERATOR_SWITCHES.add("SPAWN_TABLE")  # T-5835: =off turns the spawn table's fill and lookup refusal off; a test sets its own
 OPERATOR_SWITCHES.add("LANE_PILOT")  # T-5708: =off stops the detached lane pilots; a test of the pilot sets its own
 OPERATOR_SWITCHES.add("PROCESS_TIER")  # T-5713: =off gives today's S, M and L tiers; a test that needs it sets it itself
 OPERATOR_SWITCHES.add("CARD_ORIGIN")  # T-5613: a bench arm names its calls "bench"; never a test's origin, a test sets its own
