@@ -358,6 +358,10 @@ def ns_names(name):
 # and tests read it too, so a new editing agent is added here and nowhere else.
 EDITING_AGENTS = ("fm-builder", "fm-fixer", "fm-resolver")
 EDITING_AGENT_NAMES = tuple(n for a in EDITING_AGENTS for n in ns_names(a))
+# T-5984: the agents whose SubagentStop report lines are stored as the task's Close fields: the editing agents (T-5681,
+# T-5854: a fixer's and a resolver's too) and the two untyped launches a lead still makes. Read by hooks._close_fields and
+# by both close-field tests, so a source and its tests cannot hold opposite rules (T-5774 narrowed it, T-5854 widened its test).
+CLOSE_FIELD_AGENTS = (*EDITING_AGENTS, "general-purpose", "claude")
 ISOLATED_AGENT_NAMES = tuple(n for a in ("fm-fixer", "fm-resolver") for n in ns_names(a))  # launched with isolation "worktree"
 
 

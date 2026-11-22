@@ -8347,7 +8347,7 @@ def _close_fields(pl):
     fields already recorded (a note in the Log instead): a scout echoing a README can't write them."""
     from sampo import lanes as slanes
     who = str(pl.get("agent_type") or "")
-    if not re.fullmatch(r"(?:[\w-]+:)?(?:fm-builder|general-purpose|claude)", who):  # T-5774: not the fixer or the resolver
+    if not re.fullmatch(rf"(?:[\w-]+:)?(?:{'|'.join(c.CLOSE_FIELD_AGENTS)})", who):  # T-5984: core's one list, the tests read it too
         return
     got = slanes.close_fields(pl.get("last_assistant_message"), tail=True)
     if not got:  # T-5963: a message of a few lines; its close lines are trailers on the lane's tip commit

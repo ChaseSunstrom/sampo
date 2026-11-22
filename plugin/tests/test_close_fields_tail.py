@@ -12,6 +12,7 @@ import subprocess
 
 from test_lane_land import OLD, LandCase
 
+from sampo import core as c
 from sampo import lanes
 
 BLOCK = ("CHANGELOG: Does a thing (T-0007).\nTITLE: Does a thing (T-0007)\nLESSON: a rule it taught.\n"
@@ -90,11 +91,19 @@ class StoredAtTheStop(LandCase):
         self.assertIn("LENSES: cost: one read; error: fails closed", fields)
         self.assertIn(f"CHANGELOG: Does a thing ({tid}).", fields)
 
-    def test_a_fixer_or_resolver_report_is_not_stored_as_a_builders(self):  # T-5774 narrowed T-5681's editing set
-        for n, agent in ((1, "sampo:fm-fixer"), (2, "sampo:fm-resolver")):
+    def test_a_fixer_or_resolver_report_is_stored_for_its_lane(self):  # T-5681, T-5854; T-5984 (T-5774 had narrowed it)
+        for n, agent in enumerate((a for a in c.CLOSE_FIELD_AGENTS if a in ("fm-fixer", "fm-resolver")), start=1):
             tid = self.lane(n, f"f{n}.txt")
             block = BLOCK.replace("T-0007", tid)
-            self.hook("SubagentStop", {"agent_type": agent, "agent_id": f"a1b2c3d{n}",
+            self.hook("SubagentStop", {"agent_type": f"sampo:{agent}", "agent_id": f"a1b2c3d{n}",
+                                       "last_assistant_message": f"Done.\n\n{block}\nNoticed: none\n"})
+            self.assertIn(f"CHANGELOG: Does a thing ({tid}).", self.brief(tid).section("Close fields"), agent)
+
+    def test_an_agent_outside_the_close_field_list_stores_nothing(self):  # T-5984
+        tid = self.lane(1, "a.txt")
+        block = BLOCK.replace("T-0007", tid)
+        for agent in ("sampo:fm-scout", "sampo:fm-reviewer", "Explore"):
+            self.hook("SubagentStop", {"agent_type": agent, "agent_id": "a1b2c3d9",
                                        "last_assistant_message": f"Done.\n\n{block}\nNoticed: none\n"})
             self.assertEqual(self.brief(tid).section("Close fields").strip(), "", agent)
 

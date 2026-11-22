@@ -139,11 +139,14 @@ class CloseFields(LandCase):
         self.assertIn("close fields kept", self.brief(tid).section("Log"))
 
     def test_every_editing_agents_trailing_lines_are_recorded_for_an_open_lane_with_commits(self):
-        """T-5854: the list follows core.EDITING_AGENTS (fm-fixer and fm-resolver edit since T-5681), one lane each."""
+        """T-5854: the list follows core.EDITING_AGENTS (fm-fixer and fm-resolver edit since T-5681), one lane each.
+        T-5984: and core.CLOSE_FIELD_AGENTS, the list the hook reads, holds every one of them."""
+        self.assertTrue(set(c.EDITING_AGENTS) <= set(c.CLOSE_FIELD_AGENTS))
         for n, name in enumerate(c.EDITING_AGENTS, start=1):
             tid = self.lane(n, f"edit{n}.txt")
             for agent in c.ns_names(name):
-                self.assertIn(f"CHANGELOG: Lane work lands with one gate run ({tid}).", self.stop(tid, report(tid), agent), agent)
+                got = self.stop(tid, report(tid), agent)
+                self.assertIn(f"CHANGELOG: Lane work lands with one gate run ({tid}).", got, agent)
                 self.fm("task", "set", tid, "--section", "Close fields", "--text", "")  # the next spelling records afresh
                 self.assertEqual(self.brief(tid).section("Close fields").strip(), "", "cleared, so the next stop is a fresh record")
 

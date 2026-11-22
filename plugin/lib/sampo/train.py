@@ -4480,12 +4480,12 @@ def _land_trains(p, main, batch, owed, closer=None):
     carry = _restart_carry(p)  # T-5023: a restarted land's queue: its lanes are promoted only if they were before
     first_taken = set()  # T-4013: every --first id this land took (`asked` is the ship request's flag, not this)
     retried, slow_retried = 0, False  # T-5793: the train's refusals by a close that held trunk, in a row; one after a long wait
-    mine, shelved, said = set(), [], None  # T-5793: the lanes this land merged; the leftovers a stop left; the train line said
+    trained, shelved, said = set(), [], None  # T-5793: the lanes this land merged (not `mine`: the check-start set above); the leftovers a stop left; the train line said
 
     def halt():
         """T-5793: the land stops: before the train's hold ends (no new close starts in the gap), only the lanes this land
         merged close on (the running batch finishes); the leftovers wait for the next land and are named."""
-        shelved[:] = closer.trim(mine)
+        shelved[:] = closer.trim(trained)
     while True:
         ensure_pm()  # T-5791: once per train and per idle wait: the safety net behind the landing
         release_waiting()
@@ -4593,7 +4593,7 @@ def _land_trains(p, main, batch, owed, closer=None):
         finally:
             closer.hold(False)
         retried, slow_retried = 0, False
-        mine.update(got["merged"])
+        trained.update(got["merged"])
         note_park(got["left_out"])  # T-4252: before the next train starts, not in the summary
         if got.get("kept"):  # T-4007: the main checkout's local changes the fast-forward set aside
             print(f"sampo lane land: {got['kept']}", file=sys.stderr, flush=True)
