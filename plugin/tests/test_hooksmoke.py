@@ -8,11 +8,22 @@ import time
 import unittest
 from unittest import mock
 
-from helpers import PLUGIN, SampoTestCase
+from helpers import PLUGIN, SampoTestCase, cpu_contention
 
 from sampo import hooksmoke
 
 BUDGET_S = 5
+
+
+def budget():
+    """The wall-clock budget: BUDGET_S on an idle box, scaled by helpers.cpu_contention on a crowded one."""
+    return BUDGET_S * cpu_contention()
+
+
+def tree_stamp(path):
+    """(path, mtime) of every entry under path, so a write deep in a folder that already exists shows as a change."""
+    return sorted((os.path.relpath(os.path.join(d, n), path), os.lstat(os.path.join(d, n)).st_mtime_ns)
+                  for d, dirs, files in os.walk(path) for n in dirs + files)
 
 
 def make_tree(root, entry=None, core=None):
@@ -45,7 +56,7 @@ class HookSmoke(SampoTestCase):
         t0 = time.monotonic()
         ok, why = hooksmoke.run(PLUGIN)
         self.assertEqual((ok, why), (True, ""))
-        self.assertLess(time.monotonic() - t0, BUDGET_S)
+        self.assertLess(time.monotonic() - t0, budget())
 
     def test_default_is_the_running_tree(self):
         self.assertEqual(hooksmoke.run(), (True, ""))
@@ -56,7 +67,7 @@ class HookSmoke(SampoTestCase):
         ok, why = hooksmoke.run(plugin)
         self.assertFalse(ok)
         self.assertIn("exit", why)
-        self.assertLess(time.monotonic() - t0, BUDGET_S)
+        self.assertLess(time.monotonic() - t0, budget())
 
     def test_broken_lib_is_named(self):
         plugin = make_tree(self.tmp, core="raise RuntimeError('smoke: a broken lib')\n")
@@ -64,7 +75,7 @@ class HookSmoke(SampoTestCase):
         ok, why = hooksmoke.run(plugin)
         self.assertFalse(ok, why)
         self.assertIn("allow case", why)  # SessionStart fails open (exit 0); the guard's fail-closed refusal of `ls` shows it
-        self.assertLess(time.monotonic() - t0, BUDGET_S)
+        self.assertLess(time.monotonic() - t0, budget())
 
     def test_broken_working_copy_in_a_git_checkout_still_fails(self):
         import subprocess
@@ -112,7 +123,7 @@ class HookSmoke(SampoTestCase):
             ok, why = hooksmoke.run(plugin)
         self.assertFalse(ok)
         self.assertIn("timed out", why)
-        self.assertLess(time.monotonic() - t0, BUDGET_S)
+        self.assertLess(time.monotonic() - t0, budget())
 
     def test_missing_entry_is_a_result_not_a_raise(self):
         ok, why = hooksmoke.run(os.path.join(self.tmp, "nowhere"))
@@ -120,9 +131,23 @@ class HookSmoke(SampoTestCase):
         self.assertIn("hooks/hook", why)
 
     def test_the_callers_state_is_untouched(self):
-        before = sorted(os.listdir(self.home))
+        os.makedirs(os.path.join(self.home, "state", "logs"))  # an existing folder: a write inside it must show
+        before = tree_stamp(self.home)
         hooksmoke.run(PLUGIN)
-        self.assertEqual(sorted(os.listdir(self.home)), before)
+        self.assertEqual(tree_stamp(self.home), before)
+
+    def test_the_state_check_sees_a_write_deep_in_a_folder(self):
+        os.makedirs(os.path.join(self.home, "state", "logs"))
+        before = tree_stamp(self.home)
+        with open(os.path.join(self.home, "state", "logs", "hooks.log"), "w", encoding="utf-8") as f:
+            f.write("x\n")
+        self.assertNotEqual(tree_stamp(self.home), before)
+
+    def test_budget_grows_on_a_crowded_box(self):
+        with mock.patch("os.getloadavg", return_value=(0.5, 0.5, 0.5)), mock.patch("os.cpu_count", return_value=16):
+            self.assertEqual(budget(), BUDGET_S)
+        with mock.patch("os.getloadavg", return_value=(40.0, 40.0, 40.0)), mock.patch("os.cpu_count", return_value=16):
+            self.assertGreater(budget(), BUDGET_S)
 
     def test_scratch_is_removed(self):
         mine = tempfile.gettempdir()
