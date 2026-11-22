@@ -105,6 +105,47 @@ class StoredAtTheStop(LandCase):
         self.assertEqual(self.stop(tid, "No close lines here at all.\n")[0], "")
 
 
+class FromTheReportFile(LandCase):
+    """T-5963: Claude Code refuses a subagent's Write to a file named report.md (and summary/findings/analysis), so the
+    full report goes to .fm-scratch/report.txt; a short message with no close lines takes them from that file."""
+
+    def stop(self, tid, msg, text, cwd=None, agent="sampo:fm-builder"):
+        lane = os.path.join(self.tmp, "lane1")
+        os.makedirs(os.path.join(lane, ".fm-scratch"), exist_ok=True)
+        if text is not None:
+            with open(os.path.join(lane, ".fm-scratch", "report.txt"), "w") as fh:
+                fh.write(text)
+        self.hook("SubagentStop", {"agent_type": agent, "agent_id": "a1b2c3d4", "last_assistant_message": msg,
+                                   "cwd": cwd or lane})
+        return self.brief(tid).section("Close fields").strip()
+
+    def test_a_short_message_takes_its_close_lines_from_the_lane_report_file(self):
+        tid = self.lane(1, "a.txt")
+        fields = self.stop(tid, "branch b, sha abc, all criteria met; full report in .fm-scratch/report.txt\n",
+                           "Everything.\n\n" + BLOCK.replace("T-0007", tid) + "\nNoticed: none\n")
+        self.assertIn(f"CHANGELOG: Does a thing ({tid}).", fields)
+        self.assertIn("LESSON: a rule it taught.", fields)
+
+    def test_close_lines_in_the_message_win_over_the_file(self):
+        tid = self.lane(1, "a.txt")
+        other = BLOCK.replace("T-0007", tid).replace("a rule it taught", "the file's lesson")
+        fields = self.stop(tid, "Done.\n\n" + BLOCK.replace("T-0007", tid), other)
+        self.assertIn("LESSON: a rule it taught.", fields)
+
+    def test_a_file_outside_the_lane_or_for_another_agent_or_symlinked_is_not_read(self):
+        tid = self.lane(1, "a.txt")
+        block = BLOCK.replace("T-0007", tid)
+        self.assertEqual(self.stop(tid, "Done.\n", block, agent="sampo:fm-scout"), "", "a scout's file")
+        self.assertEqual(self.stop(tid, "Done.\n", block, cwd=self.repo), "", "the main checkout's cwd is not the lane")
+        lane = os.path.join(self.tmp, "lane1", ".fm-scratch")
+        real = os.path.join(self.tmp, "elsewhere.txt")
+        with open(real, "w") as fh:
+            fh.write(block)
+        os.replace(os.path.join(lane, "report.txt"), os.path.join(self.tmp, "gone.txt"))
+        os.symlink(real, os.path.join(lane, "report.txt"))
+        self.assertEqual(self.stop(tid, "Done.\n", None), "", "a symlink is not followed")
+
+
 class LandSaysWhy(LandCase):
     def message(self, tid):
         self.audited(tid)

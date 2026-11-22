@@ -37,10 +37,21 @@ class ReportCap(unittest.TestCase):
                 self.assertNotIn("400 words", body, "the old word cap is replaced, not kept beside the new one")
 
     def test_builder_and_reproducer_write_the_rest_to_the_scratch_report(self):
+        # T-5963: the message is at most 6 lines; the rest is in a file the message names. Not report.md: Claude Code
+        # refuses a subagent's Write to report/summary/findings/analysis .md ("return findings as text"), so builders
+        # returned 2-4k characters instead; a .txt name is written.
         for name in WRITES_THE_REST:
             with self.subTest(agent=name):
-                report = _report(_body(os.path.join(AGENTS, f"fm-{name}.md")))
-                self.assertIn(".fm-scratch/report.md", report, "the rest of the report goes to a file the report names")
+                body = _body(os.path.join(AGENTS, f"fm-{name}.md"))
+                report = _report(body)
+                self.assertIn(".fm-scratch/report.txt", report, "the rest of the report goes to a file the report names")
+                self.assertRegex(report, r"(?:≤|at most) 6 lines", "the message is capped at 6 lines")
+                self.assertNotIn(".fm-scratch/report.md", body, "that name is refused by Claude Code itself")
+
+    def test_the_builder_names_the_file_in_its_rules_and_the_close_reads_it(self):
+        body = _body(os.path.join(AGENTS, "fm-builder.md"))
+        self.assertIn(".fm-scratch/report.txt", body.split("\n\nReport in")[0], "the rules say where the report goes")
+        self.assertIn("the close reads", body, "the close lines may live in that file")
 
     def test_the_builder_report_paragraph_still_splits_the_contract(self):
         # lanes.contract and the contract tests cut the rules at "\n\nReport in": the cap line must keep that opening

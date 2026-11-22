@@ -8264,6 +8264,28 @@ def _mark_builder(pl, returned):
         log_error("builder mark", _tb())
 
 
+REPORT_FILE = os.path.join(".fm-scratch", "report.txt")  # T-5963: not report.md, which Claude Code refuses a subagent's Write to
+REPORT_FILE_CAP = 65536  # the most of it read: a report's close block is its end
+
+
+def _report_file_fields(pl):
+    """T-5963: the close fields of the report file in the agent's working folder ({} when it has none): a regular
+    file (no symlink), the last REPORT_FILE_CAP bytes, read as a message's own close block is. The caller checks the
+    folder is the named task's lane."""
+    from sampo import lanes as slanes
+    path = os.path.join(_cwd(pl), REPORT_FILE)
+    try:
+        if os.path.islink(path) or not os.path.isfile(path):
+            return {}
+        with open(path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            fh.seek(max(0, fh.tell() - REPORT_FILE_CAP))
+            text = fh.read().decode("utf-8", "replace")
+    except OSError:
+        return {}
+    return slanes.close_fields(text, tail=True)
+
+
 def _close_fields(pl):
     """T-3500: a returning agent's CHANGELOG/TITLE/LESSON/NUMBERS/DOCS report lines go onto the open task they name
     ((T-NNNN) at the end of its CHANGELOG or TITLE line) as its Close fields section, which sampo task finish and
@@ -8275,6 +8297,10 @@ def _close_fields(pl):
     if not re.fullmatch(r"(?:[\w-]+:)?(?:fm-builder|general-purpose|claude)", who):  # T-5774: not the fixer or the resolver
         return
     got = slanes.close_fields(pl.get("last_assistant_message"), tail=True)
+    from_file = False
+    if not got:  # T-5963: a message of a few lines; its close lines are in the lane's report file
+        got = _report_file_fields(pl)
+        from_file = bool(got)
     if not got.get("id") or not slanes.close_text(got):
         if not got:
             _close_refused(pl, who)
@@ -8285,6 +8311,8 @@ def _close_fields(pl):
         lane = str(b.meta.get("lane") or "") if b else ""
         if not lane or b.status in c.CLOSED or not os.path.isdir(lane):
             return
+        if from_file and os.path.realpath(_cwd(pl)) != os.path.realpath(lane):
+            return  # the file is the lane's own: one read from another folder names some other task's lane
         head = c._git(c.main_worktree(p.root) or p.root, "rev-parse", "HEAD", timeout=10).strip()
         if not head or c._git(lane, "rev-list", "--count", "HEAD", "--not", head, timeout=10).strip() in ("", "0"):
             return  # no commit since the lane was made: nothing of its own to close
