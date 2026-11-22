@@ -403,9 +403,11 @@ class NightGuards(ForemanTestCase):
         with open(os.path.join(bindir, "claude"), "w") as f:
             f.write(SECOND)
         os.chmod(os.path.join(bindir, "claude"), 0o755)
-        cc = os.path.join(self.tmp, "cc")
+        # T-6017: the headless launcher (T-5706) refuses a CLAUDE_CONFIG_DIR under a folder others can write, so a config
+        # folder under /tmp never reached the stub claude; make it under the launcher's own safe root, removed after
         from sampo import cost
-        d = os.path.join(cc, "projects", os.path.basename(cost.transcripts_dir(self.repo)))
+        cc = self.safe_config_dir()
+        d =os.path.join(cc, "projects", os.path.basename(cost.transcripts_dir(self.repo)))
         os.makedirs(d)
         with open(os.path.join(d, "old.jsonl"), "w") as f:
             f.write(json.dumps({"type": "user", "message": {"role": "user", "content": "export the report"}}))

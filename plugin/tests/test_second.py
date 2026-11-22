@@ -33,7 +33,7 @@ class _Stubbed(ForemanTestCase):
             f.write(STUB)
         os.chmod(os.path.join(bindir, "claude"), 0o755)
         self.log = os.path.join(self.tmp, "stub.log")
-        self.cc = os.path.join(self.tmp, "cc")
+        self.cc = self.safe_config_dir()  # T-6017: a config folder under /tmp is refused by the child launcher
         self.env = {"PATH": bindir + os.pathsep + os.environ["PATH"], "STUB_LOG": self.log, "CLAUDE_CONFIG_DIR": self.cc}
         self.fm("init")
 

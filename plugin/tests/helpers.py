@@ -464,6 +464,18 @@ class SampoTestCase(unittest.TestCase):
                     raise
                 time.sleep(0.1)
 
+    def safe_config_dir(self):
+        """T-6017: a fresh CLAUDE_CONFIG_DIR a headless child will accept. The launcher (T-5706) refuses one under a folder
+        others can write, which /tmp is, so a stub claude never ran with one under self.tmp; this one is made under the
+        launcher's own safe root and removed after the test. Skips the test when this machine has no such root."""
+        from sampo import ideas
+        try:
+            d = tempfile.mkdtemp(prefix="fm-test-cc-", dir=ideas.safe_root())
+        except OSError:
+            self.skipTest("this machine has no folder of ours with a safe chain to keep a Claude config in")
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        return d
+
     def fm(self, *args, cwd=None, check=True, env=None, input=None, timeout=30, real_state=False):
         # T-2282: real_state=True runs bin/fm itself: its prove trust file is read only from the user's own state
         # (fixtures/fm_trusting.py, the default, makes a test's home count as that)
