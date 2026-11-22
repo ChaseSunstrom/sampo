@@ -4571,7 +4571,13 @@ class Run:
                 why = f"criterion {i}: {refused}"
             elif self.guard("Bash", {"command": cmd}):
                 why = f"Smith's guard refused criterion {i}'s verify"
-        if not why and worker_confinement(self.root)[0] is None:
+        unconfined = False
+        if not why:
+            try:
+                unconfined = worker_confinement(self.root)[0] is None
+            except ConfineError:  # T-5909: the tree holds Sampo's state: no confinement can be made for it
+                unconfined = True
+        if unconfined:
             why = "the check would run unconfined (no Landlock, or FOREMAN_CONFINE=0), and a copy is no safe place for that"
         if not why and self.search_spent >= SEARCH_BUDGET_S:
             why = f"the searches of this run have spent their {SEARCH_BUDGET_S} s of checks"
@@ -4989,16 +4995,25 @@ class Run:
         argv = worker_argv(self.worker, prompt, cwd=self.root)
         if self.max_usd is not None and os.path.basename(argv[0]) == "claude":  # T-1357: claude stops itself there
             argv += ["--max-budget-usd", f"{self.left():.2f}"]
+        _lane_recover(self.root)  # T-5909: a turn that died before its judge left HEAD on a lane ref: back on the branch
         before = _snapshot(self.root, self.verify_cmd)
+        before["lane"] = None
         code, out, ended = None, "", False
         try:
+            before["lane"] = _lane_begin(self.root)  # T-5909: it commits on a ref of its own, never trunk's or a lane's
             # T-1327: quiet, so only Foreman's guard runs in that nested session; T-1294: its leases are ours
             # T-1417: no self-update mid-turn: it rewrites ~/.local/bin/claude, which the judge holds
+            # T-5909: a confined worker's session files go to a folder of its own, never sessions/ (the lead reads that)
             env = dict(worker_env(start=True), FOREMAN_QUIET="1", FOREMAN_WORKER_OF=f"fm-code-{self.tid or 'plan'}",
-                       DISABLE_AUTOUPDATER="1")
+                       DISABLE_AUTOUPDATER="1", **_worker_sessions_env(self.root))
             streams = "stream-json" in (all_runners().get(self.worker, {}).get("work") or "")
             self.unlean = None
-            confine, note = worker_confinement(self.root)
+            try:
+                confine, note = worker_confinement(self.root)
+            except ConfineError as e:
+                raise Blocked(str(e))
+            from sampo import landlock
+            before["confined"] = confine is not None and landlock.refs_guarded(self.root)  # the kernel refuses shared refs
             if not getattr(self, "_confine_said", False):  # T-1607: said once a run
                 self._confine_said = True
                 self.emit("note", f"  {note}", worker=argv[0])
@@ -5207,7 +5222,13 @@ class Run:
                 lost.append(claude)
                 why += " (it couldn't be put back)"
             out.append((claude, why))
+        from sampo import landlock
         head = b["head"]
+        lane = landlock.lane_end(self.root, b.get("lane"))  # T-5909: HEAD back on the branch, the worker's own ref gone
+        left = _head(self.root)
+        tip_now = lane or left[1]  # the tip as the worker left it, before it is put back
+        if lane and lane.encode() != head[1]:
+            out.append(("HEAD", "the worker committed or switched branch: moved back, its changes judged below"))
         if _head(self.root) != head:
             if head[0]:
                 _git(self.root, "symbolic-ref", "HEAD", head[0])
@@ -5216,6 +5237,16 @@ class Run:
             elif head[1]:  # it was detached: point HEAD back without moving the branch the worker switched to
                 _git(self.root, "update-ref", "--no-deref", "HEAD", head[1])
             out.append(("HEAD", "the worker committed or switched branch: moved back, its changes judged below"))
+        # T-5909 backstop: the kernel refuses a shared ref to a confined worker; this finds one an unconfined worker moved
+        # own: the branch HEAD named at the start and the lane ref; only a branch it made this turn counts when it switched
+        # a confined turn (it ran in a lane) is only reported: the lane ref was the worker's to point anywhere, so a tip
+        # built on trunk's newer commit would make the judge roll trunk back
+        undone, seen = landlock.refs_undo(self.root, b.get("refs"), head[1], tip_now,
+                                          (head[0], (b.get("lane") or {}).get("lane")), left[0],
+                                          confined=bool(b.get("lane") or b.get("confined")))
+        out += [(r, f"a worker never moves a ref but its own branch: {what} and put back") for r, what in undone]
+        if seen:  # journal only: another lane or the train moves refs in the same minutes, so a note per turn would be noise
+            self.log(kind="refs_seen", refs=[f"{r} ({what})" for r, what in seen[:20]])
         flagged = sorted(_flags(self.root) - b["flags"])
         if flagged:
             _git(self.root, "update-index", "--no-assume-unchanged", "--no-skip-worktree", "--", *flagged)
@@ -5761,7 +5792,10 @@ def install_warning():
 def containment(root):
     """T-1402: what holds this run's commands and workers in, for the start event and the app: {kind, label}."""
     from sampo import landlock
-    paths, _ = worker_confinement(root)
+    try:
+        paths, _ = worker_confinement(root)
+    except ConfineError:
+        paths = None
     return {"kind": "landlock", "label": f"Landlock {landlock.available()[1]}"} if paths is not None else {
         "kind": "guard", "label": "guard only"}
 
@@ -5774,8 +5808,42 @@ def worker_confinement(root):
     ok, why = landlock.available()
     if not ok:
         return None, f"worker unconfined: {why}"
-    return landlock.writable_for(root), (f"worker confined by Landlock ({why}): it writes only in this tree, its git "
-                                           "folders, scratch, Claude Code's folders and tool caches")
+    try:
+        paths = landlock.writable_for(root)
+    except landlock.Refused as e:  # T-5909: never run unconfined instead: the grant would cover Sampo's state
+        raise ConfineError(f"fm code: worker confinement refused: {e}. FOREMAN_CONFINE=0 in your own shell turns it off")
+    return paths, (f"worker confined by Landlock ({why}): it writes only in this tree, its own lane ref, its git "
+                   "objects, scratch, Claude Code's folders, tool caches and the guard's session logs")
+
+
+def _worker_sessions_env(root):
+    """T-5909: {FOREMAN_WORKER_SESSIONS: the folder} a confined worker's nested session keeps its session files in (its
+    taint store), {} when the turn runs unconfined (its hooks then use sessions/ as they always did)."""
+    from sampo import landlock
+    if os.environ.get("FOREMAN_CONFINE") == "0" or not landlock.available()[0]:
+        return {}
+    try:
+        return {landlock.WORKER_SESSIONS_ENV: landlock.worker_sessions(root)}
+    except Exception:
+        return {}
+
+
+def _lane_recover(root):
+    """T-5909: put HEAD back on its branch when a past turn died holding a lane ref (landlock.lane_recover); never raises."""
+    from sampo import landlock
+    try:
+        return landlock.lane_recover(root)
+    except Exception:
+        return None
+
+
+def _lane_begin(root):
+    """T-5909: a confined worker's HEAD moves to a ref in a folder of its own for its turn (landlock.lane_begin); None
+    when the turn runs unconfined or there is nothing to swap."""
+    from sampo import landlock
+    if os.environ.get("FOREMAN_CONFINE") == "0" or not landlock.available()[0]:
+        return None
+    return landlock.lane_begin(root, _head(root))
 
 
 def _close_quietly(f):
@@ -7588,8 +7656,9 @@ def _leave_out_built(root, wrote, had=()):
 
 
 def _head(root):
-    return tuple(_git(root, *a).stdout.strip() for a in (("symbolic-ref", "-q", "HEAD"), ("rev-parse", "-q", "--verify",
-                                                                                          "HEAD")))
+    # T-5909: --no-recurse, so HEAD on a lane ref the worker made a symref of is read as the lane ref, not its target (trunk)
+    return tuple(_git(root, *a).stdout.strip() for a in (("symbolic-ref", "-q", "--no-recurse", "HEAD"),
+                                                         ("rev-parse", "-q", "--verify", "HEAD")))
 
 
 def _read(path):
@@ -7800,7 +7869,13 @@ def _snapshot(root, verify=None):
             "own": {f: _read(f) for f in own | _files_under(hooks)}, "hooks_at": _read(hooks), "flags": _flags(root),
             "stats": stats, "kept": kept, "home": {f: _read(f) for f in held},
             "home_dirs": {d: (_read(d), os.path.realpath(d)) for d in dirs},
-            "mcp": _mcp(os.path.join(home, ".claude.json"))}
+            "mcp": _mcp(os.path.join(home, ".claude.json")), "refs": _refs_of(root)}
+
+
+def _refs_of(root):
+    """T-5909: every ref of the repository as it stands, for judge to compare (None when git can't say)."""
+    from sampo import landlock
+    return landlock.refs_snapshot(root)
 
 
 WATCHED = (".claude", *core.MIRRORS)  # also judged by the guard when git doesn't show them

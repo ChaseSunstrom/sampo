@@ -5925,7 +5925,18 @@ _TAINT_ARG = c.lazy(r"://|[|>]|\s-{1,2}\w[\w-]*(?:=|\s+)\S|[/~]")
 
 
 def _taint_path(sid):
-    return os.path.join(c.state_dir(), "sessions", f"{sid}.taint.json") if sid and re.fullmatch(r"[\w-]{1,100}", sid) else None
+    """The session's taint store. T-5909: a confined fm code worker can't write sessions/ (the lead reads usage snapshots
+    and the by-pid map there as truth), so its nested session keeps the store in the folder Sampo named for it in
+    FOREMAN_WORKER_SESSIONS; honoured only for a worker, and only beneath <state>/worker-sessions/."""
+    if not (sid and re.fullmatch(r"[\w-]{1,100}", sid)):
+        return None
+    mine = os.environ.get("FOREMAN_WORKER_SESSIONS")
+    if mine and os.environ.get("FOREMAN_WORKER_OF"):
+        base = os.path.realpath(os.path.join(c.state_dir(), "worker-sessions"))
+        real = os.path.realpath(mine)
+        if os.path.dirname(real) == base:
+            return os.path.join(real, f"{sid}.taint.json")
+    return os.path.join(c.state_dir(), "sessions", f"{sid}.taint.json")
 
 
 def _leaves(o):
@@ -5999,7 +6010,10 @@ def _taint_check(pl, p):
         if not hit:
             return None
         if p:
-            c.log_event(p, "taint_flag", data={"line": c.fit(hit, 80)}, session=pl.get("session_id"))
+            try:  # T-5909: a confined worker can't write the project's log: the flag still goes out, never dropped with it
+                c.log_event(p, "taint_flag", data={"line": c.fit(hit, 80)}, session=pl.get("session_id"))
+            except OSError:
+                pass
         why = f"Sampo: this command came from text a web/MCP result returned (\"{c.fit(hit, 80)}\")."
         if deny:
             tid = c.active_brief_fast(p, p.lane) if p else None

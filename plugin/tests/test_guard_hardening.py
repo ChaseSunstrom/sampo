@@ -425,8 +425,10 @@ class LandlockBounds(unittest.TestCase):
                                         GIT_COMMITTER_EMAIL="t@t"))
             real = [os.path.realpath(p) for p in landlock.writable_for(wt)]
             common = os.path.realpath(os.path.join(main, ".git"))
-            for want in ("objects", "refs", "logs"):
-                self.assertIn(os.path.join(common, want), real)
+            self.assertIn(os.path.join(common, "objects"), real)  # T-5909: objects/ until T-5924
+            for never in ("refs", os.path.join("refs", "heads"), "logs", os.path.join("logs", "refs", "heads"),
+                          "packed-refs"):  # a branch HEAD names gets no ref folder: only a fmw lane ref's own folder does
+                self.assertNotIn(os.path.join(common, never), real, never)
             self.assertNotIn(common, real, "never the whole common dir: hooks and config live there")
             self.assertTrue(any(p.startswith(os.path.join(common, "worktrees")) for p in real))
 

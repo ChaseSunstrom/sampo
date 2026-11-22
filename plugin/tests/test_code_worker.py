@@ -785,13 +785,21 @@ class Worker(CodeCase):
         self.assertTrue(os.path.islink(hooks))
         self.assertFalse(os.path.exists(os.path.join(self.fake_home, ".gitconfig")), r.stdout)
 
-    def test_a_branch_switch_from_a_detached_head_leaves_that_branch_alone(self):
+    def test_a_branch_the_worker_made_from_a_detached_head_keeps_its_commit(self):
+        sha = self.git("rev-parse", "HEAD")
+        self.git("checkout", "-q", "--detach")
+        self.cli("hop", 'git switch -q -c other\ngit commit -q --allow-empty -m mine\nfix-calc\n')
+        self.work("make calc.add add", "--worker", "hop {prompt}", "--verify", VERIFY, check=False)
+        self.assertNotEqual(self.git("rev-parse", "other"), sha)  # its own new branch: its commit stays on it
+        self.assertEqual(self.git("symbolic-ref", "-q", "HEAD"), "")  # detached again
+
+    def test_a_branch_that_was_already_there_is_put_back_when_the_worker_commits_on_it(self):
         sha = self.git("rev-parse", "HEAD")
         self.git("branch", "other")
         self.git("checkout", "-q", "--detach")
         self.cli("hop", 'git switch -q other\ngit commit -q --allow-empty -m mine\nfix-calc\n')
         self.work("make calc.add add", "--worker", "hop {prompt}", "--verify", VERIFY, check=False)
-        self.assertNotEqual(self.git("rev-parse", "other"), sha)  # its commit stays on it
+        self.assertEqual(self.git("rev-parse", "other"), sha)  # not the worker's to move: put back
         self.assertEqual(self.git("symbolic-ref", "-q", "HEAD"), "")  # detached again
 
     def test_worker_argv(self):
