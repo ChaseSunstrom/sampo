@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- Moved the fmgenesis, fmgrants and fmgraph map entries from docs/map/files-lib-2.md to a new files-lib-7.md, taking files-lib-2 from 86.9 KB to 51.3 KB so the waiting lanes' additions fit under the 90 KB read limit (T-5346).
 - A lane a workflow agent built and the main session accepted at or after its last commit now counts as finished while its launching session is alive, so lane accept queues it and a train lands it instead of skipping it as still building (T-5344).
 - Green ref: `sampo.greenref.mark` and `read` keep the last tree whose hook smoke passed in the local ref `refs/sampo/green/hook`, which no push carries and which refuses a sha the repo lacks (T-5082).
 - Lane cleanup removes a merged lane whose only leftovers are the native fast build's outputs (plugin/native/sampo-fast, its .sha256 and .src stamps and .sampo-fast-* temp copies), ignored or untracked (T-5078).
