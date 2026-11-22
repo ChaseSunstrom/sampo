@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- sampo lane land treats a lane whose reviewed tip is already on trunk (merged inside a stacked lane, no commit past it) as merged: --first says so and the normal close runs (T-5861).
 - A land that closes a lane from its commit trailers now writes the trailer's CHANGELOG line into CHANGELOG.md (the deferred commit step had dropped it), and the lease-overlap refusal test asserts the task and session it names (T-5858).
 - A live train's repo-shape cull now runs each subset tree on the red classes alone and the kept build once on the whole set, with one more split for a class red only there (T-5853).
 - sampo lane recover takes an accepted, returned or reviewed lane the land parked for a conflict or red at once, not after 15 quiet minutes (T-5850).
