@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- A new inventory test walks plugin/lib with ast and fails for any real-home derivation (expanduser, Path.home, HOME, the passwd entry) not on a reviewed read, mixed or write list, naming the open gaps in setup.paths and codex_newest (T-5036).
 - sampo lane say ID fix|delta|merge-trunk [steer] prints the builder's or reviewer's round message from the lane tip, the review's findings (now with their fix), the brief's tests and the standing safety line, with no model call (T-5953).
 - The behind (post-merge) verify runs the shape modules and only the test classes the merged change reaches (cli.affected), with the full suite once per 10 merged heads or 3 h; partial records never stand as a full run for sampo ship, closes or the sentinel (T-5936).
 - sampo bench arms now run in a fresh one-commit repo of the base, so an agent can no longer read the hidden tests or reference fix from git history, and a transcript audit voids any run that touched the answers (T-3364).
