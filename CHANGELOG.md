@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- The live snapshot's Board now carries a `bigs` part: each big task's done/total, wave, spend and children (12 trees, 40 children each), read from the same tree `sampo big status --all` shows (T-5027).
 - `sampo wired` lists the public functions in plugin/lib/sampo that no verb or hook reaches, as file:line rows from a static ast scan (T-5016).
 - `kalevala gen` now also writes a GIANT task for the generation, with Design from the setup, one XL milestone per tower and a plan that passes `big check`, and keeps its id on the gen record (T-5014).
 - Hook caches (breaker, lock-busy record, leads, seen-marks, session and boot marks) are written without an fsync via write_atomic(durable=False), cutting the fsync stalls in slow hooks while state files keep the durable default (T-5000).
