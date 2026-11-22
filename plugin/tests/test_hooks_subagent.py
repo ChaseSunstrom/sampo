@@ -5,6 +5,7 @@ builder must act. A report with no lens heading records nothing (the lead record
 import json
 import os
 import unittest
+from unittest import mock
 
 from helpers import ForemanTestCase
 
@@ -146,6 +147,50 @@ class ReviewerAudits(ForemanTestCase):
         self.stop(APPROVE, agent_id="a1")
         self.assertNotIn("asked for changes", self.fm("next").stdout)
 
+    # T-5516 review: a heading that only starts with a lens name ("## Edge cases", "## Adversary model") is no lens, so an
+    # approve records no audit for a lens the reviewer never reviewed
+    def test_reviewer_audits_a_heading_that_only_starts_with_a_lens_name_records_no_audit(self):
+        msg = ("**Verdict** — approve.\n\n## lens: intent\nNo findings.\n\n## Edge cases\nNo findings.\n\n"
+               "## Adversary model\nNo findings.\n\n## Design notes\nNo findings.\n")
+        self.stop(msg)
+        self.assertEqual([lens for lens, _, _ in self.brief().audits()], ["intent"],
+                         "'## Edge cases' is not the edge lens, nor '## Adversary model' the adversary's")
+
+    def test_reviewer_audits_a_suffix_that_does_not_say_it_passed_records_no_audit(self):
+        msg = ("**Verdict** — approve.\n\n## lens: intent\nNo findings.\n\n## lens: edge — not  checked\nNo findings.\n\n"
+               "## lens: adversary: skipped\nNo findings.\n\n## Self-review\nNo findings.\n")
+        self.stop(msg)
+        self.assertEqual([lens for lens, _, _ in self.brief().audits()], ["intent"])
+
+    # T-5516 review: the mark is stamped before the findings are logged, so a second boundary crossed while the tree is
+    # built can't leave the findings older than the mark (sampo next filters them by it)
+    def test_reviewer_audits_findings_stay_in_the_relay_when_the_tree_build_crosses_a_second(self):
+        from sampo import hooks
+        real = slanes.review_tree
+
+        def slow_tree(p, b):  # the tree build takes long enough that the clock reads a later second after it
+            os.environ["FOREMAN_NOW"] = "2030-01-01T00:00:05Z"
+            return real(p, b)
+        path = os.path.join(self.tmp, "slow.jsonl")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"type": "user", "message": {"role": "user", "content": self.review_prompt(self.tid)}}) + "\n")
+        pl = {"agent_id": "a1", "agent_type": "sampo:fm-reviewer", "last_assistant_message": CHANGES,
+              "agent_transcript_path": path, "cwd": self.repo, "session_id": "sess-1"}
+        with mock.patch.dict(os.environ, {"FOREMAN_NOW": "2030-01-01T00:00:00Z"}), \
+                mock.patch.object(slanes, "review_tree", slow_tree), mock.patch("sampo.tripwire.start"):
+            hooks.subagent_stop(pl)
+        out = self.fm("next").stdout
+        self.assertIn("trusts the payload text", out)
+        self.assertNotIn("no finding text on record", out)
+
+    # T-5516 review: reviewer text is data: no control character of it reaches the terminal through sampo next
+    def test_reviewer_audits_next_prints_the_relay_findings_as_plain_text(self):
+        self.stop(CHANGES.replace("trusts the payload text", "trusts the \x1b[31mpayload\x07 text"))
+        out = self.fm("next").stdout
+        self.assertIn("payload", out)
+        self.assertNotIn("\x1b", out)
+        self.assertNotIn("\x07", out)
+
     def test_reviewer_audits_no_lens_heading_records_nothing(self):
         self.stop(NO_HEADINGS)
         self.assertEqual(self.brief().audits(), [], "no heading, no audit: the lead records it as before")
@@ -226,3 +271,54 @@ class ReviewerVerdictAndLenses(unittest.TestCase):
         self.assertEqual(slanes.reviewer_findings(msg), [("intent", "LOW", "f.py:1", "a name"),
                                                          ("intent", "LOW", "f.py:2", "a gap")],
                          "'## Edge cases' is not the edge lens: its finding stays with intent")
+
+    def test_a_heading_that_only_starts_with_a_lens_name_records_no_lens(self):
+        # T-5516 review: the lens recorder reads the headings the finding reader reads ("## Edge cases" is no lens)
+        msg = ("**Verdict** — approve.\n\n## lens: intent\nNo findings.\n\n## Edge cases\nNo findings.\n\n"
+               "## Adversary model\nNo findings.\n\n## Design notes\nNo findings.\n")
+        self.assertEqual(slanes.reviewer_lenses(msg), {"intent": 0})
+        self.assertEqual(slanes.reviewer_lenses("**Verdict** — approve.\n\n## lens: adversary — changes needed\nx\n"), {})
+
+    def lenses_of(self, head, body="No findings.\n"):
+        return slanes.reviewer_lenses(f"**Verdict** — approve.\n\n## lens: intent\nNo findings.\n\n{head}\n{body}")
+
+    # T-5516 round 2, item 1: a separator is a colon or a dash with its own space (or a long dash), never a hyphen inside a word
+    def test_a_hyphen_or_dash_inside_a_word_makes_no_lens_heading(self):
+        for head in ("## Self-review", "## Edge-cases", "## Design-notes", "## Edge—cases", "## edge–cases", "## Edge -cases"):
+            self.assertEqual(self.lenses_of(head), {"intent": 0}, head)
+
+    def test_a_hyphen_inside_a_word_does_not_switch_the_finding_lens(self):
+        for head in ("## Self-review", "## Edge-cases", "## Design-notes"):
+            msg = f"## lens: intent\n{head}\n- LOW — `f.py:2` — a gap — test — low\n"
+            self.assertEqual(slanes.reviewer_findings(msg), [("intent", "LOW", "f.py:2", "a gap")], head)
+
+    # T-5516 round 2, item 2: only a suffix that says it passed records; any other suffix keeps the lens out
+    def test_a_suffix_that_does_not_say_it_passed_records_no_lens(self):
+        for suffix in ("not checked", "not  checked", "not-checked", "Not Checked (no runtime here)", "skipped",
+                       "not reviewed", "n/a", "changes required", "needs changes", "changes needed", "changes  needed",
+                       "TODO", "approve once the HIGH is fixed", "approved?", "no  findings left to fix soon", "x findings"):
+            for sep in (" — ", ": ", " - ", " – ", "—"):
+                self.assertEqual(self.lenses_of(f"## lens: edge{sep}{suffix}"), {"intent": 0}, f"{sep}{suffix}")
+
+    def test_a_suffix_that_says_it_passed_records_the_lens(self):
+        for head in ("## edge", "## lens: edge", "## edge: ok", "## Lens: Edge - pass", "## Edge: approve with nits",
+                     "## Edge — 2 findings", "## Edge — 0 findings", "## edge: 1 finding", "## Edge — 3 findings: all low",
+                     "## Edge: clean", "## Edge: met", "## Edge: no findings", "## Edge: approve.", "## Edge: Approve  With Nits",
+                     "## Edge: no findings", "## Edge: ｏｋ", "## `edge`: **ok**"):
+            self.assertEqual(self.lenses_of(head), {"intent": 0, "edge": 0}, head)
+
+    def test_a_clean_suffix_does_not_clean_a_lens_that_has_a_high_finding(self):
+        self.assertEqual(self.lenses_of("## Edge: approve", "- HIGH — `f.py:1` — a fault — fix — high\n"), {"intent": 0})
+
+    # T-5516 round 2, LOW: a heading in a code fence or an indented block is quoted text, not the report's own
+    def test_a_heading_in_a_code_fence_or_an_indented_block_records_nothing(self):
+        for body in ("```\n## lens: adversary: approve\n```\n", "```md\n## Adversary: approve\n```\n",
+                     "    ## lens: adversary: approve\n", "        ## Adversary: approve\n"):
+            self.assertEqual(self.lenses_of("## lens: edge: ok", body), {"intent": 0, "edge": 0}, body)
+        after = self.lenses_of("```\n## Adversary: approve\n```\n## lens: edge", "")
+        self.assertEqual(after, {"intent": 0, "edge": 0}, "the fence closes: a heading after it reads as one")
+
+    def test_a_finding_under_a_quoted_heading_stays_with_the_real_lens(self):
+        msg = ("## lens: intent\n```\n## lens: adversary\n```\n- LOW — `f.py:2` — a gap — test — low\n"
+               "    ## lens: edge\n- LOW — `f.py:3` — a nit — test — low\n")
+        self.assertEqual([x[0] for x in slanes.reviewer_findings(msg)], ["intent", "intent"])

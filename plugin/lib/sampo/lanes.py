@@ -2230,19 +2230,32 @@ DEFECT_CLASSES = [
 ]
 
 
-# "## edge", "## lens: edge", "## edge: ok" or "## lens: adversary — changes needed" (T-5516 item 2: a dash or colon
-# suffix is the heading's own, and its findings are its lens's); never "## Edge cases" or "## Design notes" (T-1501 review)
-_LENS_HEAD = re.compile(r"(?i)^#+\s*(?:lens:\s*)?(" + "|".join(c.AUDIT_LENSES) + r")\s*(?:[:—–-].*)?$")
-_FINDING = re.compile(r"(?i)^(?:[-*]|\d+[.)])\s*(CRITICAL|HIGH|MEDIUM|LOW)\s*[—–-]+\s*(\S+?)\s*[—–-]+\s*(.+)$")
+# "## edge", "## lens: edge", "## edge: ok" or "## lens: adversary — changes needed": the lens name, then the end of the
+# line or a separator (a colon, a long dash, or a hyphen with a space each side) and the heading's own suffix (T-5516
+# item 2: its findings are its lens's); never "## Edge cases", "## Design notes" (T-1501 review) nor a hyphen inside a
+# word ("## Self-review", "## Edge-cases"; T-5516 round 2). Group 2 is the suffix: the one shape for every reader of
+# lens headings (a looser copy recorded audits for "## Edge cases").
+_LENS_HEAD = re.compile(r"(?i)^#+\s*(?:lens:\s*)?(" + "|".join(c.AUDIT_LENSES) + r")(?:\s*[:—–]\s*|\s+-\s+|\s+-$|$)(.*)$")
+_FINDING =re.compile(r"(?i)^(?:[-*]|\d+[.)])\s*(CRITICAL|HIGH|MEDIUM|LOW)\s*[—–-]+\s*(\S+?)\s*[—–-]+\s*(.+)$")
+
+
+def _report_lines(msg):
+    """T-5516 round 2: (line, lens heading match or None) for each line of a reviewer's message, bold and backticks taken
+    out. A line inside a ``` fence or indented 4 or more spaces is quoted text: never a heading."""
+    fenced = False
+    for raw in str(msg or "").splitlines():
+        if raw.lstrip().startswith("```"):
+            fenced = not fenced
+        line = raw.strip().replace("`", "").replace("**", "")
+        quoted = fenced or raw.expandtabs(4).startswith("    ")
+        yield line, (None if quoted else _LENS_HEAD.match(line))
 
 
 def reviewer_findings(msg, cap=30):
     """T-1181: [(lens, severity, file, issue)] from a reviewer's message: '- SEVERITY — path:line — issue — …' lines
     (bold and backticks tolerated) under '## lens: X' headings; lens 'self' before any heading."""
     out, lens = [], "self"
-    for line in str(msg or "").splitlines():
-        line = line.strip().replace("`", "").replace("**", "")
-        h = _LENS_HEAD.match(line)
+    for line, h in _report_lines(msg):
         if h:
             lens = h.group(1).lower()
             continue
@@ -2257,9 +2270,18 @@ _VERDICT = re.compile(r"(?i)^verdict\s*[—–:-]+\s*(.+)$")
 
 _VERDICT_APPROVE = ("approve", "approve with nits")  # T-5516: the only verdict words that record audits
 _VERDICT_CHANGES = ("changes needed", "changes-needed")  # the only words that mark the task for the builder
-_LENS_ANY = re.compile(r"(?i)^#+\s*(?:lens:\s*)?(" + "|".join(c.AUDIT_LENSES) + r")\b(.*)$")  # any heading suffix
-_NOT_CLEAN = re.compile(r"(?i)not checked|changes[ -]needed")  # a lens heading that says it is not a pass
+_CLEAN_SUFFIX = re.compile(r"approve|approve with nits|ok|clean|pass|met|(?:no|\d+) findings?(?::.*)?")
 _BLOCKING = ("HIGH", "CRITICAL")  # a finding this severe keeps its lens from being recorded as clean
+
+
+def _clean_suffix(text):
+    """T-5516 round 2: whether a lens heading's suffix says the lens passed: none, or (after NFKC, whitespace collapse,
+    case folding and trailing punctuation) approve, approve with nits, ok, clean, pass, met, no findings or a count of
+    findings ('0 findings', '3 findings: all low'). Any other words keep the lens out: a list of the ways to say it
+    did not pass ('not checked', 'skipped', 'n/a', 'needs changes' …) never ends."""
+    import unicodedata
+    words = " ".join(unicodedata.normalize("NFKC", text or "").split()).casefold().rstrip(" .!")
+    return not words or bool(_CLEAN_SUFFIX.fullmatch(words))
 
 
 def reviewer_verdict(msg):
@@ -2288,16 +2310,15 @@ def review_tree(p, b):
 
 def reviewer_lenses(msg):
     """T-5516: {lens: finding count} for each '## lens: X' heading of a reviewer's report that is clean enough to record:
-    a heading that says 'not checked' or 'changes needed', or a lens with a HIGH or CRITICAL finding, is left out for the
-    lead to record by hand. Only headings count (text before the first heading is no lens), so a report with none gives {}."""
+    a heading whose suffix does not say it passed (round 2: an allowlist, see _clean_suffix), or a lens with a HIGH or
+    CRITICAL finding, is left out for the lead to record by hand. Only headings count (text before the first heading is
+    no lens), so a report with none gives {}."""
     counts, lens, unclean = {}, None, set()
-    for line in str(msg or "").splitlines():
-        line = line.strip().replace("`", "").replace("**", "")
-        h = _LENS_ANY.match(line)
+    for line, h in _report_lines(msg):
         if h:
             lens = h.group(1).lower()
             counts.setdefault(lens, 0)
-            if _NOT_CLEAN.search(h.group(2)):
+            if not _clean_suffix(h.group(2)):
                 unclean.add(lens)
             continue
         m = _FINDING.match(line)

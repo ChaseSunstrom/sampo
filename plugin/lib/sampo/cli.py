@@ -4803,7 +4803,7 @@ def plan_file(p, args):
         todo.append((b.id, e, crit, steps))
     if problems:
         raise UsageError("nothing written: " + "; ".join(problems))
-    verifies = [v for _, _, crit, _ in todo for t in crit for _, v in [c.split_verify(t)] if v]
+    verifies = [v for _, _, crit, _ in todo for t in crit for _, v in [c.split_verify(_plan_field(t))] if v]  # as written
     _refuse_unrunnable(p, verifies)
     lines, rows = [], []
     with c.lock(p.dir):  # T-5516 item 6: one lock for the batch; each plan is judged on its brief as it is under this lock
@@ -8774,7 +8774,7 @@ def _changes_relay(p, b):
     for e in c.ledger_events(p, kinds=["finding"]):
         if e.get("task") == b.id and str(e.get("ts") or "")[:19] >= since:
             d = e.get("data") or {}
-            texts.append(c.fit(" ".join(str(d[k]) for k in ("severity", "file", "text") if d.get(k)), 120))
+            texts.append(c.fit(c.plain(" ".join(str(d[k]) for k in ("severity", "file", "text") if d.get(k))), 120))  # reviewer text: data
     if not texts:
         return head + ": no finding text on record"
     shown, left = c.more(texts, 3)

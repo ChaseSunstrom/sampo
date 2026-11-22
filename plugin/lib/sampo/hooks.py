@@ -7584,7 +7584,7 @@ def _reviewer_task(path, msg, act):
     return (ids.pop() if ids else None), ""
 
 
-def _reviewer_return(p, tid, pl, msg):
+def _reviewer_return(p, tid, pl, msg, asked_at=None):
     """T-5516: a stopped fm-reviewer's report says what its lead would otherwise type. An approve (or approve with nits)
     records one audit per '## lens:' heading on the task it names (how: the reviewer and its agent id; result: the
     verdict and the finding count under that lens), once per agent id. 'changes needed' records none and marks the task
@@ -7592,7 +7592,9 @@ def _reviewer_return(p, tid, pl, msg):
     the relay with its findings. The mark clears only on the same reviewer's approve, or once the tree has moved since the
     changes were asked (T-5516 item 5: another reviewer's approve on that same tree does not answer them). An approve is
     recorded only when the lane still has the tree the review was briefed on (item 3); otherwise nothing is recorded and
-    the drop is logged. A report with no verdict line, or no lens heading, changes nothing and the lead records as before."""
+    the drop is logged. A report with no verdict line, or no lens heading, changes nothing and the lead records as before.
+    asked_at: when the report came in, read before its findings were logged (the relay keeps the findings logged since
+    the mark, and the tree build below can cross a second after them: T-5516 review); none reads the clock now."""
     from sampo import lanes as slanes
     verdict = slanes.reviewer_verdict(msg)
     if not tid or not verdict:
@@ -7607,7 +7609,7 @@ def _reviewer_return(p, tid, pl, msg):
         if kind == "changes":
             # flat keys: meta values are text (a dict would round-trip as its repr); the findings are the `finding` events
             b.meta["changes_asked"] = aid or "fm-reviewer"
-            b.meta["changes_asked_at"] = c.now()
+            b.meta["changes_asked_at"] = asked_at or c.now()
             b.meta["changes_asked_tree"] = now
         else:
             briefed = b.meta.get("review_tree") or ""
@@ -7657,11 +7659,12 @@ def subagent_stop(pl):
                 c.log_event(p, "reviewer_unbound", task=None, session=pl.get("session_id"),
                             data={"agent_id": pl.get("agent_id"), "why": why})
             else:
+                asked_at = c.now()  # before the findings are logged: none of them is older than the mark it sets
                 for lens, sev, file, text in slanes.reviewer_findings(msg):
                     c.log_event(p, "finding", task=tid, session=pl.get("session_id"),
                                 data={"lens": lens, "severity": sev, "file": file, "text": text, "verdict": "reported"})
                 try:  # T-5516: its verdict's audits, or its changes-needed mark (bookkeeping: never the subagent's event)
-                    _reviewer_return(p, tid, pl, msg)
+                    _reviewer_return(p, tid, pl, msg, asked_at)
                 except Exception:
                     log_error("SubagentStop", _tb())
         chars = len((pl.get("last_assistant_message") or "").strip())

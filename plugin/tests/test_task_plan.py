@@ -129,6 +129,15 @@ class TaskPlanFile(ForemanTestCase):
         self.assertEqual(len(b.acceptance()), 1, "the forged heading is not a second criterion")
         self.assertEqual(len(b.steps()), 1, "nor a step: the one step given is the one step written")
 
+    # T-5516 review: the verify that is judged is the verify that is written: a field is collapsed to one line first
+    def test_a_verify_that_only_the_collapsed_text_carries_is_judged_too(self):
+        plans = self.plans()
+        plans[0]["criteria"] = ["session survives a reload ::\nfm nosuchverb"]  # ' :: ' ends the line: only collapsed does it split
+        code, text = self.run_plan(plans)
+        self.assertNotEqual(code, 0, text)
+        self.assertIn("nosuchverb", text, "the verify that would be written is refused as one that can't run")
+        self.assertNotIn("nosuchverb", self.fm("task", "show", self.a).stdout, "and nothing is written")
+
     def test_a_leading_hash_in_a_field_is_escaped(self):
         plans = self.plans()
         plans[1]["steps"] = ["# Verification evidence"]
