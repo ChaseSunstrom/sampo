@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- The land no longer spends its train time re-closing leftovers: one whose last close failed only on classes run.py records as red on trunk is skipped with one line and requeued when they go green, and the rest close after the first train's merges, up to three at once within the CPU room (T-5912).
 - sampo lane recover and resume of a lane that already has its branch are no longer refused by the land-backlog bar or the unmerged cap, so 21 waiting lanes can't hold a recovery; a new lane is still held (T-5933).
 - An auto-approved read no longer lets git diff, log, show or blame run a repo-configured diff driver or textconv: read_only passes them only with --no-ext-diff --no-textconv (blame: --no-textconv) or in an allow-listed form that shows no file content (T-5916).
 - A pure spawn module holds the one agent-type to model table, fills a spawn's missing model from it and refuses a lookup sent to a general agent, for the Agent hook, headless builders and cost view to share (T-5835).
