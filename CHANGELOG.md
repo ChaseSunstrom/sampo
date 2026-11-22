@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- bus.wake and modelup's /model best switch-back now type into a tmux pane only after tmuxpane.claude_here and the strict idle screen check pass (a bash pane, a pid mismatch and a reused pid get nothing typed), and a test drives smith.Run.phase through code_tick to its keeper journal row (T-5794).
 - In live landing mode, express lanes (performance, security, urgent) named --first train together as one train capped at the batch size instead of one train each; gated mode still trains them alone (T-5726).
 - Sampo's misses count now includes every avoidable steer, and a steer matching an earlier filed task counts as a catch (T-5712).
 - `CHANGELOG: Outcome targets: a regressed target files a discovered task with its numbers and leads sampo next (T-5709).
