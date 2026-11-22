@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- sampo doctor warns when demo.mp4 or live.mp4 is older than the cast it is rendered from or runs over 2 seconds off its length, naming the command that remakes it (T-5039).
 - The live snapshot's Board now carries a `bigs` part: each big task's done/total, wave, spend and children (12 trees, 40 children each), read from the same tree `sampo big status --all` shows (T-5027).
 - `sampo wired` lists the public functions in plugin/lib/sampo that no verb or hook reaches, as file:line rows from a static ast scan (T-5016).
 - `kalevala gen` now also writes a GIANT task for the generation, with Design from the setup, one XL milestone per tower and a plan that passes `big check`, and keeps its id on the gen record (T-5014).
