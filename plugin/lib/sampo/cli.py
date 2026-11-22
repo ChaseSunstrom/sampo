@@ -9579,6 +9579,11 @@ def _build_parser(only=None):
                    help="send NAME \"text\": one added remote or one live session by its id prefix (T-3932)")
     s.add_argument("words", nargs="*")
     s.add_argument("--wake", action="store_true")
+    s = add("localruns", lazy("sampo.localruns", "cmd_localruns"), tier=("Running elsewhere", 1312),
+            help="score the local-model runs per arm (tasks finished of tasks measured; exit 0 at 3 finished) and sort "
+                 "each stop reason into a loop fault with its Sampo fix or a model fault with its route (T-5017)")
+    s.add_argument("path", nargs="?", help="the rows file (default: <state>/local-runs.jsonl)")
+    s.add_argument("--since", metavar="DATE", help="only rows at or after this ISO date or epoch second")
     s = add("spec", lazy("sampo.change", "cmd_spec"), tier=("Finding your way", 630), help="a one-line wish as a red unittest: a tool-less child's "
                                                         "assertions, only safe ones kept (T-0713)")
     s.add_argument("wish")
