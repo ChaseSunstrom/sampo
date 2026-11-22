@@ -20,7 +20,6 @@ T-4288: a "sampo.stamp" audit event names files the code is about to stat only a
 (recall._own_stamp: its own source files); the stats that follow record nothing, so a class that makes a task no
 longer holds all of core.py. Accepted gap: a later stat of the same path by the same process, for any reason, is not
 recorded either."""
-import configparser
 import os
 import re
 import shlex
@@ -365,6 +364,7 @@ def _drivers(top, e):
     [merge.NAME] with a driver, in the config files _config_files names). A python driver's script is the .py word of
     its command (resolved in the work tree); blind when a driver is no python script that exists, a driver is a program
     not in QUIET, a config can't be read, or a config includes another (not followed)."""
+    import configparser  # T-5762: here, not at the top: it brings contextlib, and every Python the venv starts runs this file
     files = _config_files(top, e)
     if files is None:
         return [], True

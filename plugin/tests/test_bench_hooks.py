@@ -328,13 +328,39 @@ class HotPathImports(unittest.TestCase):  # T-3577
              "random", "signal", "heapq", "string", "contextlib")
 
     def test_the_hot_events_load_no_heavy_module(self):
+        self.assertEqual(self._loaded(), [], "these events loaded heavy modules")
+
+    def test_the_measurement_sees_what_the_interpreter_itself_imports_at_start(self):
+        # T-5762: the control. A cached batch run of run.py puts a recording venv's python3 first on PATH, and the hook's
+        # `#!/usr/bin/env python3` starts under it: what that interpreter imports in its .pth is counted against the
+        # hook ("PreToolUse:Bash loaded contextlib@?", never alone). A venv planted to import statistics shows here
+        seen = self._loaded(plant="statistics")
+        self.assertEqual(len(seen), 4, f"two events, two runs each: {seen}")
+        self.assertTrue(all("statistics@?" in got for _, got in seen), f"the plant went unseen: {seen}")
+
+    def _loaded(self, plant=None):
+        """The heavy modules each hot event's process had at exit (a list of the lines, [] when none); plant: a module
+        a venv's .pth imports, whose python3 runs the hook."""
         import json
+        import site as site_mod
         import subprocess
         import tempfile
         with open(os.path.join(bench_hooks.HERE, "fixtures", "hook_payloads.json")) as f:
             fixtures = json.load(f)
+        lines = []
         with tempfile.TemporaryDirectory() as t:
             repo, env = bench_hooks._scratch_project(t)
+            if plant:
+                real, d = os.path.realpath(sys.executable), os.path.join(t, "plant")
+                lib = site_mod.getsitepackages([d])[0]
+                os.makedirs(lib)
+                os.makedirs(os.path.join(d, "bin"))
+                os.symlink(real, os.path.join(d, "bin", "python3"))
+                with open(os.path.join(d, "pyvenv.cfg"), "w") as f:
+                    f.write(f"home = {os.path.dirname(real)}\ninclude-system-site-packages = true\n")
+                with open(os.path.join(lib, "plant.pth"), "w") as f:
+                    f.write(f"import {plant}\n")
+                env["PATH"] = os.path.join(d, "bin") + os.pathsep + env.get("PATH", os.defpath)
             site, out = os.path.join(t, "site"), os.path.join(t, "loaded")
             os.makedirs(site)
             with open(os.path.join(site, "sitecustomize.py"), "w") as f:  # what the hook's process had at exit, each
@@ -355,7 +381,9 @@ class HotPathImports(unittest.TestCase):  # T-3577
                     self.assertEqual(r.returncode, 0, r.stderr)
                     self.assertNotIn('"deny"', r.stdout)
                     with open(out) as f:
-                        self.assertEqual(f.read().split(), [], f"{name} loaded these")
+                        got = f.read().split()
+                    lines.append((name, got))
+        return [(name, got) for name, got in lines if got] if not plant else lines
 
     def test_core_finds_tempfiles_folder_and_makes_its_files_without_loading_it(self):
         import subprocess

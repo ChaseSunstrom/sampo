@@ -655,6 +655,16 @@ class Recorder(unittest.TestCase):
         self.assertEqual(os.listdir(os.path.dirname(stale)), [os.path.basename(os.path.dirname(os.path.dirname(self.py)))],
                          "one venv, and one no run used for weeks is gone")
 
+    def test_the_venv_python_starts_with_no_stdlib_module_a_hook_must_not_load(self):
+        # T-5762: every Python the venv starts runs runcover.pth first; a top-level `import configparser` brought
+        # contextlib into each hook run of a cached batch ("PreToolUse:Bash loaded contextlib@?"), test_core's
+        # LaterImports and test_fast_equiv's hook runs with it. What only a rare path needs is imported there
+        code = "import sys; print(*sorted(m for m in ('contextlib', 'configparser', 'tempfile', 'shutil') if m in sys.modules))"
+        for env in (dict(os.environ, RUNPY_COVER=""), dict(os.environ, RUNPY_COVER=os.path.join(self.home, "c"),
+                                                           RUNPY_COVER_ROOTS=self.d)):
+            r = subprocess.run([self.py, "-c", code], capture_output=True, text=True, check=True, env=env, cwd=self.d)
+            self.assertEqual(r.stdout.split(), [], "the recorder's own startup imported these")
+
     def test_a_cleared_environment_or_closed_descriptors_lose_nothing_and_write_nowhere_else(self):
         got = self.record("os.environ.clear()\nimport mod_a\n")
         self.assertIn(module("lib/mod_a.py"), got)
