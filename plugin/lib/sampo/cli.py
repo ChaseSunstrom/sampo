@@ -2538,15 +2538,24 @@ def _close_affected(p, b, runs, args):
             break
     n4, left4 = c.more(names, 4)
     n6, left6 = c.more(names, 6)
-    if names and set(names) <= before:
+    try:  # T-5982: a test the task itself added or changed, or its criteria run, is never its baseline's: red there refuses
+        mine = c.own_test_modules(list(changed or ()), [x for _, x in b.verify_cmds() if x])
+    except Exception:  # noqa: BLE001 — criteria that can't be read leave the diff's own tests
+        mine = c.own_test_modules(list(changed or ()), ())
+    own_red = [n for n in names if c.is_own_test(n, mine)]
+    if names and set(names) <= before and not own_red:
         say(f"{b.id}: the linked tests fail, but were already red in the last full run "
             f"({', '.join(n4 + [left4] if left4 else n4)}): its baseline task owns them")
         return
     raise c.PolicyError(f"{b.id} not finished: the tests linked to its changes fail"
                         + (f" ({', '.join(n6 + [left6] if left6 else n6)})" if names else " (the runner names no test)")
-                        + f": {cmd} → {c.run_result(code, output)}. Fix them; if they were red before this task, a "
-                        "full sampo check records that and the close goes through; or waive on the record: "
-                        "--skip-affected \"<why>\"")
+                        + f": {cmd} → {c.run_result(code, output)}. "
+                        + (f"{c.joinmore(own_red, 3)} {'is' if len(own_red) == 1 else 'are'} a test this task added, changed or "
+                           "names in a criterion: red there is its own, never a baseline's. Fix it; or waive on the record: "
+                           "--skip-affected \"<why>\""
+                           if own_red else
+                           "Fix them; if they were red before this task, a full sampo check records that and the close "
+                           "goes through; or waive on the record: --skip-affected \"<why>\""))
 
 
 def _sentinel(p):
@@ -8404,7 +8413,7 @@ def _own_view(p, b, base, changed=None, landing=True, span=None):
 
 
 def affected(p, b=None, skipped=None, since=None, detail=None, only=None, hold=False, shape_green=False, lock=None,
-             among=None, why=None):
+             among=None, why=None, also=None):
     """(command, tests, changed files) for the tests linked (fm map) to files changed since the task started, with the
     project's template; command None when no test is linked. fm check --affected and the ambient runner (T-0705).
     `hold` (T-4286): the run always holds the repo-shape classes, whatever files changed. `shape_green` (T-4563): the
@@ -8413,7 +8422,9 @@ def affected(p, b=None, skipped=None, since=None, detail=None, only=None, hold=F
     `only`: exactly these files as the changed ones (T-3533: fm ship's files main moved past the gated tree).
     `lock` (T-4648): a dict the bounded behaviour lock passes; only the tests linked to `only` and its own test files, the
     ones named like those files first, at most LOCK_MODULES of them; it gets {"linked": how many there were}.
-    `among` (T-4822): only these test files of the set (a close's residual: what no passing gate run covered)."""
+    `among` (T-4822): only these test files of the set (a close's residual: what no passing gate run covered).
+    `also` (T-5982): test files that always run, whole, whatever the map and the run cache link (a lane's own criteria
+    on a gate with no criteria stage of its own: the live train's behind run); the files that exist in the tree."""
     from sampo import map as smap
     import shlex
     act = b or (None if since else c.active_brief(c.load_briefs(p), p.lane))  # T-1117 review: the closing task's base, active or not
@@ -8478,7 +8489,8 @@ def affected(p, b=None, skipped=None, since=None, detail=None, only=None, hold=F
             why.update(parts=parts, sources={"changed test": own, "map link": linked, "hub symbol": set().union(*picked.values()),
                                              "test importer": importers, "co-change": paired, "once broke": broke,
                                              "import budget": budget, "rule test": rules, "run cache": ran})
-        others = linked | set().union(*picked.values()) | own | importers | paired | broke | budget | rules
+        owed = {t for t in also or () if os.path.isfile(os.path.join(p.root, t))}  # T-5982: named, so never narrowed to classes
+        others = linked | set().union(*picked.values()) | own | importers | paired | broke | budget | rules | owed
         every = sorted(others | ran)
         # T-5588: a module only the run cache selected is named by the classes it saw reach the change, when the runner
         # takes class ids: run.py then runs those with the result cache on, not every class of the module

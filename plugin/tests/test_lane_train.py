@@ -1154,8 +1154,9 @@ class Train(TrainCase):
         self.assertFalse(os.path.exists(os.path.join(self.repo, "test_bad.py")))
         self.assertNotIn("probe", self.git("worktree", "list"), "the probe worktrees are gone")
 
-    def test_an_affected_test_red_on_the_base_itself_is_left_to_the_gates(self):
-        """T-3474 review: a class red on the bare base too isn't the lane's fault: an info line, and the lane goes on."""
+    def test_an_affected_test_the_lane_edits_that_is_red_on_the_base_holds_the_lane(self):
+        """T-5982: a red the base has is excused only for a test the lane did not touch: the lane that edits the red test
+        file owns it (a red base would otherwise let any lane through by editing a red test)."""
         self.fm("check", "affected", "python3 -m unittest {tests}")
         red = "import unittest\nclass Old(unittest.TestCase):\n    def test_it(self):\n        self.assertTrue(False)\n"
         with open(os.path.join(self.repo, "test_old.py"), "w") as f:
@@ -1163,6 +1164,24 @@ class Train(TrainCase):
         self.git("add", "test_old.py")
         self.git("commit", "-qm", "a red test on the base")
         a = self.lane(1, "test_old.py", red + "# touched\n")
+        r = self.train(a, check=False)
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("test_old.Old", r.stdout + r.stderr)
+        self.assertNotIn("left to the gates", r.stdout)
+        self.assertFalse(self.meta(a).get("lane_stop", "").startswith("merged"), "the lane is not let through")
+
+    def test_an_affected_test_red_on_the_base_itself_is_left_to_the_gates(self):
+        """T-3474 review: a class red on the bare base too isn't the lane's fault: an info line, and the lane goes on.
+        T-5982: for a test the lane did not touch (a source it changes links the test)."""
+        self.fm("check", "affected", "python3 -m unittest {tests}")
+        red = "# map-links: lib.py\nimport unittest\nclass Old(unittest.TestCase):\n    def test_it(self):\n        self.assertTrue(False)\n"
+        with open(os.path.join(self.repo, "test_old.py"), "w") as f:
+            f.write(red)
+        with open(os.path.join(self.repo, "lib.py"), "w") as f:
+            f.write("N = 1\n")
+        self.git("add", "test_old.py", "lib.py")
+        self.git("commit", "-qm", "a red test on the base")
+        a = self.lane(1, "lib.py", "N = 2\n")
         r = self.train(a)
         self.assertIn("its affected tests are red on the base itself: test_old.Old; left to the gates", r.stdout)
         self.assertNotIn(f"left out {a}", r.stdout)

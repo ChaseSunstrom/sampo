@@ -88,6 +88,51 @@ def _mod(k):
     return parts[max(next((n for n, x in enumerate(parts) if x[:1].isupper()), len(parts)) - 1, 0)]
 
 
+def _verify_of(b):
+    """T-5982: the verify commands of brief `b`'s criteria (what a lane's own tests are named by, with its diff)."""
+    try:
+        return [cmd for _, cmd in b.verify_cmds() if cmd]
+    except Exception:  # noqa: BLE001 — a brief whose criteria can't be read names no test: its diff still counts
+        return []
+
+
+def _lane_own(p, tid, main=None):
+    """T-5982: c.own_test_modules for the task's lane (its diff against the main checkout's HEAD, its verify commands), or
+    None when it can't be told (no brief, no lane, a diff that fails): every test then counts as the lane's, so no
+    known-red wait, base-red excuse or baseline excuse applies (fails closed)."""
+    from sampo import lanes
+    try:
+        b = c.find_brief(p, tid)
+        path = (b.meta.get("lane") or "") if b else ""
+        if not b or not path or not os.path.isdir(path):
+            return None
+        tip = _git(path, "rev-parse", "HEAD").stdout.strip()
+        if not tip:
+            return None
+        root = main or p.root
+        base = b.meta.get("base") or "HEAD"  # a merged lane (a leftover) has an empty diff against HEAD: its start commit names it
+        if base == "HEAD" and not _git(root, "merge-base", "--is-ancestor", tip, "HEAD").returncode:
+            return None  # merged, and no start commit to measure from: unknown
+        return c.own_test_modules(lanes.lane_files(root, tip, base), _verify_of(b))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+_UNLISTED = ("its changed files could not be listed, so no red can be proven the base's or another lane's: it is held "
+             "alone and no other lane is blamed")  # T-5982
+
+
+def _unlisted(ids, owned_of):
+    """T-5982: the lanes of `ids` whose own tests are unknown (owned_of(id) is None: their diff could not be listed)."""
+    return [i for i in ids if owned_of(i) is None]
+
+
+def _known_own(ids, owned_of):
+    """T-5982: the sorted own-test modules of the lanes of `ids` whose diff is known; an unknown lane adds none (it is
+    held by its own rule, _UNLISTED), so a red is never blamed on another lane for want of its list."""
+    return sorted({m for i in ids if (got := owned_of(i)) is not None for m in got})
+
+
 def _affected_gate(p, wt, base, checks):
     """T-3544: (the full-suite gate, the affected template, the tests the merged batch reaches) or None to run every
     gate as configured. The full suite is the gate equal to the affected template's runner with no names (`python3
@@ -137,7 +182,7 @@ def _mark_green(p):
         os.replace(path + ".tmp", path)
 
 
-def _base_red(p, main, base, sub):
+def _base_red(p, main, base, sub, own=()):
     """T-3625: why the base's own affected tests (the batch's picks that exist on it) fail, or ''. A red base then
     stops the train in minutes, not after its full gate and bisection. It runs only when the FOREMAN_/SAMPO_
     environment differs from that of the last train whose gate went green (_mark_green), whatever its base: in
@@ -150,11 +195,13 @@ def _base_red(p, main, base, sub):
                 return ""
     except (OSError, ValueError):
         pass
-    return _rebuilding(p, "the base probe", lambda: _base_red_once(main, base, sub))  # T-4728
+    return _rebuilding(p, "the base probe", lambda: _base_red_once(main, base, sub, own))  # T-4728
 
 
-def _base_red_once(main, base, sub):
-    """_base_red's run on one scratch tree; raises _Lost when something else removes the tree (the caller reruns it once)."""
+def _base_red_once(main, base, sub, own=()):
+    """_base_red's run on one scratch tree; raises _Lost when something else removes the tree (the caller reruns it once).
+    T-5982 `own` (c.own_test_modules of the batch's lanes; None: unknown): a class of a lane's own test that is red on
+    the base is no stop of the train here: it is judged as the lane's by the gate (a red base covers no lane that edits it)."""
     wt = c.scratch_tree("sampo-base-", main)  # T-4735: in Sampo's own scratch root, locked while this process lives
     try:
         if _git(main, "worktree", "add", "-q", "--detach", wt, base).returncode:
@@ -185,7 +232,10 @@ def _base_red_once(main, base, sub):
             code, out = go(run)
         if code in (0, 5, 124):  # a run of no tests or a timeout proves nothing: the full gates decide
             return ""
-        return _why_red({"cmd": sub[1], "affected": ts, "failing": _failed(out), "firsts": firsts,
+        failing = [n for n in _failed(out) if not c.is_own_test(n, own)]
+        if not failing and _failed(out):  # T-5982: only the lanes' own tests: the gate and the probes name them
+            return ""
+        return _why_red({"cmd": sub[1], "affected": ts, "failing": failing or _failed(out), "firsts": firsts,
                          "tail": out.rstrip().splitlines()[-15:]})
     finally:
         _git(main, "worktree", "remove", "--force", wt)
@@ -1226,6 +1276,8 @@ def _probe_once(p, main, base, b, tip, notes, cli):
             notes.append((b.id, f"flaky (red once, green on a rerun): {_with_first(sorted(bad - still), firsts)}"))
         _git(wt, "reset", "-q", "--hard", base)
         based = (still & again(still)[1]) if still else set()  # red without the lane too: the base's, not the lane's
+        mine = c.own_test_modules(list(changed or ()), _verify_of(b))  # T-5982: a lane's own test is never the base's
+        based = {k for k in based if not c.is_own_test(k, mine)}
         if based:
             notes.append((b.id, f"its affected tests are red on the base itself: {c.joinmore(sorted(based), 6)}; "
                                 "left to the gates"))
@@ -1360,7 +1412,7 @@ def shape_classes(files):
     return [m for m in c.repo_shape_modules() if m in SHAPE_ALWAYS or docs and m == "test_docs"]
 
 
-def _live_shape(wt, p=None, main=None, base=None, classes=None, files=None):
+def _live_shape(wt, p=None, main=None, base=None, classes=None, files=None, own=()):
     """T-5590: the live train's one repo-shape run on the merged tree, before anything lands (a module, an env name or a
     help position a lane adds is red here, not on trunk). T-5806: a ShapeVerdict, so _run splits a red batch by lane:
     green when the tree is green or not a Sampo tree (_shape_tree).
@@ -1370,7 +1422,9 @@ def _live_shape(wt, p=None, main=None, base=None, classes=None, files=None):
     verdict forgives nothing.
     T-5853: `classes` (the red classes a batch run named, joined) runs only those: a subset tree of the cull.
     T-5935: `files` (the train's changed files) runs only the modules whose inputs changed (shape_classes): none for a
-    train that changed no input of any, which is green with no run."""
+    train that changed no input of any, which is green with no run.
+    T-5982: `own` (c.own_test_modules of the batch's lanes; None: unknown, () none) names the tests a lane changed or
+    whose criterion names them: such a class is the lane's even when the base is red on it, and is never forgiven."""
     if not _shape_tree(wt):
         return ShapeVerdict("green")
     if not classes and (sub := shape_classes(files)) is not None:
@@ -1385,8 +1439,9 @@ def _live_shape(wt, p=None, main=None, base=None, classes=None, files=None):
             old = _base_shape_red(p, main, base)
         except Exception:  # noqa: BLE001: no base verdict forgives nothing
             old = None
-        if old:
-            new = [n for n in (x.strip() for x in names.split(",")) if n and n not in old]
+        if old:  # T-5982: a class whose module a lane changed (`own`, None: unknown) is that lane's, red on the base or not
+            own = own() if callable(own) else own  # asked only here: a green tree needs no diff
+            new =[n for n in (x.strip() for x in names.split(",")) if n and (n not in old or c.is_own_test(n, own))]
             if not new:
                 _trunk_red_capture(p, base, old)
                 return ShapeVerdict("green", "", secs)
@@ -1397,7 +1452,7 @@ def _live_shape(wt, p=None, main=None, base=None, classes=None, files=None):
 SHAPE_CULL_WALLS = 2  # T-5806: the fresh shape seconds one cull may spend, in batch walls (shape_batch_wall()); cache hits are free
 
 
-def _shape_cull(ids, shape, suspects=(), budget=None, base_rerun=None, notes=None):
+def _shape_cull(ids, shape, suspects=(), budget=None, base_rerun=None, notes=None, own=()):
     """T-5806: {lane id: (why, its classes)} the lanes to park so the rest of `ids` (merge order) is green on the repo-shape
     classes, from `shape(ids subset, fresh=False) -> ShapeVerdict` (the caller merges that subset on a fresh tree and
     caches a verdict per tree; `fresh` skips the cache).
@@ -1412,7 +1467,9 @@ def _shape_cull(ids, shape, suspects=(), budget=None, base_rerun=None, notes=Non
     T-5880: when every lane ids is parked and a class is red in all their trees, no lane is to blame for it (a base red, or
     a flake under load, as 16 of 16 lanes parked for test_fast_equiv.Passthrough): `base_rerun(class) -> ShapeVerdict`
     runs it once on the base alone, the class is dropped from every park (a lane left with none is not parked) whatever the
-    rerun says, and (class, the rerun's verdict, number of lanes) is appended to `notes`. A cut rerun raises."""
+    rerun says, and (class, the rerun's verdict, number of lanes) is appended to `notes`. A cut rerun raises.
+    T-5982 `own` (None: unknown): a class whose module a lane changed or names in its criterion is never dropped as no
+    lane's: it stays the parked lanes' red."""
     parked, spent = {}, [0.0]
     cap = SHAPE_CULL_WALLS * shape_batch_wall() if budget is None else budget
     order = {i: n for n, i in enumerate(ids)}
@@ -1460,7 +1517,7 @@ def _shape_cull(ids, shape, suspects=(), budget=None, base_rerun=None, notes=Non
         pool = [i for i in pool if i not in group]
     if base_rerun and len(ids) > 1 and len(parked) == len(ids):  # T-5880: a class red in every lane's tree is no lane's
         sets = [{n for n in re.split(r"[,\s]+", w[1]) if n} for w in parked.values()]
-        for k in sorted(set.intersection(*sets)):
+        for k in sorted(k for k in set.intersection(*sets) if not c.is_own_test(k, own)):
             v = base_rerun(k)  # the class alone on the base, once, as the subset trees ran it
             if v.verdict == "cut":
                 raise c.PolicyError(f"the repo-shape class {k} is red in all {len(ids)} subset trees and its rerun on the "
@@ -2182,6 +2239,33 @@ def _run(p, main, ids, defer_verify=False, judged=None):
                         .stdout.split("\0") if f}
         return diffs[i]
 
+    owned, briefs = {}, {b.id: b for b, _ in cands}
+
+    def owned_of(i):
+        """T-5982: lane i's own tests (c.own_test_modules over its diff and verify commands; None: the diff could not be
+        listed), asked once, for any lane of the train (a dropped one too: base_red's put-back)."""
+        if i not in owned:
+            owned[i] = c.own_test_modules(lane_diff(i), _verify_of(briefs[i])) if i in briefs and i in tips else None
+        return owned[i]
+
+    def own_tests():
+        """T-5982: the train's lanes' own tests (the sorted modules of owned_of), or None when a diff could not be listed
+        (every test then counts as a lane's: fails closed)."""
+        got = []
+        for i in [b.id for b, _ in merged] or list(tips):  # the lanes still in: a dropped lane's tests are no one's now
+            if owned_of(i) is None:
+                return None
+            got += owned_of(i)
+        return got
+
+    def unlisted():
+        """T-5982: the lanes still in whose diff could not be listed: no red of the tree can be proven theirs or not."""
+        return _unlisted([b.id for b, _ in merged], owned_of)
+
+    def lane_diff(i):
+        r = _git(main, "diff", "--name-only", "--no-renames", "-z", f"{base}...{tips[i]}")
+        return None if r.returncode else [f for f in r.stdout.split("\0") if f]
+
     def reach(i):
         """The tests lane i's diff reaches, as the probes pick them (cli.affected on the scratch tree); none without
         an affected command or a map."""
@@ -2420,7 +2504,12 @@ def _run(p, main, ids, defer_verify=False, judged=None):
             raise c.PolicyError(f"base probe inconclusive: the base {base[:9]} of {branch} ended {row['exit']} with no failing "
                                 f"class named, so it is not proven red or green ({c.joinmore(list(names), 4) or 'the gate'}); "
                                 f"no lane dropped on its account: {_why_red(row)}")
-        return row, [n for n in names if any(_same(f, n) for f in row["failing"])]
+        # T-5982: a lane's own test, red on the base and with the lane, is never excused as the base's: it is judged
+        # as the lane's (a red base is no cover for a lane that touches the test that is red)
+        # an unlisted lane's tests are unknown: it is held alone by the blame step (_UNLISTED), so what is excused here is
+        # judged on the known lanes' tests and no other lane is blamed for it
+        mine = _known_own([b.id for b, _ in merged] or list(tips), owned_of)
+        return row, [n for n in names if any(_same(f, n) for f in row["failing"]) and not c.is_own_test(n, mine)]
 
     def owner_probe(blamed, g, explained, who):
         """T-3809 review: a module a lane's criterion named no longer ran on base + that lane before the gate (the gate
@@ -2458,7 +2547,9 @@ def _run(p, main, ids, defer_verify=False, judged=None):
         bad = [n for n in names if any(_same(f, n) for f in row.get("failing") or ())] or list(row.get("failing") or ())
         back = []
         for i, why in list(dropped.items()):
-            if bad and any(_same(n, k) for n in bad for k in why):
+            if bad and any(_same(n, k) for n in bad for k in why) and not any(
+                    c.is_own_test(n, owned_of(i)) for n in bad):  # T-5982: its own edit of a red test stays its, asked now
+                # (a lane dropped before any own_tests() ran has no memo), and an unknown diff is the lane's too
                 back.append(i)
                 left[:] = [(j, w) for j, w in left if j != i]
                 cli.mutate(p, i, lambda x: x.append_log(f"put back: {c.joinmore(bad, 4)} is red on the base "
@@ -2524,13 +2615,14 @@ def _run(p, main, ids, defer_verify=False, judged=None):
                 if key in seen and not fresh:
                     return seen[key]._replace(secs=0.0)  # a cache hit costs no shape seconds
                 # base-relative: a class red on the base is no lane's; T-5853: only the red classes run
-                seen[key] = _live_shape(wt, p, main, base, first.names)
+                seen[key] = _live_shape(wt, p, main, base, first.names, own=own_tests)
                 return seen[key]
 
             mods = {_mod(n) for n in re.split(r"[,\s]+", first.names) if n}
             sus = {i for i in ids_m if mods & ({_stem(f) for f in diff(i)} | {_stem(t) for t in reach(i)})}
             notes = []  # T-5880: (class, base rerun verdict, lanes) for a class red in every lane's subset tree
-            parked = _shape_cull(ids_m, shape, sus, base_rerun=lambda k: _base_shape_rerun(p, main, base, k), notes=notes)
+            parked = _shape_cull(ids_m, shape, sus, base_rerun=lambda k: _base_shape_rerun(p, main, base, k), notes=notes,
+                                 own=own_tests())  # T-5982: a class whose module a lane changed is never dropped as no lane's
             for k, verdict, n in notes:
                 print(f"sampo lane land: repo-shape class {c.fit(c.plain(k), 100)} red in all {n} subset trees: base rerun "
                       f"{verdict}, no lane parked for it", file=sys.stderr, flush=True)
@@ -2541,7 +2633,7 @@ def _run(p, main, ids, defer_verify=False, judged=None):
             if not kept or _git(wt, "rev-parse", "HEAD^{tree}").stdout.strip() == tree0:
                 return parked, kept, ShapeVerdict("green"), len(seen)
             trunk_watch()
-            return parked, kept, _live_shape(wt, p, main, base, files=tfiles), len(seen)  # the one whole run of the kept build
+            return parked, kept, _live_shape(wt, p, main, base, files=tfiles, own=own_tests), len(seen)  # the one whole run of the kept build
 
         ids_m, pool, parked, trees, classes = [b.id for b, _ in merged], merged, {}, 0, []
         for rnd in (1, 2):
@@ -2570,7 +2662,7 @@ def _run(p, main, ids, defer_verify=False, judged=None):
         sub = _affected_gate(p, wt, base, checks)
         if moved():  # a lane merged meanwhile: don't spend a gate run on a base that is gone
             raise c.PolicyError(moved_why("since the train started"))
-        why = _base_red(p, main, base, sub) if sub and merged and not live else ""
+        why = _base_red(p, main, base, sub, own_tests()) if sub and merged and not live else ""
         if why:  # T-3625: the base's affected tests first: a red base is known in minutes
             raise c.PolicyError(f"the base {base[:9]} of {branch} is red; fix it before a train can blame a lane: red on "
                                 f"the base (no lane dropped for it): {why}")
@@ -2583,7 +2675,7 @@ def _run(p, main, ids, defer_verify=False, judged=None):
         if live and merged and (smoke := _live_smoke(wt)):  # T-5444: the one front check: the merged tree compiles
             raise c.PolicyError(f"the merged tree does not compile, nothing landed: {smoke}")
         phases["smoke"], t_ph = time.monotonic() - t_ph, time.monotonic()
-        if live and merged and (shape := _live_shape(wt, p, main, base, files=tfiles)).verdict != "green":  # T-5590, T-5805: the batch's new repo-shape reds, once
+        if live and merged and (shape := _live_shape(wt, p, main, base, files=tfiles, own=own_tests)).verdict != "green":  # T-5590, T-5805: the batch's new repo-shape reds, once
             merged = shape_split(shape)  # T-5806: a red parks the lane(s) that bring it and the rest land; a cut stops the land
         phases["shape"], t_ph = time.monotonic() - t_ph, time.monotonic()
         if live and merged and (slow := _live_timing(p, main, wt, base, tfiles)):  # T-5446: the hooks timed once per batch
@@ -2717,11 +2809,15 @@ def _run(p, main, ids, defer_verify=False, judged=None):
             need[g] = (need.get(g) or set()) | set(names) | set(flaky) if names and not owed else None  # the suite's other tests passed here (T-4889: not the cut ones)
             ids = [b.id for b, _ in merged]
             explained, who = set(), {}
-            blamed = _blame(red["out"], names or red["failing"], ids, diff, reach, explained, who)
-            if blamed and suite and g == suite and any(cov.values()):  # T-3809: the lane carrying a covered module first
+            # T-5982: a lane whose diff could not be listed is held alone for it (its own tests are unknown, so no red can
+            # be proven another lane's, and no other lane is blamed for what it may have caused)
+            unk = unlisted()
+            blamed = {i: (_UNLISTED, "") for i in unk} if unk else _blame(red["out"], names or red["failing"], ids, diff,
+                                                                           reach, explained, who)
+            if blamed and not unk and suite and g == suite and any(cov.values()):  # T-3809: the lane carrying a covered module first
                 blamed = owner_probe(blamed, g, explained, who)
             mine = {}  # T-4986: a bisected lane's own classes: what it is left out for, and all its line names
-            rest = [n for n in names if n not in explained] if blamed else list(names)
+            rest = [] if unk else [n for n in names if n not in explained] if blamed else list(names)
             if not blamed or rest:  # T-4986 review: what no lane's file explains is bisected in this round too
                 for at, own, spent in bisect(g, rest, not cls):
                     only = "only " + c.joinmore(own, 4) if own else "the whole red gate"
@@ -5000,6 +5096,11 @@ def _fix_open(p, why, tid=""):
     named = set(_CLASS_RE.findall(why or ""))
     if not named:
         return ""
+    lb = c.find_brief(p, tid) if tid else None
+    if lb and (lb.meta.get("lane") or ""):  # a task that never had a lane changed no test of its own
+        own = _lane_own(p, tid)  # None (unknown: a lane whose diff can't be told) counts every test as the lane's
+        if any(c.is_own_test(n, own) for n in named):
+            return ""  # T-5982: a refusal naming a test the lane itself added or changed is its own: no FIX's wait excuses it
     for b in sorted(c.load_briefs(p), key=lambda x: c.id_num(x.id)):
         red = b.meta.get("trunk_red")
         if isinstance(red, list) and red and b.id != tid and b.status not in c.CLOSED and named <= set(red):  # never itself
@@ -5155,7 +5256,9 @@ def _red_waiting(p, main, ids):
             path = b.meta.get("lane") or ""
             sha = _git(path, "rev-parse", "--short", "HEAD").stdout.strip() if os.path.isdir(path) else ""
             if b.status not in c.CLOSED and sha and (named := _refusal_classes(b, sha)) and len(named) <= KNOWN_RED_MAX:
-                want[t] = named
+                own = _lane_own(p, t, main)  # T-5982: a lane's own tests are never waited out as trunk's known red
+                if not any(c.is_own_test(n, own) for n in named):
+                    want[t] = named
         except Exception:  # noqa: BLE001 — a brief that can't be read is simply closed as before
             continue
     if not want:

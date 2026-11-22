@@ -5,6 +5,7 @@ Stdlib only. Everything that writes state goes through this module (via fm).
 import _thread
 import datetime
 import fcntl
+import fnmatch
 import functools
 import json
 import os
@@ -7706,6 +7707,56 @@ def failed_classes(output):
     tests the output names."""
     blocks = re.findall(r"(?m)^((?:  failed class: [\w.]+\r?(?:\n|\Z))+)", output or "")  # run.py's one contiguous block
     return re.findall(r"[\w.]+", " ".join(blocks[-1:]).replace("failed class:", "")) or failing_tests(output)
+
+
+def test_module(name):
+    """T-5982: the module a failing test's name sits in: `mod.Class.test` and `pkg.mod.Class` (the first part named test*,
+    else the one before the first Class), `path/test_mod.py::Class::test` (the file's stem)."""
+    head = (name or "").split("::")[0].strip()
+    if "/" in head or head.endswith(".py"):
+        return os.path.basename(head).rsplit(".", 1)[0]
+    parts = head.split(".")
+    if hit := next((x for x in parts if x.startswith("test_")), ""):
+        return hit
+    at = next((n for n, x in enumerate(parts) if x[:1].isupper()), len(parts))
+    return parts[max(at - 1, 0)]
+
+
+_OWN_FILE = re.compile(r"^(?:[\w.\-/]*/)?(?:test_[\w\-]*|[\w\-]*_test)\.py$")
+_OWN_MOD = re.compile(  # test_x, test_x.py, test_x.Class.test, test_x::Class, test_x.py::C::t, plugin.tests.test_x, test_x*.py
+    r"^(?:[\w.\-/]*/)?(?:[A-Za-z_]\w*\.)*?(test_[\w*?]+)(?:\.py(?:::[\w:.\[\]\-]*)?|::[\w:.\[\]\-]*|(?:\.[A-Za-z_]\w*)*)$")
+
+
+def own_test_modules(changed, cmds=()):
+    """T-5982: what a lane's own tests are, as the sorted module names: every test file its diff adds or changes
+    (`changed`) and every test module a criterion's verify command (`cmds`) names, in any form the briefs write (`test_x`,
+    `test_x.Class.test`, `test_x::Class`, `path/test_x.py::C::t`, `plugin.tests.test_x`, `-p test_x*.py`, inside a
+    `bash -c '...'`). A module is the lane's whole: a `-k` word never narrows it, for the train's reds are class-level
+    (`mod.Class`) and no word matches one. The token after `-k` is a pattern, never a module; a bare `test_*` glob names
+    no module. None when `changed` is None (the diff could not be listed): the caller then counts every test as the lane's
+    (fail closed). Known red, a red base and a trunk red excuse only a test that is not in this list."""
+    if changed is None:
+        return None
+    own = {f.rsplit("/", 1)[-1].rsplit(".", 1)[0] for f in changed if _OWN_FILE.match(f or "")}
+    for cmd in cmds or ():
+        try:
+            toks = shlex.split(cmd or "")
+        except ValueError:
+            toks = (cmd or "").split()
+        toks = [w for t in toks for w in (t.split() if re.search(r"\s", t) else [t])]  # `bash -c 'a && b'` is one token
+        for n, t in enumerate(toks):
+            if (m := _OWN_MOD.match(t)) and not t.startswith("-") and (n == 0 or toks[n - 1] != "-k") and m.group(1) != "test_*":
+                own.add(m.group(1))
+    return sorted(own)
+
+
+def is_own_test(name, own):
+    """T-5982: True when the failing test `name` is in a module a lane owns (own_test_modules' list; a glob in it matches
+    modules by fnmatch). own None (unknown) is True: a test is only excused once it is known not to be the lane's."""
+    if own is None:
+        return True
+    mod = test_module(name)
+    return any(fnmatch.fnmatchcase(mod, m) for m in own)
 
 
 def class_lines(names, indent="    ", n=50):

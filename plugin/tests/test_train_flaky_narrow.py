@@ -99,9 +99,21 @@ class BaseFirst(ttf.Gate):
         self.red = {"GATE_ENV_RED": "1"}  # red on the base too, in the gate's own environment
         self.green_env()  # the base's green is cached from before the machine changed: _base_red passes
 
-    def test_a_class_red_on_the_bare_base_drops_no_lane_even_when_a_lane_changed_its_test(self):
+    def test_a_lane_that_changed_the_test_red_on_the_bare_base_is_left_out_for_it(self):
+        """T-5982: the base's red excuses only a test no lane touched: a lane's own edit of it is the lane's."""
         self.base("plugin/tests/test_env.py", ttf.ENV.format(""))
         a = self.lane(1, "plugin/tests/test_env.py", ttf.ENV.format("") + "# a lane's edit\n")
+        b = self.lane(2, "b.txt")
+        r = self.train(a, b, check=False, env=self.red)
+        out = r.stdout + r.stderr
+        log = self.fm("task", "show", a).stdout
+        self.assertIn("left out of a merge train", log, out)
+        self.assertIn("test_env.Env", log)
+        self.assertNotIn("put back", log)
+
+    def test_a_class_red_on_the_bare_base_drops_no_lane_when_none_changed_its_test(self):
+        self.base("plugin/tests/test_env.py", ttf.ENV.format(""))
+        a = self.lane(1, "a.txt")
         b = self.lane(2, "b.txt")
         r = self.train(a, b, check=False, env=self.red)
         out = r.stdout + r.stderr

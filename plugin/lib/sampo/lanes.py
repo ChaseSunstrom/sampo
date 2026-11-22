@@ -6119,12 +6119,34 @@ def _pm_sweep_reset(p):
         c.write_atomic(os.path.join(_pm_dir(p), ".sweep"), json.dumps({"t": time.time(), "k": 0}))
 
 
-def _pm_partial(p, main, wt, since, heads=1, sha=None, r=None, sweep=None):
+def _pm_own_mods(p, tasks):
+    """T-5982: the test modules (globs too) the lanes `tasks` named in their own criteria (their verify commands). A brief
+    that is gone, or one that can't be read, names none."""
+    mods = set()
+    for t in dict.fromkeys(tasks or ()):
+        try:
+            b = c.find_brief(p, t)
+            mods |= set(c.own_test_modules((), [x for _, x in b.verify_cmds() if x])) if b else set()
+        except Exception:  # noqa: BLE001 — an unreadable brief names no module: its diff's own test files still count
+            continue
+    return sorted(mods)
+
+
+def _pm_own_files(p, tasks):
+    """T-5982: the repo's test files the lanes `tasks` named in their own criteria (their verify commands), whole: the
+    live train runs no criteria stage and no gate, so this behind run is where a lane's own criterion meets the merged
+    head, and the map and the run cache (class-narrowed, T-5588) may not link its module to the lane's diff at all
+    (the 15:01 land of 2026-11-22 let in `test_lane_land -k stale` red). A brief that is gone names none."""
+    return [f"plugin/tests/{m}.py" for m in _pm_own_mods(p, tasks) if "*" not in m]
+
+
+def _pm_partial(p, main, wt, since, heads=1, sha=None, r=None, sweep=None, tasks=()):
     """(cmd, tests) of the affected classes (cli.affected over `since`..the tree in wt; cmd "" when no test is reached: the
     shape pass that ran first is all the head needs), or None when the whole suite runs: not this repo's own runner (the
     affected template is not the operator's suite), a sweep is due, or the selection failed (no affected command, no map: a
     full run). A due sweep gets a True in the list `sweep` (the caller runs it uncached: ship's full pass); the record `sha`
-    (r) that is to be one is marked so (`sweep`): a sweep that times out and is tried again stays one."""
+    (r) that is to be one is marked so (`sweep`): a sweep that times out and is tried again stays one. T-5982 `tasks`: the
+    merges' lanes; the test modules their criteria name always run, whole (_pm_own_files)."""
     from sampo import cli
     if os.environ.get("FM_POSTMERGE_CMD") or not os.path.exists(os.path.join(main, "plugin", "tests", "run.py")):
         return None
@@ -6135,7 +6157,7 @@ def _pm_partial(p, main, wt, since, heads=1, sha=None, r=None, sweep=None):
             sweep.append(True)
         return None
     try:
-        cmd, tests, _ = cli.affected(c.Project(p.slug, wt, p.dir, p.lane), since=since)
+        cmd, tests, _ = cli.affected(c.Project(p.slug, wt, p.dir, p.lane), since=since, also=_pm_own_files(p, tasks))
     except Exception as e:  # noqa: BLE001 — a convenience: the full suite decides
         c.log_event(p, "postmerge_partial_failed", data={"error": f"{type(e).__name__}: {e}"[:200]})
         return None  # the full run, cached as usual (_pm_uncached_due); its green restarts the sweep counts
@@ -6489,11 +6511,12 @@ def _pm_rebuild(p, main, wt, sha, r, gone):
     return True
 
 
-def _pm_judge(main, wt, sha, gone, code, out):
+def _pm_judge(main, wt, sha, gone, code, out, owns=()):
     """T-5791 (out of pm_verify, so the shape pass and the full run judge a red alike; it records nothing): (reds, reach,
     flaky, inherited, unrelated, files) of a run that ended `code` with `out`. reach is what stays blamed on the merge once
     the flaky (green alone), docs-only (unrelated) and inherited (red on the first parent too) classes are excused. The
-    reruns move wt: to the first parent's tree last."""
+    reruns move wt: to the first parent's tree last. T-5982 `owns`: the modules the merged task's criteria name (_pm_own_mods);
+    with the test files the merge changed they are its own, and red there is never excused as inherited."""
     flaky = inherited = unrelated = []
     reds = pm_classes(out, code) if code and code != 124 else []
     files, reach = _pm_files(main, sha), reds
@@ -6528,8 +6551,11 @@ def _pm_judge(main, wt, sha, gone, code, out):
                     # T-5518: per class: the classes the parent also fails are excused, the rest stay blamed
                     named = {m.rpartition(".")[0] or m for m in _FAILED.findall(pout)}
                     if pcode:
-                        inherited = [k for k in reach if k in named]
-                        reach = [k for k in reach if k not in named]
+                        # T-5982: a test file the merge itself changed is its own: red there is never trunk's inheritance
+                        own = c.own_test_modules(files)
+                        own = None if own is None else sorted({*own, *owns})  # + the task's criterion modules, whole
+                        inherited = [k for k in reach if k in named and not c.is_own_test(k, own)]
+                        reach = [k for k in reach if k not in inherited]
     return reds, reach, flaky, inherited, unrelated, files
 
 
@@ -6636,7 +6662,7 @@ def pm_verify(p, main, sha):
             if _pm_tree_lost(p, sha, r, tries, wt):
                 return False
             if scode and scode != 124 and _pm_shape_named(sout, scode):  # no class named: no verdict, the suite decides
-                verdict = _pm_judge(main, wt, sha, gone, scode, sout)
+                verdict = _pm_judge(main, wt, sha, gone, scode, sout, _pm_own_mods(p, [r["task"]]))
                 if verdict[1]:  # blamed on this merge after the flake, docs-only and parent checks: it stands for the run
                     code, out, judged = scode, sout, verdict
                 else:  # excused (or nothing to judge): the full suite still decides, on the tree as it was
@@ -6647,7 +6673,7 @@ def pm_verify(p, main, sha):
             # T-5936: a head runs the classes its own change reaches; a requeued merge (reverts in its tree) and a sweep
             # (due, or a timed-out one retried: r["sweep"]) run the whole suite
             sweep = []
-            part = None if gone else _pm_partial(p, main, wt, f"{sha}^1", sha=sha, r=r, sweep=sweep)
+            part = None if gone else _pm_partial(p, main, wt, f"{sha}^1", sha=sha, r=r, sweep=sweep, tasks=[r["task"]])
             if part is not None or r.get("partial"):
                 pm_set(p, sha, partial=part is not None)
             # a sweep is an uncached run: it is the full pass sampo ship pushes without running the suite itself
@@ -6662,7 +6688,7 @@ def pm_verify(p, main, sha):
                                           low=True)  # T-3757: what landed becomes the usual; T-4197; T-4570: yields slots to waiting builders
             if _pm_tree_lost(p, sha, r, tries, wt):  # T-4728: a run in a removed folder ends 127: no merge is reverted for it
                 return False
-            judged = _pm_judge(main, wt, sha, gone, code, out)
+            judged = _pm_judge(main, wt, sha, gone, code, out, _pm_own_mods(p, [r["task"]]))
         reds, reach, flaky, inherited, unrelated, files = judged
         vanished = _tree_lost(wt)  # T-4728: judged before the finally removes it: the reruns above ran in this tree too
     finally:
@@ -6876,6 +6902,7 @@ def pm_run(p, main):
                 try:
                     # T-5936: the heads' own affected classes, unless a sweep is due (a requeued merge: the whole suite)
                     green = _pm_green_at(p, main, head, reds, short, part=part, heads=len(todo),
+                                         tasks=[t for t in (recs[s].get("task") for s in todo) if t],
                                          since=None if any(recs[s].get("after_reverts") for s in todo) else f"{todo[0]}^1")
                     # T-3800: a red HEAD run is narrowed the way a merge's own verify is (T-3216), not answered with
                     # a full suite per merge: its red classes alone at HEAD (green: flaky, the run stands), else alone
@@ -6912,7 +6939,7 @@ def pm_run(p, main):
             return
 
 
-def _pm_green_at(p, main, sha, reds=None, short=None, part=None, since=None, heads=1):
+def _pm_green_at(p, main, sha, reds=None, short=None, part=None, since=None, heads=1, tasks=()):
     """T-3446: the full suite on sha in a throwaway worktree; True only on a clean pass (a probe: no merge's record, but
     an uncached pass is recorded for fm ship, T-3666). `reds` (a list) gets a red run's failing classes (T-3800). T-5791:
     `short` (a list) gets a True when the probe stopped at a shape-pass red that held alone: the full suite never ran, so
@@ -6939,7 +6966,7 @@ def _pm_green_at(p, main, sha, reds=None, short=None, part=None, since=None, hea
                         short.append(True)
                     return False  # green alone (a flake) falls through: the full suite is the answer then
         sweep = []
-        plan = _pm_partial(p, main, wt, since, heads, sweep=sweep) if part is not None and since else None
+        plan = _pm_partial(p, main, wt, since, heads, sweep=sweep, tasks=tasks) if part is not None and since else None
         if plan is not None:
             part.append(True)
         full = False if plan is not None else bool(sweep) or _pm_uncached_due(p)  # a sweep is uncached: ship's full pass

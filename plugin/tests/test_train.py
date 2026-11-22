@@ -19,6 +19,7 @@ import unittest
 from unittest import mock
 
 import test_lane_land
+from helpers import ForemanTestCase
 from test_accept_check import AcceptCase, stub
 from test_express_lane import ExpressBase
 from test_lane_train import AffectedBase, TrainCase
@@ -187,6 +188,48 @@ class CullAllRed(unittest.TestCase):
         with self.assertRaises(train.c.PolicyError) as e:
             train._shape_cull(["a", "b"], self.shape(), base_rerun=lambda n: train.ShapeVerdict("cut", "", 1.0))
         self.assertIn("no lane parked", str(e.exception))
+
+
+class ShapeKnownRed(unittest.TestCase):
+    """T-5982: a repo-shape class red on the base is forgiven (T-5805), and one red in every lane's tree dropped (T-5880),
+    only when no lane changed or names its module; unknown own (None) forgives nothing."""
+
+    def live(self, own, merged="test_x.K, test_y.M", base=("test_x.K",)):
+        with mock.patch.object(train, "_shape_tree", return_value=True), \
+                mock.patch.object(train, "_shape_run", return_value=("red", merged)), \
+                mock.patch.object(train, "_base_shape_red", return_value=list(base)), \
+                mock.patch.object(train, "_trunk_red_capture") as cap:
+            return train._live_shape("wt", object(), "main", "base", own=own), cap
+
+    def test_a_base_red_class_is_forgiven_when_no_lane_owns_its_module(self):
+        got, cap = self.live([], merged="test_x.K")
+        self.assertEqual(got.verdict, "green")
+        cap.assert_called_once()
+
+    def test_a_base_red_class_in_a_module_a_lane_changed_is_that_lanes_red(self):
+        got, cap = self.live(["test_x"], merged="test_x.K")
+        self.assertEqual((got.verdict, got.names), ("red", "test_x.K"))
+        got, _ = self.live(["test_x"])
+        self.assertEqual(got.names, "test_x.K, test_y.M", "the owned base-red class stays beside the new one")
+        cap.assert_not_called()
+
+    def test_an_unknown_own_forgives_nothing_and_a_callable_is_asked_only_for_a_red_tree(self):
+        self.assertEqual(self.live(None, merged="test_x.K")[0].verdict, "red")
+        asked = []
+        self.assertEqual(self.live(lambda: asked.append(1) or [], merged="test_x.K")[0].verdict, "green")
+        self.assertEqual(asked, [1])
+        with mock.patch.object(train, "_shape_tree", return_value=True), \
+                mock.patch.object(train, "_shape_run", return_value=("green", "")):
+            train._live_shape("wt", object(), "main", "base", own=lambda: asked.append(2) or [])
+        self.assertEqual(asked, [1], "a green tree needs no diff")
+
+    def test_the_cull_never_drops_a_class_as_no_lanes_when_a_lane_owns_its_module(self):
+        shape = CullAllRed.shape()
+        for own, parked in (([], 0), (["test_x"], 2), (None, 2)):
+            asked = []
+            got = train._shape_cull(["a", "b"], shape, base_rerun=lambda k: asked.append(k) or train.ShapeVerdict("red", k, 1.0),
+                                    own=own)
+            self.assertEqual((len(got), bool(asked)), (parked, parked == 0), own)
 
 
 PIPE_FILE = "plugin/lib/sampo/train.py"
@@ -895,7 +938,7 @@ class InsertionUnionLib(AffectedBase):
         why = train._probe(p, self.repo, base, None, self.git("rev-parse", "foreman/lane1"), [], tests=False)
         self.assertIn(f"conflicts with the base: {self.LIB}", why)
 
-class BehindAffected(PmCase):
+class BehindBase(PmCase):
     """T-5936: the behind verify of a merged head ran the whole suite (13,000 tests, 100% of the CPU for hours) after every
     merge. Now it runs the shape modules and only the classes cli.affected picks from the head's own change, and the whole
     suite once per sweep: when PM_SWEEP_S or PM_SWEEP_EVERY merged heads have passed since the last one. A partial verify is
@@ -953,6 +996,10 @@ class BehindAffected(PmCase):
     def sweep_state(self):
         with open(os.path.join(slanes._pm_dir(self.p), ".sweep")) as f:
             return json.load(f)
+
+
+class BehindAffected(BehindBase):
+    """T-5936: what the behind verify runs (BehindBase's fixture)."""
 
     def test_behind_affected_a_head_that_changes_one_module_runs_its_classes_and_the_shape_pass_only(self):
         self.swept()
@@ -1108,6 +1155,69 @@ class BehindAffected(PmCase):
         slanes.pm_set(self.p, sha, sweep=True)
         self.assertEqual(self.verify(), ["shape", "full"], "a record that was to be a full run stays one")
         self.assertFalse(self.rec(sha).get("partial"))
+
+
+class BehindKnownRed(BehindBase):
+    """T-5982: the live train runs no gate of its own, so the behind run is where a lane's own criterion meets the merged
+    head. 2026-11-22 15:01: `test_lane_land -k stale` (a lane's own criterion) went red on trunk because no map link and no
+    run-cache class tied that module to the lane's diff, and the partial run never named it. The modules a landed lane's
+    criteria name now always run, whole, beside what its change reaches."""
+
+    def own_head(self, rel, ac):
+        """A merge of a lane (touching rel) whose one criterion is `ac`'s command, recorded pending."""
+        tid = json.JSONDecoder().raw_decode(self.fm("task", "new", "Own", "--type", "FEATURE", "--tier", "S", "--ac", ac,
+                                                    "--step", "s", "--json").stdout)[0]["id"]
+        self.n += 1
+        self.git("checkout", "-qb", f"b-o{self.n}", self.trunk)
+        with open(os.path.join(self.repo, rel), "a") as f:
+            f.write(f"{self.n}\n")
+        self.git("add", "-A")
+        self.git("commit", "-qm", f"o{self.n}")
+        self.git("checkout", "-q", self.trunk)
+        return self.merge(f"o{self.n}", tid)
+
+    def test_a_landed_lanes_own_criterion_module_runs_though_nothing_links_it_to_the_change(self):
+        self.swept()
+        sha = self.own_head("plugin/lib/sampo/b.py", "stale :: python3 plugin/tests/run.py test_a -k stale")
+        self.assertEqual(self.verify(), ["shape", "part", "test_a", "test_b"],
+                         "test_a is the criterion's own, run whole; test_b is what b.py reaches")
+        self.assertEqual(self.rec(sha)["state"], "green")
+
+    def test_a_red_in_the_criterions_module_holds_the_merge_not_the_suite_that_ignored_it(self):
+        self.swept()
+        self.env(PM_FAIL="1", FM_POSTMERGE_RERUN="exit 1")  # the class stays red alone: no flake
+        self.template("echo part {names} >> $PM_MARK; echo 'FAIL: t (test_a.A.t)'; test -z \"$PM_FAIL\"")
+        sha = self.own_head("plugin/lib/sampo/b.py", "stale :: python3 plugin/tests/run.py test_a -k stale")
+        self.assertEqual(self.verify()[:3], ["shape", "part", "test_a"])
+        self.assertNotEqual(self.rec(sha)["state"], "green", "the red the criterion's module shows is not passed over")
+
+    def test_two_lanes_landed_together_each_green_alone_run_every_lanes_criterion_on_the_combined_head(self):
+        """A live train lands two lanes in one batch: the one behind run judges the merged head of both, so lane a's
+        criterion module (test_b, linked to nothing a touches) runs beside what lane b's change reaches; a red there
+        holds the merge (not green)."""
+        self.swept()
+        self.env(PM_FAIL="1", FM_POSTMERGE_RERUN="exit 1")  # the class stays red alone: no flake
+        self.template("echo part {names} >> $PM_MARK; echo 'FAIL: t (test_b.B.t)'; test -z \"$PM_FAIL\"")
+        first = self.own_head("notes/readme.txt", "alone :: python3 plugin/tests/run.py test_b -k alone")
+        second = self.own_head("plugin/lib/sampo/a.py", "other :: true")
+        ran = self.verify()
+        self.assertEqual(ran[:2], ["shape", "part"], ran)
+        self.assertIn("test_b", ran[2:], "lane one's own criterion module runs on the combined head")
+        for sha in (first, second):
+            self.assertNotEqual(self.rec(sha)["state"], "green", f"{ran} {self.rec(first)} {self.rec(second)}")
+
+    def test_a_criterion_that_names_no_test_module_adds_nothing(self):
+        self.swept()
+        self.own_head("plugin/lib/sampo/b.py", "ok :: true")
+        self.assertEqual(self.verify(), ["shape", "part", "test_b"])
+
+    def test_pm_own_files_names_the_modules_of_every_listed_task_once_and_skips_a_missing_brief(self):
+        a = json.JSONDecoder().raw_decode(self.fm("task", "new", "A", "--type", "FEATURE", "--tier", "S", "--ac",
+                                                  "a :: python3 plugin/tests/run.py test_a test_b.Cls -k x", "--step", "s",
+                                                  "--json").stdout)[0]["id"]
+        self.assertEqual(slanes._pm_own_files(self.p, [a, a, "T-9999999"]),
+                         ["plugin/tests/test_a.py", "plugin/tests/test_b.py"])
+        self.assertEqual(slanes._pm_own_files(self.p, ()), [])
 
 
 class StandingShip(AcceptCase):
@@ -1549,7 +1659,7 @@ class SlimGate(TrainCase):
         p = c.find_project(self.repo)
         seen = {}
 
-        def shape(wt, p=None, main=None, base=None, classes=None, files=None):
+        def shape(wt, p=None, main=None, base=None, classes=None, files=None, own=()):
             seen.setdefault("shape", files)
             return train.ShapeVerdict("green")
 
@@ -1651,6 +1761,39 @@ class LeftoverKnownRed(LeftoverBase):
         self.assertIn(f"sampo lane land: {a}: its failing classes are no longer red on trunk: the close is queued again", err)
         self.assertNotIn(a, [t for t, why in got["hand"] if "red on trunk" in why], got["hand"])
         self.assertEqual(asked[0], {self.RED}, "only the skipped lane's classes are asked about")
+
+    def own_leftover(self, n):
+        """T-5982: a merged, open leftover whose own diff is the red class's test file (test_x.py)."""
+        tid = self.lane(n, "test_x.py", when=test_lane_land.OLD)
+        self.audited(tid)
+        self.returned(tid, f"Lane {n}")
+        self.train(tid)
+        return tid
+
+    def test_a_leftover_that_changed_the_red_test_itself_is_closed_not_waited_out(self):
+        a, = self.leftovers(1)
+        o = self.own_leftover(2)
+        self.refuse(a, self.red_why())
+        self.refuse(o, self.red_why())
+        self.new_lane()
+        got, err, events = self.run_land(self.red_now)
+        closed = [t for k, t in events if k == "close"]
+        self.assertNotIn(a, closed, err)
+        self.assertIn(o, closed, "its own test is red: no known-red wait, the close runs and holds the verdict")
+        self.assertNotIn(f"{o}: close skipped", err)
+
+    def test_a_fix_the_refusal_waits_for_never_owns_a_lanes_own_red_test(self):
+        a, = self.leftovers(1)
+        o = self.own_leftover(2)
+        fix = self.fm_json("task", "new", "Trunk red", "--type", "FIX", "--tier", "S", "--ac", "ok :: true", "--step", "s")["id"]
+        b = c.find_brief(self.p, fix)
+        b.meta["trunk_red"] = [self.RED]
+        c.save_brief(self.p, b)
+        why = self.red_why()
+        self.assertEqual(train._fix_open(self.p, why, a), fix, "a lane that left the test alone waits for the FIX")
+        self.assertEqual(train._fix_open(self.p, why, o), "", "a lane that changed the test itself does not")
+        self.assertFalse(train._fix_wait(self.p, self.repo, o, why))
+        self.assertNotIn("close_waits_on", c.find_brief(self.p, o).meta)
 
     def test_a_refusal_naming_a_class_that_is_not_red_is_closed_as_before(self):
         a, b = self.leftovers(2)
@@ -1848,3 +1991,307 @@ class CloserParallel(unittest.TestCase):
             closer.put([t], left=True)
         closer.join()
         self.assertEqual(most[0], 1)
+
+
+# T-5982: a lane's own tests are never excused as known red (a class red on the base too, a trunk red, a baseline red)
+KNOWN_ENV = ("# map-links: a.txt\nimport os, unittest\n\n\nclass {0}(unittest.TestCase):\n    def test_it(self):\n"
+             "        self.assertFalse(os.environ.get('GATE_ENV_RED'), 'known red here')\n")
+
+
+class OwnTestsKnownRed(unittest.TestCase):
+    # every criterion shape the real briefs hold (state/projects/*/tasks/*.md verify commands), and the modules each names
+    FORMS = [
+        ("python3 plugin/tests/run.py test_a", ["test_a"]),
+        ("python3 plugin/tests/run.py test_a test_b test_c", ["test_a", "test_b", "test_c"]),
+        ("python3 plugin/tests/run.py test_a -k stale", ["test_a"]),
+        ("python3 plugin/tests/run.py -k test_a", []),
+        ("python3 plugin/tests/run.py test_a.PostMergeVerify", ["test_a"]),
+        ("python3 plugin/tests/run.py test_a.Lanes.test_x", ["test_a"]),
+        ("python3 plugin/tests/run.py test_a::Lanes test_b::C::test_y", ["test_a", "test_b"]),
+        ("nice -n 10 python3 plugin/tests/run.py test_a 2>&1 | tail -30", ["test_a"]),
+        ("env FOREMAN_NO_TEST_CACHE=1 python3 plugin/tests/run.py test_a", ["test_a"]),
+        ("python/cpython-3.12-linux-x86_64-gnu/bin/python3.12 plugin/tests/run.py test_a", ["test_a"]),
+        ("python3 plugin/tests/run.py test_a test_b && cd mods/foreman-ui && ~/.local/bin/claude plugin test .", ["test_a", "test_b"]),
+        ("python3 -m unittest test_a", ["test_a"]),
+        ("python3 -m unittest -q test_a test_b", ["test_a", "test_b"]),
+        ("python3 -m unittest plugin.tests.test_a.Cls.test_x", ["test_a"]),
+        (".venv/bin/python -m unittest discover -s ../tests -p test_a.py", ["test_a"]),
+        (".venv/bin/python -m unittest discover -s ../tests -p 'test_a*.py'", ["test_a*"]),
+        (".venv/bin/python -m unittest discover -s ../tests -p 'test_*.py'", []),
+        (".venv/bin/python test_a.py", ["test_a"]),
+        ("bash -c 'cd app && ../.venv/bin/python -m unittest discover -s ../tests -p test_a.py -q'", ["test_a"]),
+        ("pytest plugin/tests/test_a.py::C::test_y -k word", ["test_a"]),
+        ("pytest plugin/tests/test_a.py plugin/tests/test_b.py", ["test_a", "test_b"]),
+        ("python3 -m pytest plugin.tests.test_a", ["test_a"]),
+        ("true", []),
+        ("", []),
+    ]
+
+    def test_every_criterion_form_in_the_real_briefs_names_its_whole_modules(self):
+        for cmd, want in self.FORMS:
+            self.assertEqual(c.own_test_modules([], [cmd]), want, cmd)
+
+    def test_own_modules_come_from_the_diff_and_the_verify_commands(self):
+        own = c.own_test_modules(["plugin/tests/test_a.py", "plugin/lib/sampo/x.py", "docs/a.md", "tests/b_test.py"],
+                                 ["python3 plugin/tests/run.py test_b test_run -k KnownRed", "true", "pytest t/test_c.py -k test_x"])
+        self.assertEqual(own, ["b_test", "test_a", "test_b", "test_c", "test_run"])
+        self.assertIsNone(c.own_test_modules(None, ["x"]), "a diff that could not be listed: unknown")
+
+    def test_a_name_is_own_by_its_module_whatever_a_k_word_says(self):
+        """-k words never narrow: the train's reds are class-level (`mod.Class`), which no word matches (`-k stale` against
+        test_lane_land.LaneLand), so a module a criterion names is the lane's whole."""
+        own = c.own_test_modules(["plugin/tests/test_a.py"], ["python3 plugin/tests/run.py test_lane_land -k stale"])
+        for n in ("test_a.Any.test_x", "plugin/tests/test_a.py::Any::test_x", "test_lane_land.LaneLand", "test_a",
+                  "test_lane_land::LaneLand", "plugin.tests.test_lane_land.LaneLand", "test_lane_land.LaneLand.test_other"):
+            self.assertTrue(c.is_own_test(n, own), n)
+        for n in ("test_run.Other", "test_b.KnownRed", "test_ab.Any", "test_lane.LaneLand"):
+            self.assertFalse(c.is_own_test(n, own), n)
+        self.assertTrue(c.is_own_test("test_zzz.Any", None), "unknown own: every test counts as the lane's")
+        self.assertTrue(c.is_own_test("test_a_more.X", c.own_test_modules([], ["run.py test_a*"])), "a glob names its modules")
+
+
+class GateKnownRed(__import__("test_train_flaky").Gate):
+    """The train gate with two base-red (known red) tests: the lane that edits one is held with it named; the one it
+    left alone is the base's and does not hold the gate."""
+    def setUp(self):
+        super().setUp()
+        self.red = {"GATE_ENV_RED": "1"}
+        self.base("plugin/tests/test_mine.py", KNOWN_ENV.format("Mine"))
+        self.base("plugin/tests/test_idle.py", KNOWN_ENV.format("Idle"))
+        self.green_env()
+
+    def test_a_lane_that_edits_a_known_red_test_is_held_with_it_named_and_an_untouched_one_passes(self):
+        a = self.lane(1, "plugin/tests/test_mine.py", KNOWN_ENV.format("Mine") + "# the lane's own edit\n")
+        b = self.lane(2, "b.txt")
+        r = self.train(a, b, check=False, env=self.red)
+        out = r.stdout + r.stderr
+        held = self.fm("task", "show", a).stdout
+        self.assertIn("left out of a merge train: its merge turns the gates red", held, out)
+        self.assertIn("test_mine.Mine", held)
+        self.assertIn("blamed: it changed plugin/tests/test_mine.py, the failing test", held)
+        self.assertNotIn("put back", held, "its own edit of a red test is never put back as the base's")
+        self.assertNotIn("left out of a merge train", self.fm("task", "show", b).stdout)
+        self.assertNotIn("own edit", open(os.path.join(self.repo, "plugin/tests/test_mine.py")).read(), out)
+        self.assertFalse(self.landed("b.txt") and self.landed("a.txt"), out)
+
+    def test_two_lanes_each_green_alone_and_red_combined_are_held_by_the_new_test_of_one_of_them(self):
+        """The 15:01 shape: lane a adds a.txt, lane b adds the test that is red once a.txt is in the tree. Neither is red
+        alone; the combined tree's gate runs b's own new test (a changed test file is the lane's own, whatever links it)
+        and the red holds the pair back: not both land."""
+        both = ("# map-links: b.txt\nimport os, unittest\n\n\nclass Both(unittest.TestCase):\n    def test_it(self):\n"
+                "        self.assertFalse(os.path.exists('a' + '.txt'), 'red with the other lane in')\n")
+        a = self.lane(1, "a.txt")
+        b = self.lane(2, "plugin/tests/test_both.py", both)
+        r = self.train(a, b, check=False)
+        out = r.stdout + r.stderr
+        held = self.fm("task", "show", b).stdout
+        self.assertIn("left out of a merge train", held, out)
+        self.assertIn("test_both.Both", held + out)
+        self.assertFalse(self.landed("a.txt") and os.path.exists(os.path.join(self.repo, "plugin/tests/test_both.py")), out)
+
+    def test_the_known_red_test_no_lane_touched_is_the_bases_and_blames_no_lane(self):
+        b = self.lane(1, "a.txt")
+        r = self.train(b, check=False, env=self.red)
+        out = r.stdout + r.stderr
+        self.assertNotIn("its merge turns the gates red", out)
+        self.assertNotIn("left out of a merge train", self.fm("task", "show", b).stdout)
+
+
+class CloseKnownRed(ForemanTestCase):
+    """T-5982: a close refused for linked tests that were already red in the last full run is excused as its baseline's,
+    except a test the task itself changed: that red is its own."""
+    SRC = "def add(a, b):\n    return a + b\n"
+    TEST = ("import unittest\nimport sys, os\nsys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))\nimport calc\n\n\n"
+            "class Calc(unittest.TestCase):\n    def test_add(self):\n        self.assertEqual(calc.add(1, 2), 3)\n")
+
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        os.makedirs(os.path.join(self.repo, "tests"))
+        shutil.copy(os.path.join(os.path.dirname(os.path.abspath(__file__)), "run.py"), os.path.join(self.repo, "tests", "run.py"))
+        for rel, text in (("calc.py", self.SRC), ("tests/test_calc.py", self.TEST), (".gitignore", "__pycache__/\n")):
+            with open(os.path.join(self.repo, rel), "w") as f:
+                f.write(text)
+        subprocess.run(["git", "-C", self.repo, "add", "-A"], check=True)
+        subprocess.run(["git", "-C", self.repo, "commit", "-qm", "suite"], check=True)
+        self.fm("check", "add", "python3 tests/run.py")
+        self.fm("check", "affected", "python3 tests/run.py {names}")
+        with open(os.path.join(self.repo, "calc.py"), "w") as f:
+            f.write("def add(a, b):\n    return a - b\n")  # red before the task, recorded by a full run
+        self.fm("check", check=False, env={"FOREMAN_SENTINEL": "off"})
+
+    def finish(self, rel, text):
+        tid = self.fm_json("task", "new", "Change", "--type", "FEATURE", "--tier", "S", "--ac", "works :: true",
+                           "--step", "s", "--scope", rel)["id"]
+        self.fm("focus", tid)
+        with open(os.path.join(self.repo, rel), "w") as f:
+            f.write(text)
+        return self.fm("task", "finish", tid, "--audit", "self", "--run", "true", check=False,
+                       env={"FOREMAN_SENTINEL": "off"})
+
+    def test_a_task_that_edits_the_red_test_itself_is_refused_not_excused(self):
+        r = self.finish("tests/test_calc.py", self.TEST + "# the task's own edit\n")
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertNotIn("its baseline task owns them", out)
+        self.assertIn("test_calc", out)
+        self.assertIn("never a baseline's", out)
+
+    def test_a_task_that_leaves_the_red_test_alone_is_still_excused_as_the_baselines(self):
+        r = self.finish("calc.py", "def add(a, b):\n    return a - b  # still\n")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("already red", r.stdout + r.stderr)
+
+
+class ExcuseSitesKnownRed(unittest.TestCase):
+    """T-5982: every function of train.py, lanes.py and cli.py that excuses or forgives a red (inherited, base red,
+    known red, baseline, forgiven) consults the lane's own tests, or is listed here with the reason it need not. A new
+    excuse site fails this until it does one or the other, so a lane's own tests are never excused by a path nobody swept."""
+    EXCUSE = re.compile(r"inherit|base_red|known_red|base_bad|base_green|base_shape|forgiv|excus|trunk_red|based\b|"
+                        r"known_bad|baseline|known_flaky")
+    OWN = re.compile(r"is_own_test|own_test_modules|_lane_own|owned_of|own_tests|_known_own|_pm_own_mods|_pm_own_files|"
+                     r"^owns?$")
+    SEEDS = {
+        "train.py": ["base_split", "base_red", "_base_red_once", "_probe_once", "_fix_open", "_red_waiting", "_live_shape",
+                     "_shape_cull"],
+        "lanes.py": ["_pm_judge", "pm_verify"],
+        "cli.py": ["_close_affected"],
+    }
+    ALLOW = {  # (file, function): why it needs no own set
+        ("train.py", "_base_red"): "runs the base once and hands the lane's own set to _base_red_once, which decides",
+        ("train.py", "_base_red_capture"): "captures a FIX for a red already decided inherited by base_split/_base_red_once",
+        ("train.py", "_base_shape_cached"): "caches the base's own red list; the forgiveness is _live_shape/_shape_cull",
+        ("train.py", "_base_shape_red"): "computes the base's red list only; _live_shape/_shape_cull decide who it forgives",
+        ("train.py", "_base_shape_rerun"): "reruns the base's shape classes only; the forgiveness stays in _live_shape",
+        ("train.py", "_trunk_red_capture"): "files a FIX for a red already decided trunk's; it excuses nothing",
+        ("train.py", "_union_proof"): "'based' here is a git base, not an excuse",
+        ("train.py", "base_check"): "delegates to base_split, which takes the lane's own set",
+        ("train.py", "shape_split"): "calls _live_shape/_shape_cull with own=own_tests",
+        ("train.py", "split"): "calls the shape split with own=own_tests",
+        ("train.py", "_known_red"): "asks run.py which classes are red on trunk; _red_waiting removes the lane's own first",
+        ("lanes.py", "merge"): "'based' here is a git base, not an excuse",
+        ("lanes.py", "based"): "nested in merge: a git base, not an excuse",
+        ("lanes.py", "_pm_trunk_red"): "files a FIX for the classes _pm_judge already decided inherited (own excluded)",
+        ("cli.py", "_concern_links"): "inherit_concerns is a concern-link option, not a red excuse",
+        ("cli.py", "_cmd_check"): "sampo check (the main thread's tree), not a lane gate; it only calls _baseline",
+        ("cli.py", "_baseline"): "captures a baseline FIX from an unchanged tree sampo check ran; no lane's tests are judged",
+        ("cli.py", "_known_flaky"): "reads the flaky list for _baseline's capture; no lane's tests are judged",
+    }
+
+    @classmethod
+    def funcs(cls):
+        import ast
+        out = {}
+        for f in cls.SEEDS.keys() | {"train.py", "lanes.py", "cli.py"}:
+            with open(os.path.join(LIB, "sampo", f), encoding="utf-8") as fh:
+                tree = ast.parse(fh.read())
+            for fn in ast.walk(tree):
+                if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                ids = {fn.name}
+                for n in ast.walk(fn):
+                    if isinstance(n, ast.Name):
+                        ids.add(n.id)
+                    elif isinstance(n, ast.Attribute):
+                        ids.add(n.attr)
+                    elif isinstance(n, ast.arg):
+                        ids.add(n.arg)
+                    elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        ids.add(n.name)
+                out.setdefault((f, fn.name), set()).update(ids)
+        return out
+
+    def test_every_function_that_excuses_a_red_consults_the_lanes_own_tests_or_says_why_not(self):
+        funcs = self.funcs()
+        bad = sorted(k for k, ids in funcs.items()
+                     if any(self.EXCUSE.search(i) for i in ids) and not any(self.OWN.search(i) for i in ids)
+                     and k not in self.ALLOW)
+        self.assertEqual(bad, [], "an excuse site that never asks which tests the lane owns: take the lane's own set "
+                                  "(c.is_own_test) or list it in ExcuseSitesKnownRed.ALLOW with the reason")
+
+    def test_the_named_excuse_sites_each_consult_the_lanes_own_tests(self):
+        funcs = self.funcs()
+        for f, names in self.SEEDS.items():
+            for n in names:
+                self.assertIn((f, n), funcs, f"{f}:{n} is gone: update SEEDS")
+                self.assertTrue(any(self.OWN.search(i) for i in funcs[(f, n)]), f"{f}:{n} no longer consults own tests")
+
+    def test_the_allowlist_holds_no_stale_or_reasonless_entry(self):
+        funcs = self.funcs()
+        for k, why in self.ALLOW.items():
+            self.assertIn(k, funcs, f"{k} is gone: drop it from ALLOW")
+            self.assertTrue(why.strip(), f"{k} has no reason")
+            self.assertTrue(any(self.EXCUSE.search(i) for i in funcs[k]),
+                            f"{k} is no excuse site any more: drop it from ALLOW")
+
+    def test_the_base_red_put_back_and_the_base_split_ask_the_lane_not_a_frozen_list(self):
+        funcs = self.funcs()
+        self.assertIn("owned_of", funcs[("train.py", "base_red")])
+        self.assertIn("_known_own", funcs[("train.py", "base_split")])
+        self.assertNotIn("own_tests", funcs[("train.py", "base_split")])  # the None-collapsing list is not what it reads
+
+    def test_a_lane_whose_diff_is_unknown_is_unlisted_and_adds_no_module_to_the_others(self):
+        owned = {"a": ["test_a"], "b": None, "c": ["test_c", "test_a"]}.get
+        self.assertEqual(train._unlisted(["a", "b", "c"], owned), ["b"])
+        self.assertEqual(train._known_own(["a", "b", "c"], owned), ["test_a", "test_c"])
+        self.assertEqual(train._known_own(["b"], owned), [])
+        self.assertEqual(train._unlisted(["a", "c"], owned), [])
+
+
+class PmKnownRed(ForemanTestCase):
+    """T-5982: the behind-verify excuses a class red on the merge's first parent too (inherited, no revert), except a test
+    file the merge itself changed: that class stays the merge's and the merge is reverted."""
+    SUITE = "[ -f base_red.txt ] && echo 'FAIL: t (test_m.A.t)' && exit 1; exit 0"  # test_m.A is red while base_red.txt exists
+
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        self.p = c.find_project(self.repo)
+        for k in ("FM_POSTMERGE_CMD", "FM_POSTMERGE_RERUN"):
+            os.environ[k] = self.SUITE
+            self.addCleanup(os.environ.pop, k, None)
+        self.tid = self.fm_json("task", "new", "Landed", "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true",
+                                "--step", "s")["id"]
+
+    def git(self, *args):
+        return subprocess.run(["git", "-C", self.repo, *args], capture_output=True, text=True).stdout.strip()
+
+    def land(self, name):
+        self.git("checkout", "-qb", f"b-{name}")
+        with open(os.path.join(self.repo, name), "w") as f:
+            f.write(name)
+        self.git("add", "-A")
+        self.git("commit", "-qm", name)
+        self.git("checkout", "-q", "-")
+        self.git("merge", "-q", "--no-ff", "-m", f"Merge {name}", f"b-{name}")
+        sha = self.git("rev-parse", "HEAD")
+        with mock.patch.object(slanes, "pm_spawn"):
+            slanes.pm_record(self.p, sha, self.tid, self.repo)
+        return sha
+
+    def test_a_merge_that_changed_the_red_test_file_is_reverted_not_inherited(self):
+        slanes.pm_set(self.p, self.land("base_red.txt"), state="green")  # test_m.A red on trunk before the merge
+        sha = self.land("test_m.py")  # the merge's own test file: its class is the merge's
+        slanes.pm_run(self.p, self.repo)
+        r = slanes.pm_records(self.p)[sha]
+        self.assertEqual((r["state"], r["classes"]), ("reverted", ["test_m.A"]))
+        self.assertFalse(os.path.exists(os.path.join(self.repo, "test_m.py")), "reverted")
+
+    def test_a_merge_whose_task_criterion_names_the_red_module_is_reverted_not_inherited(self):
+        """A merge that changed no test file, its task's own criterion runs the module: red there is the merge's."""
+        self.tid = self.fm_json("task", "new", "Names it", "--type", "FEATURE", "--tier", "S", "--ac",
+                                "ok :: python3 plugin/tests/run.py test_m -k stale", "--step", "s")["id"]
+        slanes.pm_set(self.p, self.land("base_red.txt"), state="green")
+        sha = self.land("other.txt")
+        slanes.pm_run(self.p, self.repo)
+        r = slanes.pm_records(self.p)[sha]
+        self.assertEqual((r["state"], r["classes"]), ("reverted", ["test_m.A"]))
+        self.assertEqual(slanes._pm_own_mods(self.p, [self.tid]), ["test_m"])
+
+    def test_a_merge_that_changed_no_test_file_inherits_the_trunks_red(self):
+        slanes.pm_set(self.p, self.land("base_red.txt"), state="green")
+        sha = self.land("other.txt")
+        slanes.pm_run(self.p, self.repo)
+        r = slanes.pm_records(self.p)[sha]
+        self.assertEqual((r["state"], r["classes"]), ("inherited", ["test_m.A"]))
+        self.assertTrue(os.path.exists(os.path.join(self.repo, "other.txt")), "not reverted")
