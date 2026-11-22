@@ -89,6 +89,19 @@ REVIEWED = {
     **_review("read", "asks where a folder is, or what the account's home is, and only checks it (the default state folder's "
               "name, the account database's home, a cache folder under XDG_CACHE_HOME or ~/.cache); nothing is opened for "
               "writing", "sampo/core.py::_default_home", "sampo/prove.py::_unreal_reason", "sampo/map.py::_run_cache"),
+    **_review("read", "reads where Claude Code's config folder is (CLAUDE_CONFIG_DIR, or the account's default) to test whether "
+              "a lane's path sits under it, which Claude Code treats as sensitive; read-only (T-5889)",
+              "sampo/pilotsig.py::_claude_folder"),
+    **_review("read", "reads aider's own config files in the account's home and in the git root and cwd, to tell whether a "
+              "worker runs a Claude model; read-only, and a config that can't be read counts as Claude (T-5849)",
+              "sampo/smith.py::_aider_claude"),
+    **_review("read", "reads the Codex and Gemini CLI config files in the account's home (CODEX_HOME moves the Codex one), to "
+              "tell whether a worker runs a Claude model; read-only, and a config that can't be read counts as Claude (T-5849)",
+              "sampo/smith.py::_cli_config_claude"),
+    **_review("read", "sizes the state folders no project owns, the test runner's cache and Claude Code's plugin cache, for "
+              "tidy's footprint; sizing only, a removal is tidy --apply's", "sampo/tidy.py::_machine_units"),
+    **_review("read", "lists the test runner's cache files (XDG_CACHE_HOME, or the account's cache folder) with the project each "
+              "belongs to, for tidy's footprint; listing only", "sampo/tidy.py::_run_cache_rows"),
     **_review("mixed", "the function writes the state folder (FOREMAN_HOME, XDG_STATE_HOME: sandboxed in a test) or a temp "
               "folder it makes; the real home is only read, or it is the temporary HOME the function sets for a child",
               "sampo/cli.py::_attachment", "sampo/cli.py::_sign_receipt", "sampo/cli.py::cmd_audit",

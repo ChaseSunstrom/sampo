@@ -808,6 +808,36 @@
 ],
 1
 ],
+"sampo/pilotsig.py::_claude_folder": [
+[
+"expanduser"
+],
+1
+],
+"sampo/smith.py::_aider_claude": [
+[
+"expanduser"
+],
+1
+],
+"sampo/smith.py::_cli_config_claude": [
+[
+"expanduser"
+],
+1
+],
+"sampo/tidy.py::_machine_units": [
+[
+"expanduser"
+],
+2
+],
+"sampo/tidy.py::_run_cache_rows": [
+[
+"expanduser"
+],
+1
+],
 "sampo/which.py::mcp": [
 [
 "expanduser"
