@@ -2127,7 +2127,7 @@ def covered(text, repo, blobs):
     shadowing one later on sys.path goes unseen, and where an in-repo symlink points.
     T-3603: a module it ran is 'x.py::' (the file less its functions' bodies), a function it ran 'x.py::QUALNAME' and
     its module's 'x.py::'; a lambda's, a generator expression's or an annotation's outside any function counts as the
-    module's. A file it read whole stands for its parts. Accepted gaps: output that depends on where in the file a
+    module's. A file it read whole stands for its parts; a .py it only stat'ed (T-5586) is its 'x.py::' too. Accepted gaps: output that depends on where in the file a
     function is (a line number logged, not a traceback, which reads the file) and code read without being run
     (f.__code__)."""
     roots, out = _roots(repo), set()
@@ -2153,7 +2153,9 @@ def covered(text, repo, blobs):
         rel = p[len(root):].replace(os.sep, "/")
         if kind == "s":  # stat, exists, access: a file's content and mode, else whether it is there (review)
             if rel and not rel.startswith(STATE):
-                out.add(rel if rel in blobs else "?" + rel)
+                # T-5586: a stat of a Python file reads its mode and size, not a function's body (recall's verb-docs stamp
+                # stats every module of the package): its module code and mode, so a body edit reruns only who ran it
+                out.add(rel + "::" if rel in blobs and rel.endswith(".py") else rel if rel in blobs else "?" + rel)
             continue
         if kind == "d":
             if not (rel + "/").startswith(STATE):

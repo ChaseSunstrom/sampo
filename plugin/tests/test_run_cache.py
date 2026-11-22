@@ -328,13 +328,29 @@ class Coverage(unittest.TestCase):
                           f"s {d}/state/x.json"])
         with mock.patch.object(run, "HERE", self.here):
             got = run.covered(text, d, self.tree()[1])
-        self.assertEqual(got, {"plugin/lib/mod.py", "?plugin/tests/fixtures", "?plugin/lib/gone.py", "?state/x.json"})
+        self.assertEqual(got, {"plugin/lib/mod.py::", "?plugin/tests/fixtures", "?plugin/lib/gone.py", "?state/x.json"})
         self.assertTrue(self.changes(["?plugin/lib/gone.py"], lambda: self.edit("plugin/lib/gone.py")), "appears")
         self.assertTrue(self.changes(["?docs/guide.md"], lambda: os.remove(os.path.join(d, "docs", "guide.md"))), "goes")
         self.assertFalse(self.changes(["?plugin/tests/fixtures"], lambda: self.edit("plugin/tests/fixtures/data.txt")),
                          "a folder that still exists")
         self.assertTrue(self.changes(["?plugin/tests/fixtures"],
                                      lambda: shutil.rmtree(os.path.join(d, "plugin", "tests", "fixtures"))))
+
+    def test_a_stat_of_a_python_file_is_its_module_s_code_not_its_whole_text(self):  # T-5586
+        """A class that only stat'ed a .py (recall's verb-docs stamp stat'ed every module of the package: 193 classes
+        held localruns.py whole) depends on whether it is there, its mode and its module-level code, not on a function's
+        body: an edit of one reruns only the classes that ran that function. A file it also opened stays whole."""
+        d, u, m = self.d, "plugin/lib/units.py", "plugin/lib/mod.py"
+        with mock.patch.object(run, "HERE", self.here):
+            got = run.covered(f"s {d}/{u}\ns {d}/{m}\nf {d}/{m}\ns {d}/plugin/tests/fixtures/data.txt\ns {d}/plugin/lib/gone.py",
+                              d, self.tree()[1])
+        self.assertEqual(got, {u + "::", m, "plugin/tests/fixtures/data.txt", "?plugin/lib/gone.py"})
+        keys = [u + "::"]
+        self.assertFalse(self.changes(keys, lambda: self.moved("return 2", "return 22")), "a function body")
+        self.assertFalse(self.changes(keys, lambda: self.moved("return 22", "return 2  # two")), "and a comment")
+        self.assertTrue(self.changes(keys, lambda: self.moved("X = 1", "X = 2")), "module-level code")
+        self.assertTrue(self.changes(keys, lambda: os.chmod(os.path.join(d, u), 0o755)), "its mode")
+        self.assertTrue(self.changes(keys, lambda: os.remove(os.path.join(d, u))), "gone")
 
     def test_run_py_and_the_helpers_beside_it_are_every_class_s(self):
         with mock.patch.object(run, "HERE", self.here):
@@ -717,7 +733,7 @@ class Recorder(unittest.TestCase):
     def test_what_it_only_stats_exists_or_accesses(self):
         got = self.record("os.path.exists('missing.txt')\nos.path.isdir('folder')\nos.access('data.txt', os.X_OK)\n"
                           "os.stat('lib/mod_a.py')\nos.lstat('lib/mod_b.py')\n")
-        self.assertLessEqual({"?missing.txt", "?folder", "data.txt", "lib/mod_a.py", "lib/mod_b.py"}, got)
+        self.assertLessEqual({"?missing.txt", "?folder", "data.txt", "lib/mod_a.py::", "lib/mod_b.py::"}, got)  # T-5586: .py: its module
         r = subprocess.run([self.py, "-c", "import os, shutil; print(shutil._use_fd_functions, os.stat in os.supports_fd,"
                             " os.stat in os.supports_dir_fd, os.lstat in os.supports_dir_fd)"],
                            capture_output=True, text=True, check=True, env=dict(os.environ, RUNPY_COVER=os.devnull))
@@ -731,7 +747,10 @@ class Recorder(unittest.TestCase):
         got = self.record(code % "sys.audit('sampo.stamp', (mod_a.__file__, 'lib/mod_b.py', 'folder/f.txt'))\n")
         self.assertLessEqual({"lib/mod_a.py::", "lib/mod_b.py::", "data.txt"}, got, "what it ran, and another file's stat")
         self.assertFalse({"lib/mod_a.py", "lib/mod_b.py", "folder/f.txt"} & got, "named as a stamp: not read whole")
-        self.assertLessEqual({"lib/mod_a.py", "lib/mod_b.py", "folder/f.txt"}, self.record(code % ""), "unnamed: whole")
+        unnamed = self.record(code % "")
+        self.assertLessEqual({"folder/f.txt"}, unnamed, "unnamed: whole")
+        self.assertLessEqual({"lib/mod_a.py::", "lib/mod_b.py::"}, unnamed, "T-5586: a stat of a .py is its module")
+        self.assertFalse({"lib/mod_a.py", "lib/mod_b.py"} & unnamed, "not its whole text either way")
 
     def test_it_starts_once_though_site_runs_its_pth_twice(self):  # T-3691: a venv seeing system packages does
         r = subprocess.run([self.py, "-c", "import os, posix, runcover; f = os.lstat; runcover.setup(runcover.PY)\n"

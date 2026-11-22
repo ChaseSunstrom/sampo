@@ -393,6 +393,55 @@ class AffectedSymbols(ForemanTestCase):
         self.assertEqual([("src/other.py", 2), (HUB, 1)], files[:2], "most shared first")
         self.assertIn(("tests/test_drive_text.py", 1), files, "each class's own test file, one class each")
 
+    def recorded(self, lines):
+        """T-5586: the keys run.py's own `covered` makes of recorder lines naming the hub, {test module: [paths]}."""
+        import run
+        hub = os.path.join(self.repo, HUB)
+        return {mod: sorted(run.covered("\n".join(f"{kind} {hub}{rest}" for kind, rest in recs), self.repo, {HUB}))
+                for mod, recs in lines.items()}
+
+    def test_a_class_that_only_imported_or_stat_ed_a_module_is_selected_by_its_module_code_not_a_function(self):
+        """T-5586: 185 classes depended on localruns.py 'the whole file' but 7 reached its changed functions: recall's
+        verb-docs stamp stat'ed every module of the package, and a stat was a whole-file read. A test that only
+        imports a module (m) or stat'ed it (s) is selected by an edit of module-level code that runs something, not by
+        a function's body; the one that called the function is selected by both."""
+        self.ran(self.recorded({"test_drive_alpha": [("m", ""), ("c", " alpha")], "test_drive_beta": [("m", ""), ("c", " beta")],
+                                "test_drive_gamma": [("m", "")],  # imports it, calls nothing
+                                "test_drive_delta": [("s", "")], "test_drive_meth": [("s", "")], "test_drive_text": [("s", "")]}))
+        self.edit("return 2", "return 22")  # beta's body
+        tests, _ = self.run_affected()
+        self.assertEqual(["tests/test_drive_beta.py"], [t for t in tests if "drive" in t], "only who called beta")
+        self.edit("return 22", "return 2")
+        self.edit("LIMIT = 1\n", "LIMIT = 1\nprint('side effect')\n")  # module-level code that runs something
+        tests, _ = self.run_affected()
+        self.assertEqual(sorted(f"tests/test_drive_{n}.py" for n in ("alpha", "beta", "gamma", "delta", "meth", "text")),
+                         sorted(t for t in tests if "drive" in t), "everyone who ran or stat'ed the module")
+        self.assertNotIn("tests/test_drive_other.py", tests)
+
+    def test_the_whole_file_count_of_a_module_drops_to_the_classes_that_read_it_whole(self):
+        """T-5586, T-5017's lane shape in a fixture of 7 classes: 3 only stat'ed the hub, 1 imported it, 2 called into
+        it, 1 opened it. Recorded the old way (a stat is the whole file) 4 hold it whole and an edit of beta's body
+        selects 5 of the 7 test modules; recorded now 1 holds it whole and it selects 2 (the caller and the reader)."""
+        from sampo import map as smap
+        lines = {"test_drive_alpha": [("m", ""), ("c", " alpha")], "test_drive_beta": [("m", ""), ("c", " beta")],
+                 "test_drive_gamma": [("m", "")], "test_drive_delta": [("s", "")], "test_drive_meth": [("s", "")],
+                 "test_drive_text": [("s", "")], "test_drive_other": [("s", ""), ("f", "")]}
+        keys = self.recorded(lines)
+        self.assertEqual([HUB], keys["test_drive_other"], "a file it opened stays whole")
+        self.assertEqual([HUB + "::"], keys["test_drive_delta"], "one it only stat'ed is its module code")
+        old = {m: [HUB] if m.endswith(("delta", "meth", "text")) else k for m, k in keys.items()}  # a stat: the whole file
+
+        def measure(records):
+            self.ran(records)
+            total, files = smap.broad(self.repo, 0.1)
+            self.edit("return 2", "return 22")
+            tests, _ = self.run_affected()
+            self.edit("return 22", "return 2")
+            return total, dict(files).get(HUB, 0), len([t for t in tests if "drive" in t])
+
+        self.assertEqual((7, 4, 5), measure(old), "before: 4 hold the hub whole; beta's body selects 5 test modules")
+        self.assertEqual((7, 1, 2), measure(keys), "after: only the class that opened it; the caller and that reader")
+
     def test_json_lists_per_hub_the_symbols_and_tests_chosen(self):
         self.edit("return 2", "return 22")
         out = json.loads(self.fm("check", "--affected", "--json").stdout)
