@@ -10608,9 +10608,14 @@ def _build_parser(only=None):
                  "capped by the free lane slots and the load gate, and lists failed children with retry, re-plan or drop; "
                  "sync merges the build branch into big/ID and names conflicts (T-4222); status, estimate, report: the "
                  "tree's progress and cost (T-4223); adopt makes an open task a child of the big task and fold merges "
-                 "an inbox item into it, closing the item with where it went (T-4246)")
+                 "an inbox item into it, closing the item with where it went (T-4246); close lands the finished big "
+                 "task as one Merge commit on the build branch: refused while a child is open, it syncs big/ID, runs "
+                 "the Integration criteria and the full gates once, then commits; a red stage changes nothing and a "
+                 "re-run resumes (T-5010)")
     s.add_argument("action", choices=["plan", "check", "expand", "run", "sync", "status", "estimate", "report", "adopt",
-                                      "fold"])
+                                      "fold", "close"])
+    s.add_argument("--changelog", metavar="LINE", help="close: the CHANGELOG line the merge carries, under Unreleased "
+                   "(none: no line)")
     s.add_argument("id", metavar="ID", nargs="?", help="the big task (status: omit it with --all)")
     s.add_argument("more", metavar="TASK", nargs="*", help="adopt: the task to adopt; fold: the items to fold in")
     s.add_argument("--all", action="store_true", help="status: every big task, one line each")

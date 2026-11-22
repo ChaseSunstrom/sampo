@@ -1208,6 +1208,196 @@ def task_sync(p, args):
     return cli.out(args, r, text)
 
 
+# ---------------------------------------------------------------- the close
+
+CLOSE_MARK = "big_close"  # the brief's stage marker, written only for the merge: a crash leaves it, the next close finishes
+
+
+def _open_children(p, b):
+    """The children of b that are not done yet (landed and dropped children are done)."""
+    st = wave_state(p, b)
+    return [r for k in ("running", "problems", "waiting", "ready") for r in st[k]]
+
+
+def _integration(b):
+    """(text, verify) of each Integration criterion of b."""
+    blocks, _ = parse_blocks(b.section("Integration"), integration=True)
+    return [crit for blk in blocks for crit in blk["criteria"]]
+
+
+def _in_scratch(p, tip, cmd, timeout):
+    """cmd run in a detached scratch worktree at tip (the candidate tree), which is removed after: (exit code, output).
+    Nothing of the main checkout or of any branch moves."""
+    import shutil
+    from sampo import lanes
+    main = _main(p)
+    wt = c.scratch_tree("sampo-bigclose-", main)
+    try:
+        if _g(p, "worktree", "add", "-q", "--detach", wt, tip).returncode:
+            raise c.PolicyError(f"could not check out {tip[:9]} in a scratch tree to run {c.fit(cmd, 80)!r}")
+        return c.run_command(wt, cmd, timeout, env=lanes.cpu_env(p), priority=True)
+    finally:
+        _g(p, "worktree", "remove", "--force", wt)
+        shutil.rmtree(wt, ignore_errors=True)
+        _g(p, "worktree", "prune")
+        c.scratch_release(wt)
+
+
+def _tail(out, n=240):
+    return (out or "").strip()[-n:] or "no output"
+
+
+def _gate_cmd(p, main):
+    """The full gates as one command: the suite command (lanes.pm_cmd), else the project's own checks (`sampo check add`)
+    joined with && as a lane's gated merge runs them, else "" (a project with no gate at all)."""
+    from sampo import lanes
+    cmd = lanes.pm_cmd(main, p=p)
+    if cmd:
+        return cmd
+    try:
+        checks = c.read_meta(p).get("checks") or []
+    except (OSError, c.CorruptState):
+        checks = []
+    return " && ".join(f"( {x} )" for x in checks if isinstance(x, str) and x.strip())
+
+
+def _dirty(p):
+    """True when the main checkout has staged or uncommitted changes to tracked files."""
+    return bool(_g(p, "diff", "--quiet").returncode or _g(p, "diff", "--cached", "--quiet").returncode)
+
+
+def task_close(p, args):
+    """T-5010: `sampo big close ID` lands the finished big task as one Merge commit on the build branch. Staged and
+    re-runnable: refused while a child is open; big/ID is synced with the build branch; the Integration criteria run on
+    the candidate tree; the full gates run once on it; then, under the merge lock, the merge (and the changelog line)
+    is committed. A red stage changes nothing on the build branch. A re-run finds what a crash left (a merge in
+    progress, or its commit) and finishes it; a close that already landed makes nothing. "Changes nothing" is about the
+    build branch and the brief: stage 1's sync moves big/ID (a branch of its own, never the trunk) before the criteria and
+    the gates run, as `sampo big sync` does, and a re-run starts from there."""
+    from sampo import cli, lanes
+    _main_only(p, "close")
+    b = cli.need_brief(p, args.id)
+    _need_big(b)
+    main, name = _main(p), f"big/{b.id}"
+    branch(p, b)  # big/ID exists from here on (cut once, as the children's lanes cut from it)
+    tip = _ref(p, name)
+    head = _g(p, "rev-parse", "HEAD").stdout.strip()
+    if b.meta.get("big_closed") and _g(p, "merge-base", "--is-ancestor", tip, head).returncode == 0:
+        return cli.out(args, {"id": b.id, "status": "closed", "sha": b.meta["big_closed"]},
+                       f"{b.id} is closed: its merge {b.meta['big_closed'][:9]} is on the build branch; nothing to do")
+    if _g(p, "merge-base", "--is-ancestor", tip, head).returncode == 0 and \
+            _g(p, "log", "-1", "--format=%s", "HEAD").stdout.startswith(f"Merge {b.id}:"):
+        return _record(p, args, b, head, tip, gate="", resumed=True)  # a crash after the commit: only the bookkeeping is left
+    if b.status in c.CLOSED:
+        raise c.PolicyError(f"{b.id} is already {b.status}: nothing to close")
+    if not _g(p, "rev-parse", "-q", "--verify", "MERGE_HEAD").stdout.strip() and _dirty(p):  # before any criterion or gate
+        raise c.PolicyError(f"{b.id}: the main checkout has uncommitted changes to tracked files, which the merge would "
+                            "carry: commit or stash them, nothing was merged")
+    open_ = _open_children(p, b)
+    if open_:
+        ids = ", ".join(f"{r['key']} {r['id']}" for r in open_)
+        raise c.PolicyError(f"{b.id}: {len(open_)} child(ren) still open ({ids}): the close waits for them. sampo big run "
+                            f"{b.id} hands out the ready ones; sampo big status {b.id} shows the rest. Nothing changed.")
+    crit = _integration(b)
+    if not crit:
+        raise c.PolicyError(f"{b.id}: the Integration section has no criterion: sampo big check {b.id} says what to add. "
+                            "Nothing changed.")
+    for text, verify in crit:
+        if not verify:
+            raise c.PolicyError(f"{b.id}: integration criterion {c.fit(text, 60)!r} has no verify command. Nothing changed.")
+    res = sync(p, b)  # stage 1: big/ID takes the build branch in (fast-forward or a merge commit; a conflict moves nothing)
+    if res["status"] == "conflict":
+        raise c.PolicyError(f"{b.id}: {res['branch']} and {res['from']} conflict in {len(res['conflicts'])} place(s), "
+                            f"nothing changed: {', '.join(res['conflicts'][:5])}. sampo big sync {b.id} says how to resolve it.")
+    tip = res["sha"]
+    for text, verify in crit:  # stage 2: the Integration criteria, on the candidate tree
+        code, out = _in_scratch(p, tip, verify, c.load_scaled(900))
+        if code:
+            raise c.PolicyError(f"{b.id}: integration criterion {text!r} is red (exit {code}), nothing changed: {_tail(out)}")
+    gate = _gate_cmd(p, main)  # stage 3: the full gates, once, on the same candidate tree
+    if gate:
+        code, out = _in_scratch(p, tip, gate, c.load_scaled(3600))
+        if code:
+            raise c.PolicyError(f"{b.id}: the full gates are red at {tip[:9]} (exit {code}), nothing changed: {_tail(out)}")
+    moved = (f"{b.id}: the build branch or {name} moved while the gates ran, nothing changed: run "
+             f"sampo big close {b.id} again")
+    if _g(p, "rev-parse", "HEAD").stdout.strip() != head or _ref(p, name) != tip:
+        raise c.PolicyError(moved)
+    hold = lanes.land_holds(p, b, main, tip, base=head)  # the same holds every trunk move makes (private terms, guard, self)
+    if hold:
+        raise c.PolicyError(f"{b.id}: {hold.bare or hold}; nothing was merged")
+    os.makedirs(lanes._pm_dir(p), exist_ok=True)
+    try:
+        with lanes.train_lock_closing(p):  # stage 4: no train runs beside the commit (T-4540), then the lock a lane's merge takes
+            with c.lock(lanes._pm_dir(p)):
+                lanes._pm_check(p, main)  # no landed merge is red while this one lands (T-3141)
+                if _g(p, "rev-parse", "HEAD").stdout.strip() != head or _ref(p, name) != tip:  # checked again, under the locks
+                    raise c.PolicyError(moved)
+                sha = _merge(p, args, b, head, tip, gate)
+    except c.LockTimeout as e:
+        raise c.PolicyError(f"{b.id}: {e}: a train or another close holds the trunk; nothing was merged, run "
+                            f"sampo big close {b.id} again") from e
+    return _record(p, args, b, sha, tip, gate)  # outside the locks: pm_record and pm_set take the pm one themselves
+
+
+def _merge(p, args, b, head, tip, gate):
+    """The merge (or the one a crash left in progress) and its changelog line, committed on the build branch. Returns the
+    merge's sha. Runs under the train's lock, then the postmerge lock; it takes the state lock inside them (cli.mutate),
+    the order every landing keeps (pm, then state)."""
+    from sampo import cli
+    mh = _g(p, "rev-parse", "-q", "--verify", "MERGE_HEAD").stdout.strip()
+    if mh:  # a crashed close's merge is still in the index: it is finished, not started again
+        if mh != tip:
+            raise c.PolicyError(f"{b.id}: a merge of another commit is under way in the main checkout: finish or abort it "
+                                f"(git merge --abort), then run sampo big close {b.id} again")
+    else:
+        if _dirty(p):
+            raise c.PolicyError(f"{b.id}: the main checkout has uncommitted changes to tracked files, which the merge would "
+                                "carry: commit or stash them, nothing was merged")
+        cli.mutate(p, b.id, lambda x: x.meta.__setitem__(CLOSE_MARK, {"stage": "merging", "build": head, "big": tip}),
+                   "big_close", {"stage": "merging", "tip": tip})
+        r = _g(p, "merge", "--no-ff", "--no-commit", tip)
+        if r.returncode:
+            clashed = [f for f in _g(p, "diff", "--name-only", "--diff-filter=U").stdout.splitlines() if f]
+            _g(p, "merge", "--abort")
+            cli.mutate(p, b.id, lambda x: x.meta.pop(CLOSE_MARK, None), "big_close", {"stage": "conflict"})
+            raise c.PolicyError(f"{b.id}: git merge {tip[:9]} conflicted in {len(clashed)} file(s), nothing changed: "
+                                f"{', '.join(clashed[:5]) or _tail(r.stderr or r.stdout, 160)}")
+        if not _g(p, "rev-parse", "-q", "--verify", "MERGE_HEAD").stdout.strip():
+            cli.mutate(p, b.id, lambda x: x.meta.pop(CLOSE_MARK, None), "big_close", {"stage": "nothing"})
+            raise c.PolicyError(f"{b.id}: big/{b.id} adds nothing the build branch lacks: nothing to merge")
+    cli._changelog_line(p, b, {"changelog": getattr(args, "changelog", None) or ""})  # T-3500: the task's one line, once
+    _g(p, "add", "--", "CHANGELOG.md")
+    r = _g(p, *_ident(p), "commit", "-q", "-m", f"Merge {b.id}: {b.title}")
+    if r.returncode:
+        raise c.PolicyError(f"{b.id}: the merge commit failed, the merge is still in progress: "
+                            f"{(r.stderr or r.stdout).strip()[:300]}. Fix it and run sampo big close {b.id} again.")
+    return _g(p, "rev-parse", "HEAD").stdout.strip()
+
+
+def _record(p, args, b, sha, tip, gate, resumed=False):
+    """The bookkeeping after the merge commit: the landing is logged, its verify is recorded green when the gates ran on
+    this tree (they ran on the candidate, which differs only by the CHANGELOG line that code trees skip), and the brief
+    takes the merge as big_closed, which a second close reads as done. `resumed`: a re-run found the commit and made only
+    this; the crashed close's gate result is not known, so the verify is spawned on the merge, not set green."""
+    from sampo import cli, lanes
+    main = _main(p)
+    lanes.log_merged(p, b.id, main, sha, tip)
+    lanes.pm_record(p, sha, b.id, main, spawn=resumed)  # a fresh close: no second suite, the gates above are its run
+    if gate and not resumed and lanes.pm_records(p).get(sha):
+        lanes.pm_set(p, sha, state="green", note=f"the full gates ran on {tip[:9]} at the close (T-5010)")
+    cli.mutate(p, b.id, lambda x: (x.append_log(f"closed: big/{b.id} ({tip[:9]}) merged into the build branch as {sha[:9]}"),
+                                     x.meta.pop(CLOSE_MARK, None), x.meta.update(big_closed=sha)),
+               "big_close", {"sha": sha, "tip": tip, "gates": bool(gate), "resumed": resumed})
+    text = f"{b.id}: big/{b.id} ({tip[:9]}) merged into the build branch as {sha[:9]}"
+    if resumed:
+        text += ("; found after a crash with its commit made: only the bookkeeping was finished, and the post-merge verify "
+                 "runs on it now (the crashed close's gate result is not known)")
+    elif not gate:
+        text += "; no gate ran: this project has no suite command or checks (FM_POSTMERGE_CMD, plugin/tests/run.py, sampo check add)"
+    return cli.out(args, {"id": b.id, "status": "closed", "sha": sha, "tip": tip, "gates": bool(gate), "resumed": resumed}, text)
+
+
 # ---------------------------------------------------------------- the wave
 
 CHOICES = "retry, re-plan or drop"
@@ -1427,7 +1617,7 @@ def cmd_big(args):
     p = cli.resolve(args)
     fn = {"plan": task_plan, "check": task_check, "expand": task_expand, "run": task_run, "sync": task_sync,
           "status": bigview.task_status, "estimate": bigview.task_estimate, "report": bigview.task_report,
-          "adopt": task_adopt, "fold": task_fold}[args.action]
+          "adopt": task_adopt, "fold": task_fold, "close": task_close}[args.action]
     if not args.id and args.action != "status":  # T-4223: only status takes no ID (--all)
         raise cli.UsageError(f"sampo big {args.action} needs the big task's ID")
     return fn(p, args)
