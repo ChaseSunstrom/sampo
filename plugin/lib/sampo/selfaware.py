@@ -5,6 +5,8 @@ turn). `sampo misses` counts the logged `miss` events by class and day; `sampo m
 model about recent unmatched questions, naming only the fixed classes below (the model's answer is accepted only if it
 is one of them; no Claude-written label ever trains or decides anything). A request or a thanks is not a miss."""
 import contextlib
+import hashlib
+import json
 import os
 import re
 
@@ -72,19 +74,221 @@ def note(p, text, session=None, ask=None):
         return None
 
 
-def report(p, days=30):
-    """{total, by_class, by_day} over the last `days` days of `miss` events."""
+CATCH_MIN_S, TELL_DAYS, SAME_MOMENT_S = 600, 7, 60  # a catch's task was filed this long before the steer; a self_tell counts this
+# many days back; a note and a steer of one session a minute apart are one message
+FILED_BY = ("predicted", "discovered", "self")  # sources of a task Sampo filed itself (not one the user typed)
+MATCH_CHARS = 150  # a message is matched by its first 150 characters: a steer row keeps 160, a miss 300 (T-5712 review)
+DONE = "done"  # a catch counts toward catches_per_week once its task reached this status
+CACHE = "misses.cache.json"  # the last report, kept under the inputs it read (a status line reads it, not the ledger)
+
+
+def _since(days):
     from datetime import timedelta
-    since =(c.clock() - timedelta(days=days)).strftime("%Y-%m-%dT00:00:00Z")
-    by_class, by_day = {}, {}
+    return (c.clock() - timedelta(days=days)).strftime("%Y-%m-%dT00:00:00Z")
+
+
+def _when(ts):
+    t = c.parse_ts(ts)
+    return t.timestamp() if t else None
+
+
+def _norm(text):
+    """A message's words as note() stores them (plain, redacted, fitted), lower-cased and single-spaced: the key that
+    matches one message seen twice (a miss event and a steer row)."""
+    return " ".join(c.fit(c.redact(c.plain(text if isinstance(text, str) else "")), MAX_TEXT).lower().split())
+
+
+def _steer_rows(p, since):
+    """(read, avoidable): the steer rows read since `since`, and the avoidable ones among them. steermeter's own rule
+    (rows: clean, unread left out) decides which rows exist."""
+    from sampo import steermeter
+    read = [r for r in steermeter._read_rows(steermeter.rows(p)) if str(r.get("at") or "") >= since]
+    return read, [r for r in read if r["avoidable"] is True]
+
+
+def _key(text):
+    """The key a message is matched by: its first MATCH_CHARS characters, normalised (T-5712 review)."""
+    return _norm(text)[:MATCH_CHARS]
+
+
+def _same(m, s):
+    """A miss event and a steer row of one session are one message: the same key, or a moment apart (SAME_MOMENT_S) and
+    a shared word (the moment alone merged two unrelated messages)."""
+    if m["key"] and m["key"] == s["key"]:
+        return True
+    close = m["t"] is not None and s["t"] is not None and abs(m["t"] - s["t"]) <= SAME_MOMENT_S
+    return bool(close and m["words"] & s["words"])
+
+
+def _filed_index(briefs, since_t):
+    """word -> [(made, id, title words)] for the tasks Sampo filed (FILED_BY) since `since_t`. Built once per report, so a
+    steer tests only the tasks it shares a word with (T-5712 review: the scan ran every brief for every steer)."""
+    from sampo import foresight
+    idx = {}
+    for b in briefs:
+        made = _when(b.meta.get("created"))
+        if b.meta.get("source") not in FILED_BY or made is None or made < since_t:
+            continue
+        words = frozenset(foresight._words(b.title))
+        for w in words:
+            idx.setdefault(w, []).append((made, b.id, words))
+    return idx
+
+
+def _filed_first(idx, text, t):
+    """(made, id) of the earliest task in the index at least CATCH_MIN_S before t whose title's words the text holds, or None."""
+    from sampo import foresight
+    best, seen = None, set()
+    for w in foresight._words(text):
+        for made, tid, words in idx.get(w, ()):
+            if tid in seen or made > t - CATCH_MIN_S:
+                continue
+            seen.add(tid)
+            if _held(words, text) and (best is None or made < best[0]):
+                best = (made, tid)
+    return best
+
+
+def _stamp(path):
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return [st.st_mtime_ns, st.st_size]
+
+
+def _cache_key(p, days):
+    """What the report reads, as stamps: steers.jsonl, every ledger file, every brief file (path, mtime, size), and the
+    window's start. None when the state folder is not an absolute path (core's rule: then nothing is kept)."""
+    if not os.path.isabs(p.dir):
+        return None
+    briefs = [[path, *(_stamp(path) or [])] for path in c.brief_paths(p, True)]
+    return {"v": 1, "days": days, "since": _since(days), "steers": _stamp(os.path.join(p.dir, "steers.jsonl")),
+            "ledger": [_stamp(f) for f in c.ledger_files(p)],
+            "briefs": hashlib.sha1(json.dumps(briefs).encode("utf-8")).hexdigest()}
+
+
+def _cached(path, key):
+    """The report kept at `path` when it was made under `key`, else None."""
+    if key is None:
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            got = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return got.get("report") if isinstance(got, dict) and got.get("key") == key else None
+
+
+def _store(path, key, r):
+    if key is None:
+        return
+    with contextlib.suppress(OSError):  # a read-only state folder just goes without
+        c.write_atomic(path, json.dumps({"key": key, "report": r}, ensure_ascii=False), durable=False)
+
+
+def report(p, days=30):
+    """_compute's report, kept on disk under the inputs it read: an unchanged state is read back, not recomputed, so a
+    plain `sampo status` loads no brief when nothing moved (T-5712 review)."""
+    key = _cache_key(p, days)
+    path = os.path.join(p.dir, CACHE)
+    got = _cached(path, key)
+    if got is None:
+        got = _compute(p, days)
+        _store(path, key, got)
+    return got
+
+
+def _compute(p, days=30):
+    """Over the last `days` days: total (every message counted once: a `miss` event, or an avoidable steer steermeter read,
+    a steer note() already logged as one), by_class (the pattern classes; a steer-only row is filed under its root),
+    by_day, by_root (the cause root of each miss; 'unrooted' when no steer named one), steers_read; catches (a task Sampo
+    filed first, or a predicted_catch event, each message once) and catches_per_week; told_not_acted (no catch, but a
+    self_tell in the TELL_DAYS before it holds its words) with told_checks and told_examples naming the checks."""
+    from sampo import foresight
+    since = _since(days)
+    read, steers = _steer_rows(p, since)
+    misses = []
     for e in c.ledger_events(p, ["miss"], since=since):
         d = e.get("data") if isinstance(e.get("data"), dict) else {}
         cls = d.get("cls") if d.get("cls") in CLASSES else "other"
-        by_class[cls] = by_class.get(cls, 0) + 1
-        day = str(e.get("ts") or "")[:10]
-        by_day[day] = by_day.get(day, 0) + 1
-    return {"total": sum(by_class.values()), "by_class": by_class, "by_day": dict(sorted(by_day.items())),
-            "catches": len(c.ledger_events(p, ["predicted_catch"], since=since))}
+        text = d.get("text") if isinstance(d.get("text"), str) else ""
+        misses.append({"cls": cls, "text": text, "key": _key(text), "words": foresight._words(_norm(text)),
+                       "session": e.get("session_id"), "ts": str(e.get("ts") or ""), "t": _when(e.get("ts")), "root": None,
+                       "used": False})
+    by_session = {}
+    for m in misses:
+        by_session.setdefault(m["session"], []).append(m)
+    entries = []  # one per message: {cls, root, text, ts, t}
+    for s in steers:
+        s_text = s.get("text") if isinstance(s.get("text"), str) else ""
+        s_row = {"session": s.get("session"), "key": _key(s_text), "t": _when(s.get("at")),
+                 "words": foresight._words(_norm(s_text))}
+        hit = next((m for m in by_session.get(s_row["session"], ()) if not m["used"] and _same(m, s_row)), None)
+        if hit:
+            hit["used"], hit["root"] = True, s.get("root") or None
+            if not hit["text"]:
+                hit["text"] = s_text
+            continue
+        root = s.get("root") or "new"
+        entries.append({"cls": root, "root": root, "text": s_text, "ts": str(s.get("at") or ""), "t": s_row["t"]})
+    for m in misses:
+        entries.append({"cls": m["cls"], "root": m["root"], "text": m["text"], "ts": m["ts"], "t": m["t"]})
+    by_class, by_day, by_root = {}, {}, {}
+    for x in entries:
+        by_class[x["cls"]] = by_class.get(x["cls"], 0) + 1
+        by_day[x["ts"][:10]] = by_day.get(x["ts"][:10], 0) + 1
+        by_root[x["root"] or "unrooted"] = by_root.get(x["root"] or "unrooted", 0) + 1
+    briefs = c.load_briefs(p, include_archive=True)
+    status_of = {b.id: b.meta.get("status") for b in briefs}
+    idx = _filed_index(briefs, _when(since))  # only the tasks filed inside the window can be caught
+    caught, predicted = set(), set()  # (task id, key): a message caught once, by a task or a predicted_catch event
+    for e in c.ledger_events(p, ["predicted_catch"], since=since):
+        d = e.get("data") if isinstance(e.get("data"), dict) else {}
+        caught.add((e.get("task"), _key(d.get("text"))))
+        predicted.add(_key(d.get("text")))
+    tells = []
+    for e in c.ledger_events(p, ["self_tell"], since=_since(days + TELL_DAYS)):
+        d = e.get("data") if isinstance(e.get("data"), dict) else {}
+        if isinstance(d.get("text"), str) and _when(e.get("ts")) is not None:
+            check = c.fit(c.plain(str(d.get("check") or "?")), 60)
+            tells.append({"check": check, "text": d["text"], "t": _when(e.get("ts")), "ts": e.get("ts")})
+    told_checks, told_examples, told = {}, [], 0
+    for x in entries:
+        task = _filed_first(idx, x["text"], x["t"]) if x["t"] is not None and x["text"] else None
+        if task:
+            caught.add((task[1], _key(x["text"])))
+            continue
+        if x["t"] is None or not x["text"] or _key(x["text"]) in predicted:
+            continue
+        hits =[y for y in tells if x["t"] - TELL_DAYS * 86400 <= y["t"] <= x["t"] and _held(foresight._words(x["text"]), y["text"])]
+        if hits:
+            told += 1
+            y = max(hits, key=lambda h: h["t"])
+            told_checks[y["check"]] = told_checks.get(y["check"], 0) + 1
+            if len(told_examples) < 3:
+                told_examples.append({"check": y["check"], "at": x["ts"], "said": c.fit(c.plain(x["text"]), 120)})
+    catches = len(caught)
+    done = sum(1 for tid, _k in caught if status_of.get(tid) == DONE)  # catches_per_week counts done tasks only
+    return {"total": len(entries), "by_class": by_class, "by_day": dict(sorted(by_day.items())),
+            "by_root": dict(sorted(by_root.items(), key=lambda kv: (-kv[1], kv[0]))), "steers_read": len(read),
+            "catches": catches, "catches_done": done,
+            "catches_per_week": round(done * 7.0 / days, 1) if days else 0.0,
+            "told_not_acted": told, "told_checks": dict(sorted(told_checks.items())), "told_examples": told_examples}
+
+
+def summary(r):
+    """The words `sampo misses` and `sampo status` both end with: the catches (a week's rate), and the told-not-acted."""
+    return (f"{r['catches']} catch{'es' if r['catches'] != 1 else ''} ({r['catches_per_week']} a week of done tasks), "
+            f"{r['told_not_acted']} told but not acted")
+
+
+def status_line(p):
+    """One line for `sampo status` (T-5712), or None when no miss was counted in the window."""
+    r = report(p)
+    if not r["total"]:
+        return None
+    return (f"Misses (30 days): {r['total']} ({r['steers_read']} steers read); {summary(r)} (sampo misses)")
 
 
 def local_ask(p):
@@ -136,14 +340,15 @@ def cmd_misses(args):
         return _cmd_why(args, p)
     swept = sweep(p) if getattr(args, "sweep", False) else 0
     r = report(p, getattr(args, "days", 30))
-    lines = [f"{r['total']} misses in the last {getattr(args, 'days', 30)} days"
+    lines = [f"{r['total']} misses in the last {getattr(args, 'days', 30)} days ({r['steers_read']} steers read)"
              + (f" ({swept} found by the local model)" if swept else "")]
     lines += [f"  {k:<11} {v}" for k, v in sorted(r["by_class"].items(), key=lambda kv: -kv[1])]
     if r["by_day"]:
         lines.append("per day:")
         lines += [f"  {d}  {n}  {'#' * min(n, 40)}" for d, n in r["by_day"].items()]
-    lines.append(f"{r['catches']} catch{'es' if r['catches'] != 1 else ''} (asks Sampo predicted and filed before "
-                 f"the user made them)")
+    lines.append(summary(r) + " (a catch: a task Sampo filed 10+ minutes earlier matched the words; told: a self_tell did)")
+    if r["told_checks"]:  # T-5712: the checks that said it and did not act (usage_burn first): each can be made to act
+        lines.append("told but not acted, by check: " + ", ".join(f"{k} {v}" for k, v in r["told_checks"].items()))
     cli.out(args, r, "\n".join(lines))
 
 

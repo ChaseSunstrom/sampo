@@ -207,6 +207,13 @@ def cmd_state(args):
                     print(line)
             except Exception:
                 pass
+            try:  # T-5712: the misses summary, on its own line; a failed misses read never costs the status
+                from sampo import selfaware
+                line = selfaware.status_line(p)
+                if line:
+                    print(line)
+            except Exception:
+                pass
             _foresight_line(p)
             try:  # T-4239: how long the newest land took from accept to live, and the ship that outlived it
                 from sampo import train
