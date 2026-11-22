@@ -2167,5 +2167,285 @@ class Admit(Base):
         self.assertIn("sampo card admit DIR", p.stdout + p.stderr)
 
 
+NOOP = "pass\n"
+SEES = 'import json, sys\nd = json.load(sys.stdin)\nprint(d["point"], repr(open(d["inputs"]["path"]).read()))\n'
+
+
+@confined
+class Hooks(Steps):
+    """T-5946: a card.json "hooks" key runs small scripts at set points of a call (before, after_gen, after_check,
+    after_apply, on_fail), in the same jail as the generator, one child per point, none when nothing is declared."""
+
+    def hooked(self, name="shout", hooks=None, **kw):
+        """A card whose hooks map each point to script text (or a list of texts), written as <point>[-n].py in its folder."""
+        spec = {}
+        d = os.path.join(self.cards_dir, name)
+        self.card(name, **kw)
+        for point, texts in (hooks or {}).items():
+            texts = [texts] if isinstance(texts, str) else texts
+            for i, text in enumerate(texts):
+                fn = f"{point}-{i}.py"
+                with open(os.path.join(d, fn), "w") as f:
+                    f.write(text)
+                spec.setdefault(point, []).append(fn)
+        with open(os.path.join(d, "card.json")) as f:
+            card = json.load(f)
+        card["hooks"] = spec
+        with open(os.path.join(d, "card.json"), "w") as f:
+            json.dump(card, f)
+        return name
+
+    def project_hook(self, point, text):
+        d = callcards.hooks_dir()
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, point + ".py"), "w") as f:
+            f.write(text)
+
+    def test_each_declared_hook_runs_at_its_point_in_order_and_sees_what_is_there(self):
+        self.hooked(hooks={p: SEES for p in callcards.POINTS if p != "on_fail"})
+        r = callcards.call("shout", {"path": "a.txt"}, self.repo, cache=False)
+        self.assertEqual((r["status"], self.read("a.txt")), ("applied", "HELLO WORLD\n"), r)
+        self.assertEqual(list(r["hooks"]), ["before", "after_gen", "after_check", "after_apply"], "in order")
+        self.assertEqual(r["hooks"]["before"], "before 'hello world\\n'", "before sees the inputs' files as they are")
+        self.assertEqual(r["hooks"]["after_gen"], "after_gen 'HELLO WORLD\\n'", "after_gen sees the generator's output")
+        self.assertEqual(r["hooks"]["after_check"], "after_check 'HELLO WORLD\\n'")
+        self.assertEqual(r["hooks"]["after_apply"], "after_apply 'HELLO WORLD\\n'", "after_apply sees the applied file")
+
+    def test_a_refusing_before_hook_fails_the_call_with_its_message_before_the_generator_runs(self):
+        self.hooked(hooks={"before": 'import sys\nprint("not on a.txt")\nsys.exit(1)\n'})
+        calls = self.spy()
+        before = tree(self.repo)
+        r = callcards.call("shout", {"path": "a.txt"}, self.repo)
+        self.assertEqual((r["status"], r["ok"]), ("hook_failed", False), r)
+        self.assertIn("before", r["error"])
+        self.assertIn("not on a.txt", r["error"])
+        self.assertEqual(len(calls), 1, "only the hook ran: no generator, no checker")
+        self.assertEqual(tree(self.repo), before)
+        self.assertEqual(callcards.outcome_class(r["status"]), "refused", "a deliberate refusal is no card's failure")
+
+    def test_an_after_apply_hook_that_cannot_be_confined_still_says_the_change_was_applied(self):
+        self.hooked(hooks={"after_apply": NOOP})
+        real = callcards._spawn
+
+        def jailless(argv, cwd, stdin, *a, **k):  # the confinement of the after_apply child alone fails
+            if '"point": "after_apply"' in stdin:
+                return {"rc": None, "out": "", "err": "", "timed_out": False, "over": False,
+                        "jail": "the confinement failed: no landlock"}
+            return real(argv, cwd, stdin, *a, **k)
+        p = mock.patch.object(callcards, "_spawn", side_effect=jailless)
+        p.start()
+        self.addCleanup(p.stop)
+        r = callcards.call("shout", {"path": "a.txt"}, self.repo, cache=False)
+        self.assertEqual(self.read("a.txt"), "HELLO WORLD\n", "the change was applied")
+        self.assertIn("already applied", r["error"])
+        self.assertIn("no landlock", r["error"])
+        self.assertEqual((r["status"], r["changed"]), ("hook_failed", ["a.txt"]), "no machine fault: the card closed on it")
+        self.assertEqual(callcards.outcome_class(r["status"]), "refused")
+
+    def test_on_fail_after_an_after_apply_refusal_sees_the_applied_files(self):
+        self.hooked(hooks={"after_apply": "raise SystemExit('lint says no')\n", "on_fail": SEES})
+        r = callcards.call("shout", {"path": "a.txt"}, self.repo, cache=False)
+        self.assertEqual(r["status"], "hook_failed", r)
+        self.assertEqual(r["hooks"]["on_fail"], "on_fail 'HELLO WORLD\\n'", "on_fail sees the files as applied")
+        self.hooked("early", hooks={"before": "raise SystemExit('no')\n", "on_fail": SEES})
+        r = callcards.call("early", {"path": "a.txt"}, self.repo, cache=False)
+        self.assertEqual(r["hooks"]["on_fail"], "on_fail 'HELLO WORLD\\n'", "a failure before the apply: the files as they are")
+
+    def test_a_chain_keeps_a_failed_steps_hook_output_and_its_applied_change(self):
+        self.hooked("first", hooks={"before": "print('one')\n"})
+        self.hooked("second", hooks={"before": "print('said before')\n", "after_apply": "raise SystemExit('no lint')\n"})
+        self.write("b.txt", "bee\n")
+        self.chain_card("pipe", [{"card": "first", "inputs": {"path": "$path"}},
+                                 {"card": "second", "inputs": {"path": "b.txt"}}])
+        r = callcards.call("pipe", {"path": "a.txt"}, self.repo, cache=False)
+        self.assertEqual((r["status"], r["step"]), ("hook_failed", 2), r)
+        self.assertEqual(r["hooks"]["before"], "said before", "the failed step's hooks output is kept")
+        self.assertIn("already applied by earlier steps: a.txt, b.txt", r["error"], "its own applied change is said too")
+
+    def test_before_cannot_change_the_files_it_only_inspects(self):
+        self.hooked(hooks={"before": 'open("a.txt", "w").write("sneaky\\n")\n'})
+        before = tree(self.repo)
+        r = callcards.call("shout", {"path": "a.txt"}, self.repo)
+        self.assertEqual(r["status"], "hook_failed", r)
+        self.assertEqual(tree(self.repo), before)
+
+    def test_an_after_gen_hook_rewrites_the_scratch_files_before_the_check(self):
+        fix = 'p = "a.txt"\ns = open(p).read().rstrip()\nopen(p, "w").write(s + " DONE\\n")\n'
+        self.hooked(hooks={"after_gen": fix})
+        r = callcards.call("shout", {"path": "a.txt"}, self.repo)
+        self.assertEqual(r["status"], "applied", r)
+        self.assertEqual(self.read("a.txt"), "HELLO WORLD DONE\n")
+        self.assertIn("+HELLO WORLD DONE", r["diff"])
+        spoil = 'import json, sys\nopen(json.load(sys.stdin)["inputs"]["path"], "w").write("lower again\\n")\n'
+        self.hooked("spoiled", hooks={"after_gen": spoil})
+        self.write("b.txt", "keep\n")
+        r = callcards.call("spoiled", {"path": "b.txt"}, self.repo)
+        self.assertEqual(r["status"], "checker_failed", r)
+        self.assertIn("lower-case", r["error"], "the checker saw what after_gen left")
+        self.assertEqual(self.read("b.txt"), "keep\n")
+
+    def test_an_after_gen_hook_cannot_write_outside_the_cards_scope(self):
+        self.hooked(hooks={"after_gen": 'open("README.md", "w").write("x")\n'})
+        before = tree(self.repo)
+        self.assertEqual(callcards.call("shout", {"path": "a.txt"}, self.repo)["status"], "scope")
+        self.assertEqual(tree(self.repo), before)
+
+    def test_an_after_check_hook_adds_a_failing_row_and_nothing_lands(self):
+        self.hooked(hooks={"after_check": 'import sys\nprint("row: result is too loud")\nsys.exit(2)\n'})
+        before = tree(self.repo)
+        r = callcards.call("shout", {"path": "a.txt"}, self.repo)
+        self.assertEqual(r["status"], "checker_failed", r)
+        self.assertIn("after_check", r["error"])
+        self.assertIn("too loud", r["error"])
+        self.assertEqual(tree(self.repo), before)
+
+    def test_an_after_apply_hook_runs_on_the_applied_files_and_its_refusal_says_the_change_stands(self):
+        self.hooked(hooks={"after_apply": 'import sys\nprint("lint: " + open("a.txt").read().strip())\nsys.exit(1)\n'})
+        r = callcards.call("shout", {"path": "a.txt"}, self.repo)
+        self.assertEqual((r["status"], r["ok"]), ("hook_failed", False), r)
+        self.assertIn("lint: HELLO WORLD", r["error"])
+        self.assertIn("already applied", r["error"])
+        self.assertEqual((r["changed"], self.read("a.txt")), (["a.txt"], "HELLO WORLD\n"))
+
+    def test_an_on_fail_hook_gets_the_reason_and_its_output_comes_back(self):
+        collect = 'import json, sys\nd = json.load(sys.stdin)\nprint("collected", d["status"], "|", d["reason"])\n'
+        self.hooked(check=FAIL, hooks={"on_fail": collect})
+        r = callcards.call("shout", {"path": "a.txt"}, self.repo)
+        self.assertEqual(r["status"], "checker_failed", r)
+        self.assertEqual(r["hooks"]["on_fail"], "collected checker_failed | the output still has lower-case letters")
+        self.assertEqual(self.read("a.txt"), "hello world\n")
+        self.assertIn("hook on_fail: collected checker_failed", callcards.text(r), "a model reads what the hooks said")
+        ok = self.hooked("fine", hooks={"on_fail": collect})
+        r = callcards.call(ok, {"path": "a.txt"}, self.repo)
+        self.assertEqual(r["status"], "applied")
+        self.assertNotIn("on_fail", r.get("hooks", {}), "on_fail runs on a failure only")
+
+    def test_on_fail_runs_when_a_hook_refused_and_a_broken_on_fail_never_hides_the_reason(self):
+        self.hooked(hooks={"before": "raise SystemExit('nope')\n", "on_fail": "raise SystemExit('also broken')\n"})
+        r = callcards.call("shout", {"path": "a.txt"}, self.repo)
+        self.assertEqual(r["status"], "hook_failed", r)
+        self.assertIn("nope", r["error"])
+        self.assertIn("also broken", r["hooks"]["on_fail"])
+
+    def test_a_chain_runs_each_steps_own_hooks_and_a_refusing_step_stops_it(self):
+        self.hooked("first", hooks={"before": "print('one')\n"})
+        self.hooked("second", hooks={"before": "raise SystemExit('second says no')\n"})
+        self.hooked("third", hooks={"before": "print('three')\n"})
+        step = {"inputs": {"path": "$path"}}
+        self.chain_card("pipe", [dict(step, card=n) for n in ("first", "second", "third")])
+        calls = self.spy()
+        r = callcards.call("pipe", {"path": "a.txt"}, self.repo, cache=False)
+        self.assertEqual((r["status"], r["step"]), ("hook_failed", 2), r)
+        self.assertIn("step 2 (second)", r["error"])
+        self.assertIn("second says no", r["error"])
+        self.assertEqual(len(calls), 4, "first: hook, gen, check; second: its hook; third never ran")
+        self.assertEqual(self.read("a.txt"), "HELLO WORLD\n", "the first step's change stands, as for any chain")
+
+    def test_a_hook_that_runs_past_the_timeout_is_killed_and_typed(self):
+        self.hooked(hooks={"before": "import time\ntime.sleep(30)\n"})
+        with mock.patch.object(callcards, "HOOK_TIMEOUT", 1):
+            t0 = time.monotonic()
+            r = callcards.call("shout", {"path": "a.txt"}, self.repo)
+        self.assertEqual(r["status"], "timeout", r)
+        self.assertIn("before hook", r["error"])
+        self.assertLess(time.monotonic() - t0, 10)
+        self.assertEqual(callcards.HOOK_TIMEOUT, 5)
+
+    def test_a_hook_is_confined_like_a_generator(self):
+        grab = 'import socket\nsocket.socket()\n'
+        self.hooked(hooks={"before": grab})
+        r = callcards.call("shout", {"path": "a.txt"}, self.repo)
+        self.assertEqual(r["status"], "hook_failed", r)
+        self.assertIn("Operation not permitted", r["error"], "no socket for a hook either")
+        peek = f'print(open({os.path.join(self.repo, "a.txt")!r}).read())\n'
+        self.hooked("peeker", hooks={"before": peek})
+        r = callcards.call("peeker", {"path": "a.txt"}, self.repo)
+        self.assertEqual(r["status"], "hook_failed", "the worktree itself is outside the jail's reads")
+        self.assertIn("PermissionError", r["error"])
+
+    def test_all_hooks_of_one_point_share_one_child_and_run_in_order(self):
+        self.hooked(hooks={"before": ["print('a')\n", "import sys\nprint('b')\nsys.exit(0)\n", "print('c')\n"],
+                           "after_check": "print('x')\n"})
+        calls = self.spy()
+        r = callcards.call("shout", {"path": "a.txt"}, self.repo, cache=False)
+        self.assertEqual(r["status"], "applied", r)
+        self.assertEqual(r["hooks"]["before"], "a\nb\nc", "a script's exit 0 ends that script, not the point")
+        self.assertEqual(len(calls), 4, "before, generator, checker, after_check: one fork per point")
+
+    def test_a_project_hook_runs_for_every_card_before_the_cards_own(self):
+        self.project_hook("before", "print('project')\n")
+        self.hooked("one", hooks={"before": "print('own')\n"})
+        self.card("two")
+        r = callcards.call("one", {"path": "a.txt"}, self.repo)
+        self.assertEqual(r["hooks"]["before"], "project\nown")
+        r = callcards.call("two", {"path": "a.txt"}, self.repo)
+        self.assertEqual((r["status"], r["hooks"]), ("applied", {"before": "project"}), r)
+
+    def test_a_project_hook_never_comes_from_the_repo(self):
+        self.write(".sampo/hooks/before.py", "raise SystemExit('from the repo')\n")
+        self.card("shout")
+        r = callcards.call("shout", {"path": "a.txt"}, self.repo)
+        self.assertEqual((r["status"], "hooks" in r), ("applied", False), r)
+
+    def test_a_card_without_hooks_runs_exactly_as_before(self):
+        self.card("plain")
+        self.hooked("spec-empty")
+        calls = self.spy()
+        for name in ("plain", "spec-empty"):
+            self.write("a.txt", "hello world\n")
+            del calls[:]
+            r = callcards.call(name, {"path": "a.txt"}, self.repo)
+            self.assertEqual(len(calls), 2, "a generator and a checker: no hook child")
+            self.assertEqual(sorted(r), sorted(callcards._result(name, "applied")), "the same keys as ever")
+            self.assertEqual(self.read("a.txt"), "HELLO WORLD\n")
+        self.write("a.txt", "hello world\n")
+        again = callcards.call("plain", {"path": "a.txt"}, self.repo)
+        self.assertTrue(again["cached"], "a hook-free card still answers from the cache")
+
+    def test_a_hooked_card_is_never_answered_from_the_cache(self):
+        self.hooked(hooks={"before": "print('ran')\n"})
+        callcards.call("shout", {"path": "a.txt"}, self.repo)
+        self.write("a.txt", "hello world\n")
+        r = callcards.call("shout", {"path": "a.txt"}, self.repo)
+        self.assertFalse(r["cached"])
+        self.assertEqual(r["hooks"]["before"], "ran", "a hook is a side effect the cache would skip")
+
+    def test_the_card_loader_refuses_a_bad_hooks_key(self):
+        self.hooked("good", hooks={"before": NOOP})
+        bad = {"unknown-point": {"hooks": {"after_dinner": ["x.py"]}}, "not-an-object": {"hooks": ["before"]},
+               "missing-file": {"hooks": {"before": ["nope.py"]}}, "path-name": {"hooks": {"before": ["../x.py"]}},
+               "not-py": {"hooks": {"before": ["gen.py.txt"]}}, "too-many": {"hooks": {"before": ["gen.py"] * 5}}}
+        for n, spec in bad.items():
+            self.card(n, **spec)
+        self.chain_card("chained", [{"card": "good", "inputs": {"path": "$path"}}], hooks={"before": ["x.py"]})
+        found, broken = callcards.cards(self.repo)
+        self.assertEqual(self.mine(found), ["good"])
+        self.assertEqual(sorted(broken), sorted(list(bad) + ["chained"]))
+        self.assertIn("after_dinner", broken["unknown-point"])
+        self.assertIn("nope.py", broken["missing-file"])
+        self.assertIn("chain", broken["chained"])
+
+    def test_the_overhead_of_a_hook_over_a_no_op_script_is_measured_and_printed(self):
+        runs = 6
+        self.card("plain")
+        self.hooked("hooked", hooks={p: NOOP for p in callcards.POINTS if p != "on_fail"})
+        for n in ("plain", "hooked"):  # warm the page cache and the scan
+            callcards.call(n, {"path": "a.txt"}, self.repo, cache=False)
+        t = {}
+        for n in ("plain", "hooked"):
+            t0 = time.monotonic()
+            for _ in range(runs):
+                self.write("a.txt", "hello world\n")
+                self.assertEqual(callcards.call(n, {"path": "a.txt"}, self.repo, cache=False)["status"], "applied")
+            t[n] = (time.monotonic() - t0) / runs
+        per = (t["hooked"] - t["plain"]) / 4
+        print(f"\ncard hooks: {t['plain'] * 1000:.0f} ms per call with none, {t['hooked'] * 1000:.0f} ms with 4 no-op "
+              f"hooks: {per * 1000:.0f} ms per hook point (one confined child each)", file=sys.stderr)
+        self.assertLess(per, 1.0, "a hook point is one fork and a jail, never a second")
+        calls = self.spy()
+        callcards.call("plain", {"path": "a.txt"}, self.repo, cache=False)
+        self.assertEqual(len(calls), 2, "no hook declared: no extra process")
+
+
 if __name__ == "__main__":
     unittest.main()

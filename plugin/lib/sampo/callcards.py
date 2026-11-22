@@ -6,7 +6,11 @@ file and an output schema instead of gen.py: its generator is one local-model ca
 profiles only, never a paid API) made by the parent, since the jail has no sockets, and its JSON must pass the schema
 and then check.py like any generator's output. A chain card is card.json alone: named cards run in order, each step's
 inputs taken from the chain's inputs or an earlier step's typed output ($name.path), stopping at the first failure; a
-cycle, a missing card or a bad reference is refused at load, and each step is a call of the Session's own. A call
+cycle, a missing card or a bad reference is refused at load, and each step is a call of the Session's own. T-5946: a
+card.json `hooks` {before, after_gen, after_check, after_apply, on_fail} names .py scripts in the card's folder (and
+<state>/callcards/hooks/<point>.py runs for every card): one confined child per used point, the generator's jail, HOOK_TIMEOUT
+each; a refusal fails the call with its message, after_gen may rewrite the scratch files, on_fail gets the reason; a hooked card
+is never cached, a card without hooks costs nothing. A call
 checks the inputs against the schema before anything runs, copies the files in scope to a scratch folder, runs the generator there and the checker over its
 output, both confined (landlock.prepare_jail: they read only the interpreter, the card and the scratch copy and write
 only scratch; landlock.syscall_filter: no socket, ptrace, setsid, or below Landlock ABI 6 signal; a clean env; rlimits
@@ -65,7 +69,11 @@ BRIEF_SHARED, BRIEF_DF = 2, 5  # brief_fits: the task words a card shares with i
 CALLS_CAP = 256 << 10  # calls.jsonl rotates to calls.jsonl.1 past this many bytes (about 2000 rows each)
 CLASSES = ("pass", "check_failed", "refused", "failed", "machine")  # a call's outcome class
 OK = ("applied", "facts")
-RUN_FAILED = ("generator_failed", "checker_failed", "timeout", "scope")
+RUN_FAILED = ("generator_failed", "checker_failed", "timeout", "scope", "hook_failed")
+POINTS = ("before", "after_gen", "after_check", "after_apply", "on_fail")  # T-5946: where a hook may run in a call
+HOOK_TIMEOUT = 5  # seconds per hook point (all the scripts of one point share it)
+HOOKS_PER_POINT = 4
+HOOK_OUT = 2000  # what a call's result keeps of one point's stdout
 NAME = re.compile(r"[a-z][a-z0-9-]{1,40}")
 # fmguard._is_credential (what Smith.hidden uses) decides; this adds the names it judges only under home
 SECRET = re.compile(r"(^|/)(\.netrc|\.npmrc|\.pypirc|\.git-credentials|\.ssh/.*|\.aws/.*|\.gnupg/.*)$")
@@ -74,6 +82,19 @@ LIB = os.path.join(c.PLUGIN_ROOT, "cards", "_lib")
 # the child's sys.path is the card's folder and the shared helpers only: never the worktree's files (a planted json.py)
 _BOOT = ("import runpy, sys; sys.path[:0] = sys.argv[1:3]; script = sys.argv[3]; sys.argv = [script]; "
          "runpy.run_path(script, run_name='__main__')")
+# T-5946: one child runs every script of a hook point in order, each with the call's JSON on its stdin; a script's exit 0
+# ends that script only, any other exit ends the point
+_HOOK_BOOT = "\n".join((
+    "import io, runpy, sys",
+    "sys.path[:0] = sys.argv[1:3]; data = sys.stdin.buffer.read()",
+    "for script in sys.argv[3:]:",
+    "    sys.stdin, sys.argv = io.TextIOWrapper(io.BytesIO(data), encoding='utf-8'), [script]",
+    "    try:",
+    "        runpy.run_path(script, run_name='__main__')",
+    "    except SystemExit as e:",
+    "        if e.code not in (None, 0):",
+    "            raise",
+    "    sys.stdout.flush()"))
 _TYPES = {"string": str, "integer": int, "number": (int, float), "boolean": bool, "array": list, "object": dict}
 
 
@@ -169,6 +190,25 @@ def _load_chain(spec):
             raise ValueError(f"step {i}: as {s['as']!r}: lowercase words joined by '_'")
 
 
+def _load_hooks(d, spec):
+    """T-5946: a card's hooks, or ValueError: {point: a script name or a list of them}, each a .py file in the card's own
+    folder, run in the same jail as the generator."""
+    hooks = spec.get("hooks", {})
+    if not isinstance(hooks, dict):
+        raise ValueError("hooks must be an object: {\"before\": [\"check_inputs.py\"], ...}")
+    for point, names in hooks.items():
+        if point not in POINTS:
+            raise ValueError(f"hooks: {point!r} isn't a hook point ({', '.join(POINTS)})")
+        names = [names] if isinstance(names, str) else names
+        if not isinstance(names, list) or not names or not all(isinstance(n, str) for n in names):
+            raise ValueError(f"hooks.{point} names a script or a list of scripts")
+        if len(names) > HOOKS_PER_POINT:
+            raise ValueError(f"hooks.{point} lists {len(names)} scripts; at most {HOOKS_PER_POINT}")
+        for n in names:
+            if os.path.basename(n) != n or not n.endswith(".py") or not os.path.isfile(os.path.join(d, n)):
+                raise ValueError(f"hooks.{point}: {n!r} isn't a .py file in the card's folder")
+
+
 def _load(d):
     """A card from its folder, or ValueError naming what's wrong."""
     with open(os.path.join(d, "card.json")) as f:
@@ -191,6 +231,9 @@ def _load(d):
         _load_model(d, spec)
     if kind == "chain":
         _load_chain(spec)
+        if spec.get("hooks"):
+            raise ValueError("a chain card has no hooks of its own: each step's card carries its own")
+    _load_hooks(d, spec)
     render = spec.get("render", {})
     if kind == "template" and (not isinstance(render, dict) or not render or not all(
             isinstance(t, str) and os.path.basename(t) == t and os.path.isfile(os.path.join(d, t))
@@ -753,6 +796,82 @@ def _argv(card, script):
     return [sys.executable, "-I", "-B", "-c", _BOOT, card["dir"], LIB, os.path.join(card["dir"], script)]
 
 
+def hooks_dir():
+    """T-5946: the scripts that run at a hook point of every card, <point>.py each, in Sampo's state like the authored
+    cards: a repo's own files never become code a call runs."""
+    return os.path.join(c.state_dir(), "callcards", "hooks")
+
+
+def _hooks(card):
+    """{point: [script paths]} a call of card runs: the project's <point>.py first, then the card's own. {} (the common
+    case, one listdir) when nothing is declared. A chain has none: its steps' cards carry theirs."""
+    if card["kind"] == "chain":
+        return {}
+    top = hooks_dir()
+    try:
+        shared = set(os.listdir(top))
+    except OSError:
+        shared = set()
+    own = card.get("hooks") or {}
+    out = {}
+    for point in POINTS:
+        paths = []
+        p = os.path.join(top, point + ".py")
+        if point + ".py" in shared and os.path.isfile(p) and not os.path.islink(p):
+            paths.append(p)
+        names = own.get(point) or []
+        paths += [os.path.join(card["dir"], n) for n in ([names] if isinstance(names, str) else names)]
+        if paths:
+            out[point] = paths
+    return out
+
+
+def _hook_failed(name, run, point, status="hook_failed"):
+    """The typed result of a hook point whose child failed, or None. status: what a refusal counts as (after_check's is
+    the checker's: a failing row)."""
+    if run["jail"]:
+        return _result(name, "confinement", error=run["jail"])
+    if run["timed_out"]:
+        return _result(name, "timeout", error=f"the {point} hook ran past {HOOK_TIMEOUT} s")
+    if run["rc"] == 0 and not run["over"]:
+        return None
+    return _result(name, status, error=f"hook {point}: {_why(run, point + ' hook')}"[:3000])
+
+
+def _hook_run(card, hooks, point, payload, cwd, writes, scratch):
+    """One confined child for every script of `point`: its run, with the call's JSON as stdin. The scripts read what the
+    generator reads (the interpreter, the card, the scratch) and the project's hooks folder, and write only `writes`."""
+    reads = _system_reads() + [card["dir"], LIB, scratch]
+    if os.path.isdir(hooks_dir()) and any(p.startswith(hooks_dir() + os.sep) for p in hooks[point]):
+        reads.append(hooks_dir())
+    argv = [sys.executable, "-I", "-B", "-c", _HOOK_BOOT, card["dir"], LIB] + hooks[point]
+    return _spawn(argv, cwd, json.dumps(dict(payload, point=point)), reads, writes, scratch, HOOK_TIMEOUT)
+
+
+def _hook_out(run):
+    text = run["out"].strip()
+    return text if len(text) <= HOOK_OUT else text[:HOOK_OUT] + "\n[cut]"
+
+
+def _hook_scratch(card, hooks, point, payload, files, status="hook_failed"):
+    """(failed result or None, stdout) of one point run in a scratch of its own that holds `files` ({rel: bytes}): the
+    points after the run (after_apply, on_fail), whose own scratch is gone."""
+    scratch = tempfile.mkdtemp(prefix="sampo-card-")
+    try:
+        view, tmp = os.path.join(scratch, "view"), os.path.join(scratch, "tmp")
+        for d in (view, tmp):
+            os.mkdir(d, 0o700)
+        for rel, data in files.items():
+            p = os.path.join(view, rel)
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, "wb") as f:
+                f.write(data)
+        run = _hook_run(card, hooks, point, payload, view, [tmp, "/dev/null"], scratch)
+        return _hook_failed(card["name"], run, point, status), _hook_out(run)
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
 def _render(card, inputs, work):
     """A template card: each target from its template, inputs XML-escaped for markup; parts pick a fixed snippet."""
     parts = card.get("parts", {})
@@ -980,7 +1099,17 @@ def _model_step(card, inputs, before, root, reply):
     return None, value, info
 
 
-def _run(card, inputs, root, before, inject, inject_facts=None, inject_model=None):
+def _run(card, inputs, root, before, inject, inject_facts=None, inject_model=None, hooks=None):
+    """The result of the confined run; hooks ({point: scripts}, from _hooks) run at their points, their stdout under the
+    result's 'hooks' (a card with none has no such key)."""
+    outs = {}
+    r = _run_in(card, inputs, root, before, inject, inject_facts, inject_model, hooks or {}, outs)
+    if outs:
+        r["hooks"] = dict(r.get("hooks") or {}, **outs)
+    return r
+
+
+def _run_in(card, inputs, root, before, inject, inject_facts, inject_model, hooks, outs):
     scratch = tempfile.mkdtemp(prefix="sampo-card-")
     try:
         orig, work, tmp = (os.path.join(scratch, x) for x in ("orig", "work", "tmp"))
@@ -994,6 +1123,22 @@ def _run(card, inputs, root, before, inject, inject_facts=None, inject_model=Non
                     f.write(data)
         reads = _system_reads() + [card["dir"], LIB, scratch]
         name, facts, gen, answer, info = card["name"], None, None, None, {}
+
+        def hook(point, cwd, writes, status="hook_failed", **more):  # None, or the call's failed result
+            if point not in hooks:
+                return None
+            payload = {"inputs": inputs, "files": sorted(before), "orig": orig, **more}
+            run = _hook_run(card, hooks, point, payload, cwd, writes, scratch)
+            failed = _hook_failed(name, run, point, status)
+            if failed:
+                failed.update(info)
+                return failed
+            if run["out"].strip():
+                outs[point] = _hook_out(run)
+            return None
+        failed = hook("before", work, [tmp, "/dev/null"])
+        if failed:
+            return failed
         if inject is not None or inject_facts is not None:  # a card's own test: this stands in for the generator
             for rel, text in (inject or {}).items():
                 if _rel_ok(rel):
@@ -1018,6 +1163,9 @@ def _run(card, inputs, root, before, inject, inject_facts=None, inject_model=Non
             failed = _failed(name, gen, "generator")
             if failed:
                 return failed
+        failed = hook("after_gen", work, [work, tmp, "/dev/null"])
+        if failed:
+            return failed
         writes, why = _diff(work, before, _expand(card.get("creates", []), inputs, card), root)
         changed, created = sorted(r for r in writes if r in before), sorted(r for r in writes if r not in before)
         if why or (card["read"] and writes):
@@ -1056,6 +1204,10 @@ def _run(card, inputs, root, before, inject, inject_facts=None, inject_model=Non
             if failed:
                 failed.update(info)
                 return failed
+        failed = hook("after_check", view, [tmp, "/dev/null"], "checker_failed", changed=changed, created=created,
+                      facts=facts)
+        if failed:
+            return failed
         if card["read"]:
             return _result(name, "facts", facts=facts, **info)
         return _result(name, "applied", changed=changed, created=created, diff=_unified(before, writes),
@@ -1134,8 +1286,11 @@ def _run_chain(card, inputs, step):
             spent = (r.get("usage") or {}).get(k)
             used[k] += spent if type(spent) is int and spent > 0 else 0
         if not r["ok"]:
+            if r.get("changed") or r.get("created"):  # T-5946: a step that failed after its apply (after_apply) landed too
+                landed = sorted(set(changed + created + r["changed"] + r["created"]))
+                applied = f" (already applied by earlier steps: {', '.join(landed)})"
             out = _result(name, r["status"], error=f"{who}: {r['error']}{applied}"[:3000], member=s["card"], step=i)
-            for k in ("advice", "escalated"):
+            for k in ("advice", "escalated", "hooks"):
                 if r.get(k):
                     out[k] = r[k]
             return costed(out)
@@ -1203,6 +1358,7 @@ def outcome_class(status):
     if status in OK:
         return "pass"
     return {"no_card": None, "checker_failed": "check_failed", "refused": "refused", "stale": "refused",
+            "hook_failed": "refused",  # T-5946: a hook said no on purpose (or a project hook broke): not the card's fault
             "confinement": "machine", "environment": "machine"}.get(status, "failed")
 
 
@@ -1337,7 +1493,8 @@ def _call(name, inputs, root, *, cache=True, inject=None, inject_facts=None, gua
         return _result(name, "bad_input", error=str(e))
     key = _key(card, clean, before)
     testing = inject is not None or inject_facts is not None or inject_model is not None
-    hit = _cache_get(key) if cache and not testing else None
+    hooks = _hooks(card)  # T-5946: a hook is a side effect a cached answer would skip: a hooked card is never cached
+    hit = _cache_get(key) if cache and not testing and not hooks else None
     if hit:
         r, writes = hit
         r = _result(name, r.get("status", "applied"),  # a cached answer cost no tokens: usage isn't charged twice
@@ -1347,15 +1504,52 @@ def _call(name, inputs, root, *, cache=True, inject=None, inject_facts=None, gua
             if stale:
                 return _result(name, "refused" if stale.startswith(_REFUSED) else "stale", error=stale)
         return r
-    r = _run(card, clean, root, before, inject, inject_facts, inject_model)
+    r = _run(card, clean, root, before, inject, inject_facts, inject_model, hooks)
     writes = r.pop("writes", {})
     if r["ok"] and writes:
         stale = _guarded(guard, writes) or _apply(root, before, writes)
         if stale:
-            return _result(name, "refused" if stale.startswith(_REFUSED) else "stale", error=stale)
-    if r["ok"] and cache and not testing:
+            r = _result(name, "refused" if stale.startswith(_REFUSED) else "stale", error=stale)
+    files = before
+    if hooks and r["status"] == "applied":
+        r = _after_apply(card, hooks, clean, before, writes, r)
+        if not r["ok"]:
+            files = {**before, **writes}  # the apply stood: on_fail sees the files as they are now
+    if hooks and "on_fail" in hooks and not r["ok"] and r["status"] != "confinement":
+        _on_fail(card, hooks, clean, files, r)
+    if r["ok"] and cache and not testing and not hooks:
         _cache_put(key, r, writes)
     return r
+
+
+def _after_apply(card, hooks, inputs, before, writes, r):
+    """T-5946: r, or the failed result of an after_apply hook that refused: it ran on the files as applied (in a scratch
+    copy: it can't touch the worktree), so the change stands and the error says so."""
+    if "after_apply" not in hooks:
+        return r
+    payload = {"inputs": inputs, "files": sorted(before), "changed": r["changed"], "created": r["created"]}
+    failed, out = _hook_scratch(card, hooks, "after_apply", payload, {**before, **writes})
+    if failed:
+        # whatever stopped the hook (a refusal, the timeout, a jail that would not close), the change stands: one status
+        # that says so, never the machine fault a confinement result reads as to the session
+        failed.update(status="hook_failed", changed=r["changed"], created=r["created"], diff=r["diff"],
+                      hooks=r.get("hooks") or {})
+        failed["error"] += " (the change was already applied)"
+        return failed
+    if out:
+        r["hooks"] = dict(r.get("hooks") or {}, after_apply=out)
+    return r
+
+
+def _on_fail(card, hooks, inputs, before, r):
+    """T-5946: the on_fail scripts, given the failed call's status and reason; their stdout goes under r['hooks']. A
+    script that fails too never hides the reason the call failed: what it said is kept as its output."""
+    payload = {"inputs": inputs, "files": sorted(before), "status": r["status"], "reason": r["error"]}
+    failed, out = _hook_scratch(card, hooks, "on_fail", payload, before)
+    if failed:
+        out = f"(the on_fail hook failed: {failed['error']})" + (f"\n{out}" if out else "")
+    if out:
+        r["hooks"] = dict(r.get("hooks") or {}, on_fail=out)
 
 
 _REFUSED = "the change was checked but not applied: "
@@ -1481,6 +1675,8 @@ def text(r):
                (f" (attempt {r['attempt']} of {ATTEMPTS})" if r.get("attempt") else ""))
         if r.get("advice"):
             out += f"\nA larger model's advice for doing it with plain actions:\n{r['advice']}"
+    for point, said in (r.get("hooks") or {}).items():  # T-5946: what the card's hooks printed
+        out += f"\nhook {point}: {said}"
     return out if len(out) <= TEXT_CAP else out[:TEXT_CAP] + "\n[cut]"
 
 

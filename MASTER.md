@@ -284,7 +284,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmsinks` (T-5902: `sampo/sinks.py`, the destructive sinks a diff adds or a test reaches, for `sampo audit prep`'s brief… [→ files-lib-8](docs/map/files-lib-8.md)
 - `fmspawn` (T-5835: `sampo/spawn.py`, the one spawn table: model by agent type… [→ files-lib-8](docs/map/files-lib-8.md)
 - `fmsmallcards`… [→ files-lib-4](docs/map/files-lib-4.md)
-- `fmcallcards` (T-3160: `sampo card`, calling cards: verified generators run confined… [→ files-lib-4](docs/map/files-lib-4.md)
+- `fmcallcards` (T-3160: `sampo card`, calling cards: verified generators run confined; T-5946 card.json `hooks` run scripts at before/after_gen/after_check/after_apply/on_fail… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmartfill` (T-4994, T-3311 slice: `sampo.artfill.fill_slots(brief)` fills an art card's slots from a one-line brief… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmsvgcards` (T-4996: SVG technique cards, technique x works type, admitted only when the example passes the works… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmgreenref` (T-5082: the last tree whose hook smoke passed, in the local ref refs/sampo/green/hook… [→ files-lib-5](docs/map/files-lib-5.md)
