@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- sampo check affected now refuses a template without {tests} or {names} (--literal overrides), and a lane can no longer change the project's gates or templates (T-3416).
 - sampo headroom finds the bounded lists the project's work outgrew (steers, asks and failures that fit no member, raised or named caps), asks a local model what a complete version lacks (cached per set, never paid, a failing set marked and retried later), and files each proposal once through find.capture; a night job runs it at idle priority (T-3328).
 - Card grids are data in plugin/data/card-grids.json, with eight new domains (languages, ops and infra, data and ML, security, writing and research, design, product and planning, Sampo's own skills), per-grid coverage, and `playbooks small grids propose|add` that reads new values from coverage misses, requests and friction with their sources (T-3103).
 - `fm code --search N|auto` draws N candidate edits, checks each in a throwaway copy with the plan's own verify commands and keeps the first green, and `sampo exam run --search N` shows its fixed rate and wall time beside the frontier first try per scenario kind (T-3010).
