@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import unittest
+import unittest.mock
 
 from test_hooks import HookCase
 
@@ -714,6 +715,19 @@ class PerLane(HookCase):
         self.write(os.path.join(other, "s.jsonl"), [self.reply("o1", 1000, 0, 0, 0, "claude-lead", self.at(0.55))])
         a = self.per_lane()["lanes"]["T-0001"]["lead"]
         self.assertEqual((a["input"], a["turns"]), (30 + 14, 5), "both worktree folders count; the sibling project does not")
+
+    def test_per_lane_takes_the_lead_replies_a_caller_already_read(self):
+        """T-5973: targets.py reads each transcript once for three readers and hands per_lane the lead's replies."""
+        from sampo import cost
+        self.rig()
+        with unittest.mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": self.cfg}):
+            own = cost.per_lane(self.p, 14)
+            replies = cost.lead_replies(cost.project_folders(self.p), cost._since(14 + cost.PER_LANE_LOOKBACK_DAYS))
+            self.assertTrue(replies)
+            self.assertEqual(cost.per_lane(self.p, 14, lead_replies=replies), own, "the same replies, the same shares")
+            bare = cost.per_lane(self.p, 14, lead_replies=[])
+        self.assertTrue(own["lanes"]["T-0001"]["lead"]["turns"] > 0)
+        self.assertNotIn("lead", bare["lanes"]["T-0001"], "none handed in is none read: the transcripts are not read again")
 
     def test_per_lane_keeps_the_early_lead_replies_of_a_lane_that_began_before_the_lookback(self):
         self.ev(-24 * 9, "lane_new", "T-0005", {})  # nine days back: before days 1 + the 7 days the ledger is read earlier

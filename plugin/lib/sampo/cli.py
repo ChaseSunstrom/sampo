@@ -11730,8 +11730,12 @@ def _build_parser(only=None):
     s = add("targets", lazy("sampo.targets", "cmd_targets"), tier=("Project and settings", 778),
             help="the outcome targets (plugin/data/targets.json): each one's actual, its target and ok | regressed | "
                  "unmeasured (usage run-out vs reset, accept-to-merge minutes, builder rework rounds, tokens per landed "
-                 "change, Sampo's cost vs bare Claude Code, CPU); a regressed one files a discovered task once a day "
-                 "and leads sampo next (T-5709)")
+                 "change, Sampo's cost vs bare Claude Code, CPU; push lag, lead context per turn, compactions per "
+                 "session-day, Sampo's disk growth, steers per day, T-5973); a regressed one files a discovered task "
+                 "once a day and leads sampo next (T-5709). The scans of transcripts, git and the disk run detached "
+                 "from the self-check (or here, when due), each at its own pace; one not read yet is unmeasured")
+    s.add_argument("--refresh-heavy", action="store_true", help="read the due transcript, git and disk targets and "
+                   "print nothing (what the self-check starts detached)")
 
     s = add("profile", lazy("sampo.profile", "cmd_profile"), tier=("Project and settings", 776),
             help="the user's machine-local profile (state/profile/, git-ignored): built from Claude's user and feedback "

@@ -71,14 +71,18 @@ def _human(n):
 
 
 _TS = re.compile(r'"timestamp":\s*"([^"]{19})')
-_BLOB = '{"type":"api-request-blob"'  # T-3521: a request's body, with no top-level timestamp: no reader here uses one
+BLOB = '{"type":"api-request-blob"'  # T-3521: a request's body, with no top-level timestamp: no reader here uses one
+_BLOB = BLOB  # the old name (T-5973 made it public for targets.py)
 
 
-def _mtime(path):
+def mtime(path):
     try:
         return os.path.getmtime(path)
     except OSError:
         return 0.0
+
+
+_mtime = mtime  # the old name (T-5973)
 
 
 def _entries(folder, since, need=None, newest=False, context=False):
@@ -97,14 +101,14 @@ def _entries(folder, since, need=None, newest=False, context=False):
     roots = [folder] if isinstance(folder, str) else folder  # T-3921: a project's worktrees and lanes, one list
     paths = [os.path.join(d, n) for root in roots for d, _, ns in os.walk(root) for n in ns if n.endswith(".jsonl")]
     if newest:
-        paths.sort(key=_mtime, reverse=True)
+        paths.sort(key=mtime, reverse=True)
     for path in paths:
         try:
             if os.path.getmtime(path) < cut:
                 continue
             with open(path, encoding="utf-8", errors="replace") as f:
                 for line in f:
-                    if need and need not in line or line.startswith(_BLOB):
+                    if need and need not in line or line.startswith(BLOB):
                         continue
                     last = _TS.match(line, max(line.rfind('"timestamp":'), 0))
                     if not context and not (last and last.group(1) >= cutoff):
@@ -1295,9 +1299,12 @@ def _share_add(rec, usage, model, f=1.0):
         rec["models"][model] = rec["models"].get(model, 0) + f
 
 
-def _equiv(rec):
+def equiv(rec):
     """A share in input-equivalent tokens (WEIGHTS: reads ×0.1, writes ×1.25, output ×5)."""
     return sum(rec.get(k, 0) * w for k, w in PER_LANE_WEIGHT.items())
+
+
+_equiv = equiv  # the old name (T-5973)
 
 
 def _role_of(agent_type):
@@ -1397,20 +1404,32 @@ def _replies(path, base=None):
         return None
 
 
-def _lead_replies(folder, since):
+def lead_reply(path, e, since):
+    """(key, (ts, usage, model)) when the transcript entry `e` of file `path` is one of the lead's own replies on or after
+    `since` (a subagent's file, a non-reply, and an older one are not), else None. The key is the message id: one reply
+    is written once per content block, and across a resumed session's files (T-5973: shared with targets.py's one walk)."""
+    m = e.get("message")
+    if f"{os.sep}subagents{os.sep}" in path or e.get("type") != "assistant" or not isinstance(m, dict) \
+            or not isinstance(m.get("usage"), dict) or str(e.get("timestamp") or "")[:19] < since[:19]:
+        return None
+    return m.get("id") or (path, e.get("timestamp")), (str(e["timestamp"]), m["usage"], str(m.get("model") or ""))
+
+
+def lead_replies(folder, since):
     """[(ts, usage, model)] of the lead's own replies (a subagent's are left out), once per message id."""
     seen = {}
     folders = [folder] if isinstance(folder, str) else list(folder)  # the project's folder and its lane worktrees'
     for path, e in _entries([f for f in folders if os.path.isdir(f)], since, need='"usage"'):
-        m = e.get("message")
-        if f"{os.sep}subagents{os.sep}" in path or e.get("type") != "assistant" or not isinstance(m, dict) \
-                or not isinstance(m.get("usage"), dict) or str(e.get("timestamp") or "")[:19] < since[:19]:
-            continue
-        seen[m.get("id") or (path, e.get("timestamp"))] = (str(e["timestamp"]), m["usage"], str(m.get("model") or ""))
+        got = lead_reply(path, e, since)
+        if got:
+            seen[got[0]] = got[1]
     return list(seen.values())
 
 
-def per_lane(p, days, now=None):
+_lead_replies = lead_replies  # the old name (T-5973)
+
+
+def per_lane(p, days, now=None, lead_replies=None):
     """T-5950: the tokens of each lane that landed in the window, by role. A lane landed once per task: its `Merge T-X`
     commit on the main checkout's HEAD first-parent line in the window (a re-landed or reverted lane is one; the ledger's
     lane_landed count is returned beside it, and stands in only when git can't read the log). The lead's share is each
@@ -1422,7 +1441,9 @@ def per_lane(p, days, now=None):
     task the stop recorded (the lead's focus then: a guess). Runs and lead replies that fit no landed lane are returned
     under `unattributed`, never dropped. {days, landed, git: {source, merges, tasks}, ledger: {tasks, events}, lanes:
     {task: {role: share}}, median: {role: {n, input, cache_read, cache_write, output, equiv}}, unattributed: {subagents:
-    [...], lead: share}}; a share is the four token kinds, `turns`, `models` (turns by model)."""
+    [...], lead: share}}; a share is the four token kinds, `turns`, `models` (turns by model). `lead_replies` is a
+    caller's own read of the lead's replies (T-5973: targets.py reads each transcript once for three readers): the
+    `[(ts, usage, model)]` that `lead_replies()` returns, trimmed here to the window; None reads them itself."""
     since = _since(days + PER_LANE_LOOKBACK_DAYS)
     floor = _since(days)
     kinds = ("lane_landed", "lane_new", "lane_builder", "focus", "builder_mark", "subagent", "reviewer_bound")
@@ -1497,7 +1518,10 @@ def per_lane(p, days, now=None):
                    else f"{', '.join(tids)} not landed in the window")
             unattr["subagents"].append({"agent_type": str(d["agent_type"]), "agent_id": aid, "task": ",".join(tids) or None,
                                         "why": why, **rec})
-    for ts, usage, model in _lead_replies(project_folders(p), since):
+    # (the parameter shadows the function here: the alias reads the transcripts)
+    replies_in = _lead_replies(project_folders(p), since) if lead_replies is None else \
+        [r for r in lead_replies if str(r[0])[:19] >= since[:19]]
+    for ts, usage, model in replies_in:
         open_ = [t for t, z in landed.items() if start.get(t, z) <= ts[:19] <= z]
         for t in open_:
             _share_add(lanes[t].setdefault("lead", _share_new()), usage, model, 1 / len(open_))
@@ -1516,7 +1540,7 @@ def _medians(lanes):
         rows = [r[role] for r in lanes.values() if role in r]
         if rows:
             out[role] = {"n": len(rows), **{k: round(statistics.median(r[k] for r in rows)) for k in PER_LANE_KINDS},
-                         "equiv": round(statistics.median(_equiv(r) for r in rows))}
+                         "equiv": round(statistics.median(equiv(r) for r in rows))}
     return out
 
 
@@ -1539,8 +1563,8 @@ def _per_lane_text(r, base=None):
            "Roles: lead = the main session's replies split among the lanes open then; builder, reviewer, fixer = those "
            "agents' own runs; other = any agent that is not a builder, reviewer or fixer (a scout, an auditor)"]
     for t, roles in r["lanes"].items():
-        out.append(f"  {t} (≈ {_human(sum(_equiv(s) for s in roles.values()))}):")
-        out += [f"    {role}: {fmt(roles[role])} · ≈ {_human(_equiv(roles[role]))}"
+        out.append(f"  {t} (≈ {_human(sum(equiv(s) for s in roles.values()))}):")
+        out += [f"    {role}: {fmt(roles[role])} · ≈ {_human(equiv(roles[role]))}"
                 for role in PER_LANE_ROLES if role in roles]
     if r["median"]:
         out.append("Median per role over the lanes that have it:")

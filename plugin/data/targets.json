@@ -35,7 +35,53 @@
     "unit": "input-equivalent tokens per landed task, 14 days",
     "higher_is_worse": true,
     "provisional": true,
-    "why": "the cost cache's per-task tokens (cost.cache_as_is) over the tasks that landed; 3,000,000 is a starting value, provisional until the numbers are seen (T-5709)"
+    "why": "the per-lane cost reader's tokens (cost.per_lane, T-5973) per landed task, lead and agents, averaged over the lanes with tokens; the cost cache's per-task tokens stand in until it has read; 3,000,000 is a starting value, provisional until the numbers are seen (T-5709)"
+  },
+  {
+    "name": "push_lag",
+    "label": "push lag",
+    "reader": "push_lag",
+    "target": 2,
+    "unit": "h since the oldest trunk commit origin/main lacks",
+    "higher_is_worse": true,
+    "why": "git cherry origin/main on the main checkout's trunk: a ship that died before the push leaves commits only this machine has (T-5973)"
+  },
+  {
+    "name": "lead_context",
+    "label": "lead context per turn",
+    "reader": "lead_context",
+    "target": 100000,
+    "unit": "cache-read tokens per lead turn, median over 3 days",
+    "higher_is_worse": true,
+    "why": "the standing context the lead re-reads on every reply (cost.lead_cache_read's figure): a session that grows past the target is one the user had to compact or restart (T-5973)"
+  },
+  {
+    "name": "compactions",
+    "label": "compactions per session-day",
+    "reader": "compactions",
+    "target": 1,
+    "unit": "compaction summaries per session-day, 7 days",
+    "higher_is_worse": true,
+    "why": "the summaries Claude Code writes when a session runs out of context, per session-day (a session's day with a message in it, 7 days; the days of the sessions add up): each one is a hand-off the user had to carry (T-5973)"
+  },
+  {
+    "name": "disk_growth",
+    "label": "Sampo disk growth",
+    "reader": "disk_growth",
+    "target": 0,
+    "unit": "MB per day, Sampo's own paths (tidy --report)",
+    "higher_is_worse": true,
+    "provisional": true,
+    "why": "the change in the bytes tidy --report finds Sampo owns, between the oldest and newest daily sample of 7 days; a flat footprint is the goal, and 0 is a floor every busy day crosses, so it is provisional until the numbers are seen (T-5973)"
+  },
+  {
+    "name": "steers",
+    "label": "steers per day",
+    "reader": "steers",
+    "target": 1,
+    "unit": "avoidable steers per day, over the days the meter has read (up to 7)",
+    "higher_is_worse": true,
+    "why": "the steer meter's avoidable messages (steers.jsonl; machine text and compaction summaries left out) per calendar day, over the days its rows cover (up to 7, at least 1; unmeasured when its record has stopped for a day): each is a time the user had to say what Sampo could have known (T-5973)"
   },
   {
     "name": "sampo_vs_bare",

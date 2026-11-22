@@ -117,15 +117,19 @@ def clean(booked):
     return out
 
 
-def _read_rows(rs):
+def read_rows(rs):
+    """The rows that were read (not unread) and carry a bool `avoidable` and a str `at`."""
     return [r for r in rs if not r.get("unread") and isinstance(r.get("avoidable"), bool) and isinstance(r.get("at"), str)]
+
+
+_read_rows = read_rows  # the old name (T-5973 made it public for targets.py)
 
 
 def rate(p, since, until=None, root=None, _rows=None):
     """(avoidable, read) over the messages read from `since` (inclusive) to `until` (exclusive; None: no end), the
     before/after counts a two-proportion test (compare) takes. With root, only avoidable steers filed under that root
     count as avoidable; the read count stays the whole window. Unread rows are in neither."""
-    got = [r for r in _read_rows(rows(p) if _rows is None else _rows)
+    got = [r for r in read_rows(rows(p) if _rows is None else _rows)
            if r["at"] >= (since or "") and (until is None or r["at"] < until)]
     return sum(1 for r in got if r["avoidable"] and (root is None or r.get("root") == root)), len(got)
 
@@ -170,7 +174,7 @@ def _window(rs, t, days):
 
 
 def _build(everything, newest=True):
-    rs = _read_rows(everything)
+    rs = read_rows(everything)
     t = c.clock().timestamp()
     out = {"windows": {k: _window(rs, t, d) for k, d in WINDOWS.items()}, "messages": len(rs),
            "unread": sum(1 for r in everything if r.get("unread")), "roots": roots()}
