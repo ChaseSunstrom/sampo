@@ -4417,9 +4417,10 @@ def _close(p, main, tid, settled=None, commit_wait=None):
     b = cli.need_brief(p, tid)
     path = b.meta.get("lane") or ""
     if b.status == "done" and _commit_pending(b):  # T-5368: its criteria passed in an earlier land; the commit waited
-        f = lanes.close_fields(b.section(lanes.CLOSE_FIELDS))
+        brief_fields = lanes.close_fields(b.section(lanes.CLOSE_FIELDS))
+        f = brief_fields or lanes.lane_trailers(path, b.meta.get("base") or "", tid)  # T-5496: the lane's trailers, as at the close
         title = lanes.close_line(f.get("title"), "title", tid)[0] or lanes.close_line(b.title, "title", tid)[0]
-        why, out = _commit_close(p, tid, title, path, _wait(commit_wait))
+        why, out = _commit_close(p, tid, title, path, _wait(commit_wait), "" if brief_fields else f.get("changelog", ""))
         if why:
             return why, ""
         return _finish_close(p, main, tid, path, title, out, 0.0)
@@ -4490,7 +4491,7 @@ def _close(p, main, tid, settled=None, commit_wait=None):
     # proved and done, and the finish wrote the mark that its commit is owed with the done itself (T-5368: a crash
     # between the two left the task done and its CHANGELOG line never committed); a land that can't take the lock now
     # leaves the commit to the next
-    why, out2 = _commit_close(p, tid, title, path, _wait(commit_wait))
+    why, out2 = _commit_close(p, tid, title, path, _wait(commit_wait), "" if brief_fields else f["changelog"])
     if why:
         return why, ""
     if kinds and settled is not None:  # T-5535: counted once it has closed, not when it settled
@@ -4509,15 +4510,17 @@ def _commit_pending(b):
 COMMIT_WAIT = "a running train holds trunk"  # T-5368: the start of the refusal a commit that timed out on a train's lock gives
 
 
-def _commit_close(p, tid, title, path, timeout=None):
+def _commit_close(p, tid, title, path, timeout=None, changelog=""):
     """T-5368: the second half of a land's close: the CHANGELOG line and the commit of a done task, under the train's
     lock (T-4540: a running train is waited for, bounded, never committed beside; `timeout` seconds, default
-    lanes.TRUNK_WAIT_S). ('', the finish's output), or (why it is left, ''): the mark stays, and the next land commits it."""
+    lanes.TRUNK_WAIT_S). ('', the finish's output), or (why it is left, ''): the mark stays, and the next land commits it.
+    `changelog`: the line a lane's commit trailers gave (T-5496), which this finish can't read off the brief's Close fields."""
     from sampo import cli
     keep = "; its lane is kept" if path else ""
     try:
         with _own_commit(), train_lock_closing(p, timeout):
-            rc, out, err = _sampo(["task", "finish", tid, "--commit", title])
+            rc, out, err = _sampo(["task", "finish", tid, "--commit", title,
+                                   *([f"--changelog={changelog}"] if changelog else [])])
     except c.LockTimeout:
         return COMMIT_WAIT + ": the close's commit waits for it, and the next land retries it" + keep, ""
     if rc:

@@ -202,7 +202,9 @@ class Claims(Base):
         self.assertEqual(out.get("permissionDecision"), "deny", "the sibling's take is a real hold, not advisory")
         r = self.fm("lease", "take", "a.py::f", env=B, cwd=lane, check=False)
         self.assertEqual(r.returncode, 1, "another session's explicit hold still refuses")
-        self.assertIn("overlaps session sess-a", r.stderr)
+        holder = next(v["task"] for v in self.fm_json("lease", "list")["leases"] if v["file"] == "a.py")
+        self.assertRegex(holder, r"^T-\d{4,}$", "the hold's task is on the lease")
+        self.assertIn(f"overlaps task {holder} (session sess-a)", r.stderr)  # T-5519: the refusal names task and session
 
 
 class ClaimsReview(Base):
