@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- A live train now lands past repo-shape classes already red on its base, files one express trunk-red FIX for them, and still refuses a class the merge itself turns red (T-5805).
 - A live land trains the express lanes and the ordinary ready lanes as one train, express first, up to an explicit --batch (the default does not cap it), so express arrivals and restarts on new code no longer starve the ordinary queue; gated mode keeps express lanes alone; supersedes T-5857 (T-5932).
 - The land no longer spends its train time re-closing leftovers: one whose last close failed only on classes run.py records as red on trunk is skipped with one line and requeued when they go green, and the rest close after the first train's merges, up to three at once within the CPU room (T-5912).
 - sampo lane recover and resume of a lane that already has its branch are no longer refused by the land-backlog bar or the unmerged cap, so 21 waiting lanes can't hold a recovery; a new lane is still held (T-5933).
