@@ -1302,7 +1302,10 @@ def stop_causes(p, briefs=None, fresh=False):
     """T-2354: {task id: (cause, detail)} for lanes whose builder came back without the work merged. A stopped process
     (this host) is proof it ended. A live one proves nothing (builder_proc is the main session's): it is a cause only
     when it is stalled, or when its last merge ended in a conflict or red at least FM_STALL_MIN minutes ago with no
-    file or commit in the lane since; a fresh one may still be a builder at work. A guard refusal is a grant to ask for,
+    file or commit in the lane since; a fresh one may still be a builder at work. T-5850: a lane whose builder reported
+    (_reported: builder_returned, accepted_at or reviewed_tip) has no builder at work, so its conflict or red is a cause
+    at once (the night of 2026-11-22: 14 accepted lanes the land parked were refused 15 minutes, builder_proc being the
+    main session, alive). A guard refusal is a grant to ask for,
     whoever's process it is. Another host, no process record, a merged or blocked lane: no cause, nothing to recover.
     `fresh` re-reads the lanes instead of the 60 s stalled cache."""
     from sampo import bus
@@ -1327,7 +1330,7 @@ def stop_causes(p, briefs=None, fresh=False):
         if kind == "guard":
             out[tid] = ("guard_refused", arg)
             continue
-        if kind in _STOP_KINDS and (state == "stopped" or (
+        if kind in _STOP_KINDS and (state == "stopped" or _reported(b) or (
                 (time.time() - at) / 60 >= _stall_limit() and _newest(b.meta["lane"], git) <= at + 2)):
             out[tid] = (_STOP_KINDS[kind], "")
         elif state == "alive":
@@ -1786,7 +1789,9 @@ def resume(p, b, main, args, ended=False, recover=None, after=""):
     have = _ref_ok(main, branch)
 
     def reset(x):
-        for k in ("lane", "lane_branch", "builder", "builder_proc", "lane_stop"):
+        # T-5850 review: the old builder's report marks go with it; a new builder's lane has none until it reports
+        for k in ("lane", "lane_branch", "builder", "builder_proc", "lane_stop",
+                  "accepted_at", "builder_returned", "reviewed_tip"):
             x.meta.pop(k, None)
         if recover:
             x.meta["recoveries"] = [*_recoveries(x), f"{recover['cause']}@{c.now()}"]

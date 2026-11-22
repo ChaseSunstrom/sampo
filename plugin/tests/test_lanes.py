@@ -2947,6 +2947,43 @@ class LaneRecovery(ForemanTestCase):
         self.fm("lane", "recover", tid, env=env)
         self.assertFalse(os.path.isdir(path), "old marker and quiet since: its builder had already returned")
 
+    def test_stop_cause_is_at_once_for_a_reported_lane_the_land_parked_on_a_live_process(self):
+        """T-5850: an accepted (or returned, or reviewed) lane's conflict or red is a cause the minute it lands, even
+        with builder_proc alive (the main session's); a lane with none of those marks keeps the quiet rule."""
+        from sampo import lanes as slanes
+        p = c.find_project(self.repo)
+        self.stall_env()
+        os.environ["FM_STALL_MIN"] = "15"  # the real limit: a 1-minute-old park is far inside it
+        for kind, cause in (("conflict", "merge_conflict"), ("refused", "red_after_merge")):
+            for mark in ({"accepted_at": c.now()}, {"builder_returned": c.now()}, {"reviewed_tip": "a" * 40}):
+                tid, _ = self.stopped_builder(proc=self.live_proc())
+                self.mark(tid, kind, ago=60, **mark)
+                got = slanes.stop_causes(p, fresh=True).get(tid)
+                self.assertEqual(got and got[0], cause, (kind, mark))
+            plain, _ = self.stopped_builder(proc=self.live_proc())
+            self.mark(plain, kind, ago=60)
+            self.assertNotIn(plain, slanes.stop_causes(p, fresh=True), f"no report mark: the quiet rule holds ({kind})")
+
+    def test_a_recovered_lane_carries_no_report_marks_so_its_new_builder_keeps_the_quiet_rule(self):
+        """T-5850 review: resume's reset clears accepted_at, builder_returned and reviewed_tip with the rest of the old
+        builder's marks; else a park during the NEW builder's work would be taken at once."""
+        from sampo import lanes as slanes
+        p = c.find_project(self.repo)
+        self.stall_env()
+        os.environ["FM_STALL_MIN"] = "15"
+        tid, _ = self.stopped_builder()  # a dead process: recover is proof enough
+        self.mark(tid, "conflict", accepted_at=time.time(), builder_returned=c.now(), reviewed_tip="a" * 40)
+        self.fm("lane", "recover", tid)
+        meta = c.find_brief(p, tid).meta
+        for k in ("accepted_at", "builder_returned", "reviewed_tip"):
+            self.assertNotIn(k, meta, k)
+        self.relaunch_stopped(tid)  # the new builder: a lane again, its process here alive
+        b = c.find_brief(p, tid)
+        b.meta["builder_proc"] = self.live_proc()
+        c.save_brief(p, b)
+        self.mark(tid, "conflict", ago=60)
+        self.assertNotIn(tid, slanes.stop_causes(p, fresh=True), "a fresh park under a live new builder: quiet rule")
+
     def test_the_cap_never_blocks_a_task_whose_lane_is_being_worked(self):
         env = {"FM_STALL_CACHE_S": "0"}
         tid, path = self.stopped_builder(proc=self.live_proc())
