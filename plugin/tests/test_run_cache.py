@@ -341,6 +341,12 @@ class Coverage(unittest.TestCase):
             self.assertEqual(run.shared(*self.tree()[:2]),
                              {"plugin/tests/run.py", "plugin/tests/helpers.py", "plugin/tests/runcover.py"})
 
+    def test_cachecost_py_is_no_class_s_dependency(self):  # T-5484: the report reads the cache, it runs no class
+        repo, blobs, _ = self.tree()
+        blobs["plugin/tests/cachecost.py"] = "blob"
+        with mock.patch.object(run, "HERE", self.here):
+            self.assertNotIn("plugin/tests/cachecost.py", run.shared(repo, blobs))
+
     def test_blobs_are_git_hashes_of_the_files_on_disk_untracked_ones_too(self):
         self.edit("plugin/lib/mod.py")
         self.edit("plugin/lib/new.py", "Y = 2\n")
@@ -426,7 +432,7 @@ class Coverage(unittest.TestCase):
             blobs = self.tree()[1]
             self.assertEqual(run.covered(text, d, blobs),
                              {"\0ref:HEAD", "\0ref:refs/remotes/origin/HEAD", "\0HEAD:plugin/lib/mod.py", "\0HEAD"})
-            for ln in (f"r {d}/docs\0HEAD", "h /elsewhere\0x", f"r {d}x\0HEAD"):
+            for ln in ("r /sampo-t5484-elsewhere/docs\0HEAD", "h /elsewhere\0x", "r /sampo-t5484-elsewhere-x\0HEAD"):
                 self.assertEqual(run.covered(ln, d, blobs), {"*", run.GIT_STATE}, "another repo's: " + ln)
 
     def test_outside_git_there_is_no_tree(self):
@@ -446,6 +452,130 @@ def devtools(browser, url):  # helpers.devtools' part the recorder sees: a brows
 """
 
 
+class Declared(unittest.TestCase):
+    """T-5484: a class's RUN_READS replace its '*' only when every '*' its run wrote is a named browser's line, and a
+    declared file must be tracked; a declared file still reruns the class when it changes."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.d = os.path.realpath(tempfile.mkdtemp())
+        scratch(cls.d, {"lib/mod_a.py": "A = 1\n", "data.txt": "x\n", "card/check.py": "C = 1\n", "www/page.html": "<p>x</p>\n"})
+        cls.blobs = dict.fromkeys(git(cls.d, "ls-files").split(), "blob")
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.d, True)
+
+    def paths(self, texts, reads, base=()):
+        return run.run_paths(set(base), texts, self.d, self.blobs, reads)
+
+    def test_a_named_browser_star_narrows_to_the_declared_reads(self):
+        got = self.paths([f"f {self.d}/lib/mod_a.py\n* browser chromium --remote-debugging-port=9 x\n* page file:///t/w.html"],
+                         ["lib/mod_a.py", "data.txt", "card/"])
+        self.assertNotIn("*", got)
+        self.assertLessEqual({"lib/mod_a.py", "data.txt", "card/", "card/check.py"}, set(got))
+
+    def test_a_star_from_anything_else_stays_the_whole_tree(self):
+        outside = os.path.join(os.sep, "sampo-t5484-not-a-temp-repo")  # outside the repo and the temp folder
+        for extra in ("* runs-python python3 -c pass", "* system ls -l", "* git git status", f"r {outside}\0HEAD"):
+            with self.subTest(extra):
+                self.assertIn("*", self.paths([f"* browser chromium x\n{extra}"], ["lib/mod_a.py"]))
+
+    def test_no_named_browser_line_or_no_declaration_keeps_the_whole_tree(self):
+        self.assertIn("*", self.paths([f"f {self.d}/lib/mod_a.py\n* runs-python python3 -c pass"], ["lib/mod_a.py"]))
+        self.assertIn("*", self.paths(["* browser chromium x"], None), "no RUN_READS declared")
+
+    def test_an_untracked_declared_read_keeps_the_whole_tree(self):
+        for reads in (["nope.txt"], ["lib/mod_a.py", "lib/gone.py"], ["ghost/"]):
+            with self.subTest(reads):
+                self.assertIn("*", self.paths(["* browser chromium x"], reads))
+
+    def test_a_page_of_the_repo_narrows_only_where_a_declared_entry_holds_it(self):  # T-5484
+        page = f"* page file://{self.d}/www/page.html"
+        self.assertIn("*", self.paths([f"* browser chromium x\n{page}"], ["lib/mod_a.py", "data.txt", "card/"]),
+                      "a declaration that omits the page it loaded")
+        self.assertNotIn("*", self.paths([f"* browser chromium x\n{page}"], ["www/page.html"]))
+        self.assertNotIn("*", self.paths([f"* browser chromium x\n{page}"], ["www/"]))
+
+    def test_a_declared_file_still_reruns_the_class_when_it_changes(self):
+        got = self.paths(["* browser chromium x"], ["lib/mod_a.py"])
+        before = run.digest(got, run.values(self.d, {**self.blobs, "lib/mod_a.py": "b1"}))
+        after = run.digest(got, run.values(self.d, {**self.blobs, "lib/mod_a.py": "b2"}))
+        self.assertNotEqual(before, after)
+
+
+class HeadOutside(unittest.TestCase):
+    """T-5484: a git HEAD read of a repo outside the recorded tree. A repo the test built in the temp folder is the test's
+    own scratch and reads nothing of the tree; any other repo outside it is the whole tree."""
+
+    @classmethod
+    def setUpClass(cls):
+        # the root is a repo beside the temp folder the tests mock, never in it: a temp folder holding a root is no scratch
+        cls.base = os.path.realpath(tempfile.mkdtemp(prefix="t5484-"))
+        cls.d = scratch(os.path.join(cls.base, "root"), {"a.py": "A = 1\n"})
+        cls.blobs = dict.fromkeys(git(cls.d, "ls-files").split(), "blob")
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.base, True)
+
+    def test_a_head_of_a_repo_the_test_built_in_its_temp_folder_reads_nothing(self):
+        tmp = os.path.join(self.base, "tmp")
+        built = os.path.realpath(scratch(os.path.join(tmp, "fmtest-5484-run", "scratch"), {"c.py": "C = 1\n"}))
+        with mock.patch.object(tempfile, "gettempdir", return_value=tmp):
+            for kind in ("r", "h"):
+                with self.subTest(kind):
+                    self.assertEqual(run.covered(f"{kind} {built}\0HEAD", self.d, self.blobs), set())
+
+    def test_a_head_of_a_repo_outside_the_roots_and_the_temp_folder_is_the_whole_tree(self):
+        outside = os.path.join(os.sep, "sampo-t5484-not-a-temp-repo")
+        for kind in ("r", "h"):
+            with self.subTest(kind):
+                got = run.covered(f"{kind} {outside}\0HEAD", self.d, self.blobs)
+                self.assertIn("*", got)
+                self.assertIn(run.GIT_STATE, got)
+
+    def test_a_head_outside_the_roots_is_the_whole_tree_when_the_temp_folder_is_the_root(self):  # T-5484
+        outside = os.path.join(os.sep, "sampo-t5484-not-a-temp-repo")
+        with mock.patch.object(tempfile, "gettempdir", return_value=os.sep):
+            for kind in ("r", "h"):
+                with self.subTest(kind):
+                    self.assertIn("*", run.covered(f"{kind} {outside}\0HEAD", self.d, self.blobs))
+
+    def test_the_temp_folder_is_trusted_only_as_a_fmtest_folder_that_holds_no_root(self):  # T-5484
+        holder = os.path.realpath(tempfile.mkdtemp(prefix="fmtest-5484-holder-"))
+        self.addCleanup(shutil.rmtree, holder, True)
+        root = os.path.realpath(scratch(os.path.join(holder, "root"), {"a.py": "A = 1\n"}))
+        other = os.path.realpath(scratch(os.path.join(holder, "other"), {"b.py": "B = 1\n"}))
+        root_blobs = dict.fromkeys(git(root, "ls-files").split(), "blob")
+        with mock.patch.object(tempfile, "gettempdir", return_value=holder):
+            self.assertIn("*", run.covered(f"h {other}\0HEAD", root, root_blobs), "a temp folder holding the checkout")
+        plain = os.path.realpath(tempfile.mkdtemp(prefix="plain-5484-"))
+        self.addCleanup(shutil.rmtree, plain, True)
+        loose = os.path.realpath(scratch(os.path.join(plain, "other"), {"b.py": "B = 1\n"}))
+        with mock.patch.object(tempfile, "gettempdir", return_value=plain):
+            self.assertIn("*", run.covered(f"h {loose}\0HEAD", self.d, self.blobs), "a temp folder not named for the class")
+        inner = os.path.realpath(scratch(os.path.join(plain, "fmtest-5484-run", "scratch"), {"c.py": "C = 1\n"}))
+        with mock.patch.object(tempfile, "gettempdir", return_value=plain):  # the run.py parent's view of a class's folder
+            self.assertEqual(run.covered(f"h {inner}\0HEAD", self.d, self.blobs), set())
+        with mock.patch.object(tempfile, "gettempdir", return_value=os.path.join(plain, "fmtest-5484-run")):
+            self.assertEqual(run.covered(f"h {inner}\0HEAD", self.d, self.blobs), set())  # a class child's own folder
+
+    def test_a_save_dropped_because_the_cache_changed_names_its_classes_on_stderr(self):  # T-5484
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "c.json")
+            gen, _ = run.load_cache(p)
+            run.save_cache(p, {"m.A": rec("ka")}, gen)
+            run.drop_cache(p)  # a third run found the cache wrong: this run's read is out of date
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                run.save_cache(p, {"m.C": rec("kc"), "m.D": rec("kd")}, gen)
+            self.assertEqual(err.getvalue().count("\n"), 1, err.getvalue())
+            self.assertIn("m.C", err.getvalue())
+            self.assertIn("m.D", err.getvalue())
+            self.assertEqual(run.load_cache(p), (gen + 1, {}), "no behaviour change: nothing saved")
+
+
 class Recorder(unittest.TestCase):
     """T-3593: runcover.py in cover_python's venv: what a process and its children record."""
 
@@ -459,6 +589,7 @@ class Recorder(unittest.TestCase):
         for name in ("tool", "pytool", "sleep"):
             os.chmod(os.path.join(cls.d, "bin", name), 0o755)
         cls.cache = os.path.realpath(tempfile.mkdtemp())
+        cls.home = os.path.realpath(tempfile.mkdtemp())  # T-5484: no global git config of this machine reaches a probe
         with mock.patch.dict(os.environ, {"XDG_CACHE_HOME": cls.cache}):
             cls.py = run.cover_python()
         cls.blobs = dict.fromkeys(git(cls.d, "ls-files").split(), "blob")
@@ -467,10 +598,12 @@ class Recorder(unittest.TestCase):
     def tearDownClass(cls):
         shutil.rmtree(cls.d, True)
         shutil.rmtree(cls.cache, True)
+        shutil.rmtree(cls.home, True)
 
-    def record(self, code, raw=False, held=None):
+    def record(self, code, raw=False, held=None, tmp=None):
         """What a script in the repo running `code` (and its children) recorded, as covered() reads it (raw: the
-        file's text; held: what the file holds before)."""
+        file's text; held: what the file holds before; tmp: the temp folder the probe and covered() both use, T-5484:
+        a class child's fmtest- folder, which the repo root is not in)."""
         out = os.path.join(tempfile.mkdtemp(), "cover")
         self.addCleanup(shutil.rmtree, os.path.dirname(out), True)
         if held is not None:
@@ -478,12 +611,19 @@ class Recorder(unittest.TestCase):
                 f.write(held)
         with open(os.path.join(self.d, "probe.py"), "w") as f:
             f.write("import os, subprocess, sys, tempfile\nsys.path.insert(0, 'lib')\n" + code)
-        r = subprocess.run([self.py, "probe.py"], cwd=self.d, timeout=120, capture_output=True, text=True,
-                           env=dict(os.environ, RUNPY_COVER=out, RUNPY_COVER_ROOTS=os.pathsep.join(run._roots(self.d))))
+        env = dict(os.environ, RUNPY_COVER=out, RUNPY_COVER_ROOTS=os.pathsep.join(run._roots(self.d)),
+                   HOME=self.home, XDG_CONFIG_HOME=self.home)
+        if tmp:
+            env["TMPDIR"] = tmp
+        r = subprocess.run([self.py, "probe.py"], cwd=self.d, timeout=120, capture_output=True, text=True, env=env)
         # T-4058: macOS CI saw only "exit status 1"; the probe's own error says which step failed there
         self.assertEqual(r.returncode, 0, f"probe.py failed:\n{code}\n{r.stderr[-1500:]}")
         with open(out) as f:
-            return f.read() if raw else run.covered(f.read(), self.d, self.blobs)
+            text = f.read()
+        if raw:
+            return text
+        with mock.patch.object(tempfile, "gettempdir", return_value=tmp) if tmp else contextlib.nullcontext():
+            return run.covered(text, self.d, self.blobs)
 
     def test_the_venv_python_is_this_python_with_the_recorder_outside_tmp_and_made_once(self):
         self.assertIsNotNone(self.py)
@@ -607,7 +747,8 @@ class Recorder(unittest.TestCase):
                 "runcover._inside = lambda *a: (n.__setitem__(0, n[0] + 1), f(*a))[1]\n"
                 "for _ in range(500):\n    ask()\nprint(n[0])\nos.path.isdir('folder')\nprint(n[0])\n")
         r = subprocess.run([self.py, "-c", code], cwd=self.d, capture_output=True, text=True, check=True,
-                           env=dict(os.environ, RUNPY_COVER=out, RUNPY_COVER_ROOTS=os.pathsep.join(run._roots(self.d))))
+                           env=dict(os.environ, RUNPY_COVER=out, RUNPY_COVER_ROOTS=os.pathsep.join(run._roots(self.d)),
+                                    HOME=self.home, XDG_CONFIG_HOME=self.home))
         self.assertEqual(r.stdout.split(), ["0", "1"], "judged on the first ask only")
 
     def test_a_path_asked_again_is_recorded_again_where_the_answer_or_the_file_changed(self):  # T-3691: the memo
@@ -692,6 +833,33 @@ class Recorder(unittest.TestCase):
                           "subprocess.run('echo hi', shell=True, capture_output=True, cwd=t)\n")
         self.assertNotIn("*", got)
 
+    def test_git_config_that_sets_a_value_runs_nothing_and_a_merge_driver_script_is_read(self):
+        """T-5484: `git config KEY VALUE` runs nothing, though its value may name a python; git merge runs the python
+        script its merge driver names, so that script is read: a driver change reruns the class, nothing else does."""
+        drv = os.path.join(self.d, "lib", "mod_b.py")
+        got = self.record("t = tempfile.mkdtemp()\nsubprocess.run(['git', 'init', '-q', t], check=True)\n"
+                          "subprocess.run(['git', '-C', t, 'config', 'merge.sampo-map.driver', "
+                          f"'python3 -I {drv} %O %A %B'], check=True)\n")
+        self.assertNotIn("*", got, "a config write is no run")
+        got = self.record("t = tempfile.mkdtemp()\nsubprocess.run(['git', 'init', '-q', t], check=True)\n"
+                          "subprocess.run(['git', '-C', t, 'merge', '-q', '--no-edit', 'nope'], capture_output=True)\n")
+        self.assertNotIn("*", got, "a merge with no driver named reads nothing judged")
+        got = self.record("t = tempfile.mkdtemp()\nsubprocess.run(['git', 'init', '-q', t], check=True)\n"
+                          "subprocess.run(['git', '-C', t, 'config', 'merge.sampo-map.driver', "
+                          f"'python3 -I {drv} %O %A %B'], check=True)\n"
+                          "subprocess.run(['git', '-C', t, 'merge', '-q', '--no-edit', 'nope'], capture_output=True)\n")
+        self.assertIn("lib/mod_b.py", got, "the driver script is read at the merge")
+        self.assertNotIn("*", got)
+
+    def test_a_merge_driver_that_names_no_readable_script_is_the_whole_tree(self):
+        nope = os.path.join(self.d, "lib", "nope.py")
+        for driver in ("python3 -c pass %O %A %B", f"python3 -I {nope} %O %A %B", "python3 -I lib/nope.py %O %A %B"):
+            with self.subTest(driver):
+                got = self.record("t = tempfile.mkdtemp()\nsubprocess.run(['git', 'init', '-q', t], check=True)\n"
+                                  f"subprocess.run(['git', '-C', t, 'config', 'merge.sampo-map.driver', {driver!r}], check=True)\n"
+                                  "subprocess.run(['git', '-C', t, 'merge', '-q', '--no-edit', 'nope'], capture_output=True)\n")
+                self.assertIn("*", got, "a python the merge runs that no key holds")
+
     def test_a_program_that_reads_no_files_stays_followed_in_the_repo_but_not_given_a_repo_path(self):
         """T-3623: sleep, nvidia-smi and a one-shot browser run from a test's working folder (the repo) without reading it."""
         for name in sorted(runcover.QUIET):
@@ -710,6 +878,92 @@ class Recorder(unittest.TestCase):
         for args in ("'--headless', '--remote-debugging-pipe', 'about:blank'", "'--headless', 'http://127.0.0.1:1/'"):
             with self.subTest(args):  # pages loaded later by a devtools no hook hears (not helpers'), or none to judge
                 self.assertIn("*", self.record(b + f"subprocess.run([t, {args}], check=True)\n"))
+
+    def driven(self, driver, sub=("merge", "-q", "--no-edit", "nope")):
+        """T-5484: what a probe recorded after it sets merge.sampo-map.driver to driver in a fresh repo and runs git sub."""
+        return self.record("t = tempfile.mkdtemp()\nsubprocess.run(['git', 'init', '-q', t], check=True)\n"
+                           f"subprocess.run(['git', '-C', t, 'config', 'merge.sampo-map.driver', {driver!r}], check=True)\n"
+                           f"subprocess.run(['git', '-C', t, *{list(sub)!r}], capture_output=True)\n")
+
+    def in_config(self, text, sub=("merge", "-q", "--no-edit", "nope")):
+        """T-5484: what a probe recorded after it appends text to a fresh repo's .git/config and runs git sub."""
+        return self.record("t = tempfile.mkdtemp()\nsubprocess.run(['git', 'init', '-q', t], check=True)\n"
+                           f"with open(os.path.join(t, '.git', 'config'), 'a') as f:\n    f.write({text!r})\n"
+                           f"subprocess.run(['git', '-C', t, *{list(sub)!r}], capture_output=True)\n")
+
+    def test_git_writes_of_other_keys_that_name_a_python_are_judged(self):  # T-5484
+        for key, value in (("alias.sampo", "!python3 -c pass"), ("core.pager", "python3 -c pass"),
+                           ("filter.x.clean", "python3 -c pass"), ("diff.x.textconv", "python3 -c pass")):
+            with self.subTest(key):
+                got = self.record("t = tempfile.mkdtemp()\nsubprocess.run(['git', 'init', '-q', t], check=True)\n"
+                                  f"subprocess.run(['git', '-C', t, 'config', {key!r}, {value!r}], check=True)\n")
+                self.assertIn("*", got, "a value that names a python")
+
+    def test_git_that_may_merge_reads_the_python_driver_it_names(self):  # T-5484
+        drv = os.path.join(self.d, "lib", "mod_b.py")
+        for sub in (("pull", "-q", "nope"), ("revert", "--no-edit", "nope"), ("stash", "apply", "nope"),
+                    ("checkout", "-m", "nope"), ("merge-tree", "nope", "nope")):
+            with self.subTest(sub):
+                got = self.driven(f"python3 -I {drv} %O %A %B", sub)
+                self.assertIn("lib/mod_b.py", got, "the driver script is read at the merge")
+                self.assertNotIn("*", got)
+
+    def test_a_read_only_git_command_reads_no_driver(self):  # T-5484
+        drv = os.path.join(self.d, "lib", "mod_b.py")
+        for sub in (("status",), ("log", "-1"), ("ls-files",), ("show", "HEAD")):
+            with self.subTest(sub):
+                self.assertNotIn("lib/mod_b.py", self.driven(f"python3 -I {drv} %O %A %B", sub))
+
+    def test_a_merge_driver_that_is_not_a_python_script_is_the_whole_tree(self):  # T-5484
+        drv = os.path.join(self.d, "lib", "mod_b.py")
+        prog = os.path.join(self.d, "bin", "pytool")  # a python script run as a program: its shebang names python
+        for driver in (f"env python3 -I {drv} %O %A %B", f"sh -c 'python3 -I {drv} %O %A %B'", f"{prog} %O %A %B"):
+            with self.subTest(driver):
+                self.assertIn("*", self.driven(driver), "a driver that is not a known quiet program")
+        self.assertNotIn("*", self.driven("true %O %A %B"), "a known quiet program reads nothing judged")
+
+    def test_a_merge_driver_in_either_section_spelling_is_judged(self):  # T-5484
+        drv = os.path.join(self.d, "lib", "mod_b.py")
+        text = (f"[merge.sampo-map]\n\tdriver = python3 -I {drv} %O %A %B\n"
+                f'[Merge "other"]\n\tdriver = python3 -I {drv} %O %A %B\n')
+        got = self.in_config(text)
+        self.assertIn("lib/mod_b.py", got, "git reads [merge.x] and any-case [merge \"x\"] alike")
+        self.assertNotIn("*", got)
+
+    def test_an_include_in_the_config_a_merge_reads_is_the_whole_tree(self):  # T-5484
+        for section in ("[include]\n\tpath = /nonexistent\n", '[includeIf "gitdir:/nonexistent/"]\n\tpath = /nonexistent\n'):
+            with self.subTest(section):
+                self.assertIn("*", self.in_config(section), "an included file is not followed")
+
+    def test_a_git_that_reads_its_config_from_the_environment_is_the_whole_tree(self):  # T-5484
+        for name in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG"):
+            with self.subTest(name):
+                got = self.record("subprocess.run(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], capture_output=True,"
+                                  f" env=dict(os.environ, {name}='/dev/null'))\n")
+                self.assertIn("*", got, "a config the environment names is not read")
+
+    def test_the_global_config_of_a_merge_names_its_driver_script(self):  # T-5484
+        drv = os.path.join(self.d, "lib", "mod_b.py")
+        text = f'[merge "sampo-map"]\n\tdriver = python3 -I {drv} %O %A %B\n'
+        got = self.record("h = tempfile.mkdtemp()\nwith open(os.path.join(h, '.gitconfig'), 'w') as f:\n"
+                          f"    f.write({text!r})\n"
+                          "t = tempfile.mkdtemp()\nenv = dict(os.environ, HOME=h)\n"
+                          "subprocess.run(['git', 'init', '-q', t], check=True, env=env)\n"
+                          "subprocess.run(['git', '-C', t, 'merge', '-q', '--no-edit', 'nope'], capture_output=True, env=env)\n")
+        self.assertIn("lib/mod_b.py", got, "the driver ~/.gitconfig names runs at the merge")
+        self.assertNotIn("*", got)
+
+    def test_a_merge_in_a_worktree_reads_the_driver_of_the_repo_it_is_a_worktree_of(self):  # T-5484
+        drv = os.path.join(self.d, "lib", "mod_b.py")
+        got = self.record("t = tempfile.mkdtemp()\nsubprocess.run(['git', 'init', '-q', t], check=True)\n"
+                          "subprocess.run(['git', '-C', t, '-c', 'user.email=t@example.com', '-c', 'user.name=t', 'commit',"
+                          " '-q', '--allow-empty', '-m', 'x'], check=True)\n"
+                          f"subprocess.run(['git', '-C', t, 'config', 'merge.sampo-map.driver', 'python3 -I {drv} %O %A %B'],"
+                          " check=True)\n"
+                          "wt = t + '-wt'\nsubprocess.run(['git', '-C', t, 'worktree', 'add', '-q', wt], check=True)\n"
+                          "subprocess.run(['git', '-C', wt, 'merge', '-q', '--no-edit', 'nope'], capture_output=True)\n")
+        self.assertIn("lib/mod_b.py", got, "a worktree's merge runs the driver its repo's config names")
+        self.assertNotIn("*", got)
 
     def assertBounded(self, code, keys=()):
         got = self.record(code + "\n")
@@ -751,13 +1005,31 @@ class Recorder(unittest.TestCase):
                      " env=dict(os.environ, GIT_DIR='.git'))",
                      "subprocess.run(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], capture_output=True,"
                      " env=dict(os.environ, GIT_CONFIG_PARAMETERS=\"'core.abbrev'='12'\"))",
-                     "t = os.path.join('lib', 'inner')\nsubprocess.run(['git', 'init', '-q', t], check=True)\n"  # its own repo
-                     "subprocess.run(['git', '-C', t, 'rev-parse', '--abbrev-ref', 'HEAD'], capture_output=True)",
-                     "t = tempfile.mkdtemp()\nsubprocess.run(['git', 'init', '-q', t], check=True)\nos.symlink(t, 'lnk')\n"
-                     "subprocess.run(['git', '-C', 'lnk', 'rev-parse', '--abbrev-ref', 'HEAD'], capture_output=True)",
                      "subprocess.run(['git', '-C', 'nowhere', 'rev-parse', 'HEAD'], capture_output=True)"):
             with self.subTest(code):
                 self.assertLessEqual({"*", run.GIT_STATE}, self.record(code + "\n"))
+
+    def test_a_repo_the_test_built_in_its_temp_folder_reads_nothing_of_the_tree(self):  # T-5484
+        base = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, base, True)
+        tmp = os.path.join(base, "fmtest-5484-run")  # the class child's folder: the rule trusts only this shape
+        os.makedirs(tmp)
+        for code in ("t = tempfile.mkdtemp()\nsubprocess.run(['git', 'init', '-q', t], check=True)\n"
+                     "subprocess.run(['git', '-C', t, 'rev-parse', '--abbrev-ref', 'HEAD'], capture_output=True)",
+                     "t = tempfile.mkdtemp()\nsubprocess.run(['git', 'init', '-q', t], check=True)\nos.symlink(t, 'lnk')\n"
+                     "subprocess.run(['git', '-C', 'lnk', 'rev-parse', '--abbrev-ref', 'HEAD'], capture_output=True)"):
+            with self.subTest(code):
+                self.assertNotIn("*", self.record(code + "\n", tmp=tmp))
+        # the same symlinked repo in a temp folder that is not a class child's: the whole tree (the name is the rule)
+        other = os.path.join(base, "plain")
+        os.makedirs(other)
+        link = os.path.join(self.d, "lnk2")
+        self.addCleanup(lambda: os.path.lexists(link) and os.unlink(link))
+        code = (f"t = {os.path.join(other, 'r')!r}\nsubprocess.run(['git', 'init', '-q', t], check=True)\n"
+                "os.symlink(t, 'lnk2')\n"
+                "subprocess.run(['git', '-C', 'lnk2', 'rev-parse', '--abbrev-ref', 'HEAD'], capture_output=True)")
+        with self.subTest("a repo outside any fmtest- folder"):
+            self.assertIn("*", self.record(code + "\n", tmp=other))
 
     def test_a_browser_a_helper_drives_counts_by_the_pages_it_is_sent(self):  # T-3691: helpers.headless_chrome's probe
         b = f"t = os.path.join(tempfile.mkdtemp(), 'chromium')\nos.symlink({TRUE!r}, t)\nimport helpers\n"

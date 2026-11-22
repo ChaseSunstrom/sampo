@@ -1198,6 +1198,7 @@ def waited_note(waits, spans=(), run_s=0.0):
     return (f"; waited {wall:.0f} s of {run_s:.0f} s wall for a slot ({100 * wall / run_s:.0f}%), "
             f"{sum(waits.values()):.0f} s summed over jobs")
 BUDGETS = {}  # T-3757: class id -> its CPU_BUDGET_S, a costly new class's declared cost
+READS = {}  # T-5484: class id -> its module's RUN_READS, the files its run reads when only a named browser's '*' is left
 CPU_BASE, CPU_GATE = "SAMPO_CPU_BASE", "SAMPO_CPU_GATE"  # T-3757: the train's baseline file; =1 fails a rise
 CPU_FLOOR = "SAMPO_CPU_FLOOR_S"  # T-3757: the absolute margin, 20 CPU s; a new class may take 4.5x it, a run 6x
 CPU_RATIO, CPU_SUM_RATIO, CPU_KEEP, CPU_UNSEEN_DAYS = 2.0, 1.5, 9, 14
@@ -1410,7 +1411,7 @@ def red_inputs(failed_classes, results, owner, base, repo, blobs, value):
         texts = [COVERED.get(r[0]) for r in results if owner(r[0]) == cid]
         if not texts or None in texts:
             continue
-        paths = sorted(base.union(*(covered(t, repo, blobs) for t in texts)))
+        paths = sorted(run_paths(base, texts, repo, blobs, READS.get(cid)))  # T-5484: the declared reads, as the cache's
         if len(paths) <= KNOWN_PATHS_MAX and all(len(p) <= KNOWN_PATH_LEN for p in paths):
             out[cid] = [digest(paths, value), paths]
     return out
@@ -1515,6 +1516,37 @@ def load_cache(path):
         return 0, {}
 
 
+def load_why(path):
+    """{class id: cause} kept beside the records in the file's "why" (T-5484): the cause of a whole-tree record, what
+    its run read past (why_of); {} when none is kept or the file is unreadable."""
+    try:
+        with open(path) as f:
+            why = json.load(f).get("why", {})
+        return {str(c): str(w) for c, w in why.items()} if isinstance(why, dict) else {}
+    except Exception:
+        return {}
+
+
+def why_of(texts):
+    """The cause of a whole-tree record (T-5484): the first "* " line of the cover texts its run wrote, runcover's
+    "* {why} {command}", cut to 120 characters; None when no text has one."""
+    for t in texts:
+        for line in (t or "").splitlines():
+            if line.startswith("* "):
+                return line[2:122]
+    return None
+
+
+def causes(cov, new):
+    """{class id: why_of(its cover texts)} for the whole-tree records in new (T-5484): those whose paths hold "*"."""
+    out = {}
+    for c, r in new.items():
+        w = why_of(cov.get(c, ())) if "*" in r[2] else None
+        if w:
+            out[c] = w
+    return out
+
+
 @contextlib.contextmanager
 def _cache_lock(path):
     """The cache's lock file held, so a read-merge-write is one step among the runs beside this one; no lock without
@@ -1533,20 +1565,28 @@ def _cache_lock(path):
             os.close(fd)  # closing it frees the lock
 
 
-def save_cache(path, new, gen):
+def save_cache(path, new, gen, why=None):
     """New records ({class id: [digest, tests, paths]}) merged into the file's under its lock, each first among its
     class's KEEP, newest 20000 classes kept; nothing when the cache was dropped since this run read it at gen (its
-    records came from a cache found wrong). The other repos' caches unused for PRUNE_S go."""
+    records came from a cache found wrong). The other repos' caches unused for PRUNE_S go. why ({class id: cause},
+    T-5484) is kept beside the records; a class's old cause goes when its record is replaced and why has none for it."""
     with _cache_lock(path):
         cur_gen, recs = load_cache(path)
         if cur_gen != gen:
+            names = sorted(new)  # T-5484: say which classes' records were dropped (no behaviour change)
+            more = f" and {len(names) - 5} more" if len(names) > 5 else ""
+            print(f"run cache: dropped the records of {', '.join(names[:5])}{more}: the cache changed during the run",
+                  file=sys.stderr)
             return
+        kept = {c: w for c, w in load_why(path).items() if c not in new}
+        kept.update(why or {})
         for c, v in new.items():
             recs[c] = [v] + [r for r in recs.pop(c, []) if r[0] != v[0]][:KEEP - 1]  # newest first: the cap keeps them
         index = {}
         recs = {c: [[r[0], r[1], [index.setdefault(p, len(index)) for p in r[2]], *r[3:4]] for r in vs]
                 for c, vs in list(recs.items())[-20000:]}
-        _write_json(path, {"gen": gen, "paths": list(index), "classes": recs})
+        kept = {c: w for c, w in kept.items() if c in recs}
+        _write_json(path, {"gen": gen, "paths": list(index), "classes": recs, "why": kept})
     folder = os.path.dirname(path)
     with contextlib.suppress(OSError):
         for name in os.listdir(folder):
@@ -2062,6 +2102,23 @@ def cover_python():
     return py if os.path.exists(py) else None
 
 
+def _in_temp(path, roots):
+    """T-5484: whether a path is a scratch repo a test built in its own temp folder: under a fmtest-<pid>- folder (the
+    class child's TMPDIR, made directly in the temp folder). Never when the temp folder is '/' or holds a repo root:
+    then no folder of it is one the test made, and a HEAD there may be the tree's."""
+    tmp = os.path.join(os.path.realpath(tempfile.gettempdir()), "")
+    if tmp == os.sep or any(r.startswith(tmp) for r in roots):
+        return False
+    p = os.path.join(os.path.realpath(path), "")
+    if not p.startswith(tmp):
+        return False
+
+    def fmtest(name):  # the name tmp.mkdtemp gives a class child's folder: TMP_PREFIX, its run.py's pid, a dash
+        return name.startswith(TMP_PREFIX) and name[len(TMP_PREFIX):].split("-", 1)[0].isdigit()
+    # the class child's own folder is the temp root; the run.py parent's view has it as a folder of the temp root
+    return fmtest(os.path.basename(tmp.rstrip(os.sep))) or fmtest(p[len(tmp):].split(os.sep, 1)[0])
+
+
 def covered(text, repo, blobs):
     """T-3593: the paths a class's recorded lines name, relative to the repo: its files (a module's source for its
     .pyc), its listed folders ('x/', './' the root), '*' for the whole tree. A file on disk that git doesn't see
@@ -2081,8 +2138,10 @@ def covered(text, repo, blobs):
             continue
         if kind in ("r", "h"):  # T-3691: git on a repo read a ref or a path at HEAD: this tree's, else unbounded
             top, _, name = p.partition("\0")
-            out.update((("\0ref:" + name) if kind == "r" else "\0HEAD" + (":" + name if name else ""),)
-                       if os.path.join(top, "") in roots else ("*", GIT_STATE))
+            if os.path.join(top, "") in roots:
+                out.add(("\0ref:" + name) if kind == "r" else "\0HEAD" + (":" + name if name else ""))
+            elif not _in_temp(top, roots):  # T-5484: a scratch repo the test built in the temp folder reads nothing of the tree
+                out.update(("*", GIT_STATE))
             continue
         qual = None
         if kind == "c":
@@ -2112,7 +2171,7 @@ def shared(repo, blobs):
     """T-3593: what every class depends on: run.py and the helpers beside it (helpers.py, forkcli.py, runcover.py)."""
     rel = os.path.relpath(os.path.realpath(HERE), os.path.realpath(repo)).replace(os.sep, "/")
     return {f for f in blobs if f.startswith(rel + "/") and f.endswith(".py") and "/" not in f[len(rel) + 1:]
-            and not os.path.basename(f).startswith("test")}
+            and not os.path.basename(f).startswith("test") and f[len(rel) + 1:] != "cachecost.py"}  # the report, not a run
 
 
 def _yields(body):
@@ -2293,6 +2352,61 @@ def _at_head(repo, commit, path):
     return _HEADS[commit].get(path, "")
 
 
+NAMED_BLIND = ("* browser ", "* page ")  # T-5484: a browser's launch, and the page a driver sent it (sampo.page)
+
+
+def run_paths(base, texts, repo, blobs, reads):
+    """T-5484: the paths a class's record holds: base, and what each run's recorded lines name (covered()). The '*'
+    (the whole tree) gives way to the class's RUN_READS only when every '*' its runs wrote is a named browser's or
+    page's line (NAMED_BLIND): then the declared files, each tracked, a declared folder ('x/') with tracked files under
+    it. Anything else, an undeclared or untracked entry, no declaration, keeps the whole tree."""
+    out, named, pages = set(base), False, []
+    for text in texts:
+        lines = text.splitlines()
+        named = named or any(ln.startswith(NAMED_BLIND) for ln in lines)
+        pages += [ln[len("* page "):] for ln in lines if ln.startswith("* page ")]
+        out.update(covered("\n".join(ln for ln in lines if not ln.startswith(NAMED_BLIND)), repo, blobs))
+    if not named or "*" in out:
+        return out
+    if not reads:
+        return out | {"*"}
+    got = set()
+    for e in reads:
+        if not isinstance(e, str) or not e or e.startswith(("/", STATE)) or ".." in e.split("/"):
+            return out | {"*"}
+        if e.endswith("/"):
+            files = {f for f in blobs if f.startswith(e) and f[:1] != "\0"}
+            if not files:
+                return out | {"*"}
+            got |= {e} | files
+        elif e in blobs:
+            got.add(e)
+        else:
+            return out | {"*"}
+    roots = _roots(repo)
+    for url in pages:  # T-5484: a page the declaration omits loads a file of the tree the declared reads don't name
+        rel = _page_rel(url, roots)
+        if rel is not None and rel not in got:
+            return out | {"*"}
+    return out | got
+
+
+def _page_rel(url, roots):
+    """T-5484: the repo-relative path of the file a page's URL loads (file: only, resolved as the browser does), None
+    when the URL names no file under a root (another scheme, or outside the repo); '' for the root itself."""
+    from urllib.parse import unquote, urlsplit
+    if url.strip()[:5].lower() != "file:":
+        return None
+    path = unquote(urlsplit(url.strip()).path)
+    if not path.startswith("/"):
+        return ""  # a relative file: URL resolves in the browser's folder, which no entry names
+    full = os.path.join(os.path.realpath(path), "")
+    root = next((r for r in roots if full.startswith(r)), None)
+    if root is None:
+        return None
+    return full[len(root):].rstrip(os.sep).replace(os.sep, "/")
+
+
 def values(repo, blobs):
     """T-3593: what a recorded path is worth in a tree: a file its mode and blob ('' when gone), a folder ('x/') the
     names in it, '?x' whether x is a file, a folder or absent, '*' the whole tree's files (Sampo's task state left
@@ -2387,6 +2501,9 @@ def classes(patterns, k, hit=None, names=(), ids=None, parts=None, whole=None):
                 cid = f"{type(t).__module__}.{type(t).__name__}"
                 if isinstance(getattr(type(t), "CPU_BUDGET_S", None), (int, float)):  # T-3757
                     BUDGETS[cid] = float(type(t).CPU_BUDGET_S)
+                reads = getattr(sys.modules.get(type(t).__module__), "RUN_READS", None)  # T-5484: module-level
+                if isinstance(reads, (list, tuple)):
+                    READS[cid] = list(reads)
                 counts[cid] = counts.get(cid, 0) + 1
                 if parts is not None and t.id() not in parts.setdefault(cid, []):  # an imported TestCase is walked twice
                     parts[cid].append(t.id())
@@ -3266,7 +3383,8 @@ def _suite(a):
 
         def read(jobs):  # what a class's jobs read in this run, as its cache record would name it; None: unrecorded
             texts = [COVERED.get(j) for j in jobs]
-            return None if None in texts else sorted(base.union(*(covered(t, *got[:2]) for t in texts)))
+            return None if None in texts else sorted(run_paths(  # T-5484: as the cache's record names them
+                base, texts, *got[:2], READS.get(owner(jobs[0])) if jobs else None))
 
         def fresh():  # the tree's values now; None when it can't be read or is another repo's
             again = tree()
@@ -3373,11 +3491,11 @@ def _suite(a):
         again = end_tree = tree() if new else None  # a file edited while the run ran: its class ran the old code or the new
         if again and again[0] == got[0]:
             base, after = shared(*got[:2]), values(*again[:2])
-            paths = {c: sorted(base.union(*(covered(t, *got[:2]) for t in cov[c]))) for c in new}
+            paths = {c: sorted(run_paths(base, cov[c], *got[:2], READS.get(c))) for c in new}
             new = {c: [digest(paths[c], value), n, paths[c], *([now[c]] if c in now else [])] for c, n in new.items()}
             new = {c: r for c, r in new.items() if digest(r[2], after) == r[0]}
             if new:
-                save_cache(cache, new, gen)
+                save_cache(cache, new, gen, causes(cov, new))  # T-5484: why each whole-tree record reruns always
     if joins:
         joins.close()  # the last greens said; the markers of classes it never finished go
     if not a.shard:

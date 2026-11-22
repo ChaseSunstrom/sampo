@@ -16,6 +16,10 @@ from sampo import callcards, panels, works
 ART = ("art-abstract", "art-landscape")
 kit = panels.kit()
 DURATION = re.compile(r"none|\d+s")
+# T-5484: what a run reads when its only whole-tree read is a browser's (its launch and the page it sent): both card
+# folders (check.py, gen.py, tests.json), the artkit they draw from, and the works and shot code that render the pair
+RUN_READS = ["plugin/cards/art-abstract/", "plugin/cards/art-landscape/", "plugin/cards/_lib/artkit.py",
+             "plugin/lib/sampo/works.py", "plugin/lib/sampo/shot.py"]
 # every enum value of each card's own slots, and every style and motion, at least once
 SAMPLES = {
     "art-abstract": [dict(composition=c, density=d, accent=a, seed=s, motion=m, style=st) for c, d, a, s, m, st in (

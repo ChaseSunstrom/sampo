@@ -20,7 +20,10 @@ T-4288: a "sampo.stamp" audit event names files the code is about to stat only a
 (recall._own_stamp: its own source files); the stats that follow record nothing, so a class that makes a task no
 longer holds all of core.py. Accepted gap: a later stat of the same path by the same process, for any reason, is not
 recorded either."""
+import configparser
 import os
+import re
+import shlex
 import sys
 
 VAR, ROOTS_VAR = "RUNPY_COVER", "RUNPY_COVER_ROOTS"
@@ -230,7 +233,13 @@ WIDE = ("--disable-web-security", "--allow-file-access")  # a page that may load
 # T-3691: git reading another repo, config or ref store than the one at its working folder (judged unbounded)
 GIT_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
            "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_REPLACE_REF_BASE", "GIT_NO_REPLACE_OBJECTS",
-           "GIT_CEILING_DIRECTORIES", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT")
+           "GIT_CEILING_DIRECTORIES", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_CONFIG_GLOBAL",
+           "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG")  # T-5484: a config the environment names is unbounded
+READ_GIT = frozenset(("rev-parse", "symbolic-ref", "show", "status", "log", "ls-files", "ls-tree", "rev-list", "show-ref",
+                      "for-each-ref", "cat-file", "describe", "version", "help", "var", "init", "clone"))  # T-5484: no merge driver
+MERGE_KEY = re.compile(r"merge\.[^.]+\.(driver|name|recursive)", re.I)  # T-5484: a git config write of one of these runs nothing
+MERGE_SECTION = re.compile(r'merge(?:\s+"(.*)"|\.(.+))', re.I | re.S)  # T-5484: [merge "x"] and [merge.x], any case of merge
+HARMLESS_C = ("core.quotepath=", "user.", "advice.", "init.defaultbranch=")  # T-5484: -c values that name no file or program
 
 
 def _one_shot(name, argv):
@@ -310,6 +319,84 @@ def _git_reads(sub, args, top):
     return None
 
 
+def _gitdir(top):
+    """T-5484: (the git dir, the common dir) of the work tree at `top`: a worktree's .git file names its git dir, whose
+    commondir file names the dir holding the shared config; None when neither can be read."""
+    dot = os.path.join(top, ".git")
+    if os.path.isdir(dot):
+        return dot, dot
+    try:
+        with open(dot, encoding="utf-8") as f:
+            line = f.read(4096).strip()
+        if not line.startswith("gitdir:"):
+            return None
+        gd = os.path.normpath(os.path.join(top, line[7:].strip()))
+    except (OSError, UnicodeDecodeError):
+        return None
+    try:
+        with open(os.path.join(gd, "commondir"), encoding="utf-8") as f:
+            return gd, os.path.normpath(os.path.join(gd, f.read().strip()))
+    except FileNotFoundError:
+        return gd, gd
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _config_files(top, e):
+    """T-5484: the config files git reads for the work tree at `top`: system, global (HOME, XDG), the repo's shared
+    config, the worktree's own config; None when the repo's git dir can't be read."""
+    gd = _gitdir(top)
+    if gd is None:
+        return None
+    home = e.get("HOME")
+    xdg = e.get("XDG_CONFIG_HOME") or (os.path.join(home, ".config") if home else None)
+    files = ["/etc/gitconfig"]
+    if home:
+        files.append(os.path.join(home, ".gitconfig"))
+    if xdg:
+        files.append(os.path.join(xdg, "git", "config"))
+    gitdir, common = gd
+    files += [os.path.join(common, "config"), os.path.join(gitdir, "config"), os.path.join(gitdir, "config.worktree")]
+    return list(dict.fromkeys(files))
+
+
+def _drivers(top, e):
+    """T-5484: (the scripts, blind) for the merge drivers git may run in the work tree at `top` (every [merge "NAME"] and
+    [merge.NAME] with a driver, in the config files _config_files names). A python driver's script is the .py word of
+    its command (resolved in the work tree); blind when a driver is no python script that exists, a driver is a program
+    not in QUIET, a config can't be read, or a config includes another (not followed)."""
+    files = _config_files(top, e)
+    if files is None:
+        return [], True
+    scripts, blind = [], False
+    for path in files:
+        if not os.path.isfile(path):
+            continue
+        cfg = configparser.RawConfigParser(interpolation=None, strict=False)
+        try:
+            cfg.read(path, encoding="utf-8")
+        except (OSError, UnicodeDecodeError, configparser.Error):
+            return [], True
+        for sec in cfg.sections():
+            if sec.lower() == "include" or sec.lower().startswith("includeif"):
+                return [], True  # T-5484: the file it includes is read by git, and not followed here
+            if not (MERGE_SECTION.fullmatch(sec) and cfg.has_option(sec, "driver")):
+                continue
+            try:
+                words = shlex.split(cfg.get(sec, "driver"))
+            except ValueError:
+                blind = True
+                continue
+            if not words or os.path.basename(words[0]) in QUIET:
+                continue  # a program that reads no file of ours
+            script = next((os.path.abspath(os.path.join(top, w)) for w in words if w.endswith(".py")), None)
+            if os.path.basename(words[0]).startswith("python") and script and os.path.isfile(script):
+                scripts.append(script)
+            else:
+                blind = True  # not a python script that exists: env, sh -c, an in-tree program, a missing script
+    return scripts, blind
+
+
 def _blind(prog, argv, cwd, env, wrapper=False, driven=False):
     """Why a child would read what no hook records, a word ("g": git on the repo), else ""; a wrapper's own part is not
     judged by its working folder; driven: a DRIVERS function started it."""
@@ -341,13 +428,27 @@ def _blind(prog, argv, cwd, env, wrapper=False, driven=False):
                 where, plain = os.path.join(where, a.split("=", 1)[1]), False
             elif a in ("-c", "--namespace", "--exec-path"):
                 v = next(it, "")
-                plain = plain and a == "-c" and v.lower().startswith("core.quotepath=")
+                plain = plain and a == "-c" and v.lower().startswith(HARMLESS_C)  # T-5484: a value naming no program
             elif not a.startswith("-"):
                 sub = a
                 break
             elif a not in ("--no-pager", "-P", "--no-optional-locks"):
                 plain = False
         cwd, rest = where, list(it)  # git reads its paths from there
+        if any(k in e for k in GIT_ENV):
+            return "g"  # T-5484: a config or repo the environment names is read where no key sees
+        if sub == "config" and len(rest) == 2 and not rest[0].startswith("-") and MERGE_KEY.fullmatch(rest[0]):
+            return ""  # T-5484: a write of a merge driver's key runs nothing: the driver is judged where git runs it
+        if sub and sub not in READ_GIT and not plain:
+            return "g"  # T-5484: a git that moves what it reads (--git-dir, --namespace) may run a driver anywhere
+        if sub and sub not in READ_GIT and plain and not _inside(where) and os.path.isdir(where) and (
+                top := _top(where)):  # T-5484: any git but a read-only one may run a merge driver the repo's config names
+            scripts, blind = _drivers(top, e)
+            if blind:
+                return "runs-python"  # git may run a merge driver that no file here holds: unseen
+            if scripts:  # git runs each python driver its config names: the script is what it reads
+                _put([f"f {s}" for s in scripts])
+                return ""
         if sub not in ("init", "clone") and _inside(where) or any(_inside(v) for k in ("GIT_DIR", "GIT_WORK_TREE")
                                                                    if (v := e.get(k))):
             if plain and not any(k in e for k in GIT_ENV) and os.path.isdir(real := os.path.realpath(where)) and (
@@ -358,7 +459,7 @@ def _blind(prog, argv, cwd, env, wrapper=False, driven=False):
             return "g"  # it reads the files and git's own state (HEAD, tags)
     elif _inside(cwd) and not wrapper and (name not in QUIET or sb) and not devtools and not _one_shot(name, argv):
         return "cwd"  # it may read the repo through its working folder (ls, make, grep -r)
-    toks = [_path(t) for a in [prog, *argv] for w in a.split() for t in (w, *w.split("=")[1:2])]
+    toks = [_path(t).lstrip("!") for a in [prog, *argv] for w in a.split() for t in (w, *w.split("=")[1:2])]  # "!x": a shell alias
     if name in ("sh", "bash", "dash", "zsh"):  # a command line: a python it runs must be this one, a program not ours
         for t in toks[1:]:
             w = _which(t, path) if t and "/" not in t else t
