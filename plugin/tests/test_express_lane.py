@@ -60,17 +60,18 @@ class ExpressLand(ExpressBase):
         self.assertEqual(self.trains(r), [ids[1], ids[3], f"{ids[0]}, {ids[2]}"], r.stderr)
 
     def test_an_express_lane_still_trains_ahead_of_the_ordinary_ones_when_the_project_is_live(self):
-        # T-5444: live mode trains every ready lane as one train; an express lane at the head is cut out of it
-        # (T-5726: several express lanes train together there: test_train.ExpressTrainsTogether)
+        # T-5444: live mode trains every ready lane as one train; T-5857: an express lane at the head leads that
+        # train (merged first) instead of leaving the ordinary lanes for a train of their own
         ids = self.made(3)
         self.fm("lane", "mode", "live")
         self.fm("task", "set", ids[2], "type=PERFORMANCE")
         self.queue(ids[0], ids[1], ids[2])
         r = self.land("--batch", "3")
-        self.assertEqual(self.trains(r), [ids[2], f"{ids[0]}, {ids[1]}"], r.stderr)
+        self.assertEqual(self.trains(r), [f"{ids[2]}, {ids[0]}, {ids[1]}"], r.stderr)
 
     def test_t5848_live_express_lanes_past_the_default_batch_train_as_one_train(self):
-        # T-5848: no --batch given: every leading express lane trains together, not TRAIN_BATCH (8) at a time
+        # T-5848: no --batch given: the default batch (TRAIN_BATCH, 8) does not cap the leading express lanes;
+        # T-5857: nor the ordinary lanes riding behind them
         ids = self.made(c.TRAIN_BATCH + 2)
         self.fm("lane", "mode", "live")
         express = ids[:c.TRAIN_BATCH + 1]
@@ -78,7 +79,27 @@ class ExpressLand(ExpressBase):
             self.fm("task", "set", t, "type=PERFORMANCE")
         self.queue(*express)
         r = self.land()
-        self.assertEqual(self.trains(r), [", ".join(express), ids[-1]], r.stderr)
+        self.assertEqual(self.trains(r), [", ".join(express + ids[-1:])], r.stderr)
+
+    def test_t5857_live_one_train_the_express_pair_leads_the_ordinary_lanes(self):
+        ids = self.made(5)
+        self.fm("lane", "mode", "live")
+        self.fm("task", "set", ids[3], "type=PERFORMANCE")
+        self.fm("task", "set", ids[4], "type=SECURITY")
+        self.queue(ids[3], ids[4])
+        r = self.land()
+        self.assertEqual(self.trains(r), [", ".join([ids[3], ids[4], ids[0], ids[1], ids[2]])], r.stderr)
+        self.assertIn("train 1 carries 2 express and 3 ordinary lanes", r.stderr)
+        self.assertEqual([self.brief(t).status for t in ids], ["done"] * 5, r.stdout + r.stderr)
+
+    def test_t5857_live_one_train_an_explicit_batch_still_caps_it(self):
+        ids = self.made(5)
+        self.fm("lane", "mode", "live")
+        self.fm("task", "set", ids[3], "type=PERFORMANCE")
+        self.fm("task", "set", ids[4], "type=SECURITY")
+        self.queue(ids[3], ids[4])
+        r = self.land("--batch", "3")
+        self.assertEqual(self.trains(r)[0], f"{ids[3]}, {ids[4]}, {ids[0]}", r.stderr)
 
     def test_t5848_gated_express_lanes_still_train_alone_with_no_batch_given(self):
         ids = self.made(3)

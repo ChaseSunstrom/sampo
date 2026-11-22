@@ -201,9 +201,18 @@ class PipelineLanesTrainFirst(ExpressBase):
         ids, pid = self.made_with_pipeline(20)
         self.fm("lane", "mode", "live")
         r = self.land("--batch", "10")
-        self.assertEqual(self.trains(r)[0], pid, r.stderr)
+        # T-5932: it leads the first train (merged first); the ordinary lanes fill that train up to the batch
+        self.assertEqual(self.trains(r)[0], ", ".join([pid] + ids[:9]), r.stderr)
         self.assertEqual([self.brief(t).status for t in (*ids, pid)], ["done"] * 21, r.stdout + r.stderr)
         self.assertIn(f"{pid} touches the pipeline", r.stderr)
+
+    def test_live_default_batch_takes_one_express_and_twenty_ordinary_lanes_as_one_train(self):
+        # T-5932: the live default is uncapped (one train for all): 21 lanes, past TRAIN_BATCH (8)
+        ids, pid = self.made_with_pipeline(20)
+        self.fm("lane", "mode", "live")
+        r = self.land()
+        self.assertEqual(self.trains(r), [", ".join([pid] + ids)], r.stderr)
+        self.assertEqual([self.brief(t).status for t in (*ids, pid)], ["done"] * 21, r.stdout + r.stderr)
 
     def test_the_land_restarts_on_what_the_shared_code_watch_reports(self):
         # T-5735: the land's own restart (T-3973) asks the same CodeWatch the verify pass and the follow ask
@@ -235,14 +244,14 @@ class PipelineLanesTrainFirst(ExpressBase):
         r = self.land("--batch", "4")
         self.assertEqual(self.trains(r), [pid, ", ".join(ids)], r.stderr)
 
-    def test_pipeline_lanes_live_train_together_capped_at_the_batch(self):
+    def test_pipeline_lanes_live_lead_one_train_with_the_ordinary_lanes_up_to_the_batch(self):
         ids, pid = self.made_with_pipeline(3)
         second = self.lane(9, "plugin/lib/sampo/lanes.py", text="y = 2\n", when="2026-01-01T00:00:00")
         self.audited(second)
         self.returned(second, "Lane lanes")
         self.fm("lane", "mode", "live")
         r = self.land("--batch", "5")
-        self.assertEqual(self.trains(r), [f"{pid}, {second}", ", ".join(ids)], r.stderr)
+        self.assertEqual(self.trains(r), [", ".join([pid, second] + ids)], r.stderr)
 
     def test_pipeline_files_cover_the_train_ship_gates_hooks_and_test_runner_and_no_others(self):
         for f in (PIPE_FILE, "plugin/lib/sampo/lanes.py", "plugin/bin/sampo", "plugin/lib/sampo/release.py",
@@ -457,7 +466,8 @@ class CodeStampReexec(unittest.TestCase):
 
 class ExpressTrainsTogether(ExpressBase):
     """T-5726: live, the express lanes (performance, security, urgent) named --first train together as one train, capped
-    at the batch size, ahead of the ordinary lanes; gated, each still trains alone (T-5023)."""
+    at an explicit --batch; T-5857: the ordinary lanes ride in that train, after them; gated, each still trains alone
+    (T-5023)."""
 
     def test_express_live_lanes_train_together_ahead_of_the_ordinary_ones(self):
         ids = self.made(5)
@@ -467,7 +477,7 @@ class ExpressTrainsTogether(ExpressBase):
         self.fm("task", "set", ids[4], "priority=urgent")
         self.queue(ids[0], ids[1], ids[3], ids[4])
         r = self.land("--batch", "5")
-        self.assertEqual(self.trains(r), [f"{ids[1]}, {ids[3]}, {ids[4]}", f"{ids[0]}, {ids[2]}"], r.stderr)
+        self.assertEqual(self.trains(r), [f"{ids[1]}, {ids[3]}, {ids[4]}, {ids[0]}, {ids[2]}"], r.stderr)
         self.assertEqual([self.brief(t).status for t in ids], ["done"] * 5, r.stdout + r.stderr)
 
     def test_express_live_train_is_capped_at_the_batch_size(self):
@@ -477,7 +487,52 @@ class ExpressTrainsTogether(ExpressBase):
             self.fm("task", "set", t, "type=PERFORMANCE")
         self.queue(*ids[:3])
         r = self.land("--batch", "2")
-        self.assertEqual(self.trains(r), [f"{ids[0]}, {ids[1]}", ids[2], ids[3]], r.stderr)
+        # T-5932: the batch is no larger than the express count: the first ordinary lane takes the last slot
+        self.assertEqual(self.trains(r), [f"{ids[0]}, {ids[3]}", f"{ids[1]}, {ids[2]}"], r.stderr)
+
+    def test_express_live_explicit_batch_2_keeps_a_slot_for_the_ordinary_lane(self):
+        ids = self.made(3)
+        self.fm("lane", "mode", "live")
+        self.fm("task", "set", ids[1], "type=PERFORMANCE")
+        self.fm("task", "set", ids[2], "type=SECURITY")
+        self.queue(ids[1], ids[2])
+        r = self.land("--batch", "2")
+        self.assertEqual(self.trains(r), [f"{ids[1]}, {ids[0]}", ids[2]], r.stderr)
+        self.assertEqual([self.brief(t).status for t in ids], ["done"] * 3, r.stdout + r.stderr)
+
+    def test_express_live_explicit_batch_1_stays_strict_priority(self):
+        # T-5932: no slot to keep at --batch 1: one lane per train, the express lanes first
+        ids = self.made(3)
+        self.fm("lane", "mode", "live")
+        self.fm("task", "set", ids[1], "type=PERFORMANCE")
+        self.fm("task", "set", ids[2], "type=SECURITY")
+        self.queue(ids[1], ids[2])
+        r = self.land("--batch", "1")
+        self.assertEqual(self.trains(r), [ids[1], ids[2], ids[0]], r.stderr)
+        self.assertEqual([self.brief(t).status for t in ids], ["done"] * 3, r.stdout + r.stderr)
+
+    def _two_express_five_ordinary(self, *args):
+        ids = self.made(7)
+        self.fm("lane", "mode", "live")
+        self.fm("task", "set", ids[5], "type=PERFORMANCE")
+        self.fm("task", "set", ids[6], "priority=urgent")
+        self.queue(ids[5], ids[6])
+        r = self.land(*args)
+        self.assertEqual([self.brief(t).status for t in ids], ["done"] * 7, r.stdout + r.stderr)
+        return [ids[5], ids[6]] + ids[:5], r  # the order they train in: express first
+
+    def test_express_live_train_fills_with_the_ordinary_lanes_up_to_the_batch(self):
+        """T-5932: 2 express and 5 ordinary ready lanes are one train of 7, express first."""
+        order, r = self._two_express_five_ordinary("--batch", "8")
+        self.assertEqual(self.trains(r), [", ".join(order)], r.stderr)
+
+    def test_express_live_train_of_an_explicit_batch_4_runs_4_then_3(self):
+        order, r = self._two_express_five_ordinary("--batch", "4")
+        self.assertEqual(self.trains(r), [", ".join(order[:4]), ", ".join(order[4:])], r.stderr)
+
+    def test_express_live_default_batch_does_not_cap_the_train(self):
+        order, r = self._two_express_five_ordinary()
+        self.assertEqual(self.trains(r), [", ".join(order)], r.stderr)
 
     def test_express_gated_lanes_still_train_alone(self):
         ids = self.made(4)
@@ -493,5 +548,5 @@ class ExpressTrainsTogether(ExpressBase):
         self.fm("task", "set", ids[1], "type=PERFORMANCE")
         self.queue(ids[1])
         r = self.land("--batch", "3")
-        self.assertIn(f"{ids[1]} is express (performance, security or urgent): it trains next, with the other express lanes",
+        self.assertIn(f"{ids[1]} is express (performance, security or urgent): it trains next, first in the train, ahead of the ordinary lanes",
                       r.stderr)
