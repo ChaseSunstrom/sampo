@@ -2422,6 +2422,53 @@ def _alive(pid):
     return True
 
 
+def proc_ticks(pid):
+    """T-5985: a process's start time in clock ticks (field 22 of /proc/PID/stat), the id a reused pid can't share; 0 when
+    it isn't running or is a zombie. T-4633: a host with no /proc (macOS) gets the start time in epoch seconds from ps."""
+    try:
+        with open(f"/proc/{int(pid)}/stat") as f:
+            rest = f.read().rsplit(")", 1)[1].split()
+        return 0 if rest[0] == "Z" else int(rest[19])
+    except (IndexError, ValueError, TypeError):
+        return 0
+    except OSError:
+        pass
+    try:
+        with open("/proc/self/stat"):  # a /proc that answers for this process: the pid just isn't there
+            return 0
+    except OSError:
+        pass
+    return ps_start(pid) or 0  # T-4672: one reading of ps's start time for every reader
+
+
+def proc_ancestors(pid, limit=16):
+    """T-5985: the parent pids above `pid`, nearest first (field 4 of /proc/PID/stat), at most `limit`; [] where /proc
+    can't say. Stops at pid 1 and at a loop. A reading, never a lock: a parent can end while this runs."""
+    out, cur = [], pid
+    for _ in range(limit):
+        try:
+            with open(f"/proc/{int(cur)}/stat") as f:
+                cur = int(f.read().rsplit(")", 1)[1].split()[1])
+        except (OSError, IndexError, ValueError, TypeError):
+            break
+        if cur <= 1 or cur in out:
+            break
+        out.append(cur)
+    return out
+
+
+def same_process(pid, ticks=0):
+    """T-5985: whether the process a marker names still runs: pid AND start ticks, since a pid alone is any later
+    process that took the number (a ship's wait would then sit out a bound for a dead one). `ticks` is what the marker's
+    writer recorded (proc_ticks of itself); a marker with none (written before this, or by a host that can't read it)
+    falls back to the pid answering. Never True for a pid that is not a plain int above 1."""
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 1:
+        return False
+    if isinstance(ticks, int) and not isinstance(ticks, bool) and ticks > 0:
+        return proc_ticks(pid) == ticks
+    return _alive(pid)  # the one pid-only answer, for a marker that recorded no start time
+
+
 def scratch_leftovers():
     """T-4735: [{path, age_s, pid}] of the trees in the scratch root that nobody owns: their lock is free and the pid that
     wrote it is gone, or they have no lock and are older than SCRATCH_YOUNG_S. Nothing with a held lock, and nothing
@@ -3309,9 +3356,10 @@ def gates_live(p, here=False, key="gates_running"):
     here: only a run on this tree (T-1965: fm ship's scratch-tree run tests another one). key="ship_testing": fm
     ship's test run in its scratch tree (T-1978)."""
     g = read_meta(p).get(key) or {}
-    try:
-        os.kill(int(g["pid"]), 0)
-    except (KeyError, TypeError, ValueError, OSError):
+    try:  # T-5985: pid and start ticks (the writers record both): a reused pid is not the run the marker names
+        if not same_process(int(g["pid"]), g.get("ticks") or 0):
+            return None
+    except (KeyError, TypeError, ValueError):
         return None
     return None if here and g.get("root") not in (None, p.root) else g
 

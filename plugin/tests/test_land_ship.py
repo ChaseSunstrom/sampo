@@ -742,6 +742,133 @@ class Cap(unittest.TestCase):
             self.assertIn(c.LAND_SHIP_ENV, out, "the standing grant gets the marker")
 
 
+class ShipPhases(unittest.TestCase):
+    """T-5985: the land's ship is never ended for time it spent waiting. The 2026-11-22 ship waited about 105 minutes on
+    an earlier one, then ran the suite, and was "ended after 7200s" before it pushed: the cap counted its whole life.
+    Now each phase it names has its own bound that starts with it, and a timeout says which phase ran out. Every child
+    here is a real shell (never a stubbed Popen: its pid would reach os.killpg)."""
+
+    def run_ship(self, script, **env):
+        import io
+        from unittest import mock
+        log = io.StringIO()  # the land's own log: what _ship_run prints
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, env), mock.patch("sys.stdout", new=log):
+            t0 = time.monotonic()
+            rc, out = train._ship_run(tmp, "T-0001", "0" * 40, argv=["sh", "-c", script])
+            self.log = log.getvalue()
+            return rc, out, time.monotonic() - t0
+
+    def test_phase_a_wait_plus_a_suite_past_the_cap_is_not_ended_when_the_suite_alone_fits(self):
+        # 4 s waiting and 3 s of suite: 7 s in all against a 6 s cap, 3 s of it the suite's own (wide margins: a loaded
+        # host may notice a phase late, and the start's own clock must not run out before the first phase is named)
+        script = 'echo wait >> "$FOREMAN_SHIP_PHASE_FILE"; sleep 4; echo suite >> "$FOREMAN_SHIP_PHASE_FILE"; sleep 3; echo pushed'
+        rc, out, took = self.run_ship(script, FOREMAN_SHIP_TIMEOUT_S="6")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("pushed", out)
+        self.assertNotIn("timed out", out)
+        self.assertGreater(took, 6.0, "the run really outlasted the cap")
+
+    def test_phase_a_suite_past_its_own_cap_is_ended_and_the_line_names_the_suite(self):
+        rc, out, took = self.run_ship('echo suite >> "$FOREMAN_SHIP_PHASE_FILE"; sleep 60', FOREMAN_SHIP_TIMEOUT_S="4")
+        self.assertEqual(rc, 124, out)
+        self.assertIn("timed out: the ship was ended after 4s in its suite phase", out)
+        self.assertLess(took, 40)
+
+    def test_phase_the_self_gate_has_its_own_bound_and_is_named(self):
+        # the cap is far off: the hook bench ran out of its own bound, not the suite's
+        rc, out, took = self.run_ship('echo hold >> "$FOREMAN_SHIP_PHASE_FILE"; sleep 40',
+                                      FOREMAN_SHIP_TIMEOUT_S="600", FOREMAN_SHIP_HOLD_TIMEOUT_S="1.5")
+        self.assertEqual(rc, 124, out)
+        self.assertIn("in its hold phase", out)
+        self.assertLess(took, 15)
+
+    def test_phase_a_step_past_its_bound_is_named_too(self):
+        rc, out, _ = self.run_ship('echo finish >> "$FOREMAN_SHIP_PHASE_FILE"; sleep 40', FOREMAN_SHIP_STEP_TIMEOUT_S="1.5")
+        self.assertEqual((rc, "in its finish phase" in out), (124, True), out)
+
+    def test_phase_each_one_is_said_in_the_log_with_its_bound(self):
+        rc, out, _ = self.run_ship('echo wait >> "$FOREMAN_SHIP_PHASE_FILE"; echo suite >> "$FOREMAN_SHIP_PHASE_FILE"; sleep 1.2',
+                                   FOREMAN_SHIP_TIMEOUT_S="30")
+        self.assertEqual(rc, 0, out)
+        self.assertRegex(self.log, r"ship phase suite: at most 30s")  # the land's own log, not the ship's output
+        self.assertNotIn("ship phase", out)
+
+    def test_phase_a_ship_that_names_none_is_ended_at_the_cap_from_its_start(self):
+        rc, out, took = self.run_ship("echo up; sleep 40", FOREMAN_SHIP_TIMEOUT_S="1.5")
+        self.assertEqual(rc, 124, out)
+        self.assertIn("in its ship phase", out)
+        self.assertLess(took, 15)
+
+    def test_phase_a_line_in_the_ships_output_can_not_start_a_phase(self):
+        # a suite prints what it likes: only the phase file names a phase
+        rc, out, _ = self.run_ship('echo wait; echo suite; echo hold; sleep 40', FOREMAN_SHIP_TIMEOUT_S="1.5")
+        self.assertEqual(rc, 124, out)
+        self.assertIn("in its ship phase", out)
+
+    def test_phase_a_name_that_is_no_phase_and_a_partial_line_change_nothing(self):
+        rc, out, _ = self.run_ship('echo bogus >> "$FOREMAN_SHIP_PHASE_FILE"; printf suit >> "$FOREMAN_SHIP_PHASE_FILE"; sleep 40',
+                                   FOREMAN_SHIP_TIMEOUT_S="1.5")
+        self.assertEqual(rc, 124, out)
+        self.assertIn("in its ship phase", out)
+
+    def test_phase_a_stray_ship_line_never_resets_the_clock(self):
+        # "ship" is the land's own pre-phase label, not a phase a ship may name: it would restart the start-cap clock
+        rc, out, _ = self.run_ship('echo suite >> "$FOREMAN_SHIP_PHASE_FILE"; echo ship >> "$FOREMAN_SHIP_PHASE_FILE"; sleep 60',
+                                   FOREMAN_SHIP_TIMEOUT_S="4")
+        self.assertEqual(rc, 124, out)
+        self.assertIn("in its suite phase", out)
+        self.assertNotRegex(self.log, r"ship phase ship")
+
+    def test_phase_only_a_complete_known_last_line_names_a_phase(self):
+        from sampo import release
+        caps = {"ship": 5.0, **release.ship_caps(5.0)}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "f")
+            for text, want in (("suite\n", "suite"), ("suite\nship\n", "suite"), ("ship\n", None), ("suite\nship\nsuite\nnoise\n", "suite"), ("wait\nsuite", "wait"), ("", None),
+                               ("x" * 1000 + "\nhold\n", "hold"), ("\xff\xfe\n", None)):
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(text)
+                self.assertEqual(train._phase_named(path, caps), want, repr(text))
+
+    def test_phase_a_phase_path_that_is_not_a_plain_file_never_stalls_the_loop(self):
+        # a link to /dev/zero (an endless read), a FIFO (an open that waits for a writer), /dev/zero itself, a directory
+        from sampo import release
+        caps = {"ship": 5.0, **release.ship_caps(5.0)}
+        with tempfile.TemporaryDirectory() as tmp:
+            link, fifo = os.path.join(tmp, "link"), os.path.join(tmp, "fifo")
+            os.symlink("/dev/zero", link)
+            os.mkfifo(fifo)
+            for path in (link, fifo, "/dev/zero", tmp, os.path.join(tmp, "missing")):
+                t0 = time.monotonic()
+                self.assertIsNone(train._phase_named(path, caps), path)
+                self.assertLess(time.monotonic() - t0, 2.0, f"{path}: it returned at once")
+            real = os.path.join(tmp, "real")
+            with open(real, "w") as f:
+                f.write("suite\n")
+            os.symlink(real, os.path.join(tmp, "lk"))
+            self.assertIsNone(train._phase_named(os.path.join(tmp, "lk"), caps), "a link to a real file is still no file")
+
+    def test_phase_the_caps_are_one_per_phase_and_the_wait_ends_itself_first(self):
+        from unittest import mock
+        from sampo import release
+        with mock.patch.dict(os.environ, {"FOREMAN_SHIP_TIMEOUT_S": "100", "FOREMAN_SHIP_HOLD_TIMEOUT_S": "bad",
+                                          "FOREMAN_SHIP_STEP_TIMEOUT_S": "-5"}):
+            caps = release.ship_caps()
+        self.assertEqual(caps["suite"], 100)
+        self.assertGreater(caps["wait"], caps["suite"], "the child's own wait bound fires before the land's")
+        self.assertEqual((caps["hold"], caps["prepare"], caps["finish"]), (3600, 1800, 1800), "a bad value is the default")
+        self.assertEqual(set(caps), set(release.PHASES))
+
+    def test_phase_the_phase_file_is_gone_with_the_run(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp, mock.patch("sys.stdout", new=open(os.devnull, "w")):
+            rc, out = train._ship_run(tmp, "T-0001", "0" * 40, argv=["sh", "-c", 'echo "$FOREMAN_SHIP_PHASE_FILE"'])
+        path = out.split()[0]
+        self.assertEqual(rc, 0)
+        self.assertIn("ship-phase-", path)
+        self.assertFalse(os.path.exists(path))
+
+
 class Grant(ShipCase):
     """Review: who may give the publish grant back, and an in-line ship beside a detached one."""
 
@@ -816,6 +943,30 @@ class Grant(ShipCase):
         self.assertIn("already running", got[1])
         self.assertTrue(self.held(tid), "nothing was shipped: the grant is untouched")
         os.remove(train._ship_marker(self.p))
+
+    def test_phase_an_in_line_ship_is_bounded_by_a_ships_whole_life(self):
+        # T-5985 review: the in-line ship had no timeout at all: a ship that hangs held the land's own thread
+        from unittest import mock
+
+        from sampo import release
+        self.lanes_ready(1)
+        with mock.patch.object(train, "_sampo", return_value=(0, "nothing to ship", "")) as ran:
+            train._ship(self.p, False, self.repo)
+        ran.assert_called_once()
+        self.assertEqual(ran.call_args.kwargs.get("timeout"), release.ship_life())
+        self.assertGreater(release.ship_life(), release.ship_span(), "its wait for another ship is in the bound")
+
+    def test_phase_sampo_verb_that_outlives_its_timeout_is_ended_with_a_line(self):
+        from unittest import mock
+        err = subprocess.TimeoutExpired(["sampo"], 3)
+        with mock.patch.object(train.subprocess, "run", side_effect=err) as run:
+            rc, out, said = train._sampo(["ship", "--task", "T-1"], timeout=3)
+        self.assertEqual(run.call_args.kwargs.get("timeout"), 3)
+        self.assertEqual(rc, 124)
+        self.assertIn("timed out", said)
+        self.assertIn("ship --task", said)
+        rc, out, said = train._sampo(["--version"])  # no timeout: as before
+        self.assertEqual(rc, 0, said)
 
     COVERED = ("nothing to ship here: the running ship (pid 7, T-1, testing abcdef123) already carries every commit "
                "this one would ship (05eeeae6); no tests run. If it is refused, run fm ship again")

@@ -760,6 +760,18 @@ def _run_test(p, wt, base, env, test, log, run_id=None):
         return proc.returncode, rd.read().decode("utf-8", errors="replace")
 
 
+RED_RERUN_S = 900  # the red classes alone, on a quiet machine
+LOAD_WAIT_S = 60  # c.wait_for_load never waits over this (T-3144)
+
+
+def _rerun_timeout():
+    """T-5985: the rerun alone's run timeout: RED_RERUN_S scaled by the host's load (T-4197), but never past what the land
+    allows the "rerun" phase (it kills the ship at that bound) less the load wait before it and a margin: a heavy load
+    must end the rerun itself, with its own line, before the land ends the whole ship."""
+    room = ship_caps()["rerun"] - LOAD_WAIT_S - 30
+    return max(1.0, min(c.load_scaled(RED_RERUN_S), room))
+
+
 def _rerun_red(wt, out, code, env, said=None):
     """T-3435: the classes a red run names, rerun alone after a load wait (the post-merge suite's helpers, T-3216).
     Returns the flaky classes when every one is green alone, None when any is still red (or can't run alone).
@@ -776,7 +788,7 @@ def _rerun_red(wt, out, code, env, said=None):
         return None
     c.wait_for_load("sampo ship", out=sys.stdout)
     print(f"{', '.join(classes)} failed in the full run; rerunning alone", flush=True)
-    if c.run_command(wt, again, c.load_scaled(900), env=env, niced=True)[0]:  # T-4197
+    if c.run_command(wt, again, _rerun_timeout(), env=env, niced=True)[0]:  # T-4197
         said.append("the rerun alone also failed")
         return None
     print(f"flaky (red in the full run, green alone): {', '.join(classes)}", flush=True)
@@ -1156,26 +1168,79 @@ def _ship_cap():
     return float(os.environ.get("FOREMAN_SHIP_TIMEOUT_S") or 7200)  # SAMPO_SHIP_TIMEOUT_S, mirrored by core
 
 
+# T-5985: the file a land's ship appends the name of each phase it enters to. A report channel, not a secret: the env is
+# popped before the suite runs, so the suite and its output never see the path, but a same-user process can still read it
+# from /proc/PID/environ of the ship and append a name, which restarts a clock. Accepted: that process runs as the same
+# user and could signal the ship or edit the project's state outright; the channel only keeps a suite's own output and
+# a nested `fm ship` from forging a phase by accident or by a hostile test name.
+PHASE_ENV = "FOREMAN_SHIP_PHASE_FILE"
+PHASES = ("prepare", "wait", "hold", "gates", "suite", "rerun", "finish")
+WAIT_SLACK = 120  # the wait ends itself at its cap (_ship_gate); the land's backstop on it comes this much later
+GATES_WAIT = 600  # c.wait_while's bound on a running fm check or ambient run: the ship's own, then it goes ahead beside it
+
+
+def _env_secs(name, default):
+    """A positive number of seconds from the environment, else `default` (an unset, empty, bad or non-positive value)."""
+    try:
+        v = float(os.environ.get(name) or default)
+    except ValueError:
+        return float(default)
+    return v if v > 0 else float(default)
+
+
+def ship_caps(limit=None):
+    """T-5985: seconds each phase of a ship may take, each on its own clock that starts when the phase does: `prepare`
+    (fetch, picks, the scratch tree), `rerun` (a red run's classes alone) and `finish` (the baseline, the footprint's hook
+    bench, the push) FOREMAN_SHIP_STEP_TIMEOUT_S (1800); `wait` for an earlier ship (the cap, FOREMAN_SHIP_TIMEOUT_S, and a slack: the wait ends itself first);
+    `hold` the self-change gate's hook bench FOREMAN_SHIP_HOLD_TIMEOUT_S (3600); `gates` the wait for a running check (600
+    and a slack); `suite` the ship's own test run, the cap (7200): the time it waited for CPU slots is in it, the time it
+    waited for another ship or the self-gate is not. `limit` overrides the suite's (a caller that read the cap already)."""
+    suite = _ship_cap() if limit is None else limit
+    step = _env_secs("FOREMAN_SHIP_STEP_TIMEOUT_S", 1800)
+    return {"prepare": step, "wait": suite + WAIT_SLACK, "hold": _env_secs("FOREMAN_SHIP_HOLD_TIMEOUT_S", 3600),
+            "gates": GATES_WAIT + WAIT_SLACK, "suite": suite, "rerun": step, "finish": step}
+
+
+def ship_span():
+    """T-5985: the longest a ship that holds its claim may run: every phase after the wait (the claim is taken once the
+    wait is over). A claim older than this (and five minutes) is stale: the ship ended itself at each phase's bound."""
+    return sum(v for k, v in ship_caps().items() if k != "wait")
+
+
+def ship_life():
+    """T-5985: the longest a land's detached ship lives in all: its wait for an earlier ship and every phase after it.
+    What a verify that yields to a ship waits at most: the suite's cap alone ended it while the ship still waited."""
+    return sum(ship_caps().values())
+
+
+def _phase(args, name):
+    """T-5985: say which phase this ship entered, to the file the land's ship run named (PHASE_ENV): the land starts that
+    phase's own clock. No file (a hand ship) or one that can't be written says nothing: a phase is a report, never a
+    condition. Not stdout: a suite's own output could say the same words, a file the suite never sees can't be forged."""
+    path = getattr(args, "_phase_file", None)
+    if not path or name not in PHASES:
+        return
+    with contextlib.suppress(OSError):
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0))  # never a link to another file
+        try:
+            os.write(fd, (name + "\n").encode())
+        finally:
+            os.close(fd)
+
+
 def _claim_alive(g):
     """T-4645: a ship's claim names a process that is still running: the pid began at the recorded start time (a reused
     pid has another), or, on a host where that time can't be read, the pid answers; and the claim is no older than a
-    ship may run (FOREMAN_SHIP_TIMEOUT_S, 7200, plus five minutes: a ship ends itself at its cap)."""
-    from sampo import train
+    ship may run (ship_span: every phase after the wait at its bound, plus five minutes: a ship ends itself at each)."""
     pid = g.get("pid") if isinstance(g, dict) else None
     if not isinstance(pid, int) or pid <= 0:
         return False
     try:
-        if time.time() - float(g.get("started") or 0) > _ship_cap() + 300:
+        if time.time() - float(g.get("started") or 0) > ship_span() + 300:
             return False
     except (TypeError, ValueError):
         return False
-    if g.get("ticks"):
-        return train._ticks(pid) == g["ticks"]
-    try:
-        os.kill(pid, 0)
-        return True
-    except OSError:
-        return False
+    return c.same_process(pid, g.get("ticks") or 0)  # a marker without start ticks: the pid answering
 
 
 def _ship_claim(p, at, picks, task):
@@ -1190,10 +1255,87 @@ def _ship_claim(p, at, picks, task):
             return held
         if held and held.get("pid") != os.getpid():  # T-5938: a ship that died holding its claim leaves a line, then this goes ahead
             train._ship_log(p, train._gone_line(held.get("pid"), held.get("task"), held.get("started"), "gone"))
-        meta["ship_claim"] = {"pid": os.getpid(), "ticks": train._ticks(os.getpid()), "started": round(time.time(), 1),
-                              "at": c.now(), "head": at, "picks": list(picks), "task": task}
+        meta["ship_claim"] = _claim_record(at, picks, task)
         c.write_meta(p, meta)
     return None
+
+
+def _claim_record(at, picks, task):
+    return {"pid": os.getpid(), "ticks": c.proc_ticks(os.getpid()), "started": round(time.time(), 1),
+            "at": c.now(), "head": at, "picks": list(picks), "task": task}
+
+
+def _ship_takeover(p, from_pid, at, picks, task):
+    """T-5985: the claim passes to this ship, atomically (under the project lock, and only while `from_pid` still holds it):
+    the one claim decides which ship tests. True when this ship holds it now."""
+    with c.lock(p.dir):
+        meta = c.read_meta(p)
+        if (meta.get("ship_claim") or {}).get("pid") != from_pid:
+            return False
+        meta["ship_claim"] = _claim_record(at, picks, task)
+        c.write_meta(p, meta)
+    return True
+
+
+def _wait_set(p, rec):
+    """T-5985: this ship's entry in meta ship_waits (who waits on whom: pid, start ticks, the pid it waits on, its parents,
+    its head's commit time), or none when `rec` is None; entries of ships that are gone are dropped with it."""
+    me = str(os.getpid())
+    with c.lock(p.dir):
+        meta = c.read_meta(p)
+        waits = {k: w for k, w in (meta.get("ship_waits") or {}).items()
+                 if k != me and isinstance(w, dict) and c.same_process(w.get("pid"), w.get("ticks") or 0)}
+        if rec:
+            waits[me] = rec
+        if waits:
+            meta["ship_waits"] = waits
+        else:
+            meta.pop("ship_waits", None)
+        c.write_meta(p, meta)
+
+
+def _int(x):
+    return x if isinstance(x, int) and not isinstance(x, bool) else None
+
+
+def _wait_cycle(me, held, waits):
+    """T-5985: the ship that waits, through the holder, on this one (a dict with its pid), or None. A holder waits on what
+    its own children wait on (a standing-ship loop waits for its ship): from the holder follow every live waiter that is
+    the holder or runs under it to the pid that one waits on, and so on (at most eight steps); a waiter on this ship (or
+    on a parent of it) closes a cycle. A holder that is this ship's own parent is the shortest one: {"own": True}."""
+    mine = {me["pid"], *(x for x in map(_int, me.get("ppids") or []) if x is not None)}
+    if held in (me.get("ppids") or []):
+        return {"pid": held, "own": True}
+    seen, frontier = set(), [held]
+    for _ in range(8):
+        nxt = []
+        for h in frontier:
+            if h in seen:
+                continue
+            seen.add(h)
+            for w in waits.values():
+                if not isinstance(w, dict) or _int(w.get("pid")) in (None, me["pid"]):
+                    continue
+                if not c.same_process(w["pid"], w.get("ticks") or 0):
+                    continue
+                if h == w["pid"] or h in (w.get("ppids") or []):
+                    on = _int(w.get("on"))
+                    if on is not None and on in mine:
+                        return w
+                    nxt.append(on)
+        frontier = [x for x in nxt if x is not None]
+        if not frontier:
+            break
+    return None
+
+
+def _age_key(w):
+    """The order of two ships: the older head (its commit's time) first, then the one that started waiting first, then
+    the lower pid: one total order, so the two ships of a cycle never both think the other is the older."""
+    try:
+        return (float(w.get("htime") or 0), float(w.get("since") or 0), int(w.get("pid") or 0))
+    except (TypeError, ValueError):
+        return (0.0, 0.0, 0)
 
 
 class _Claimed:
@@ -1232,16 +1374,46 @@ def _ship_gate(p, at, picks, task, args):
         return "covered"
     t0 = getattr(args, "_ship_wait_from", None) or time.monotonic()
     args._ship_wait_from = t0
+    _phase(args, "wait")  # T-5985: the land's clock for this wait is its own; the suite's starts after it
     end = t0 + _ship_cap()
     print(f"fm ship: waiting for {who} to end before testing: {len(picks)} commit(s) wait, no test runs until then "
           f"(at most {_ship_cap():g}s); then it tests the moved {args.remote or 'origin'} main", flush=True)
-    while True:
-        g = (c.read_meta(p).get("ship_claim") or {})
-        if not (g.get("pid") != os.getpid() and _claim_alive(g)):
-            return "waited"
-        if time.monotonic() >= end:
-            _err(f"{who} is still running after {_ship_cap():g}s; nothing was pushed: run fm ship again after it")
-        time.sleep(1)
+    try:
+        htime = float(_git(p.root, "log", "-1", "--format=%ct", at, ok=True).strip() or 0)
+    except ValueError:
+        htime = 0.0
+    me = {"pid": os.getpid(), "ticks": c.proc_ticks(os.getpid()), "on": held.get("pid"), "task": task, "head": at,
+          "htime": htime, "since": round(time.time(), 1), "ppids": c.proc_ancestors(os.getpid())}
+    with contextlib.suppress(Exception):  # a registry that can't be written only loses the cycle check, never the wait
+        _wait_set(p, me)
+    try:
+        while True:
+            meta = c.read_meta(p)
+            g = (meta.get("ship_claim") or {})
+            if not (g.get("pid") != os.getpid() and _claim_alive(g)):
+                return "waited"
+            if g.get("pid") != me["on"]:  # the claim passed to another ship: this one waits on that
+                me["on"] = g.get("pid")
+                with contextlib.suppress(Exception):
+                    _wait_set(p, me)
+            other = _wait_cycle(me, g["pid"], meta.get("ship_waits") or {})
+            if other:
+                # T-5985: the holder waits for a ship that waits on this one (its own child, or this ship's parent): neither
+                # would ever end. The older head yields and ends, the newer takes the claim (atomic: one ship tests).
+                if other.get("own") or _age_key(me) < _age_key(other):
+                    _err(f"superseded by {other['pid']}" + (f" ({other.get('task')})" if other.get("task") else "")
+                         + f": {who} and that ship wait on each other; this ship's head {at[:9]} is the older, so it ends "
+                         "and the other goes ahead; nothing was pushed: run fm ship again after it")
+                if _ship_takeover(p, g["pid"], at, picks, task):
+                    print(f"fm ship: {who} waits on a ship that waits on this one: this head is the newer, so it tests "
+                          f"now and the other goes after it (pid {other['pid']})", flush=True)
+                    return "go"
+            if time.monotonic() >= end:
+                _err(f"{who} is still running after {_ship_cap():g}s; nothing was pushed: run fm ship again after it")
+            time.sleep(1)
+    finally:
+        with contextlib.suppress(Exception):
+            _wait_set(p, None)
 
 
 def ship(p, args):
@@ -1276,6 +1448,12 @@ def ship(p, args):
     # `fm ship` in scratch repos, where this sha isn't a commit
     os.environ.pop("FOREMAN_SHIP_AT", None)
     os.environ.pop("SAMPO_SHIP_AT", None)
+    # T-5985: the land's phase file, read once and gone from the env for the same reason: a suite that runs `fm ship` in a
+    # scratch repo must not write the land's phases. The replan below (the same args) keeps it.
+    from_land = os.environ.pop(PHASE_ENV, None)
+    os.environ.pop("SAMPO_SHIP_PHASE_FILE", None)
+    args._phase_file = getattr(args, "_phase_file", None) or from_land
+    _phase(args, "prepare")
     at = _git(root, "rev-parse", "--verify", "-q", "--end-of-options", f"{pin or 'HEAD'}^{{commit}}", ok=True).strip()
     if not at:
         _err(f"SAMPO_SHIP_AT {pin!r} isn't a commit here; nothing was pushed")
@@ -1338,6 +1516,7 @@ def ship(p, args):
     if gate == "covered":
         return 0
     if gate == "waited":  # the other ship ended: plan again from the moved main (it may carry these commits by now)
+        # T-5985: the replan below opens with _phase(args, "prepare"): its fetch is never ended as the "wait" that just ended
         os.environ["FOREMAN_SHIP_AT"] = at
         if land:
             os.environ[c.LAND_SHIP_ENV] = "land"  # the replan is still the land's own ship
@@ -1371,15 +1550,19 @@ def ship(p, args):
                       "one commit, without it", flush=True)
                 hits = _private_hits(root, sent, head)  # the one commit main gets: its message, its lines, its tree
             _refuse_private(root, sent, head, hits)
+            _phase(args, "hold")  # T-5985: the self-gate's hook bench has its own bound, outside the suite's
             _push_hold(p, b, root, picks, "fm ship")  # T-4805: a commit made straight on the trunk is judged like a lane's
             from sampo import ambient
+            _phase(args, "gates")
             c.wait_while(lambda: c.gates_live(p) or ambient.running(p),  # T-1978: never two suites at once
-                         "a running fm check or ambient test run", "fm ship", out=sys.stdout)
+                         "a running fm check or ambient test run", "fm ship", limit=GATES_WAIT, out=sys.stdout)
+            _phase(args, "suite")  # T-5985: the suite's own clock starts here: its cap counts this run alone
             print(f"testing {n} on {remote} main, a snapshot of the head at {at[:9]} (a later head is never in it): "
                   f"{shlex.join(test)}", flush=True)
             env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}  # GIT_DIR from a hook: not the user's repo
             tested = _git(wt, "rev-parse", "HEAD^{tree}").strip()  # T-2642: the tree the suite runs on is the tree pushed
-            c.update_meta(p, ship_testing={"pid": os.getpid(), "at": c.now(), "root": os.path.realpath(wt)})
+            c.update_meta(p, ship_testing={"pid": os.getpid(), "ticks": c.proc_ticks(os.getpid()), "at": c.now(),
+                                           "root": os.path.realpath(wt)})
             t0 = time.monotonic()
             env.setdefault("PYTHONUNBUFFERED", "1")
             env[c.SLOT_PRIORITY] = env.get(c.SLOT_PRIORITY) or "1"  # T-3614: its runs take freed CPU slots first
@@ -1407,8 +1590,11 @@ def ship(p, args):
             c.log_event(p, "ship_test", data={"cmd": c.fit(shlex.join(test), 200), "exit": failed,
                                               "s": round(time.monotonic() - t0, 1)})
             rerun = []  # T-4739: what the rerun alone did, for the refusal
+            if failed:
+                _phase(args, "rerun")  # T-5985: a load wait and the red classes alone: their own bound, not the suite's
             if failed and _rerun_red(wt, tail, failed, env, rerun) is not None:
                 failed = 0  # T-3435: green alone is a flake; the baseline capture and the verdict get the rerun's
+            _phase(args, "finish")  # the baseline, the footprint's hook bench, the push
             from sampo import cli  # the shipped tree is vouchable, so the run files (or clears) what fm check would
             try:
                 got = [] if hit else cli._baseline(p, [(shlex.join(test), failed, tail, None)])  # a reuse ran nothing

@@ -238,9 +238,11 @@ class Yield(TrainCase):
     def test_yield_the_wait_ends_when_the_ships_limit_has_passed(self):
         self.marker()
         t0 = time.monotonic()
-        with mock.patch.dict(os.environ, {"FOREMAN_SHIP_TIMEOUT_S": "0.3"}):
+        with mock.patch.object(release, "ship_life", return_value=0.3):  # T-5985: a ship's whole life (waits included), not its suite's cap
             self.assertTrue(lanes.ship_yield(self.p))
         self.assertLess(time.monotonic() - t0, 10, "a ship that never ends can't hold the verify past its limit")
+        with mock.patch.dict(os.environ, {"FOREMAN_SHIP_TIMEOUT_S": "0.3"}):
+            self.assertGreater(release.ship_life(), 3000, "the suite's cap alone is no longer the verify's limit")
 
     def test_yield_the_runner_yields_before_each_suite_run(self):
         order = []

@@ -3118,11 +3118,15 @@ def held_by_active(p, main, ids=None, briefs=None):
             if hit else "")
 
 
-def _sampo(argv, env=None):
+def _sampo(argv, env=None, timeout=None):
     """(exit code, stdout, stderr) of one sampo verb, the checks its command line runs, in a fresh process: a land
-    outlives the trains it merges, so its own code would judge their verbs and docs as unknown (T-3970)."""
-    r = subprocess.run([sys.executable, os.path.join(c.PLUGIN_ROOT, "bin", "sampo"), *argv], capture_output=True,
-                       text=True, env=env)
+    outlives the trains it merges, so its own code would judge their verbs and docs as unknown (T-3970). `timeout`
+    (T-5985): seconds before the verb is ended, rc 124 and a line saying so, never a hang on the land's own thread."""
+    try:
+        r = subprocess.run([sys.executable, os.path.join(c.PLUGIN_ROOT, "bin", "sampo"), *argv], capture_output=True,
+                           text=True, env=env, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return 124, "", f"timed out: `sampo {' '.join(argv[:2])}` was ended after {timeout:g}s"  # not a list: the verb's name
     return r.returncode, r.stdout, r.stderr
 
 
@@ -3219,8 +3223,10 @@ def _ship(p, keep, main=None):
     _ship_log(p, f"{_hms()} ship of {head[:9]} on {grant.id}'s publish grant (in line, from the land)\n")  # T-4739
     try:
         env = _ship_env(grant.id, head)  # T-4289: its gate's tests take no test override; T-5938: the marker, standing alone
+        # T-5985: bounded by a ship's whole life (release.ship_life: every phase at its own bound, its wait too: this
+        # ship may wait on a claim first), so a ship that hangs ends and the land goes on
         rc, out, err = _sampo(["ship", "--task", grant.id],  # T-4289: its gate's tests never take a test override
-                              env=env)
+                              env=env, timeout=release.ship_life())
     except Exception as e:  # noqa: BLE001 — a failed ship is said, never stops the land
         rc, out, err = 1, "", f"{type(e).__name__}: {e}"
     line = (out.strip().splitlines() or ["shipped"])[-1] if not rc else "refused: " + _why(err or out, REFUSAL_ROOM)
@@ -3252,20 +3258,7 @@ def _ticks(pid):
     """A process's start time in clock ticks (field 22 of /proc/PID/stat), the id a reused pid can't share; 0 when it
     isn't running or is a zombie. T-4633: a host with no /proc (macOS) gets the start time in epoch seconds from ps,
     which every liveness check here read as 'not running' (0) before."""
-    try:
-        with open(f"/proc/{int(pid)}/stat") as f:
-            rest = f.read().rsplit(")", 1)[1].split()
-        return 0 if rest[0] == "Z" else int(rest[19])
-    except (IndexError, ValueError):
-        return 0
-    except OSError:
-        pass
-    try:
-        with open("/proc/self/stat"):  # a /proc that answers for this process: the pid just isn't there
-            return 0
-    except OSError:
-        pass
-    return c.ps_start(pid) or 0  # T-4672: one reading of ps's start time for every reader
+    return c.proc_ticks(pid)  # T-5985: one reading, in core, for the markers core and lanes read too
 
 
 def _read_marker(p):
@@ -3283,13 +3276,7 @@ def _ship_alive(p):
     m = _read_marker(p)
     if not m or not isinstance(m.get("pid"), int):
         return None
-    if m.get("ticks"):
-        return m if _ticks(m["pid"]) == m["ticks"] else None
-    try:  # a host without /proc: the pid alone
-        os.kill(m["pid"], 0)
-        return m
-    except OSError:
-        return None
+    return m if c.same_process(m["pid"], m.get("ticks") or 0) else None  # no ticks recorded: the pid answering
 
 
 def _gone_line(pid, grant, started, what):
@@ -3391,16 +3378,59 @@ def _ship_env(grant, head=""):
     return c.scrubbed_env(env)
 
 
+def _phase_named(path, caps):
+    """T-5985: the phase a ship's phase file names last (a complete line, one of release.PHASES that `caps` bounds), or
+    None: no file, an empty one, a partly written line or only names that are no phase ("ship" is the land's own label for
+    the time before a phase is named, never a name a ship may give: it is skipped, it never restarts a clock). Only the
+    file's tail is read: the ship appends a
+    word per phase. The land's loop must never stall on it: the path is opened read-only, never through a link, never
+    waiting for a writer (a FIFO), and only a regular file is read, at most 256 bytes (never an endless /dev/zero)."""
+    from sampo import release
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    except OSError:
+        return None
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            return None
+        os.lseek(fd, max(0, st.st_size - 256), os.SEEK_SET)
+        tail = os.read(fd, 256)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    lines = tail.decode("utf-8", errors="replace").split("\n")[:-1]  # the last piece has no newline yet
+    for ln in reversed(lines):  # a line that is no phase ("ship", noise) is skipped: the last name that is one stands
+        if ln in release.PHASES and ln in caps:
+            return ln
+    return None
+
+
 def _ship_run(main, grant, head, argv=None):
     """(exit code, output) of one `sampo ship --task GRANT` pinned to `head` (SAMPO_SHIP_AT: it tests and pushes that
     snapshot), every output line stamped into this process's own log; ended after SAMPO_SHIP_TIMEOUT_S (7200).
+    T-5985: that cap is the suite's own run, not the ship's whole life: the ship names each phase it enters in a file of
+    its own (release._phase; never in its output, which a suite could forge) and each phase has its own bound that starts
+    with it (release.ship_caps: a wait for an earlier ship, the self-gate's hook bench, the suite); a ship that names no
+    phase (an older one, a probe) is bound by the cap from its start, as before. A ship ended for time says which phase
+    ran out. The phase file is the child's alone: the land only reads it.
     Review: the output goes to a file, never a pipe: a process that left the group and holds a pipe's write end keeps
     the read loop waiting for an EOF that never comes (T-2255), so the cap would never fire. The deadline is
     wait(timeout) then a group kill; whoever still holds the file writes into an unlinked file."""
+    from sampo import release
     env = _ship_env(grant, head)
     limit = float(os.environ.get("FOREMAN_SHIP_TIMEOUT_S") or 7200)  # SAMPO_SHIP_TIMEOUT_S, mirrored by core
-    fd, path = tempfile.mkstemp(prefix="ship-run-", suffix=".log")
-    out, part, capped, proc = [], "", False, None
+    caps = {"ship": limit, **release.ship_caps(limit)}  # "ship": no phase named yet (the cap from the start)
+    pfd, ppath = tempfile.mkstemp(prefix="ship-phase-", suffix=".txt")
+    os.close(pfd)
+    try:
+        fd, path = tempfile.mkstemp(prefix="ship-run-", suffix=".log")
+    except OSError:
+        os.remove(ppath)
+        raise
+    env[release.PHASE_ENV] = ppath
+    out, part, capped, proc = [], "", None, None
     try:
         with os.fdopen(fd, "ab") as w, open(path, encoding="utf-8", errors="replace") as r:
             def drain(last=False):
@@ -3419,14 +3449,20 @@ def _ship_run(main, grant, head, argv=None):
                                                  "--task", grant],
                                         cwd=main, env=env, stdin=subprocess.DEVNULL, stdout=w, stderr=subprocess.STDOUT,
                                         start_new_session=True)
-                deadline = time.monotonic() + limit
+                phase = "ship"
+                deadline = time.monotonic() + caps[phase]
                 rc = None
                 while rc is None:
                     try:
                         rc = proc.wait(timeout=max(0.0, min(0.4, deadline - time.monotonic())))
                     except subprocess.TimeoutExpired:
-                        if time.monotonic() >= deadline:
-                            capped = True
+                        named = _phase_named(ppath, caps)
+                        if named and named != phase:  # a new phase: its own clock starts now, the old one's is spent
+                            phase = named
+                            deadline = time.monotonic() + caps[phase]
+                            print(f"{_hms()} ship phase {phase}: at most {caps[phase]:g}s", flush=True)
+                        elif time.monotonic() >= deadline:
+                            capped = f"{caps[phase]:g}s in its {phase} phase"
                             with contextlib.suppress(OSError):
                                 killsafe.killpg(proc.pid, signal.SIGKILL)
                             rc = proc.wait()
@@ -3444,10 +3480,11 @@ def _ship_run(main, grant, head, argv=None):
                 e.ship_out = "".join(out)
                 raise
     finally:
-        with contextlib.suppress(OSError):
-            os.remove(path)
+        for f in (path, ppath):
+            with contextlib.suppress(OSError):
+                os.remove(f)
     if capped:
-        out.append(f"timed out: the ship was ended after {limit:g}s\n")
+        out.append(f"timed out: the ship was ended after {capped}\n")
         rc = 124
     return rc, "".join(out)
 

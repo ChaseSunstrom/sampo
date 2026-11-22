@@ -3154,7 +3154,7 @@ def _stale_pid(path, now=None):
     data, st = _tail(path, 33)
     if data is None or st.st_size > 32 or (now or time.time()) - st.st_mtime < FSCK_LOCK_AGE:
         return ""
-    text = data.strip()
+    text = (data.split() or [""])[0]  # T-5985: "pid ticks" in ambient's run.pid: the pid is the first word
     if not (text.isdigit() and len(text) <= 9 and int(text) > 0):  # never os.kill(0): that signals our own group
         return "it holds no pid" if text else "it is empty"
     try:

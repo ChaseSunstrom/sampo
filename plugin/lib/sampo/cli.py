@@ -7243,7 +7243,8 @@ def _cmd_check(args):
         return 0
     marked = args.evidence or not getattr(args, "affected", False)  # T-1963: a full run, for the edit hook's note too
     if marked:  # T-1176: the drive reads this (a dead pid = stale) so it doesn't offer or leave the task meanwhile
-        c.update_meta(p, gates_running={"task": args.evidence, "pid": os.getpid(), "at": c.now(), "root": p.root})
+        c.update_meta(p, gates_running={"task": args.evidence, "pid": os.getpid(), "ticks": c.proc_ticks(os.getpid()),
+                                      "at": c.now(), "root": p.root})
     from sampo import ambient
     # T-1964: never two suites at once; edits meanwhile start none (gates_running is set)
     c.wait_while(lambda: ambient.running(p), "the ambient test run", "sampo check", limit=300)

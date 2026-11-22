@@ -6612,7 +6612,7 @@ def _pm_claim(p, sha):
         if any(o["state"] in ("red", "conflict") or (o["state"] in ("pending", "running") and o["n"] < r["n"])
                for o in recs.values() if o["sha"] != sha):
             return None  # settle the red one, and the older merges, first: a red here might be theirs
-        r.update(state="running", pid=os.getpid())
+        r.update(state="running", pid=os.getpid(), ticks=c.proc_ticks(os.getpid()))  # T-5985: pid AND start time
         c.write_atomic(os.path.join(_pm_dir(p), f"{sha}.json"), json.dumps(r))
         return r
 
@@ -7039,10 +7039,11 @@ def pm_reset(p, prefix):
 
 
 def _pm_dead(r):
+    """The verify a record names is no longer running. T-5985: by pid AND start time (a record written with `ticks`), so
+    a reused pid never keeps a dead verify's claim alive; a record with none falls back to the pid answering."""
     try:
-        os.kill(int(r.get("pid") or 0), 0)
-        return False
-    except (OSError, ValueError):
+        return not c.same_process(int(r.get("pid") or 0), r.get("ticks") or 0)
+    except (TypeError, ValueError):
         return True
 
 
@@ -7060,7 +7061,7 @@ def ship_yield(p, cap=None):
     A land closes that gap for its own trains (train._land_trains starts the verify only once no further train is
     queued); a lane that turns ready after that, or a hand `sampo ship` begun mid-run, can still meet a running verify."""
     from sampo import release, train
-    limit = release._ship_cap() if cap is None else cap
+    limit = release.ship_life() if cap is None else cap  # T-5985: a ship's whole life, not its suite's cap alone
     t0 = time.monotonic()
 
     def running():
@@ -7079,7 +7080,7 @@ def pm_run(p, main):
     change may lean on the reverted merge) is judged without it, as pm_verify would; the newest merge may predate it."""
     probed = set()
     from sampo import release
-    patience = release._ship_cap()  # T-4718: all the waiting for a project's ships this pass does, together
+    patience = release.ship_life()  # T-4718: all the waiting for a project's ships this pass does, together (T-5985: a ship's whole life)
     from sampo import measure, train
     measure.note_pipeline_used(p)  # T-5735: a verify pass starts on the merged code: any pipeline fix before it is in use
     watch = train.process_watch()

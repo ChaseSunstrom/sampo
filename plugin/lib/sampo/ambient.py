@@ -50,11 +50,13 @@ def after_edit(p, path):
 
 
 def running(p):
+    """A run is live: run.pid holds "pid ticks" (T-5985: the start time too, so a reused pid is no live run; a file
+    with the pid alone, from an older run, falls back to the pid answering)."""
     try:
         with open(os.path.join(_dir(p), "run.pid")) as f:
-            os.kill(int(f.read().strip()), 0)
-        return True
-    except (OSError, ValueError):
+            parts = f.read().split()
+        return c.same_process(int(parts[0]), int(parts[1]) if len(parts) > 1 else 0)
+    except (OSError, ValueError, IndexError):
         return False
 
 
@@ -71,7 +73,7 @@ def run(p):
         os.unlink(pid)  # a run that died left it
         fd = os.open(pid, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     try:
-        os.write(fd, str(os.getpid()).encode())
+        os.write(fd, f"{os.getpid()} {c.proc_ticks(os.getpid())}".encode())
         os.close(fd)
         for _ in range(1 + RERUNS):
             try:
