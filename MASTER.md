@@ -221,6 +221,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmmiss` (T-2369: the open capability misses of a task — `open_misses`, `gaps`… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmmission` (`sampo mission`: the mission, surfaces, lenses and pack for an… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmmodels` (T-2485, the user's gen-2 model layer… [→ files-lib-3](docs/map/files-lib-3.md)
+- `fmmoonheld` (T-5180, T-4338 k4: `held(p, n, local_only)`, a seeded blind re-judge of kept moons… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmmoonscale` (`sampo moons grow [--target N | --keep N] [--batch K] [--max-calls M]`… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmmoonground` (T-5179, `sampo/moonground.py`: every kept moon graded new, partial or built… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmmoonshot` (`sampo moons [status|rate|order|check]`, T-2626, MOONSHOT.md part… [→ files-lib-3](docs/map/files-lib-3.md)
