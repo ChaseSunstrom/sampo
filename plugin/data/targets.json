@@ -22,10 +22,10 @@
     "name": "rework_rounds",
     "label": "builder rework rounds",
     "reader": "rework_rounds",
-    "target": 1.0,
-    "unit": "changes-asked rounds per landed lane, 14 days",
+    "target": 1.5,
+    "unit": "review rounds per landed lane, 14 days",
     "higher_is_worse": true,
-    "why": "changes_asked ledger events per landed task: a builder that needs more than one round is rework"
+    "why": "per reviewed lane, the distinct lane trees an audit prep was briefed on plus each changes_asked on a tree no prep covers (T-5972: a round sent by message writes no prep); a lane with no prep and no ask is left out of the divisor. A clean lane is one round, so the target is 1.5 (a strict over-target on 1.0 would read every clean lane as rework): an average over 1.5 means builders return with findings a self-review should have caught"
   },
   {
     "name": "tokens_per_change",

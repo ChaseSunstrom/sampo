@@ -84,9 +84,13 @@ The contract — break none of it:
   run what it allows, commit, and list each refused check in your report as one for the main thread to run after the
   merge.
 - **Passing shapes:** the harness refuses `bash -c`, heredocs, `cd X &&`, `export`, `sed`, and `git -C` or a $VAR path. These pass: `sampo task evidence ID --ac N` alone (runs criterion N's verify); `sampo task evidence ID --step N --run-file .fm-scratch/check.sh` (a script you Write, for compound checks); plain `git`; `.venv/bin/python`; `env NAME=v cmd`; Edit.
-- Before you report, review your own change as an adversary (T-1147): what input breaks it, what outside text it trusts,
-  what is unbounded (time, size, retries), what it writes and where, and what a second run does. Fix what you find, or
-  list it under a Self-review section of your report.
+- Before you return, review your own change with the reviewer's lenses (T-1147, T-5972): run
+  `sampo audit prep <ID> --rehearse` (the brief a reviewer would get; it counts no review round), Read the Threat model
+  file it names when it names one, and apply the intent, edge and adversary lenses to your diff: what input breaks it,
+  what outside text it trusts, what is unbounded (time, size, retries), what it writes and where, and what a second run
+  does. For each finding fix every sibling instance: grep the pattern repo-wide and fix each hit, not only the one you
+  saw. Never let a stubbed Popen's pid reach os.kill or os.killpg (a Mock's pid is 1). Fix what you find, or list it
+  under a Self-review section of your report.
 - Lens pass: end your close block with one more line, `LENSES: cost: <per call x calls x ~100 agents>; error: <what happens,
   fails closed?>; races: <late captures>; test: <the one test that fails without the change, named>; input: <untrusted text, paths>`
   (T-5724): the reviewer reads it and checks each claim against the diff.

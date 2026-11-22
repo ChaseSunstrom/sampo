@@ -1025,3 +1025,56 @@ class CensoredReads(CalBase):  # T-2610: a miss lands mid-window, a hold only af
         fresh = self.done("Fresh")
         self.fm("capture", f"Crash after {fresh}", "--type", "FIX", "--tier", "S")
         self.assertGreater(outcomes.outcomes(self.p)[fresh]["days_left"], 25)
+
+
+class ReviewRounds(Base):
+    """T-5972: rework_rounds counts each audit prep at a new lane tip as a round. A SendMessage round never wrote a
+    changes_asked event, so the target read 0.07 rounds per lane while a lane took six."""
+
+    def rounds(self, tid, trees=(), asked=(), land=True):
+        """asked: the tree each changes_asked row names (None: a row with no tree, as before T-5709's data)"""
+        from sampo import targets
+        for t in trees:
+            c.log_event(self.p, "audit_prepped", task=tid, data={"tree": t})
+        for t in asked:
+            c.log_event(self.p, "changes_asked", task=tid, data={} if t is None else {"tree": t})
+        if land:
+            c.log_event(self.p, "lane_landed", task=tid, data={"tasks": [tid]})
+        return targets.refresh(self.p, time.time(), force=True)["values"].get("rework_rounds")
+
+    def test_three_preps_at_three_tips_read_three_rounds_not_zero(self):
+        self.assertEqual(self.rounds("T-9001", trees=("aaa", "bbb", "ccc")), 3.0)
+
+    def test_a_second_prep_at_the_same_tip_is_the_same_round(self):
+        self.assertEqual(self.rounds("T-9001", trees=("aaa", "aaa", "aaa")), 1.0)
+
+    def test_an_ask_on_a_prepped_tree_is_that_round_and_one_on_an_unprepped_tree_is_another(self):
+        # prep at aaa, changes asked on aaa (round 1), a delta round by message on bbb asks again: no prep, still a round
+        self.assertEqual(self.rounds("T-9001", trees=("aaa",), asked=("aaa", "bbb")), 2.0)
+
+    def test_the_shared_helper_counts_the_same_in_every_reader(self):
+        from sampo import outcomes
+        ev = lambda kind, tree: {"event": kind, "data": {} if tree is None else {"tree": tree}}
+        rows = [ev("audit_prepped", "aaa"), ev("changes_asked", "aaa"), ev("changes_asked", "bbb"), ev("changes_asked", "ccc"),
+                ev("changes_asked", None), ev("audit_prepped", "aaa"), ev("accepted", "zzz")]
+        self.assertEqual(outcomes.review_rounds(rows), 4, "aaa once, bbb, ccc and the tree-less ask; an accept is no round")
+        self.assertEqual(outcomes.review_rounds([ev("audit_prepped", "a" * 40), ev("changes_asked", "a" * 12)]), 1,
+                         "a tree id is compared at 12 characters whichever event wrote it")
+        self.assertEqual(outcomes.review_rounds([]), 0)
+
+    def test_a_lane_with_no_prep_is_left_out_of_the_divisor(self):
+        # T-9001 took 2 rounds; T-9002 landed with no prep and no ask (an S lane with no audit): 2.0, not 1.0
+        self.rounds("T-9002")
+        self.assertEqual(self.rounds("T-9001", trees=("a", "b")), 2.0)
+
+    def test_a_clean_lane_reads_one_round_under_the_target(self):
+        from sampo import targets
+        self.assertEqual(self.rounds("T-9001", trees=("aaa",)), 1.0)
+        tgt = [x for x in json.load(open(os.path.join(os.path.dirname(targets.__file__), "..", "..", "data", "targets.json")))
+               if x["name"] == "rework_rounds"][0]
+        self.assertGreater(tgt["target"], 1.0, "a clean lane (one prep, one round) must not read over its target")
+        self.assertIn("divisor", tgt["why"])
+
+    def test_a_prep_with_no_tree_and_a_prep_of_an_unlanded_task_count_nothing(self):
+        c.log_event(self.p, "audit_prepped", task="T-9003", data={"tree": "zzz"})
+        self.assertEqual(self.rounds("T-9001", trees=("", "aaa")), 1.0, "an empty tree names no tip; T-9003 never landed")

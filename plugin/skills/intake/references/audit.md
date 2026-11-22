@@ -23,6 +23,16 @@ A file a finding on a light lane named floors its next review at normal. `SAMPO_
 
 `design` is advisory, never required: `sampo audit prep` adds it at any tier when the diff touches UI (markup, styles, components, the foreman-ui pane's hooks, TUI screens; not tests), and `sampo audit run` runs it only then, so a backend diff costs nothing extra. Record it like any lens: `sampo task audit ID design …`.
 
+## Threat model for a diff on a security surface
+
+`sampo audit prep` names this section, with the adversary and edge templates below, in the brief of a diff that adds subprocess, env, path, hook or auth code (T-5972), so the first review applies it; a builder reads the same brief with `sampo audit prep ID --rehearse` before it returns. What must never happen: a guard bypassed, a task authorizing itself, a credential exposed, data lost, untrusted content run. Per surface, answer from the code:
+- **subprocess**: an argument or program name from untrusted text (a flag spelled `--x=y`, a leading `-`, a path as an option); `shell=True` or a string command; a missing timeout; a stubbed `Popen` or `os.kill` in a test that lets a Mock pid (1, 0, -1) reach `os.kill` or `os.killpg`; a child that outlives its parent.
+- **env**: a variable the child inherits that changes behaviour (PATH, GIT_*, PYTHONPATH, HOME); a variable read from a place a repo or a pasted text controls; a secret passed down.
+- **paths**: `..`, symlinks, case, an absolute path where a relative one is meant; a path built from untrusted text and then deleted, moved or opened; a check and the use of its path apart (TOCTOU); what it writes and where.
+- **hooks**: a verdict that fails open on an error, a parse failure or a timeout; a refusal that a rephrasing passes; a hook that blocks its own repair.
+- **auth**: a credential in a log, a brief, a ledger line or an argument; a check that trusts a field the caller sets; a token or lease that outlives its task.
+For each finding, name every sibling instance: grep the pattern repo-wide and list the lines, so one fix closes the class.
+
 ## Protocol
 1. **Freeze the change.** All steps done with evidence, tests green (`sampo check`). `sampo audit prep ID` saves the diff since the task was focused (untracked files included) and prints step 2's briefs, each with this project's past findings for its lens (so save reviews as `<task>-<lens>`).
 2. **Build the review brief** from the templates below (`sampo audit prep ID` does this): one section per lens, each with its prompt and context slice and nothing else. Leave out your plan, rationale and conversation; the point is a fresh view.

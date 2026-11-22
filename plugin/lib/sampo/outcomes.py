@@ -54,6 +54,27 @@ def reverts(p, n=200):
     return rows
 
 
+TREE_ID = 12  # characters of a tree id the ledger keeps (audit_prepped and changes_asked write the same length)
+
+
+def row_tree(e):
+    """The tree id (TREE_ID characters) an audit_prepped or changes_asked row names, '' for none; a row's data may be
+    anything a hand-edited ledger holds, so only a text tree names one."""
+    d = e.get("data")
+    t = d.get("tree") if isinstance(d, dict) else ""
+    return t[:TREE_ID] if isinstance(t, str) else ""
+
+
+def review_rounds(events):
+    """T-5972: the review rounds one task's ledger rows show: one for each distinct tree an audit prep was briefed on, plus
+    one for each changes_asked that names a tree no prep covers (a delta round answered by SendMessage writes no prep) or
+    names none. Other rows are ignored; the one reader for the rework-rounds target and for a reviewer's round count."""
+    prepped = {row_tree(e) for e in events if e.get("event") == "audit_prepped"}
+    prepped.discard("")
+    asks = [row_tree(e) for e in events if e.get("event") == "changes_asked"]
+    return len(prepped) + sum(1 for t in asks if t not in prepped)
+
+
 def done_at(b):
     """When the brief was last closed done (its log), else its updated stamp."""
     hits = re.findall(r"(?m)^- (\S+) done\b", b.section("Log"))

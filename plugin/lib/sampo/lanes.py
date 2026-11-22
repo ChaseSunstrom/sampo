@@ -3024,6 +3024,82 @@ def review_depth(b, files, diff, p=None, tests_linked=None):
             "model": DEPTH_MODEL[ptier], "why": why}
 
 
+SECURITY_SURFACES = (  # T-5972: (name, a line a diff adds, or a file path, that touches it, whether the pattern reads string
+    # contents), in the order a brief names them. A pattern reads a CALL SITE or an assignment in code: a line is read with
+    # its comments cut and, unless the surface reads strings, its string contents emptied (a quoted mode of 3 characters or less stays), so a word in a comment, a
+    # docstring-style sentence or a name (`token = 1`) fires nothing.
+    ("subprocess", re.compile(r"\bsubprocess\.\w+\s*\(|\bPopen\s*\(|\bos\.(?:system|kill|killpg|exec\w*|spawn\w*|popen)\s*\("
+                              r"|\bshell\s*=\s*True|\b_sampo\s*\(|\b_git\s*\("), None, False),  # c._git and _sampo run a process
+    ("env", re.compile(r"\bos\.environ\b|\bos\.getenv\s*\(|\benv\s*=\s*[{\w]|\bputenv\s*\("), None, False),
+    ("paths", re.compile(r"\bos\.(?:unlink|remove|rmdir|rename|replace|symlink|link|makedirs|chmod|chown)\s*\("
+                         r"|\bshutil\.\w+\s*\(|\brealpath\s*\(|\bexpanduser\s*\(|\bwrite_atomic\s*\("
+                         r"|\.(?:write_text|write_bytes|unlink|rmdir|mkdir|symlink_to|chmod|touch)\s*\("  # pathlib
+                         r"|\bopen\s*\(.*?(?:,|mode\s*=)\s*[\"'][rbt]*[wax+][^\"']*[\"']\s*[,)]|\.\./|[\"']\.\.[\"']"),
+     None, False),  # open(p, "w"): bare keeps a quoted mode of 3 characters or less
+    ("hooks", re.compile(r"\bpermissionDecision\b|\bhookSpecificOutput\b|\bPreToolUse\b"),
+     re.compile(r"(?:^|/)hooks?(?:\.py|/)"), True),
+    ("auth", re.compile(r"(?i)\bauthori[sz]ation\b|\bbearer\b|\bhmac\.|\bsecrets\.\w+\s*\(|\bgetpass\b|\bcompare_digest\b"
+                        r"|\b(?:api[_-]?key|password|passwd|secret|token)s?\s*=\s*(?:os\.|[\"'][^\"']|input\s*\()"), None, True),
+)
+_DIFF_FILE = re.compile(r"(?m)^diff --git a/.+? b/(.+)$")
+
+
+def _code_line(line):
+    """T-5972: (code, bare) for one added line: the line with its `#` or `//` comment cut (a line that starts as a comment
+    gives none), and the same with the text inside quotes emptied. One line at a time: a diff shows no string that opens
+    on another, so a triple quote reads as an open quote and the rest of its line as text, which only misses a hit."""
+    if line.lstrip().startswith(("#", "//", "/*", "* ", "*/")):
+        return "", ""
+    code, bare, inner, quote, i = [], [], [], "", 0
+    while i < len(line):
+        ch = line[i]
+        if quote:
+            code.append(ch)
+            if ch == "\\" and i + 1 < len(line):
+                code.append(line[i + 1])
+                inner.append(line[i + 1])
+                i += 1
+            elif ch == quote:
+                quote = ""
+                bare.append("".join(inner) if len(inner) <= 3 else "")  # a mode ("w", "ab") or ".." stays; text goes
+                bare.append(ch)
+                inner = []
+            else:
+                inner.append(ch)
+        else:
+            if ch == "#" or line.startswith("//", i):
+                break
+            code.append(ch)
+            bare.append(ch)
+            if ch in "\"'":
+                quote = ch
+        i += 1
+    return "".join(code), "".join(bare)
+
+
+def security_surfaces(diff):
+    """T-5972: the security surfaces (subprocess, env, paths, hooks, auth) a diff touches, in SECURITY_SURFACES order: a
+    line it ADDS to a code file matches a surface's pattern, or the file is a surface's own (hooks). Docs and tests are
+    not read (a test that spawns a process adds no surface), and a removed line adds none. The patterns are an aid
+    to a brief, never a gate: a miss only leaves the reviewer without the threat model's file."""
+    found, path = set(), None
+    for line in str(diff or "").splitlines():
+        m = _DIFF_FILE.match(line)
+        if m:
+            path = m.group(1)
+            skip = c.DOC.search(path) or c._TEST_DIR.search(path) or c.TESTISH.search(path)
+            path = None if skip else path
+            for name, _, where, _ in SECURITY_SURFACES:
+                if path and where and where.search(path):
+                    found.add(name)
+        elif path and line.startswith("+") and not line.startswith("+++"):
+            code, bare = _code_line(line[1:])
+            for name, pat, _, strings in SECURITY_SURFACES:
+                if name not in found and pat.search(code if strings else bare):
+                    found.add(name)
+    return [n for n, _, _, _ in SECURITY_SURFACES if n in found]
+
+
 _VERDICT = re.compile(r"(?i)^verdict\s*[—–:-]+\s*(.+)$")
 
 

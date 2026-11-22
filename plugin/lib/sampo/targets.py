@@ -133,8 +133,9 @@ def _derive(p, now):
     """The values from the ledger (landings, changes asked, each landed task's first accept), the cost cache and the bench
     results. No brief is read: a scan costs the ledger's window, not the archive."""
     since = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - WINDOW_S))
-    landed, changes, first = {}, {}, {}  # task -> newest landing (epoch); task -> changes asked; task -> first accept (epoch)
-    for e in c.ledger_events(p, ["lane_landed", "changes_asked", "accepted"], since=since):
+    landed, first = {}, {}  # task -> newest landing (epoch); task -> first accept (epoch)
+    review = {}  # T-5972: task -> its audit_prepped and changes_asked rows, counted by outcomes.review_rounds
+    for e in c.ledger_events(p, ["lane_landed", "changes_asked", "accepted", "audit_prepped"], since=since):
         t = _epoch(e.get("ts"))
         if t is None:
             continue
@@ -144,8 +145,8 @@ def _derive(p, now):
             for tid in data.get("tasks") or [e.get("task")]:
                 if isinstance(tid, str) and tid:
                     landed[tid] = max(t, landed.get(tid, 0.0))
-        elif kind == "changes_asked" and isinstance(e.get("task"), str) and e.get("task"):
-            changes[e["task"]] = changes.get(e["task"], 0) + 1
+        elif kind in ("changes_asked", "audit_prepped") and isinstance(e.get("task"), str) and e.get("task"):
+            review.setdefault(e["task"], []).append(e)
         elif kind == "accepted" and isinstance(e.get("task"), str) and e.get("task"):
             at = float(data["at"]) if _num(data.get("at")) else t  # the first stamp: a re-accept never moves it
             first[e["task"]] = min(at, first.get(e["task"], at))
@@ -154,7 +155,12 @@ def _derive(p, now):
         mins = [(landed[t] - first[t]) / 60 for t in landed if t in first and landed[t] >= first[t]]
         if mins:
             values["accept_to_merge"] = round(statistics.median(mins), 2)
-        values["rework_rounds"] = round(sum(changes.get(t, 0) for t in landed) / len(landed), 2)
+        # T-5972: the rounds each landed lane took (outcomes.review_rounds, the reader a reviewer's stop also uses); a lane
+        # with no prep and no ask was never reviewed and is left out of the divisor, not read as zero rounds
+        from sampo import outcomes
+        taken = [n for n in (outcomes.review_rounds(review.get(t, ())) for t in landed) if n]
+        if taken:
+            values["rework_rounds"] = round(sum(taken) / len(taken), 2)
         costs, made = cost.cache_as_is(p)
         if made is None:
             notes["tokens_per_change"] = "no cost cache yet, so no tokens are counted"

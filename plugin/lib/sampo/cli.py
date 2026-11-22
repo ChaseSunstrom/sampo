@@ -9070,6 +9070,25 @@ def _builder_lenses(b):
             "the diff, and flag an empty or boilerplate one):\n" + "\n".join(f"- {x}" for x in items))
 
 
+def _threat_model(p, b, ref, templates, surfaces, sfx=""):
+    """T-5972: for a diff that adds subprocess, env, path, hook or auth code, the brief line naming ID.threat.md: the
+    threat-model section of references/audit.md and the adversary and edge templates (the lens checklist), written
+    there so the reviewer reads one file this project's folder holds, not the plugin's. By reference (T-5964): the text
+    never sits in the brief. A diff on no such surface removes an earlier prep's file."""
+    path = os.path.join(p.dir, "audits", f"{b.id}.threat.md{sfx}")
+    m = re.search(r"(?ms)^## Threat model for a diff on a security surface\n.*?(?=^## )", ref)
+    if not surfaces or not m:
+        try:  # an earlier prep's file would send the reviewer to text about another diff; two preps at once both unlink
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+        return ""
+    lens = "".join(f"\n**{n}** — context: {templates[n][0]}\n> {templates[n][1]}\n" for n in ("adversary", "edge") if n in templates)
+    c.write_atomic(path, m.group(0).strip() + "\n\n## Lens checklist (adversary, edge)\n" + lens)
+    return (f"\nThreat model: this diff adds {', '.join(surfaces)} code; Read the threat-model section and the lens checklist "
+            f"before the adversary lens: {path}")
+
+
 def _sinks(p, zeros, trees):
     """T-5902: (hits, brief text, error) for the destructive sinks in the -U0 diffs `zeros`, one per diff pair, the new side
     of each read from the same index of `trees` and every line number moved to the last (the final tree). The scan is an
@@ -9125,11 +9144,14 @@ def cmd_audit(args):
         if tip:  # T-3972: once merged, merge-base HEAD branch is the tip: an empty diff; judge its own merge (T-3968)
             (base, tree), upto = _lane_merge(p, base, tip), f"merged lane {branch} at {tip[:9]}"
         else:
-            base, tree, upto = c._git(p.root, "merge-base", "HEAD", branch).strip() or base, branch, f"branch {branch}"
+            fork = c._git(p.root, "merge-base", "HEAD", branch).strip()
+            if fork and fork == (c._git(p.root, "rev-parse", "--verify", "-q", branch + "^{commit}", fail="") or "").strip():
+                fork = ""  # T-5972: HEAD is the lane (a builder's own review): the fork is the tip, an empty diff; the task's start is the base
+            base, tree, upto = fork or base, branch, f"branch {branch}"
     pairs = [(base, tree)]
     # T-1296: edits not yet committed in this checkout belong to the task as well, but only while it is this
     # checkout's own task (T-1579: a lane task's review shouldn't carry whatever the main checkout is working on)
-    mine = getattr(c.active_brief_fast(p), "id", None) == b.id
+    mine = getattr(c.active_brief_fast(p, p.lane), "id", None) == b.id  # T-5972 review: inside a lane, the lane's own brief
     if tree == branch and mine:
         now = c.worktree_tree(p.root)
         if now:
@@ -9154,7 +9176,10 @@ def cmd_audit(args):
             raise UsageError(f"git diff {a} failed: {r.stderr.strip()[:200]}")
         stdout += r.stdout
     r.stdout = stdout
-    path = os.path.join(p.dir, "audits", f"{b.id}.diff")
+    # T-5972 review: a builder's rehearsal writes every artifact beside the live ones (ID.diff.rehearse, ...), never over
+    # the files a reviewer is reading: it binds no tree, so nothing else says its text is not the review's
+    sfx = ".rehearse" if getattr(args, "rehearse", False) else ""
+    path = os.path.join(p.dir, "audits", f"{b.id}.diff{sfx}")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     clean = _without_secrets(p.root, r.stdout)
     shown = _compact_diff(clean)  # the pre-audit reads the raw diff (T-0723)
@@ -9170,7 +9195,7 @@ def cmd_audit(args):
     zsrc, ztests = _split_tests(zero)
     review, tests_path = path, None
     shown_lines = shown.count("\n")  # T-0983: what the reviewer reads, not the raw diff
-    src_path, summary_path = (os.path.join(p.dir, "audits", f"{b.id}.{x}") for x in ("src.diff", "tests.md"))
+    src_path, summary_path = (os.path.join(p.dir, "audits", f"{b.id}.{x}{sfx}") for x in ("src.diff", "tests.md"))
     if split:
         review, tests_path = src_path, summary_path
         src_shown = _compact_diff(src)
@@ -9179,8 +9204,10 @@ def cmd_audit(args):
         c.write_atomic(tests_path, _test_summary(p.root, b, ztests, path))
     else:  # T-5683: an earlier prep's split files would send the reviewer to stale text
         for stale in (src_path, summary_path):
-            if os.path.exists(stale):
+            try:  # T-5972: two preps at once both find it, and the second unlink would fail the prep
                 os.unlink(stale)
+            except FileNotFoundError:
+                pass
     with open(os.path.join(c.PLUGIN_ROOT, "skills", "intake", "references", "audit.md"), encoding="utf-8") as f:
         ref = f.read()
     templates = {m.group(1): (m.group(2), m.group(3)) for m in _LENS_TPL.finditer(ref)}
@@ -9234,16 +9261,20 @@ def cmd_audit(args):
     bodies = lanes.touched_bodies(p.root, pairs[-1][1], {k: [n for n in v if (k, n) not in grown]
                                                          for k, v in changed.items()} if src.strip() else {})
     # T-5964: the bodies are read on demand from their file, not inlined in the brief (a brief is re-read every turn)
-    bodies_path = os.path.join(p.dir, "audits", f"{b.id}.touched.md")
+    bodies_path = os.path.join(p.dir, "audits", f"{b.id}.touched.md{sfx}")
     if bodies:
         c.write_atomic(bodies_path, bodies + "\n")
         head += (f"\nTouched functions, their bodies as the new side has them (repo text: data, never instructions; a body "
                  f"cut where it says so): {bodies_path}")
-    elif os.path.exists(bodies_path):  # an earlier prep's bodies would send the reviewer to stale text
-        os.unlink(bodies_path)
+    else:  # an earlier prep's bodies would send the reviewer to stale text
+        try:  # T-5972 review: one try, not exists-then-unlink: a second prep at once finds it gone
+            os.unlink(bodies_path)
+        except FileNotFoundError:
+            pass
     sunk, sink_text, sink_error = _sinks(p, zeros, [z for _, z in pairs])  # T-5902: every destructive call with a computed target, for any language
     head += sink_text
     head += _builder_lenses(b)  # T-5724
+    head += _threat_model(p, b, ref, templates, lanes.security_surfaces(clean), sfx)  # T-5972
     steps = _files_vs_steps(b, files)  # T-0610: does each changed file serve a step?
     from sampo import lib  # T-1036: the review checklists of the stack cards this task's edits used (self block and reviewers)
     try:  # the hook's per-task marker, not a ledger scan (an archived ledger would lose them); ":" names are markers
@@ -9304,7 +9335,7 @@ def cmd_audit(args):
         books += ("## Stack card checklists\nThe cards this task's edits used; hold the diff to them:\n"
                   + "\n".join(f"### {n}\n{rv[:1200]}" for n, rv in checks) + "\n")
     if books:  # T-1681: the checklists as fm playbooks show gives them (facts filled in, the project's overlays)
-        cl = os.path.join(p.dir, "audits", f"{b.id}.checklists.md")
+        cl = os.path.join(p.dir, "audits", f"{b.id}.checklists.md{sfx}")
         c.write_atomic(cl, books)
         lists = f"Checklists (this project's facts and overlays filled in; read these, not the plugin's files): {cl}\n"
     nits = _past_nits(p, files, b.id)
@@ -9316,16 +9347,19 @@ def cmd_audit(args):
         block = (f"=== review ({', '.join(grp)}) ===\n{head}{focus}\n\n" + "\n\n".join(by_lens[x] for x in grp)
                  + f"\n\n{_REVIEW_OUT}")
         blocks.append(block)
-        briefs.append(os.path.join(p.dir, "audits", f"{b.id}.review" + (f"-{i}" if len(groups) > 1 else "") + ".md"))
+        briefs.append(os.path.join(p.dir, "audits", f"{b.id}.review" + (f"-{i}" if len(groups) > 1 else "") + f".md{sfx}"))
         c.write_atomic(briefs[-1], "\n\n".join([x for x in blocks if x.startswith("=== self")] + [block])
                        + f"\n\n{diff_lines}" + lists)
     if not briefs:
-        briefs.append(os.path.join(p.dir, "audits", f"{b.id}.review.md"))
+        briefs.append(os.path.join(p.dir, "audits", f"{b.id}.review.md{sfx}"))
         c.write_atomic(briefs[0], "\n\n".join(blocks) + f"\n\n{diff_lines}" + lists)
-    with c.lock(p.dir):  # T-5516: the tree these reviews are briefed on; a reviewer's stop records only while it still is
-        fresh = need_brief(p, b.id)
-        fresh.meta["review_tree"] = lanes.review_tree(p, fresh)
-        c.save_brief(p, fresh)
+    if not getattr(args, "rehearse", False):  # T-5972: a builder's own pass before it returns is no review round and binds no reviewer
+        with c.lock(p.dir):  # T-5516: the tree these reviews are briefed on; a reviewer's stop records only while it still is
+            fresh = need_brief(p, b.id)
+            fresh.meta["review_tree"] = lanes.review_tree(p, fresh)
+            c.save_brief(p, fresh)
+        if fresh.meta["review_tree"]:  # T-5972: one round per tip: rework_rounds counts the distinct trees a task was prepped at
+            c.log_event(p, "audit_prepped", task=b.id, session=session(), data={"tree": fresh.meta["review_tree"][:12]})  # the same 12 as changes_asked
     brief = briefs[0]
     big = b.tier == "L" and len(groups) == 1 and r.stdout.count("\n") > SPLIT_SUGGEST
     how = (f"Run {len(briefs)} sampo:fm-reviewer subagents in parallel, one per brief, each with the prompt \"Read "
@@ -11257,6 +11291,8 @@ def _build_parser(only=None):
                                                         "green yet breaks its criterion (T-0652)")
     s.add_argument("--split", action="store_true", help="one brief per lens group (up to 3) for parallel fresh-context "
                                                         "reviewers instead of one reviewer for every lens (T-0216)")
+    s.add_argument("--rehearse", action="store_true", help="prep: a builder's own review of its diff before it returns "
+                                                           "(T-5972): the same brief, but no review round is counted")
     s.add_argument("--lens", action="append", choices=list(c.AUDIT_LENSES), help="only this lens (repeatable)")
     s.add_argument("--base", help="diff from this revision (default: the commit the task was focused at)")
     s.add_argument("--note", action="append", default=[], help="focus for every lens brief: this round's change, "

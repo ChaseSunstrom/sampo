@@ -8584,7 +8584,7 @@ def _reviewer_return(p, tid, pl, msg, asked_at=None, turns=()):
             b.meta["changes_asked_tree"] = now
             # T-5709: one ledger row per ask, so the rework-rounds target counts the rounds (targets._derive)
             c.log_event(p, "changes_asked", task=tid, session=pl.get("session_id"),
-                        data={"who": aid or "fm-reviewer", "tree": now[:12]})
+                        data={"who": aid or "fm-reviewer", "tree": now[:12]})  # T-5972: audit_prepped keeps the same 12
         else:
             briefed = b.meta.get("review_tree") or ""
             moved = why_not
@@ -8611,8 +8611,14 @@ def _reviewer_return(p, tid, pl, msg, asked_at=None, turns=()):
                     b.meta.pop(key, None)
             from sampo import train  # its audit row rule: the same row, once, as a typed `lane accept --audit`
             who = f"{pl.get('agent_type')} {aid}".strip()
-            rounds = len([e for e in c.ledger_events(p, kinds=["changes_asked"]) if e.get("task") == tid]) \
-                if same and lenses else 0
+            # T-5972: the rounds before this approve, read as the rework-rounds target reads them (a delta round answered
+            # by message has a changes_asked on a tree no prep covered, a prep at a new tip is a round); the prep this
+            # approve answers is not a round before it
+            from sampo import outcomes
+            rounds = outcomes.review_rounds([e for e in c.ledger_events(p, kinds=["changes_asked", "audit_prepped"])
+                                             if e.get("task") == tid and not (
+                                                 e.get("event") == "audit_prepped"
+                                                 and outcomes.row_tree(e) == now[:outcomes.TREE_ID])]) if same and lenses else 0
             after = f", round {rounds + 1} after {rounds} changes needed" if rounds else ""
             for lens, n in lenses.items():
                 train._add_audit_once(b, lens, who, f"{words}, {n} finding{'' if n == 1 else 's'}{after}", briefed)

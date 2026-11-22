@@ -59,8 +59,8 @@ class CompactDiff(ForemanTestCase):
 PERSONAS = ("art director", "accessibility reviewer", "first-time user")
 
 
-class DesignLens(HookCase):
-    """T-1501: a UI diff gets a design read by three personas; any other diff costs nothing extra."""
+class PrepBase(HookCase):
+    """write(), prep() and brief(): a task in a fresh repo and the brief `sampo audit prep` writes for it."""
 
     def write(self, rel, text="x\n"):
         path = os.path.join(self.repo, rel)
@@ -76,6 +76,139 @@ class DesignLens(HookCase):
         data = json.loads(self.fm("audit", "prep", self.tid, "--json", *extra).stdout)
         with open(data["brief"]) as f:
             return data["lenses"], f.read()
+
+
+class ReviewRoundsBrief(PrepBase):
+    """T-5972: each prep is one review round, counted from what happened; a diff on a security surface gets its threat
+    model and the lens checklist by reference in the first brief, so the adversary lens is not a round later."""
+
+    def prepped(self):
+        return [e for e in c.ledger_events(c.find_project(self.repo), kinds=["audit_prepped"]) if e.get("task") == self.tid]
+
+    def threat_line(self, text):
+        return next((x for x in text.splitlines() if x.startswith("Threat model")), "")
+
+    def test_a_prep_logs_the_round_with_the_tree_it_reviewed(self):
+        self.prep()
+        self.write("a.py", "x = 1\n")
+        self.brief()
+        got = self.prepped()
+        self.assertEqual(len(got), 1)
+        self.assertTrue(got[0]["data"].get("tree"), "the tip the round was briefed on")
+
+    def test_a_rehearsal_is_no_round_and_writes_the_same_brief(self):
+        self.prep()
+        self.write("a.py", "import subprocess\nsubprocess.run(['ls'])\n")
+        self.brief("--rehearse")
+        self.assertEqual(self.prepped(), [], "a builder's own pass before it returns is not a review round")
+        self.assertIn(".threat.md", self.threat_line(self.brief("--rehearse")[1]))
+
+    def test_a_subprocess_diff_names_the_threat_model_file_and_the_lens_checklist(self):
+        self.prep()
+        self.write("a.py", "import subprocess\nsubprocess.run(['ls'])\n")
+        line = self.threat_line(self.brief()[1])
+        self.assertIn("subprocess", line)
+        path = next(w for w in line.split() if w.endswith(".threat.md"))
+        with open(path.strip("():;,")) as f:
+            body = f.read()
+        self.assertIn("Threat model for a diff on a security surface", body)
+        self.assertIn("**adversary**", body, "the lens checklist the reviewer applies")
+        self.assertIn("**edge**", body)
+
+    def test_a_plain_diff_and_a_test_that_spawns_a_process_name_no_threat_model(self):
+        self.prep()
+        self.write("a.py", "x = 1\n")
+        self.write("tests/test_a.py", "import subprocess\nsubprocess.run(['ls'])\n")
+        self.assertEqual(self.threat_line(self.brief()[1]), "")
+
+    def test_an_earlier_threat_file_is_removed_when_the_diff_leaves_the_surface(self):
+        self.prep()
+        self.write("a.py", "import subprocess\nsubprocess.run(['ls'])\n")
+        line = self.threat_line(self.brief()[1])
+        path = next(w for w in line.split() if w.endswith(".threat.md")).strip("():;,")
+        self.assertTrue(os.path.exists(path))
+        self.write("a.py", "x = 1\n")
+        self.brief()
+        self.assertFalse(os.path.exists(path), "a stale threat file would send a reviewer to text about another diff")
+
+    def test_security_surfaces_read_added_lines_of_code_files_only(self):
+        from sampo import lanes
+        add = lambda path, line: block(path, f"@@ -0,0 +1 @@\n+{line}\n")
+        got = lanes.security_surfaces(add("a.py", "subprocess.run(x)") + add("b.py", "os.environ['A']")
+                                      + add("c.py", "os.unlink(p)") + add("hooks.py", "x = 1")
+                                      + add("d.py", "h = {'Authorization': f'Bearer {t}'}"))
+        self.assertEqual(got, ["subprocess", "env", "paths", "hooks", "auth"])
+        self.assertEqual(lanes.security_surfaces(add("tests/test_a.py", "subprocess.run(x)") + add("README.md", "token")), [])
+        removed = block("a.py", "@@ -1 +0,0 @@\n-subprocess.run(x)\n")
+        self.assertEqual(lanes.security_surfaces(removed), [], "a removed line adds no surface")
+        self.assertEqual(lanes.security_surfaces(""), [])
+
+    def test_surfaces_read_call_sites_not_comments_strings_or_names(self):
+        # T-5972 review: a word in a comment, a string or a name fired a surface, and a pathlib write or a wrapper missed one
+        from sampo import lanes
+        add = lambda line: block("a.py", f"@@ -0,0 +1 @@\n+{line}\n")
+        for noise in ("# the token is read from subprocess.run output", "x = 1  # os.unlink(p) when the secret expires",
+                      "token = 1", "secret_count = len(tokens)", "msg = 'run subprocess.run(x) then os.kill(p)'",
+                      "def password_hint(): pass", "doc = 'Open the file with open(p, \"w\") and os.chmod it'",
+                      "// a JS comment with os.environ and token", " * a block comment: shutil.rmtree"):
+            self.assertEqual(lanes.security_surfaces(add(noise)), [], noise)
+        for line, want in (("pathlib.Path(p).write_text(s)", "paths"), ("with open(p, 'w') as f:", "paths"),
+                           ("open(os.path.join(a, 'b'), mode='a')", "paths"), ("os.chmod(p, 0o600)", "paths"),
+                           ("c.write_atomic(p, s)", "paths"), ("out = c._git(root, 'rm', x)", "subprocess"),
+                           ("r = _sampo('task', 'new')", "subprocess"), ("password = 'hunter2'", "auth"),
+                           ("ok = hmac.compare_digest(a, b)", "auth"), ("t = secrets.token_hex(8)", "auth"),
+                           ("x = 1  # then", None), ("open(p)", None), ("open(p, 'r')", None), ("open(p, 'rb')", None)):
+            self.assertEqual(lanes.security_surfaces(add(line)), [want] if want else [], line)
+        self.assertEqual(lanes.security_surfaces(add("print({'permissionDecision': 'deny'})")), ["hooks"], "a hook key is a string")
+        self.assertEqual(lanes.security_surfaces(block("plugin/lib/sampo/hooks.py", "@@ -0,0 +1 @@\n+print({'permissionDecision': 'deny'})\n")),
+                         ["hooks"])
+
+
+def _agent(name):
+    with open(os.path.join(os.path.dirname(__file__), "..", "agents", name + ".md"), encoding="utf-8") as f:
+        return " ".join(f.read().split())
+
+
+class SelfReviewRules(ForemanTestCase):
+    """T-5972: a builder runs the reviewer's lenses on its own diff and fixes the class of each finding before it returns,
+    so the first review finds little: six rounds on one lane each fixed the instance and left its siblings."""
+
+    def texts(self):
+        from sampo import lanes as slanes
+        return [" ".join(slanes.contract("T-9", "abc", "/m").split()), _agent("fm-builder").replace("<ID>", "T-9")]
+
+    def test_the_builder_applies_the_intent_edge_and_adversary_lenses_to_its_own_diff(self):
+        for text in self.texts():
+            for w in ("intent, edge and adversary lenses", "sampo audit prep T-9 --rehearse", "Threat model",
+                      "Before you return"):
+                self.assertIn(w, text)
+
+    def test_the_builder_fixes_every_sibling_instance_of_a_finding(self):
+        for text in self.texts():
+            self.assertIn("every sibling instance", text)
+            self.assertIn("grep the pattern", text)
+
+    def test_the_builder_never_lets_a_stubbed_popen_pid_reach_a_kill(self):
+        for text in self.texts():
+            self.assertIn("stubbed Popen", text)
+
+
+class ClassSweepRules(ForemanTestCase):
+    """T-5972: a reviewer's finding names the whole class, so one round fixes it."""
+
+    def test_a_reviewer_lists_every_sibling_instance_of_each_finding(self):
+        flat = _agent("fm-reviewer")
+        for w in ("every sibling instance", "grep the pattern repo-wide", "one round", "whole class"):
+            self.assertIn(w, flat)
+
+    def test_the_output_format_has_a_siblings_part_and_the_threat_model_is_read(self):
+        flat = _agent("fm-reviewer")
+        self.assertIn("siblings:", flat)
+        self.assertIn("Threat model", flat)
+
+
+class DesignLens(PrepBase):
+    """T-1501: a UI diff gets a design read by three personas; any other diff costs nothing extra."""
 
     def test_ui_paths_finds_ui_files_and_leaves_the_rest(self):
         ui =["web/app.css", "web/x.scss", "a/b.less", "src/App.tsx", "src/c.jsx", "v/a.vue", "s/a.svelte",
@@ -312,6 +445,72 @@ class DesignLens(HookCase):
             diff = f.read()
         self.assertIn("lane_work.py", diff, "the lane's own change, not merge-base HEAD..tip (empty once merged)")
         self.assertNotIn("later_work.py", diff, "not the work merged after it")
+
+    def test_a_prep_inside_its_own_lane_diffs_the_committed_work_not_an_empty_one(self):  # T-5972
+        # a builder's own review runs with HEAD on the lane branch: merge-base HEAD branch is the tip, an empty diff
+        self.prep()
+
+        def git(*a):
+            return subprocess.run(["git", "-C", self.repo, *a], check=True, capture_output=True, text=True).stdout
+        git("checkout", "-q", "-b", "foreman/x")
+        self.write("lane_work.py", "x = 1\n")
+        git("add", "lane_work.py")
+        git("commit", "-qm", "lane work")
+        p = c.find_project(self.repo)
+        b = c.find_brief(p, self.tid)
+        b.meta["lane_branch"] = "foreman/x"
+        c.save_brief(p, b)
+        self.fm("audit", "prep", self.tid, "--json", "--rehearse")
+        with open(os.path.join(p.dir, "audits", f"{self.tid}.diff.rehearse")) as f:
+            self.assertIn("lane_work.py", f.read(), "the lane's committed work, from the task's start")
+
+    def lane_prep(self, *extra):
+        """a linked worktree for the task (its brief names it as its lane), one committed file and one not committed,
+        and `sampo audit prep --rehearse` run from inside it: the diff's text"""
+        self.prep()
+        lane = os.path.join(self.tmp, "lane-y")
+        subprocess.run(["git", "-C", self.repo, "worktree", "add", "-q", "-b", "foreman/y", lane], check=True, capture_output=True)
+        with open(os.path.join(lane, "committed.py"), "w") as f:
+            f.write("a = 1\n")
+        subprocess.run(["git", "-C", lane, "add", "committed.py"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", lane, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "lane work"],
+                       check=True, capture_output=True)
+        with open(os.path.join(lane, "uncommitted.py"), "w") as f:  # untracked: never added
+            f.write("b = 2\n")
+        p = c.find_project(self.repo)
+        b = c.find_brief(p, self.tid)
+        b.meta["lane_branch"], b.meta["lane"] = "foreman/y", lane
+        c.save_brief(p, b)
+        self.fm("audit", "prep", self.tid, "--json", "--rehearse", *extra, cwd=lane)
+        return p
+
+    def test_a_rehearsal_inside_its_lane_includes_the_files_not_yet_committed(self):  # T-5972 review
+        p = self.lane_prep()
+        with open(os.path.join(p.dir, "audits", f"{self.tid}.diff.rehearse")) as f:
+            diff = f.read()
+        self.assertIn("committed.py", diff)
+        self.assertIn("uncommitted.py", diff, "a builder reviews its work before it commits it: untracked files too")
+
+    def test_a_rehearsal_writes_beside_the_live_review_files_never_over_them(self):  # T-5972 review
+        self.prep()
+        self.write("a.py", "x = 1\n")
+        self.brief()
+        audits = os.path.join(c.find_project(self.repo).dir, "audits")
+        live = {}
+        for n in os.listdir(audits):
+            if n.startswith(self.tid + "."):
+                with open(os.path.join(audits, n)) as f:
+                    live[n] = f.read()
+        self.assertTrue(live)
+        self.write("a.py", "import subprocess\nsubprocess.run(['ls'])\ny = 2\n")
+        self.write("tests/test_a.py", "def test_a():\n    assert 1\n")  # code and tests: the diff splits in two
+        data = json.loads(self.fm("audit", "prep", self.tid, "--json", "--rehearse").stdout)
+        self.assertTrue(data["brief"].endswith(".rehearse"), data["brief"])
+        for n, text in live.items():
+            with open(os.path.join(audits, n)) as f:
+                self.assertEqual(f.read(), text, f"{n}: a rehearsal must not rewrite the review a reviewer is reading")
+        for n in (".review.md", ".diff", ".src.diff", ".tests.md", ".threat.md"):
+            self.assertTrue(os.path.exists(os.path.join(audits, self.tid + n + ".rehearse")), n)
 
     def test_prep_gives_reviewers_the_non_test_diff(self):  # T-5683: a reviewer reads the code, not every test line
         self.prep()

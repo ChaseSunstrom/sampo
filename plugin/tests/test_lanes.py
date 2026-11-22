@@ -2691,6 +2691,16 @@ class BuilderContractOneSource(unittest.TestCase):
             self.assertIn(rule, flat)
 
 
+class SelfReviewContract(unittest.TestCase):  # T-5972
+    def test_the_brief_carries_the_builders_self_review_rule(self):
+        # the rule lives once in fm-builder.md and reaches every brief through contract(): a builder that runs the
+        # reviewer's lenses on its own diff, and fixes each finding's siblings, leaves the first review little to find
+        text = " ".join(slanes.contract("T-9", "abc123", "/main").split())
+        for w in ("intent, edge and adversary lenses", "sampo audit prep T-9 --rehearse", "every sibling instance",
+                  "grep the pattern repo-wide", "stubbed Popen"):
+            self.assertIn(w, text)
+
+
 class _LaneRepo(ForemanTestCase):
     """git(), lane() and base(); no tests of its own (T-3815), so AndonClear shares them without rerunning BoardLanes."""
 

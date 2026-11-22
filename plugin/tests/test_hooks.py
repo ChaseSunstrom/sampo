@@ -7443,7 +7443,7 @@ class ReviewerBind(ForemanTestCase):
         return [e["data"]["why"] for e in c.ledger_events(c.find_project(self.repo), kinds=["reviewer_unbound"])]
 
     def commit(self):
-        with open(os.path.join(self.repo, "moved.txt"), "w", encoding="utf-8") as f:
+        with open(os.path.join(self.repo, "moved.txt"), "a", encoding="utf-8") as f:  # each call adds a line: a new tree
             f.write("a later commit\n")
         subprocess.run(["git", "-C", self.repo, "add", "-A"], check=True, capture_output=True)
         subprocess.run(["git", "-C", self.repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "more"],
@@ -7568,6 +7568,15 @@ class ReviewerBind(ForemanTestCase):
         row = [x for x in self.brief().evidence() if c._AUDIT_RE.match(x)][0]
         self.assertIn("approve, 0 findings, round 2 after 1 changes needed", row)
         self.assertFalse(self.brief().meta.get("changes_asked"))
+
+    def test_a_delta_round_answered_by_message_counts_in_the_approve_round_number(self):
+        # T-5972: an earlier round was a prep at another tip (its changes went by message), then changes were asked on
+        # this tree: two rounds before the approve, where counting changes_asked alone read one
+        c.log_event(c.find_project(self.repo), "audit_prepped", task=self.tid, data={"tree": "f" * 12})
+        self.stop(CHANGES_ONE, [self.prompt(self.tid)])
+        self.stop(RESTATED, [self.prompt(self.tid), "re-check"])
+        row = [x for x in self.brief().evidence() if c._AUDIT_RE.match(x)][0]
+        self.assertIn("round 3 after 2 changes needed", row)
 
     def test_a_short_approve_after_changes_records_no_lens_it_did_not_write(self):
         self.stop(CHANGES_ONE, [self.prompt(self.tid)])
