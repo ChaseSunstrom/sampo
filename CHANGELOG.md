@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- Hook caches (breaker, lock-busy record, leads, seen-marks, session and boot marks) are written without an fsync via write_atomic(durable=False), cutting the fsync stalls in slow hooks while state files keep the durable default (T-5000).
 - SVG technique cards: a technique-by-work-type grid with a writer prompt per cell, keeping a card only when its example SVG passes the works gates and shows the technique (T-4996).
 - Two art cards, art-abstract and art-landscape, draw a seeded picture from the design tokens in dark and light with at most 8 typed slots, and their check passes only once both render through works (T-4995).
 - The Ward reads bash arithmetic `$((…))` as arithmetic, so a sampo path in a command that also uses `$((n+22))` (a sed range) is no longer refused as a computed verb; a `$(…)` inside the arithmetic is still read (T-4931).
