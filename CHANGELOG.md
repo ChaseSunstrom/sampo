@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- `fm landscape --capture` clusters the claims Sampo lacks locally and files one capture per cluster with its sources, under a per-track `landscape:<track>` trigger, and `fm night` runs it weekly in Sampo's home project only (T-3362).
 - `sampo fold check` has a second reader sample the fold ledger's built verdicts, showing each row's cited file and line, and record ok or refuted, a refuted verdict going back to stays with a reason (T-5022).
 - A performance, security or urgent lane named in a land's --first queue now trains next and alone as a batch of one, ahead of earlier-queued ordinary lanes, with the full gate still run (T-5023).
 - `sampo big close` closes a big parent in re-runnable stages (children done, integration criteria, full gates once) as one Merge commit on the build branch, and a red stage changes nothing (T-5010).
