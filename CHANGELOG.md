@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- `sampo friction` no longer counts a `task wait` still running (exit 124) or ended unfinished (1), or a `task evidence --run` whose run reported a red test (101), as failed tool calls; the count and the minutes lost agree with the list (T-4999).
 - The command guard no longer refuses a write through a name set once on the line (S=/scratch) just because the same letter is also a plain word given to a program (--tier S). It now also refuses a line whose built-in here-document assigns the name (S=; : <<EOF with ${S:=rm}, then $S -rf ~), which it used to let through (T-4983).
 - The Ward reads line 1 of a long script inside a small budget again: its whole-script search for a moved TMPDIR waits for a piece that holds mktemp (it cost 11 ms on 30000 lines up front), and ScriptScale's CPU bound scales by the runner's speed; CI on main was red at f16857a; (T-4976).
 - sampo uninstall now removes the fm and sampo links a marketplace install left in ~/.local/bin, and a plugin update repoints them instead of leaving them dangling (T-4867).
