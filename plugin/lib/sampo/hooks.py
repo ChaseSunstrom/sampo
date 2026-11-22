@@ -10,7 +10,6 @@ import json
 import os
 import re
 import shlex
-import signal
 import stat
 import sys
 import time
@@ -3122,6 +3121,7 @@ def _rustfmt(p, path):
         out, _ = proc.communicate(before, timeout=ONWRITE_TIMEOUT)
     except subprocess.TimeoutExpired:
         try:
+            import signal  # here, not at the top: the hook hot path loads no `signal` (T-5888)
             os.killpg(proc.pid, signal.SIGKILL)  # the group: a child of rustfmt can't hold the pipe open
         except OSError:
             pass
@@ -4491,12 +4491,12 @@ def _isolation_denial(pl):
 
 # T-5497: the Sampo type (and its model) that fits a job, by the words of the call. Both spellings of a type are accepted
 # (sampo:fm-builder and sampo:builder, for the rename); a note names the fm- spelling the plugin ships today.
-_FIT_SAMPO_TYPE = re.compile(r"(?:sampo|foreman):(?:fm-)?[\w-]+")
+_FIT_SAMPO_TYPE = c.lazy(r"(?:sampo|foreman):(?:fm-)?[\w-]+")
 # a build job needs Edit, Write and Bash, which scout, recon and reviewer lack: a build verb anywhere settles it, and a
 # lookup, research or review type is named only when the text OPENS with its word
-_FIT_BUILD = re.compile(r"(?i)\b(?:implement\w*|add(?:s|ed|ing)?|fix\w*|writ(?:e|es|ing|ten)|edit\w*|refactor\w*|"
-                        r"creat(?:e|es|ed|ing)|updat(?:e|es|ed|ing)|chang(?:e|es|ed|ing)|build\w*)\b")
-_FIT_OPEN = re.compile(r"\W*(\w+)")
+_FIT_BUILD = c.lazy(r"(?i)\b(?:implement\w*|add(?:s|ed|ing)?|fix\w*|writ(?:e|es|ing|ten)|edit\w*|refactor\w*|"
+                    r"creat(?:e|es|ed|ing)|updat(?:e|es|ed|ing)|chang(?:e|es|ed|ing)|build\w*)\b")
+_FIT_OPEN = c.lazy(r"\W*(\w+)")
 _FIT_REVIEW = frozenset(("review", "audit", "critique"))
 _FIT_RESEARCH = frozenset(("research", "doc", "docs", "documentation", "survey", "investigate", "map"))
 _FIT_LOOKUP = frozenset(("find", "where", "which", "list", "grep", "search", "locate", "lookup", "count"))

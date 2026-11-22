@@ -6675,8 +6675,8 @@ def _is_sampo(argv):
 
 
 # T-5547 round 7: code that imports Sampo (or the guard) is a Sampo run; `from sampo import x` too
-_IMPORTS_SAMPO = re.compile(r"(?:^|[\s;&|(])(?:import|from)\s+(?:sampo|fmguard)(?!\w)"
-                            r"|(?:__import__|import_module)\(\s*['\"](?:sampo|fmguard)(?!\w)")
+_IMPORTS_SAMPO = lazy(r"(?:^|[\s;&|(])(?:import|from)\s+(?:sampo|fmguard)(?!\w)"
+                      r"|(?:__import__|import_module)\(\s*['\"](?:sampo|fmguard)(?!\w)")
 _SAMPO_MODULES = ("sampo", "fmguard")
 
 
@@ -6726,7 +6726,7 @@ def _state_a(text, facts, rx=_STATE_CODE_A):
             facts["a"].update(re.findall(_SAMPO_NAMES, m.group(0)))
 
 
-_QUOTED_SPAN = re.compile(r"'[^']*'|\"(?:\\.|[^\"\\])*\"", re.S)  # a quoted span, read as text: no word of the shell's
+_QUOTED_SPAN = lazy(r"'[^']*'|\"(?:\\.|[^\"\\])*\"", re.S)  # a quoted span, read as text: no word of the shell's
 _STATE_UNQ = lazy(rf"(?<![\w$.-])({_SAMPO_NAMES})\+?=\S")  # a state name assigned with a value, in a word no quote holds
 
 
@@ -6978,7 +6978,7 @@ def _runner_code(name, args, i):
     return m.group(1) if m else None
 
 
-_FUNC_DEF = re.compile(r"(?:^|[\s;&|(])(?:function\s+\w|\w+\s*\(\s*\))")  # a shell function: its body runs when called
+_FUNC_DEF = lazy(r"(?:^|[\s;&|(])(?:function\s+\w|\w+\s*\(\s*\))")  # a shell function: its body runs when called
 
 
 def state_env_run(cmd, cwd=None):
