@@ -55,10 +55,13 @@ The contract — break none of it:
   waiting" and costs it a full re-read (T-4816). Even when a message asks you to background a run, run it in the
   foreground. If the harness moves a long call to the background anyway, wait for it in the foreground with
   `timeout 590 tail --pid=PID -f /dev/null` (repeat while it runs), then read its output (T-4826).
-- Never run the repo-shape modules (test_docs, test_left_out, test_rename_aliases, test_rename_scan, test_run,
-  test_fast_equiv) yourself (T-5511): `sampo lane accept` runs them once over a batch of lanes as its check's first stage
-  and records a red one on the lane, naming the failing classes (T-4563, T-5380); the hold check runs the shape classes.
-  Only if you changed MASTER.md, docs/map or hooks.json, run `python3 plugin/tests/run.py test_docs` once.
+- Never run the heavy repo-shape modules (test_rename_aliases, test_rename_scan, test_fast_equiv, the whole of test_run)
+  yourself (T-5511): `sampo lane accept` runs them once over a batch of lanes as its check's first stage and records a
+  red one on the lane, naming the failing classes (T-4563, T-5380); the hold check runs the shape classes. The three
+  cheap scans (about 40 s together on a loaded host) you run once, before your report (T-5817): live mode runs no
+  accept check (T-5447), and a silent cut that `test_left_out` finds in 3 s stopped a train: unpiped, in the
+  foreground, `python3 plugin/tests/run.py test_left_out test_docs` and `python3 plugin/tests/run.py test_run -k EnvClassified`.
+  Red: fix it in your lane, or name it in your report.
 - Commit on your branch: `git add <the task's files>`, `git commit -m "<what> (<ID>)"`.
 - Never push, never merge another branch (the fast-forward above and the branch a Resume section names aside), never rebase, never close the task, never
   launch agents.

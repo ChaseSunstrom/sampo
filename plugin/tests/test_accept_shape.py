@@ -1,5 +1,5 @@
 """T-4542, T-4563: the repo-shape tests are one list (core.REPO_SHAPE: its modules, then its module.Class entries). A builder
-never runs them itself (T-5511: the accept stage and the hold check already do, so a third run only waits for slots). sampo lane accept starts the lane's check and returns at once (T-4563): the check's child runs the modules first,
+never runs the heavy ones itself (T-5511: the accept stage and the hold check already do, so a third run only waits for slots); the three cheap scans it runs once before its report (T-5817). sampo lane accept starts the lane's check and returns at once (T-4563): the check's child runs the modules first,
 before its long part. Red records the refusal on the lane and ends the child; green is recorded at the tip and the hold
 check runs without the classes (--shape-green), a fresh run without them holds the lane clean at that tip; cut or a tree
 without the modules goes on as before, and a retry runs no module again. The runs here are stubbed (c.run_command,
@@ -39,8 +39,18 @@ class ContractShape(unittest.TestCase):
         text = slanes.contract("T-9", "abc123", "/main")
         self.assertNotIn("python3 plugin/tests/run.py " + " ".join(MODULES), text,
                          "a builder's own shape run is the third copy: accept's first stage and the hold check run them")
-        self.assertIn("Never run the repo-shape modules", text)
+        self.assertIn("Never run the heavy repo-shape modules", text)
         self.assertIn("sampo lane accept", text)
+
+    def test_the_builder_runs_the_three_cheap_scans_once_before_the_report(self):  # T-5817
+        # live mode runs no accept check (T-5447), so a silent cut test_left_out catches in 3 s reached a train
+        flat = " ".join(slanes.contract("T-9", "abc123", "/main").split())
+        self.assertIn("python3 plugin/tests/run.py test_left_out test_docs", flat)
+        self.assertIn("python3 plugin/tests/run.py test_run -k EnvClassified", flat)
+        self.assertIn("once, before your report", flat)
+        for heavy in ("test_rename_aliases", "test_rename_scan", "test_fast_equiv"):
+            self.assertNotIn("run.py " + heavy, flat)
+            self.assertIn(heavy, flat, "named as the train's")
 
 
 class ShapeRun(unittest.TestCase):
