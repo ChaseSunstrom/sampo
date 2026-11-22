@@ -717,6 +717,20 @@ def _live_smoke(wt):
     return "" if r.returncode == 0 else (r.stdout + r.stderr).strip()[-600:] or f"exit {r.returncode}"
 
 
+def _live_shape(wt):
+    """T-5590: the live train's one repo-shape run on the merged tree, before anything lands (a module, an env name or a
+    help position a lane adds is red here, not on trunk). '' when the tree is green or not a Sampo tree (_shape_tree);
+    else why: red names the classes, a cut (no verdict, the batch wall) is refused as well."""
+    if not _shape_tree(wt):
+        return ""
+    verdict, names = _shape_run(wt, shape_batch_wall())
+    if verdict == "green":
+        return ""
+    if verdict == "red":
+        return f"the merged tree breaks the repo-shape classes: {names}"
+    return f"its repo-shape run was cut (no verdict) at {SHAPE_BATCH_WALL_ENV}={shape_batch_wall()} s"
+
+
 def _held(p, b, main, tip):
     """The reason `sampo lane merge` would refuse this lane (private term, guard, self-change gate), or ''. T-4783: the
     private-term check is lanes.private_refusal, the function `merge` calls, first: a lane that carries a term never
@@ -1575,6 +1589,8 @@ def _run(p, main, ids, defer_verify=False, judged=None):
             sub = (*sub[:2], list(dict.fromkeys([*sub[2], *(f for b, _ in merged for f in covers(b.id))])))
         if live and merged and (smoke := _live_smoke(wt)):  # T-5444: the one front check: the merged tree compiles
             raise c.PolicyError(f"the merged tree does not compile, nothing landed: {smoke}")
+        if live and merged and (shape := _live_shape(wt)):  # T-5590: the merged batch's repo-shape classes, once
+            raise c.PolicyError("the merged batch's repo-shape run did not pass, nothing landed: " + shape)
         if live and merged and (slow := _live_timing(p, main, wt, base)):  # T-5446: the hooks timed once per batch
             raise c.PolicyError("the self-change gate holds the merged batch, nothing landed: " + c.joinmore(slow, 4, "; ")
                                 + "; the next land times each lane and leaves out the one that slowed the hooks")

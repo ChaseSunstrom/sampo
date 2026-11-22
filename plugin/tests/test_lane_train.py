@@ -88,6 +88,56 @@ class Train(TrainCase):
         self.assertIn("does not compile", r.stderr + r.stdout)
         self.assertFalse(os.path.exists(os.path.join(self.repo, bad)))
 
+    def test_live_shape_runs_the_repo_shape_classes_once_and_only_on_a_sampo_tree(self):
+        # T-5590: the live train's one repo-shape run on the merged tree: '' for green or a non-Sampo tree, else the why
+        from sampo import train
+        plain = os.path.join(self.tmp, "plain")
+        shape = os.path.join(self.tmp, "shape")
+        os.makedirs(os.path.join(shape, "plugin", "tests"))
+        with open(os.path.join(shape, "plugin", "tests", "run.py"), "w") as f:
+            f.write("# a stand-in runner\n")
+        with mock.patch.object(train, "_shape_run", return_value=("green", "")) as run:
+            self.assertEqual(train._live_shape(plain), "", "another project's tree is not held to the classes")
+            run.assert_not_called()
+            self.assertEqual(train._live_shape(shape), "")
+            run.assert_called_once()
+        with mock.patch.object(train, "_shape_run", return_value=("red", "test_docs, test_run")):
+            self.assertIn("breaks the repo-shape classes: test_docs, test_run", train._live_shape(shape))
+        with mock.patch.object(train, "_shape_run", return_value=("cut", "")):
+            why = train._live_shape(shape)
+            self.assertIn("was cut", why)
+            self.assertIn("SAMPO_SHAPE_BATCH_WALL_S", why)
+
+    def test_live_land_refuses_a_batch_whose_merged_tree_breaks_or_cuts_the_repo_shape_classes(self):
+        # T-5590: red or cut on the merged tree lands nothing; green lands. Each lane's stand-in runner is its own change.
+        self.fm("lane", "mode", "live")
+        os.makedirs(os.path.join(self.repo, "plugin", "tests"))
+        with open(os.path.join(self.repo, "plugin", "tests", "run.py"), "w") as f:
+            f.write("# the trunk's stand-in runner\nimport sys\nsys.exit(0)\n")
+        self.git("add", "plugin")
+        self.git("commit", "-qm", "a Sampo tree with its runner")
+        stubs = {"red": "import sys\nprint('  failed class: test_docs')\nsys.exit(1)\n",
+                 "cut": "import sys\nsys.exit(1)\n", "green": "import sys\nsys.exit(0)\n"}
+        env = {"FM_POSTMERGE_CMD": "true", "FOREMAN_NO_BACKGROUND": "1"}
+        for n, verdict in enumerate(("red", "cut", "green"), 1):
+            with self.subTest(verdict=verdict):
+                head = self.git("rev-parse", "HEAD")
+                tid = self.lane(n, os.path.join("plugin", "tests", "run.py"), stubs[verdict])
+                r = self.train(tid, check=False, env=env)
+                out = r.stderr + r.stdout
+                if verdict == "green":
+                    self.assertEqual(r.returncode, 0, out)
+                    self.assertNotEqual(self.git("rev-parse", "HEAD"), head, "the green batch landed")
+                    continue
+                self.assertNotEqual(r.returncode, 0, out)
+                self.assertIn("nothing landed", out)
+                self.assertEqual(self.git("rev-parse", "HEAD"), head, "a refused batch lands nothing")
+                if verdict == "red":
+                    self.assertIn("test_docs", out)
+                else:
+                    self.assertIn("was cut", out)
+                    self.assertIn("SAMPO_SHAPE_BATCH_WALL_S", out)
+
     def test_live_mode_is_a_project_switch_and_full_gate_forces_gated(self):
         from sampo import train
         p = c.find_project(self.repo)
