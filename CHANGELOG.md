@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- MASTER.md's 34 over-long file-map index lines are cut to their first words and a shard link, and a doc test refuses a new one over 160 characters, so MASTER keeps 21 KB of room (T-5361).
 - The land's merged-lane set no longer rebinds the check-start set, so a stale lane's check the land started is waited for again, and the CloseFields test follows the builder-only close-field recorder (T-5984).
 - test_deadfeatures follows T-5613's rows: a call through _record_call writes via cli and counts as real, a test or bench call and a row with no via do not, and deadfeatures reads callcards' origin tuples directly (T-5990).
 - sampo lane land starts a stale lane's affected check itself and trains the lane once that check is green, at most three at once (T-5561).
