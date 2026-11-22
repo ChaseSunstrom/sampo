@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- A builder's or lane pilot's sampo ship is read by Sampo's own ship parser and blocked on any shell expansion or parse error, and a killed ship's spent grant is given back only after ls-remote shows main lacks its head (T-5980).
 - A land's ship is no longer killed for time it spent waiting on an earlier ship: its 7200 s cap counts its test run only, each phase has its own bound, and a timeout names the phase that ran out (T-5985).
 - A merge taken off trunk by any revert (the verify's own, a hand revert, a sweep of verified records) sets its done task back to planned with the reason, and T-3051's moonscale._kept is back on trunk so test_moons_ground is green (T-5981).
 - A lane's own criterion commands and the tests it adds or changes count as red at the train gate, the close, the leftover sweep and the behind verify, and the live train's behind run always runs the modules a landed lane's criteria name, so a red there no longer reaches trunk under a base-red, baseline or inherited excuse (T-5982).
