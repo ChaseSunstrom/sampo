@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- SessionStart's one-call routines line is shorter (a shorter head and a 40-character about), so every session start stays under the 1000-byte context cap (T-5819).
 - Workflow calls whose agent() stages name no sampo:fm-* type and no haiku or sonnet model are refused before they can run uncapped on Opus (T-5680).
 - The builder brief now points at the agent definition's contract instead of repeating its 9.7 KB, and the Sampo-repo-only rules reach a builder only in a project with the test runner (T-5595).
 - Subagents follow the usage pace: while it holds, an Agent launch runs on haiku, a Workflow or a fork waits, and a session caps its live subagents at three (T-5562).
