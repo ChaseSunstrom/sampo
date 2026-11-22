@@ -5729,15 +5729,50 @@ def private_refusal(p, b, main, tip, base="HEAD"):
                    f"{release.private_where(held, where)}{at}")
 
 
-def land_holds(p, b, main, tip, base="HEAD", timing=True):
-    """T-4785: the reason the lane `b` at `tip` must not land on `main` (private term, a scan or git call that failed, a
-    file the guard refuses, the self-change gate), or ''. The one function every path that moves a trunk calls before it
-    does: the train (train._held), fm serve's integrate and the pull-request train, so none runs fewer holds than the
-    others (serve and the PR train once landed what only the train held). Fails closed: a git call, listing or scan that
-    could not run is a hold. The private check is private_refusal, first, so a lane that carries a term never reaches
-    the guard or a probe; its reason names commit, file and line, never the term. base: what `tip` is compared with."""
+REVIEW_HELD = "held: not reviewed at this tip"  # T-5968: the words of the review hold (the land asks the pilot on them)
+
+
+def review_hold(b, tip):
+    """T-5968: '' when the lane `b` was reviewed at `tip`, else why it must not reach a trunk yet (REVIEW_HELD first).
+    Reviewed is the accept's own stamp for this very commit (meta accepted_tip, or reviewed_tip: the audits it recorded),
+    else audits on the brief recorded against the lane's tree while the lane sits clean on that tip (the same rule
+    `sampo lane accept` counts by, train._counted_lenses): at least one audit, and the lens groups its process tier asks.
+    A lane whose tip moved since its accept has neither, so it is reviewed again. An unreadable lane or tree is a hold
+    (fails closed); the stamp is never read for another commit."""
+    from sampo import cli
+    if not tip:
+        return ""
+    m = b.meta
+    if tip in (str(m.get("accepted_tip") or ""), str(m.get("reviewed_tip") or "")):
+        return ""
+    path, why = str(m.get("lane") or ""), "no review is recorded at this tip"
+    if path and os.path.isdir(path) and _lane_tree(path, m.get("lane_branch") or f"foreman/{b.id}"):
+        tree = c.worktree_id(path)
+        if tree and any(t == tree for _, _, t in b.audits()):
+            ptier = c.ptier_now(b)[0]
+            gaps = cli._audit_gaps(b, [], b.audit_blockers(tree=tree, groups=c.audit_groups(b.tier, ptier)), ptier)
+            if not gaps:
+                return ""
+            why = "; ".join(gaps)
+    return (f"{REVIEW_HELD}: {why}; the lane pilot reviews it (sampo lane pilot {b.id}), or sampo lane accept {b.id} "
+            "--audit LENS HOW RESULT")
+
+
+def land_holds(p, b, main, tip, base="HEAD", timing=True, review=True):
+    """T-4785: the reason the lane `b` at `tip` must not land on `main` (an unreviewed tip, a private term, a scan or git
+    call that failed, a file the guard refuses, the self-change gate), or ''. The one function every path that moves a
+    trunk calls before it does: the train (train._held), fm serve's integrate, fm lane merge and the pull-request train,
+    so none runs fewer holds than the others (serve and the PR train once landed what only the train held). Fails closed:
+    a git call, listing or scan that could not run is a hold. T-5968: the review hold (review_hold) is first, kind
+    "review": a lane trains only once its review is recorded at its tip; `review=False` is for a caller that has its own
+    reason (the lane pilot's own gate runs before the review it asks for; the PR train merges pull requests GitHub's
+    review approved; fm serve reads the review at the tip it rebased from). The private check is private_refusal, next,
+    so a lane that carries a term never reaches the guard or a probe; its reason names commit, file and line, never the
+    term. base: what `tip` is compared with."""
     import fmguard
     from sampo import selfgate
+    if review and (why := review_hold(b, tip)):
+        return Hold(why, "review", bare=why)
     meta = c.read_meta(p)
     ctx = fmguard.Ctx(cwd=main, project_root=main, home=os.path.expanduser("~"), foreman_home=c.foreman_home(),
                       state_dir=c.state_dir(), state_fallbacks=c.state_fallbacks(), scratch=[],
@@ -5765,7 +5800,7 @@ def land_holds(p, b, main, tip, base="HEAD", timing=True):
 
 class Hold(str):
     """T-4785: what land_holds returns: the reason as the string (empty when nothing holds the lane, so `if hold:` reads
-    as before), and `kind` ('' | 'private' | 'scan' | 'guard' | 'self'), `files` (what the lane changes; None when the
+    as before), and `kind` ('' | 'review' | 'private' | 'scan' | 'guard' | 'self'), `files` (what the lane changes; None when the
     listing failed) and `bare`, the facts behind the reason that `merge` words its own way (private: the sentence without
     its advice; guard: (file, category, detail); self: the held lines)."""
     def __new__(cls, reason="", kind="", files=None, bare=None):
@@ -5818,6 +5853,7 @@ def merge(p, b, main, unverified=None):
     # real remote); here, the lane's own commits and files are judged as ship judges them, while amending is cheap.
     # T-4785: the holds are land_holds, the one body the train, serve and the PR train run too; merge words the guard
     # and self-change ones its own way (the grant to ask for) and records them
+    # T-5968: and the review hold (--unverified waives the criteria's re-run, never the review)
     hold = land_holds(p, b, main, tip)
     if hold.kind in ("guard", "self") and hold.bare:
         c.log_event(p, "enforce", task=b.id, data={"kind": "merge_refused", "branch": branch,

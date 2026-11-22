@@ -167,7 +167,12 @@ class ExpressLand(ExpressBase):
         for tid in (a, b, c3, d):
             self.returned(tid, f"Lane {tid}")
         r = self.land("--first", a, "--batch", "2")
-        self.assertEqual(self.trains(r), [f"{b}, {c3}", a, d], r.stderr)
+        # T-5968: the resolving commit moved a's tip past its accept: a waits for a review of the new tip, then trains alone
+        self.assertEqual(self.trains(r), [f"{b}, {c3}", d], r.stderr)
+        self.assertIn(f"{a}: held: not reviewed at this tip", r.stderr)
+        self.stamp_accepted(a)
+        r = self.land("--first", a)
+        self.assertEqual(self.trains(r), [a], r.stderr)
 
 
 class ExpressRestart(ExpressBase):

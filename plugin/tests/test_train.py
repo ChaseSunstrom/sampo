@@ -4,7 +4,9 @@ was 0 bytes (T-4147, T-4139, T-4189), and a check cut off at its deadline (60 of
 read. Now the check's lines are written to that stdout as they arrive, the result is still read from the same text, and
 a hold for a cut-off check names the log."""
 # map-links: plugin/lib/sampo/train.py
+import ast
 import contextlib
+import glob
 import io
 import json
 import os
@@ -2295,3 +2297,207 @@ class PmKnownRed(ForemanTestCase):
         r = slanes.pm_records(self.p)[sha]
         self.assertEqual((r["state"], r["classes"]), ("inherited", ["test_m.A"]))
         self.assertTrue(os.path.exists(os.path.join(self.repo, "other.txt")), "not reverted")
+
+
+class ReviewBeforeTrain(LeftoverBase):
+    """T-5968: the 15:01 live land trained lanes whose builder had only returned, unreviewed (T-5706's round 6 and T-5884
+    reached trunk that way and turned tests red). A lane trains only once its review is recorded at its tip, in both modes."""
+    HELD = "held: not reviewed at this tip"
+    merge_reviewed = False  # the fixture never stamps a merge's lane: that is the hold under test
+
+    def unreviewed(self, n=1, **kw):
+        tid = self.lane(n, f"rev{n}.txt", when=test_lane_land.OLD, reviewed=False, **kw)
+        self.returned(tid, f"Lane {n}")
+        return tid
+
+    def hold(self, tid):
+        b = self.brief(tid)
+        with self.in_project():
+            return train._lane_hold(self.p, b, train._lane_tip(self.repo, b), self.repo)
+
+    def test_a_live_lane_with_no_review_is_held_and_asked_of_the_pilot(self):
+        self.fm("lane", "mode", "live")
+        tid = self.unreviewed()
+        self.assertTrue((self.hold(tid) or "").startswith(self.HELD), self.hold(tid))
+        asked = []
+        env = {k: v for k, v in os.environ.items() if k != "FOREMAN_NO_BACKGROUND"}  # the ask is made only where a land may background
+        with mock.patch.object(train, "_ask_pilot", lambda p, t: asked.append(t)), mock.patch.dict(os.environ, env, clear=True):
+            got, err, events = self.run_land()
+        self.assertEqual(asked, [tid], "the land asks the lane pilot once")
+        self.assertNotIn(("train", [tid]), events)
+        self.assertNotIn("rev1.txt", self.git("ls-files"), "nothing reached trunk")
+
+    def test_the_gated_train_holds_it_too(self):
+        tid = self.unreviewed()
+        self.assertTrue((self.hold(tid) or "").startswith(self.HELD))
+        r = self.train(tid, check=False)
+        self.assertNotIn("rev1.txt", self.git("ls-files"), r.stdout + r.stderr)
+        self.assertIn(self.HELD, r.stdout + r.stderr)
+
+    def test_lane_train_and_first_and_merge_hold_it_in_live_mode(self):
+        self.fm("lane", "mode", "live")
+        tid = self.unreviewed()
+        for argv in (("lane", "train", tid), ("lane", "train", tid, "--first"), ("lane", "merge", tid),
+                     ("lane", "merge", tid, "--unverified")):
+            r = self.fm(*argv, check=False)
+            self.assertNotIn("rev1.txt", self.git("ls-files"), f"{argv}: {r.stdout + r.stderr}")
+        self.assertIn("not reviewed at this tip", self.fm("lane", "merge", tid, check=False).stderr)
+
+    def test_audits_on_the_lane_tree_or_an_accept_release_it(self):
+        self.fm("lane", "mode", "live")
+        tid = self.unreviewed()
+        path = self.brief(tid).meta["lane"]
+        self.assertTrue(self.hold(tid))
+        self.fm("task", "audit", tid, "self", "one fm-reviewer pass on the branch", "no findings", cwd=path)
+        self.assertFalse(self.hold(tid), self.hold(tid))
+        accepted = self.unreviewed(2)
+        self.stamp_accepted(accepted)
+        self.assertFalse(self.hold(accepted))
+
+    def test_an_accepted_lane_trains_as_before(self):
+        self.fm("lane", "mode", "live")
+        tid = self.lane(1, "ok.txt", when=test_lane_land.OLD)
+        self.returned(tid)
+        self.assertFalse(self.hold(tid))
+        self.train(tid)
+        self.assertIn("ok.txt", self.git("ls-files"))
+
+    def test_a_tip_that_moved_after_the_accept_is_held_until_reviewed_again(self):
+        self.fm("lane", "mode", "live")
+        tid = self.lane(1, "moved.txt", when=test_lane_land.OLD)
+        path = self.brief(tid).meta["lane"]
+        self.assertFalse(self.hold(tid))
+        with open(os.path.join(path, "more.txt"), "w") as f:
+            f.write("later\n")
+        self.git("add", "more.txt", cwd=path)
+        self.git("commit", "-qm", "after the accept", cwd=path)
+        self.assertTrue((self.hold(tid) or "").startswith(self.HELD))
+        self.fm("lane", "train", tid, check=False)
+        self.assertNotIn("moved.txt", self.git("ls-files"))
+        self.stamp_accepted(tid)
+        self.assertFalse(self.hold(tid))
+
+    def test_the_ask_goes_to_pilotsig_once_and_never_raises(self):
+        from sampo import pilotsig
+        with mock.patch.object(pilotsig, "spawn", return_value=None) as sp:
+            train._ask_pilot(self.p, "T-1")
+        sp.assert_called_once_with(self.p, "T-1")
+        err = io.StringIO()
+        with mock.patch.object(pilotsig, "spawn", side_effect=OSError("no fork")), contextlib.redirect_stderr(err):
+            train._ask_pilot(self.p, "T-1")
+        self.assertIn("no review started", err.getvalue())
+
+
+class EveryPathToTrunkIsReviewed(unittest.TestCase):
+    """T-5968 class sweep: every call site that moves lane commits onto a trunk (a git merge, a fast-forward, the train's
+    merge, lanes.merge, a land_holds call) is in one of two tables, so a new path fails here until it is placed: GATED
+    (the function reaches lanes.review_hold, directly or through land_holds without review=False) or ALLOWED with the
+    reason it needs no lane review."""
+    GATED = {
+        ("lanes.py", "merge"): "land_holds, the shared hold, before its git merge (lane merge, race pick, hand close)",
+        ("lanes.py", "pick"): "lanes.merge",
+        ("lanes.py", "cmd_lane"): "lanes.merge",
+        ("lanes.py", "land_holds"): "calls review_hold first",
+        ("train.py", "_held"): "land_holds: every train hold (--first, lane train, the land) runs it",
+        ("train.py", "_lane_hold"): "review_hold: the land's lane selection, so an unreviewed lane is never batched",
+        ("train.py", "_run"): "trains only lanes _holds (_held) let through",
+        ("train.py", "_run.merge1"): "trains only lanes _holds (_held) let through",
+        ("train.py", "_batch_once"): "trains only lanes _holds (_held) let through",
+        ("train.py", "_shape_batch_once"): "trains only lanes _holds (_held) let through",
+        ("train.py", "_merge_in"): "trains only lanes _holds (_held) let through",
+        ("train.py", "_fast_forward"): "fast-forwards only the batch _run built from held-checked lanes",
+        ("serve.py", "_integrate_lane"): "review_hold on the tip the builder left, before its rebase",
+    }
+    ALLOWED = {
+        ("lanepilot.py", "gate"): "the pilot's own gate runs before the review it records (review=False)",
+        ("big.py", "task_close"): "big/ID has no lane tip: it integrates children each reviewed when they merged in",
+        ("big.py", "_merge"): "task_close's merge of big/ID",
+        ("pr.py", "train"): "pull requests are reviewed on GitHub, not as lanes (review=False)",
+        ("pr.py", "_retest"): "a scratch worktree testing a PR head, nothing reaches a trunk",
+        ("lanes.py", "start"): "fast-forwards the lane's own new branch to its base",
+        ("louhi.py", "_lanes_drill.do"): "a drill's scratch repo",
+        ("mapmerge.py", "main"): "merges map files, not lane commits",
+        ("release.py", "_push"): "fast-forwards a release branch from trunk",
+        ("train.py", "_probe_once"): "a scratch probe, nothing reaches a trunk",
+        ("update.py", "_apply"): "updates the installed plugin, not a lane",
+    }
+    GITMERGE = {"--ff-only", "--no-ff", "--no-commit", "--no-edit", "--squash"}
+    NAMES = {"_fast_forward", "_merge_in", "land_holds", "review_hold"}
+    FUNCS = (ast.FunctionDef, ast.AsyncFunctionDef)
+    SRC_OF = {"lanes.py": {"land_holds", "merge"}, "train.py": {"_lane_hold", "_held"}, "serve.py": {"_integrate_lane"}}
+
+    @classmethod
+    def _qual(cls, fn, parents):
+        names = [fn.name]
+        while fn in parents:
+            fn = parents[fn]
+            if isinstance(fn, cls.FUNCS):
+                names.append(fn.name)
+        return ".".join(reversed(names))
+
+    _memo = []
+
+    @classmethod
+    def _sites(cls):
+        """({(file, function): [lines]} for each call site, {(file, function): its source}); scanned once per run."""
+        if not cls._memo:
+            cls._memo.append(cls._scan())
+        return cls._memo[0]
+
+    @classmethod
+    def _scan(cls):
+        root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib", "sampo")
+        out, src = {}, {}
+        for f in sorted(glob.glob(os.path.join(root, "*.py"))):
+            with open(f, encoding="utf-8") as fh:
+                text = fh.read()
+            tree = ast.parse(text)
+            parents = {ch: n for n in ast.walk(tree) for ch in ast.iter_child_nodes(n)}
+            base = os.path.basename(f)
+            for n in ast.walk(tree):
+                if isinstance(n, cls.FUNCS) and n.name in cls.SRC_OF.get(base, ()):  # (the source of every function is slow)
+                    src[(base, cls._qual(n, parents))] = ast.get_source_segment(text, n) or ""
+                if not isinstance(n, ast.Call):
+                    continue
+                fn = n.func
+                name = fn.id if isinstance(fn, ast.Name) else fn.attr if isinstance(fn, ast.Attribute) else ""
+                cs = [a.value for a in ast.walk(n) if isinstance(a, ast.Constant) and isinstance(a.value, str)]
+                lane_merge = name == "merge" and (isinstance(fn, ast.Name) or (
+                    isinstance(fn.value, ast.Name) and fn.value.id == "lanes"))
+                if name in cls.NAMES or lane_merge or ("merge" in cs and set(cs) & cls.GITMERGE):
+                    up = n
+                    while up in parents and not isinstance(up, cls.FUNCS):
+                        up = parents[up]
+                    out.setdefault((base, cls._qual(up, parents) if isinstance(up, cls.FUNCS) else "<module>"),
+                                   []).append(n.lineno)
+        return out, src
+
+    def test_every_call_site_is_placed(self):
+        sites, _ = self._sites()
+        known = set(self.GATED) | set(self.ALLOWED)
+        self.assertFalse(set(self.GATED) & set(self.ALLOWED))
+        self.assertEqual(sorted(set(sites) - known), [], "a new path to a trunk: place it in GATED or ALLOWED (T-5968)")
+        self.assertEqual(sorted(known - set(sites)), [], "a placed site that is gone: drop it from the table")
+
+    def test_the_gated_roots_really_reach_the_review_hold(self):
+        _, src = self._sites()
+        lanes_src = src[("lanes.py", "land_holds")]
+        self.assertIn("review_hold(b, tip)", lanes_src)
+        self.assertIn("land_holds(p, b, main, tip)", src[("lanes.py", "merge")])
+        self.assertIn("lanes.review_hold(b, sha)", src[("train.py", "_lane_hold")])
+        self.assertIn("land_holds(", src[("train.py", "_held")])
+        self.assertNotIn("review=False", src[("train.py", "_held")])
+        self.assertIn("review_hold(", src[("serve.py", "_integrate_lane")])
+
+    def test_the_bypasses_are_only_the_allowed_ones(self):
+        root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib", "sampo")
+        off = set()
+        for f in glob.glob(os.path.join(root, "*.py")):
+            with open(f, encoding="utf-8") as fh:
+                tree = ast.parse(fh.read())
+            for n in ast.walk(tree):
+                if (isinstance(n, ast.Call) and getattr(n.func, "attr", getattr(n.func, "id", "")) == "land_holds"
+                        and any(k.arg == "review" and isinstance(k.value, ast.Constant) and k.value.value is False
+                                for k in n.keywords)):
+                    off.add(os.path.basename(f))
+        self.assertEqual(off, {"lanepilot.py", "big.py", "pr.py", "serve.py"}, off)

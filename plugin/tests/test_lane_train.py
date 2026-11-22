@@ -23,6 +23,7 @@ class TrainCase(ForemanTestCase):
     """The fixtures: an initialised repo with one gate that counts its runs and fails when BREAK exists."""
     def setUp(self):
         super().setUp()
+        self.unreviewed_ids = set()  # T-5968: lanes made with reviewed=False: train() leaves them as they are
         self.fm("init")
         self.runs = os.path.join(self.tmp, "gate-runs")
         self.fm("check", "add", f"echo x >> {self.runs}; test ! -e BREAK -o -e FIX.txt")
@@ -33,8 +34,20 @@ class TrainCase(ForemanTestCase):
     def gate_runs(self):
         return len(open(self.runs).read().split()) if os.path.exists(self.runs) else 0
 
-    def lane(self, n, name, text=None, ac="true", when=None, tier="S"):
-        """A lane worktree with a task and one commit writing `name` (dated `when`, else now); its task id."""
+    def stamp_accepted(self, tid, path=None):
+        """T-5968: the lane as `sampo lane accept` leaves it: its accepted_tip stamped at the tip it has now (every path to a
+        trunk holds a lane with no review at its tip, lanes.review_hold)."""
+        p = c.find_project(self.repo)
+        b = c.find_brief(p, tid)
+        tip = self.git("rev-parse", "HEAD", cwd=path or b.meta["lane"])
+        b.meta["accepted_tip"] = tip
+        c.save_brief(p, b)
+        self.unreviewed_ids.discard(tid)
+        return tip
+
+    def lane(self, n, name, text=None, ac="true", when=None, tier="S", reviewed=True):
+        """A lane worktree with a task and one commit writing `name` (dated `when`, else now); its task id. T-5968: it is
+        accepted at that commit unless `reviewed=False` (the review hold's own tests)."""
         path = os.path.join(self.tmp, f"lane{n}")
         subprocess.run(["git", "-C", self.repo, "worktree", "add", "-q", "-b", f"foreman/lane{n}", path], check=True)
         plan = (["--interpretation", "Reading 1: the lane's change. Reading 2: none.",
@@ -50,9 +63,16 @@ class TrainCase(ForemanTestCase):
         self.git("add", name, cwd=path)
         subprocess.run(["git", "-C", path, "commit", "-qm", f"lane {n}"], check=True, capture_output=True,
                        env=dict(os.environ, GIT_AUTHOR_DATE=when, GIT_COMMITTER_DATE=when) if when else None)
+        if reviewed:
+            self.stamp_accepted(tid, path)
+        else:
+            self.unreviewed_ids.add(tid)
         return tid
 
     def train(self, *ids, check=True, env=None):
+        for tid in ids:  # T-5968: a test that commits to a lane after making it still trains a lane its review covers
+            if tid not in self.unreviewed_ids:
+                self.stamp_accepted(tid)
         return self.fm("lane", "train", ",".join(ids), check=check, env=env)
 
     def meta(self, tid):
@@ -553,7 +573,7 @@ class Train(TrainCase):
     def test_live_mode_holds_only_a_red_check(self):
         from sampo import train
         p = c.find_project(self.repo)
-        b = mock.Mock(meta={})
+        b = mock.Mock(meta={"accepted_tip": "sha"})  # T-5968: reviewed at that tip
         with mock.patch.object(train, "live_mode", return_value=True):
             for line, held in (("held: check queued behind 2 running at most (pid 1)", False),
                                ("held: check running (pid 1); it joins the land when green", False),

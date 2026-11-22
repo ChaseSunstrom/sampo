@@ -1349,9 +1349,13 @@ def _lane_hold(p, b, sha, main):
     """Why the land leaves this lane out at `sha`, or None. A lane stacked on an unlanded dependency waits for it
     (_dep_hold, T-5725). Gated: its own check running, queued, red or missing
     (_check_hold, _unchecked). Live (T-5444): only a red check that its current checker gave; the behind suite judges
-    the rest after the merge."""
+    the rest after the merge. T-5968: in both modes a lane with no review recorded at its tip is held first
+    (lanes.review_hold: the accept's stamp, or audits on the lane's tree); the land asks the lane pilot for it (_land_trains)."""
+    from sampo import lanes
     if dep := _dep_hold(p, b, main):
         return dep
+    if why := lanes.review_hold(b, sha):
+        return why
     why = _check_hold(b, sha, main) or (None if live_mode(p) else _unchecked(b, sha, main))
     if why and live_mode(p) and not (why.startswith("held: check red") and "has changed since it ran" not in why):
         return None
@@ -3813,6 +3817,17 @@ def _pilot_parks(p, parked, tick=True):
         print(f"lane pilot: tick: {c.fit(str(e), 200)}", file=sys.stderr)
 
 
+def _ask_pilot(p, tid):
+    """T-5968: a lane the land holds as not reviewed at its tip is asked of the lane pilot: one detached headless review
+    under its single-flight claim, 2 h cap and SAMPO_LANE_PILOT switch (pilotsig.spawn is quiet where none starts, and for
+    a return it already reported). Never raises into the land: the lane waits for its review, as it did."""
+    from sampo import pilotsig
+    try:
+        pilotsig.spawn(p, tid)
+    except Exception as e:  # noqa: BLE001
+        print(f"lane pilot: {tid}: no review started: {c.fit(c.plain(str(e)), 200)}", file=sys.stderr)
+
+
 def announce_skills(root, before, after):
     """T-3851: a session lists its skills when it starts, so each SKILL.md a train added between `before` and `after`
     is told to every live session once (the bus), with its description and the file to Read. The names sent."""
@@ -4501,6 +4516,7 @@ def _land_trains(p, main, batch, owed, closer=None):
             if _park_kind(w)[0] == "conflict":  # T-5876: the resolver starts now, not 30 to 60 minutes later at the land's end
                 _pilot_parks(p, [(i, w)], tick=False)  # (never raises into the land; the end pass asks again and ticks)
 
+    pilot_asked = set()  # T-5968: lanes whose review the land asked the lane pilot for
     held = set()  # T-4767: lanes the check hold left out: read again when a train starts or one is named --first
     checking, mine = set(), set()  # T-5561: lanes whose check this land started, and those still running (or waiting for a
     # slot): a land with nothing else to train waits for the second set
@@ -4516,6 +4532,9 @@ def _land_trains(p, main, batch, owed, closer=None):
         or paused land: those hold it as before); `checking` follows the lanes whose check is in flight."""
         sha = tip(b)
         why = _lane_hold(p, b, sha, main)
+        if why and why.startswith(lanes.REVIEW_HELD) and background and b.id not in pilot_asked:
+            pilot_asked.add(b.id)  # T-5968: asked once per land (pilotsig.spawn is single-flight and quiet where none starts)
+            _ask_pilot(p, b.id)
         # live mode trains a stale lane at once with its note (sort): the land does not wait hours for a niced check there
         if (background and not live_mode(p) and failed.get(b.id, 0) <= time.monotonic()
                 and (why is None or why.startswith("held: no passing affected check"))):
@@ -6794,6 +6813,9 @@ def accept(p, b, main, args):
         # that is its return, so the awaiting test below counts it; accepted_at is still stamped only when the lane really
         # queues (T-4239). T-5516 item 8: an accept that recorded and counted no audit saw nothing, so it stamps nothing
         cli.mutate(p, b.id, lambda x: x.meta.__setitem__("reviewed_tip", tip), "reviewed", {"tip": tip[:12]})
+    if tip:  # T-5968: the close's own audit rule passed at this tip (a self-alone tier asks no audit, so none may be on the
+        # brief): every path to a trunk reads this stamp (lanes.review_hold), and a lane whose tip moves needs a new accept
+        cli.mutate(p, b.id, lambda x: x.meta.__setitem__("accepted_tip", tip), "accepted_tip", {"tip": tip[:12]})
     ptier, ptier_why = tier.get("ptier") or "", tier.get("why") or []
     # T-5715: the tier the review judged the lane at, raise-only (the close reads it as a floor); written and logged
     # only when the stamp rises

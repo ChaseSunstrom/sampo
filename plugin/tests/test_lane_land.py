@@ -42,10 +42,10 @@ class LandCase(TrainCase):
         self.git("add", "CHANGELOG.md")
         self.git("commit", "-qm", "changelog")
 
-    def lane(self, n, name, text=None, ac="true", when=None, tier="S", checked=True):
+    def lane(self, n, name, text=None, ac="true", when=None, tier="S", checked=True, reviewed=True):
         """T-4767: a lane the land trains: the land holds one with no passing affected run at its tip, so each lane
         carries a clean one (the repo-shape classes held, run just now) unless `checked=False` (the hold's own tests)."""
-        tid = super().lane(n, name, text=text, ac=ac, when=when, tier=tier)
+        tid = super().lane(n, name, text=text, ac=ac, when=when, tier=tier, reviewed=reviewed)
         if checked:
             self.record_clean_run(tid)
         return tid
@@ -323,7 +323,12 @@ class Land(LandCase):
             self.returned(tid, f"Lane {tid}")
         r = self.land("--first", a, "--batch", "1")
         self.assertRegex(r.stderr, rf"--first {a}: parked: conflicts with .*same.txt")
-        self.assertEqual(self.trains(r), [b, a], r.stderr)
+        # T-5968: the resolving commit moved a's tip past its accept: a waits for a review of the new tip, then lands
+        self.assertEqual(self.trains(r), [b], r.stderr)
+        self.assertIn(f"{a}: held: not reviewed at this tip", r.stderr)
+        self.stamp_accepted(a)
+        r = self.land()
+        self.assertEqual(self.trains(r), [a], r.stderr)
         self.assertEqual(self.brief(a).status, "done", r.stdout + r.stderr)
 
     def test_a_refused_finish_keeps_the_lane_and_says_so(self):
@@ -1563,6 +1568,7 @@ class StackedDependent(LandCase):
         subprocess.run(["git", "-C", one, "merge", "-q", "--no-edit", "foreman/lane2"], check=True, capture_output=True,
                        env=dict(os.environ, GIT_AUTHOR_DATE=OLD, GIT_COMMITTER_DATE=OLD))  # old: the lane is quiet
         self.record_clean_run(top)  # its tip moved by the merge
+        self.stamp_accepted(top)  # T-5968: and reviewed at the moved tip
         p = c.find_project(self.repo)
         b = c.find_brief(p, top)
         b.meta["stacked_on"] = dep

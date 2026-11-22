@@ -30,6 +30,10 @@ class ConflictHistory(ForemanTestCase):
             f.write(text)
         self.git("add", "hot.py", cwd=path)
         self.git("commit", "-qm", "lane", cwd=path)
+        p = c.find_project(self.repo)  # T-5968: reviewed at that tip (a merge holds an unreviewed lane before it conflicts)
+        b = c.find_brief(p, tid)
+        b.meta["accepted_tip"] = self.git("rev-parse", "HEAD", cwd=path).strip()
+        c.save_brief(p, b)
 
     def brief(self, tid):
         p = self.fm("lane", "brief", tid, "--json")

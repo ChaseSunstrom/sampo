@@ -238,6 +238,9 @@ class Lanes(ForemanTestCase):
         with open(os.path.join(self.lane, "remote.py"), "w") as f:
             f.write('HOST = "llm.example.test"\n')
         self.git("commit", "-q", "--amend", "-am", "remote", cwd=self.lane)
+        held = self.fm("lane", "merge", tid, check=False)  # T-5968: the amend moved the tip past its review
+        self.assertIn("not reviewed at this tip", held.stderr)
+        self.stamp_review(tid)
         self.fm("lane", "merge", tid)
         self.assertIn("llm.example.test", self.git("show", "HEAD:remote.py"))
 
@@ -2715,6 +2718,7 @@ class _LaneRepo(ForemanTestCase):
             f.write(text)
         self.git(path, "add", "shared.py")
         self.git(path, "commit", "-qm", "lane change")
+        self.stamp_review("T-0001")  # T-5968: reviewed at that tip (a merge holds a lane with no review)
         return path
 
     def base(self):

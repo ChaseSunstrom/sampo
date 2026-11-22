@@ -78,7 +78,7 @@ def gate(p, b, main):
         return f"the contract is over ({why})"
     # round 3: timing=False, so a dry run or a sweep never starts the hook bench (it takes the machine lock); the accept
     # runs land_holds with its timing
-    return lanes.land_holds(p, b, main, tip, timing=False) or train._check_hold(b, tip, main) or ""
+    return lanes.land_holds(p, b, main, tip, timing=False, review=False) or train._check_hold(b, tip, main) or ""
 
 
 def _state(main, b):

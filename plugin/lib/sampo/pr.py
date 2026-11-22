@@ -168,7 +168,7 @@ def train(p, args):
                 code = 1
                 break
             from sampo import lanes  # T-2430: the holds fm lane merge and fm serve run, on the head the merge is pinned to
-            held = lanes.land_holds(p, b, p.root, head, base=f"origin/{x['baseRefName']}")  # T-4785: and the private/guard ones
+            held = lanes.land_holds(p, b, p.root, head, base=f"origin/{x['baseRefName']}", review=False)  # T-5968: GitHub reviews a PR, not a lane audit; T-4785: and the private/guard ones
             if held:
                 lines.append(f"#{n} held, train stopped: {c.fit(c.plain(held), 200)}" +
                              (f" (fm ask {b.id} core, then run the train again)" if "self-change" in held else ""))

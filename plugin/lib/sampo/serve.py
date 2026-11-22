@@ -840,6 +840,16 @@ def _integrate_lane(p, tid, path):
     if not git(path, "log", "--oneline", f"{branch}..HEAD").stdout.strip():
         _fm(p.root, "lane", "rm", tid)
         return "nothing to merge"
+    from sampo import lanes  # T-5968: a lane lands only after its review is recorded at the tip the builder left, read before
+    brief = c.find_brief(p, tid)  # the rebase moves it (the rebase keeps the reviewed work; the post-rebase holds skip the review)
+    if brief is None:
+        return f"kept in {path}: no brief for {tid} to judge the lane by"
+    try:
+        unreviewed = lanes.review_hold(brief, git(path, "rev-parse", "HEAD").stdout.strip())
+    except Exception as e:  # a review that can't be read is a hold, never a landing
+        unreviewed = f"the review could not be read ({type(e).__name__})"
+    if unreviewed:
+        return f"kept in {path}: {c.fit(c.plain(unreviewed), 200)}"
     rebase = git(path, "rebase", "-q", branch)
     if rebase.returncode:
         git(path, "rebase", "--abort")
@@ -851,12 +861,10 @@ def _integrate_lane(p, tid, path):
     if why:
         return f"kept in {path}: {why} while the gates ran"
     tip = git(path, "rev-parse", "HEAD").stdout.strip() or f"foreman/{tid}"
-    from sampo import lanes  # T-2352: fm serve's merge is gated like fm lane merge, on the same commit it lands
-    brief = c.find_brief(p, tid)  # T-4785: and held by what the train holds (private term, guard, a failed git call or scan)
-    if brief is None:
-        return f"kept in {path}: no brief for {tid} to judge the lane by"
+    # T-2352: fm serve's merge is gated like fm lane merge, on the same commit it lands
+    # T-4785: and held by what the train holds (private term, guard, a failed git call or scan)
     try:
-        held = lanes.land_holds(p, brief, p.root, tip)
+        held = lanes.land_holds(p, brief, p.root, tip, review=False)
     except Exception as e:  # T-4785 review: a hold that can't run is a hold, never a landing and never the loop's end
         held = f"the checks before landing could not run ({type(e).__name__})"
     if held:

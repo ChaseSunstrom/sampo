@@ -492,6 +492,7 @@ class Callers(ForemanTestCase):
             self.assertEqual(done.stdout.strip(), "0", "an opt-out is kept")
 
     def test_the_lands_gate_asks_at_the_high_class(self):
+        self.stamp_review(self.tid)  # T-5968: a lane trains once its review is recorded at its tip
         self.fm("lane", "train", self.tid, env=self.ENV)
         # whatever ran before it in the lane stays ordinary; the gate on the merged tree is the last run
         self.assertEqual(self.classes()[-1:], ["1"], "the train's gate ran at the high class")

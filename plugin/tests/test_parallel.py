@@ -429,6 +429,7 @@ class IntegrateHolds(ForemanTestCase):
             f.write(text)
         self.git("add", name, cwd=path)
         self.git("commit", "-qm", "work T-0001", cwd=path)
+        self.stamp_review("T-0001")  # T-5968: reviewed at that tip (serve integrates only a lane its review covers)
         return path
 
     def integrate(self, path):
@@ -446,6 +447,26 @@ class IntegrateHolds(ForemanTestCase):
         how = self.integrate(self.lane())
         self.assertIn("merged into", how)
         self.assertTrue(os.path.exists(os.path.join(self.repo, "x.py")))
+
+    def test_a_lane_with_no_review_at_its_tip_is_kept_not_landed(self):  # T-5968
+        from sampo import core as c
+        path = self.lane()
+        p = c.find_project(self.repo)
+        b = c.find_brief(p, "T-0001")
+        b.meta.pop("accepted_tip")  # the builder only returned
+        c.save_brief(p, b)
+        how = self.integrate(path)
+        self.held(how, path)
+        self.assertIn("not reviewed at this tip", how)
+        with open(os.path.join(path, "more.py"), "w") as f:  # a tip that moved after the accept is held again
+            f.write("B = 2\n")
+        self.git("add", "more.py", cwd=path)
+        self.git("commit", "-qm", "after the accept", cwd=path)
+        b = c.find_brief(p, "T-0001")
+        b.meta["accepted_tip"] = self.git("rev-parse", "HEAD~1", cwd=path).strip()
+        c.save_brief(p, b)
+        self.assertIn("not reviewed at this tip", self.integrate(path))
+        self.assertFalse(os.path.exists(os.path.join(self.repo, "more.py")))
 
     def test_a_lane_that_landed_is_reported_merged_when_removing_its_folder_raises(self):
         # T-4785 re-check: the fast-forward had landed, then `lane rm` raised and _integrate reported the lane "kept"

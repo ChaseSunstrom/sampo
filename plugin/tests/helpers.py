@@ -469,6 +469,8 @@ class SampoTestCase(unittest.TestCase):
         # (fixtures/fm_trusting.py, the default, makes a test's home count as that)
         # fm run never takes a real inhibitor lock; T-1379: fm doctor skips its hook bench (no test reads its timings)
         # T-4935: nor builds the native fast path of the tree under test (minutes under load, the live hooks' binary)
+        if args[:2] in (("lane", "merge"), ("lane", "pick")) and getattr(self, "merge_reviewed", True):
+            self._review_merging(args[2:], cwd)
         e = dict(os.environ, FOREMAN_HOME=self.home, FOREMAN_INHIBITED="1", FOREMAN_DOCTOR_BENCH="0", FOREMAN_DOCTOR_BUILD="0")
         for k in ("FOREMAN_SHIP_AT", "SAMPO_SHIP_AT"):  # a ship's own test run: its pin names a commit a scratch repo lacks
             e.pop(k, None)
@@ -484,6 +486,32 @@ class SampoTestCase(unittest.TestCase):
         if check and p.returncode != 0:
             raise AssertionError(f"fm {' '.join(args)} exited {p.returncode}\nstdout:{p.stdout}\nstderr:{p.stderr}")
         return p
+
+    def _review_merging(self, ids, cwd):
+        """T-5968: a lane merge holds a lane with no review at its tip (lanes.review_hold). A test of something else that
+        merges a lane it never accepted gets the stamp `sampo lane accept` would have left, at the lane's tip now, unless
+        the brief already carries a review stamp; a class that tests the hold sets `merge_reviewed = False`."""
+        try:
+            p = _core.find_project(cwd or self.repo)
+            for tid in ids:
+                b = _core.find_brief(p, tid) if tid.startswith("T-") else None
+                if b and not (b.meta.get("accepted_tip") or b.meta.get("reviewed_tip")):
+                    self.stamp_review(tid, cwd)
+        except Exception:  # a fixture that is no project yet: the merge itself says so
+            pass
+
+    def stamp_review(self, tid, cwd=None):
+        """T-5968: tid's accepted_tip stamped at its lane branch's tip now (what a merge reads), as `sampo lane accept`
+        leaves it; nothing when the branch is not there."""
+        p = _core.find_project(cwd or self.repo)
+        b = _core.find_brief(p, tid)
+        tip = subprocess.run(["git", "-C", p.root, "rev-parse", "--verify", "-q",
+                              f"{b.meta.get('lane_branch') or 'foreman/' + tid}^{{commit}}"],
+                             capture_output=True, text=True).stdout.strip()
+        if tip:
+            b.meta["accepted_tip"] = tip
+            _core.save_brief(p, b)
+        return tip
 
     def fm_ask(self, tid, *cats, session="sess-1", why="needs it", env=None, check=True, pin=None, flags=None):
         """fm ask the way a session runs it: PreToolUse sees the Bash command (trusted session id), then fm runs."""
