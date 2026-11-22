@@ -1549,10 +1549,12 @@ function renderHead(s) {
   setText($("clock"), clock(s.at, true));
   age();
 }
-function age() {
+function age() {  // T-5549: a stale frame (the last one built, shown while the fresh one is held) says how old it is
   if (!snap) return;
   const at = Date.parse(str(snap.at));
-  setText($("clock-age"), Number.isFinite(at) ? (Date.now() - at < 5000 ? "· now" : "· " + span(Date.now() - at) + " old") : "");
+  if (!Number.isFinite(at)) return setText($("clock-age"), "");
+  const old = Date.now() - at;
+  setText($("clock-age"), snap.stale === true ? "· stale, " + span(old) + " old" : old < 5000 ? "· now" : "· " + span(old) + " old");
 }
 
 let snap = null, snapAt = -Infinity, firstRender = true;

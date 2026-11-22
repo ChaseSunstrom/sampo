@@ -653,6 +653,251 @@ class Serve(ForemanTestCase):
             live.snapshot_all(self.p)
         self.assertEqual(n["train"], 2)
 
+    def _open(self, qs="", port=None):  # T-5549: a stream; its reader, and the time the request went out
+        port = port or self.port
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        t0 = time.monotonic()
+        conn.request("GET", "/api/stream" + qs, headers={"Host": f"127.0.0.1:{port}", "Cookie": self.cookie})
+        return conn, conn.getresponse(), t0
+
+    def _frame(self, r):  # T-5549: the next state event's frame
+        while True:
+            line = r.readline().decode()
+            if not line:
+                raise AssertionError("the stream ended before a state event")
+            if line.startswith("data: "):
+                return json.loads(line[6:])
+
+    def _restart(self):  # T-5549: a second server on the same project (a restart), serving on its own port; its
+        # session secret is its own, so this logs in there and the cookie after it is the new server's
+        again, token = live.make(self.p)
+        stop = threading.Event()
+        again.stop = stop
+        t = threading.Thread(target=live.serve, args=(again, stop), daemon=True)
+        t.start()
+        self.addCleanup(lambda: (stop.set(), t.join(5)))
+        port = again.server_address[1]
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("GET", f"/?t={token}", headers={"Host": f"127.0.0.1:{port}"})
+        r = conn.getresponse()
+        r.read()
+        conn.close()
+        self.assertEqual(r.status, 303)
+        self.cookie = r.getheader("Set-Cookie").split(";")[0]
+        return port
+
+    def test_first_frame_a_new_stream_gets_the_last_frame_at_once_marked_stale(self):  # T-5549
+        self.login()
+        gate, started = threading.Event(), threading.Event()
+        gate.set()
+        stamp = {"v": "a"}
+        real = live.COLLECTORS["project"]
+
+        def held(p):  # a build that takes long once the gate is closed
+            started.set()
+            gate.wait(10)
+            return real(p)
+        self.addCleanup(gate.set)
+        with mock.patch.dict(live.COLLECTORS, {"project": held}), mock.patch.object(live, "_stamp", lambda p: stamp["v"]), \
+                mock.patch.object(live, "STREAM_S", 0.1):
+            c1, r1, _ = self._open()
+            fresh = self._frame(r1)
+            self.assertFalse(fresh.get("stale"), "a frame built for this stream is not stale")
+            gate.clear()
+            started.clear()  # the first build set it: wait for the held one
+            stamp["v"] = "b"  # the inputs changed: the next build is due and holds
+            self.assertTrue(started.wait(5))
+            c2, r2, t0 = self._open()
+            second = self._frame(r2)
+            took = time.monotonic() - t0
+            self.assertLess(took, 1.0, "the new stream's first state event does not wait for the held build")
+            self.assertEqual((second.get("stale"), second["at"]), (True, fresh["at"]), "the last built frame, marked stale")
+            self.assertTrue(FIELDS <= set(second))
+            gate.set()
+            self.assertFalse(self._frame(r1).get("stale"), "the next fresh frame clears the stale mark")
+            c1.close()
+            c2.close()
+
+    def test_first_frame_cold_a_restart_paints_the_kept_frame_while_a_build_is_held(self):  # T-5549
+        self.login()
+        c1, r1, _ = self._open()
+        built = self._frame(r1)
+        c1.close()
+        self.assertTrue(os.path.exists(os.path.join(self.p.dir, "live-frame.json")), "a built frame is kept on disk")
+        live._CACHE.clear()
+        gate, started = threading.Event(), threading.Event()
+        real = live.COLLECTORS["project"]
+
+        def held(p):  # the cold build of a fresh server: it takes long
+            started.set()
+            gate.wait(10)
+            return real(p)
+        self.addCleanup(gate.set)
+        with mock.patch.dict(live.COLLECTORS, {"project": held}):
+            port = self._restart()
+            c2, r2, t0 = self._open(port=port)
+            first = self._frame(r2)
+            took = time.monotonic() - t0
+            gate.set()
+            c2.close()
+        self.assertLess(took, 1.0, "the first frame paints within 1 s of a cold start under a long build")
+        self.assertEqual((first.get("stale"), first["at"]), (True, built["at"]))
+        self.assertEqual(first["project"]["slug"], self.p.slug)
+
+    def test_first_frame_a_corrupt_or_linked_kept_frame_is_not_served(self):  # T-5549
+        self.login()
+        c1, r1, _ = self._open()
+        self._frame(r1)
+        c1.close()
+        path = os.path.join(self.p.dir, "live-frame.json")
+        with open(path, "w", encoding="utf-8") as f:  # a torn or foreign file: nothing is served from it
+            f.write("{not json")
+        c2, r2, _ = self._open(port=self._restart())
+        self.assertFalse(self._frame(r2).get("stale"), "a corrupt kept frame is ignored: a fresh build answers")
+        c2.close()
+        os.remove(path)
+        planted = os.path.join(self.tmp, "planted.json")
+        with open(planted, "w", encoding="utf-8") as f:
+            json.dump({"at": "2000-01-01T00:00:00", "project": {}}, f)
+        os.symlink(planted, path)  # a link to a file outside the state folder is not read either
+        c3, r3, _ = self._open(port=self._restart())
+        third = self._frame(r3)
+        c3.close()
+        self.assertFalse(third.get("stale"))
+        self.assertNotEqual(third["at"], "2000-01-01T00:00:00")
+
+    def test_shared_build_two_streams_share_one_build_and_an_unchanged_stamp_skips_it(self):  # T-5549
+        self.login()
+        n = {"builds": 0}
+        real = live.COLLECTORS["project"]
+
+        def counted(p):
+            n["builds"] += 1
+            return real(p)
+        stamp = {"v": "a"}
+        with mock.patch.dict(live.COLLECTORS, {"project": counted}), mock.patch.object(live, "_stamp", lambda p: stamp["v"]), \
+                mock.patch.object(live, "STREAM_S", 0.1):
+            c1, r1, _ = self._open()
+            c2, r2, _ = self._open()
+            names = [t.name for t in threading.enumerate() if t.name == "live-frames"]
+            self.assertEqual(len(names), 1, "one builder thread for every stream, not one per stream")
+            for r in (r1, r2):
+                for _ in range(3):
+                    self._frame(r)
+            self.assertEqual(n["builds"], 1, "two streams, three ticks each: one build, the stamp never changed")
+            stamp["v"] = "b"  # a changed stamp: one more build, shared by both streams
+            for _ in range(40):
+                self._frame(r1)
+                self._frame(r2)
+                if n["builds"] >= 2:
+                    break
+            self.assertEqual(n["builds"], 2)
+            c1.close()
+            c2.close()
+
+    def test_shared_build_the_ceiling_rebuilds_an_unchanged_stamp(self):  # T-5549
+        self.login()
+        n = {"builds": 0}
+        real = live.COLLECTORS["project"]
+
+        def counted(p):
+            n["builds"] += 1
+            return real(p)
+        with mock.patch.dict(live.COLLECTORS, {"project": counted}), mock.patch.object(live, "_stamp", lambda p: "same"), \
+                mock.patch.object(live, "STREAM_S", 0.1), mock.patch.object(live, "FRAME_MAX_S", 0):
+            c1, r1, _ = self._open()
+            for _ in range(3):
+                self._frame(r1)
+            c1.close()
+        self.assertGreaterEqual(n["builds"], 2, "a frame older than FRAME_MAX_S is rebuilt even when the stamp is unchanged")
+
+    def test_shared_build_events_moving_do_not_rebuild_the_frame(self):  # T-5549: a hook writes events every tick
+        self.login()
+        n = {"builds": 0}
+        real = live.COLLECTORS["project"]
+
+        def counted(p):
+            n["builds"] += 1
+            return real(p)
+        path = os.path.join(c.state_dir(), "events.jsonl")
+        with mock.patch.dict(live.COLLECTORS, {"project": counted}), mock.patch.object(live, "STREAM_S", 0.1):
+            c1, r1, _ = self._open()
+            self._frame(r1)
+            for _ in range(10):  # the event log is no input of the frame: its writes cost no build
+                with open(path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"ts": c.now(), "kind": "guard_block", "rule": "rm-rf", "tool": "Bash",
+                                        "project": self.p.slug, "cmd": "rm -rf x"}) + "\n")
+                self._frame(r1)
+            c1.close()
+        self.assertEqual(n["builds"], 1, "ten events moved and no rebuild: FRAME_MAX_S bounds how stale the ticker is")
+
+    def test_first_frame_a_failed_build_holds_the_frame_as_stale(self):  # T-5549
+        self.login()
+        stamp, broke = {"v": "a"}, {"on": False}
+        real = live.snapshot
+
+        def failing(p, fresh=False):
+            if broke["on"]:
+                raise RuntimeError("a build that raises")
+            return real(p, fresh=fresh)
+        with mock.patch.object(live, "_stamp", lambda p: stamp["v"]), mock.patch.object(live, "STREAM_S", 0.1), \
+                mock.patch.object(live, "snapshot", failing):
+            c1, r1, _ = self._open()
+            self.assertFalse(self._frame(r1).get("stale"))
+            broke["on"], stamp["v"] = True, "b"  # the next build is due, and it raises
+            fr = self.server.frames[("p", self.p.dir)]
+            for _ in range(100):
+                if fr.redo:
+                    break
+                time.sleep(0.05)
+            self.assertTrue(fr.redo, "the failed build is noted for a retry")
+            c2, r2, _ = self._open()
+            self.assertTrue(self._frame(r2).get("stale"), "the held frame after a failed build is marked stale")
+            c1.close()
+            c2.close()
+
+    def test_first_frame_a_kept_frame_of_another_owner_or_over_the_cap_is_not_read(self):  # T-5549
+        path = os.path.join(self.p.dir, "live-frame.json")
+        body = json.dumps({"at": "2000-01-01T00:00:00", "project": {}}).encode("utf-8")
+        with open(path, "wb") as f:
+            f.write(body)
+
+        def build():
+            return {"at": c.now()}
+        self.assertIsNotNone(live.Frames(build, lambda: None, path).frame, "this uid's kept frame is read")
+        with mock.patch.object(live.os, "getuid", return_value=os.getuid() + 1):  # a file another uid owns
+            self.assertIsNone(live.Frames(build, lambda: None, path).frame)
+        with mock.patch.object(live, "KEPT_MAX", len(body) - 1):  # larger than the cap: not read
+            self.assertIsNone(live.Frames(build, lambda: None, path).frame)
+
+    def test_strip_hidden_drops_a_sensitive_projects_items_and_refuses_its_slug_elsewhere(self):  # T-5549
+        hidden = type("P", (), {"slug": "secret-zz", "root": "/x/secret-zz", "dir": "/x"})()
+        open_ = type("P", (), {"slug": "open-yy", "root": "/x/open-yy", "dir": "/x"})()
+        frame = {"at": "t", "queue": [{"project": "secret-zz", "id": "a"}, {"project": "open-yy", "id": "b"}],
+                 "lanes": [], "board": {"lanes": [{"project": "secret-zz"}], "asks": {"rows": [{"project": "open-yy"}]}},
+                 "projects": [{"slug": "secret-zz", "name": "secret-zz", "sensitive": False, "drive": True}]}
+        with mock.patch.object(live.c, "all_projects", return_value=[(hidden, {"sensitive": True}), (open_, {})]):
+            out = live._strip_hidden(frame)
+            self.assertEqual([r["id"] for r in out["queue"]], ["b"])
+            self.assertEqual(out["board"]["lanes"], [])
+            self.assertEqual(out["projects"][0], {"slug": "secret-zz", "name": "secret-zz", "sensitive": True})
+            frame["guard"] = "secret-zz"  # the slug in a field this strip does not know: the frame is not served
+            self.assertIsNone(live._strip_hidden(frame))
+
+    def test_first_frame_the_kept_file_is_0600_from_its_first_byte(self):  # T-5549: a frame holds what the page shows
+        path = os.path.join(self.p.dir, "live-frame.json")
+        fr = live.Frames(lambda: {"at": c.now()}, lambda: None, path)
+        real, modes = os.replace, []
+
+        def checked(src, dst):  # the temp file's mode at the moment it takes the kept file's name
+            modes.append(os.stat(src).st_mode & 0o777)
+            return real(src, dst)
+        with mock.patch.object(live.os, "replace", side_effect=checked):
+            fr._keep(b'{"at": "x"}')
+        self.assertEqual(modes, [0o600], "the temp file is 0600 before it is renamed over the kept file")
+        self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+        self.assertEqual(open(path, "rb").read(), b'{"at": "x"}')
+
     def test_all_carries_every_open_projects_asks_ships_and_gate_tagged_and_none_of_a_sensitive_one(self):  # T-3731
         op, sp = self._two_more()
         at = c.now()

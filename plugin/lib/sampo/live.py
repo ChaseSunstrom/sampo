@@ -8,13 +8,16 @@ replaced at once, so `sampo watch --web --url` always prints a URL that still wo
 GET /            the page: plugin/web/live/index.html (its __NONCE__ becomes the CSP nonce), or a placeholder
 GET /static/NAME a file of plugin/web/live/ (live.css, live.js)
 GET /api/state   one snapshot (the contract: research live-schema)
-GET /api/stream  Server-Sent Events: a `state` event with the snapshot every 2 s
+GET /api/stream  Server-Sent Events: a `state` event with the snapshot every STREAM_S (2 s); a new stream gets the last frame
+                 at once, marked `"stale": true` while a fresh one is held (T-5549)
 POST /api/act    {action, project?, session?, text?, confirmed?}: one of ACTIONS as a sampo child process (or a bus note); needs
                  Content-Type application/json, the server's own Origin and an X-Sampo-Nonce minted for a page load
 
 Each collector is cheap (no model call, nothing beyond 127.0.0.1: Ollama's /api/ps, the Jeff server's /v1/models,
 nvidia-smi, /proc) and fails soft: its field is empty, never a 500. The whole snapshot is cached CACHE_S seconds, so any
-number of pages cost one build. Model calls come from what the code already logs: the ledger's cards_grow, moons_grow,
+number of pages cost one build; a stream's frames come from one builder thread per view, rebuilt only when the input
+stamp moved (or FRAME_MAX_S passed), and kept on disk for the next run (T-5549).
+Model calls come from what the code already logs: the ledger's cards_grow, moons_grow,
 moons_funnel, run_session, genesis_confirm and genesis_review events (each names its models) and state/spend.jsonl."""
 import calendar
 import hmac
@@ -27,6 +30,7 @@ import signal
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -36,9 +40,12 @@ from sampo import core as c
 from sampo import jobprog, settingsserve
 
 WEB = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "web", "live"))
-CACHE_S = 1.5  # the snapshot is shared; the stream asks every 2 s
+CACHE_S = 2.5  # T-5549: above STREAM_S, so /api/state's one-off build is never older than a stream tick's
 SLOW_S = 30  # the stats read whole card and moon files
-STREAM_S = 2
+STREAM_S = 2  # a stream's frame every STREAM_S seconds; one build per view serves every stream of it
+FRAME_MAX_S = 30  # T-5549: a frame whose input stamp is unchanged is still rebuilt this often (git and GPU are not stamped)
+KEEP_S = 30  # T-5549: the last frame is kept on disk at most this often
+KEPT_MAX = 8 << 20  # T-5549: a kept frame larger than this is not read
 ALL_S = 10  # T-3730: the All view refreshes each other project's slice this often
 STREAMS_MAX = 8  # open streams at once: a thread each
 FLOW_S, CALL_S = 60, 300
@@ -534,17 +541,26 @@ COLLECTORS = {"project": project, "focus": focus, "queue": queue, "closed_today"
 EMPTY = {"project": {}, "focus": None, "gpu": None, "stats": {}, "board": {}}  # every other field's empty is []
 
 
-def snapshot(p):
-    """The contract's snapshot; a collector that raises leaves its field empty. Cached CACHE_S seconds per project."""
-    def build():
-        s = {"at": c.now()}
-        for name, fn in COLLECTORS.items():
-            try:
-                s[name] = fn(p)
-            except Exception:  # a collector is cheap and optional; the rest of the page stands
-                s[name] = EMPTY.get(name, [])
+def _build_one(p):
+    """The contract's snapshot of one project, built now; a collector that raises leaves its field empty."""
+    s = {"at": c.now()}
+    for name, fn in COLLECTORS.items():
+        try:
+            s[name] = fn(p)
+        except Exception:  # a collector is cheap and optional; the rest of the page stands
+            s[name] = EMPTY.get(name, [])
+    return s
+
+
+def snapshot(p, fresh=False):
+    """/api/state's snapshot: _build_one, cached CACHE_S seconds per project. A stream's frame builder asks for a `fresh`
+    build, which also refreshes that cache, so a project's build is shared by the frames and /api/state (T-5549)."""
+    if fresh:
+        s = _build_one(p)
+        with _LOCK:
+            _CACHE[("snap", p.dir)] = (time.monotonic(), s)
         return s
-    return _cached(("snap", p.dir), CACHE_S, build)
+    return _cached(("snap", p.dir), CACHE_S, lambda: _build_one(p))
 
 
 def _slice(p):
@@ -566,11 +582,11 @@ def _tag(rows, slug):
     return [{**r, "project": slug} for r in rows or []]
 
 
-def snapshot_all(default):
-    """T-3730: every open project at once. The machine-wide fields are the server's own project's snapshot (built once);
-    each other project adds its slice, cached ALL_S seconds. Items carry "project"; a sensitive project is its name
-    only, with no items."""
-    base = snapshot(default)
+def snapshot_all(default, base=None):
+    """T-3730: every open project at once. The machine-wide fields are the server's own project's snapshot (built once,
+    or `base` when a frame builder has just built it); each other project adds its slice, cached ALL_S seconds. Items
+    carry "project"; a sensitive project is its name only, with no items."""
+    base = snapshot(default) if base is None else base
     s = dict(base)
     queue_, lanes_, rows, trains, loops, asks, ships, slugs = [], [], [], [], [], [], [], []
     more = 0
@@ -617,6 +633,247 @@ def snapshot_all(default):
     except Exception:  # noqa: BLE001 - the gate's picture is optional
         s["board"]["guard"] = None
     return s
+
+
+FRAME_KEPT = "live-frame"  # T-5549: a kept frame's file name starts with this; it is no input to the stamp
+
+
+def _meta(path):
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
+def _listing(d):
+    """A folder's entries by name, size and mtime (a subfolder by its own mtime only); () when there is no folder."""
+    try:
+        with os.scandir(d) as it:
+            return tuple(sorted((e.name, _meta(e.path)) for e in it if FRAME_KEPT not in e.name))
+    except FileNotFoundError:
+        return ()
+
+
+def _stamp(p):
+    """T-5549: what a project's frame is built from, read cheaply: the project folder's entries, the board layout (global
+    and this project's) and the job progress folder. None when a read fails: that frame is rebuilt. The event log is not
+    in it: a hook writes it every few seconds, so FRAME_MAX_S alone bounds how stale the ticker can be. Git refs, the
+    network and the GPU are not in it either."""
+    from sampo import board as bd
+    try:
+        sd = c.state_dir()
+        return (_listing(p.dir), _meta(os.path.join(sd, bd.LAYOUT_FILE)), _listing(os.path.join(sd, "progress")))
+    except Exception:  # an input that will not read: the frame is rebuilt rather than trusted
+        return None
+
+
+def _stamp_all(default):
+    return tuple(_stamp(q) for q in [default, *(q for q, _ in c.all_projects())])
+
+
+def _encode(s):
+    return json.dumps(s, ensure_ascii=False).encode("utf-8")
+
+
+def _strip_hidden(s):
+    """T-5549: a kept All frame, read back later, with the sensitive projects taken out as a live build would draw them:
+    their items go and their rows keep only the name. None when a sensitive project's slug still shows elsewhere."""
+    hidden = {q.slug for q, meta in c.all_projects() if meta.get("sensitive")}
+    if not hidden:
+        return s
+
+    def keep(rows):
+        return [r for r in rows if not (isinstance(r, dict) and r.get("project") in hidden)] if isinstance(rows, list) else rows
+    out = dict(s)
+    for k in ("queue", "lanes"):
+        if k in out:
+            out[k] = keep(out[k])
+    b = dict(s["board"]) if isinstance(s.get("board"), dict) else {}
+    for k in ("lanes", "trains", "loops", "ships"):
+        if k in b:
+            b[k] = keep(b[k])
+    if isinstance(b.get("asks"), dict):
+        b["asks"] = {**b["asks"], "rows": keep(b["asks"].get("rows"))}
+    if "board" in s or b:
+        out["board"] = b
+    if isinstance(s.get("projects"), list):
+        out["projects"] = [{"slug": r.get("slug"), "name": r.get("name"), "sensitive": True}
+                           if isinstance(r, dict) and r.get("slug") in hidden else r for r in s["projects"]]
+    rest = _encode({k: v for k, v in out.items() if k != "projects"}).decode("utf-8")  # the rows' names are by design
+    return None if any(slug in rest for slug in hidden) else out
+
+
+class _Frame:
+    """One frame: the snapshot, its bytes (encoded once for every stream) and the stale bytes, encoded on first need."""
+
+    def __init__(self, s, stamp, built, kept=False):
+        self.s, self.stamp, self.built, self.kept, self.seq = s, stamp, built, kept, 0
+        self.body, self._stale = _encode(s), None
+
+    def stale_body(self):
+        if self._stale is None:
+            self._stale = _encode({**self.s, "stale": True})
+        return self._stale
+
+
+class Frames:
+    """T-5549: one view's frames (a project's, or All's), built by one thread (`live-frames`) that runs while a stream
+    is open and is shared by all of them. Every STREAM_S the thread publishes a frame: rebuilt when the input stamp
+    changed or FRAME_MAX_S has passed, else the held frame again with `at` set to now. A new stream gets the held frame
+    at once, marked stale (`"stale": true`) while a build is held, when it was kept by an earlier run, or before this
+    run's first tick. A kept frame (`path`, 0600, written at most every KEEP_S seconds) is read back at start."""
+
+    def __init__(self, build, stamp, path, clean=None):
+        self.build, self.stamp, self.path, self.clean = build, stamp, path, clean
+        self.cond = threading.Condition()
+        self.frame = self._kept()
+        self.seq = self.frame.seq if self.frame else 0
+        self.subs, self.closed, self.building, self.redo, self.ticked = 0, False, False, False, False
+        self.kept_at, self.thread = None, None
+
+    def _kept(self):
+        """The frame an earlier run kept, or None: no link, a non-file, another owner, a torn or a large file, or one
+        `clean` refuses: none."""
+        try:
+            f = _open_mine(self.path, KEPT_MAX)
+            if f is None:
+                return None
+            with f:
+                raw = f.read(KEPT_MAX + 1)
+            s = json.loads(raw) if len(raw) <= KEPT_MAX else None
+        except (OSError, ValueError, RecursionError):
+            return None
+        if not isinstance(s, dict) or not isinstance(s.get("at"), str):
+            return None
+        if self.clean is not None:
+            try:
+                s = self.clean(s)
+            except Exception:  # a project list that will not read: the kept frame is not served
+                return None
+            if s is None:
+                return None
+        fr = _Frame(s, None, float("-inf"), kept=True)
+        fr.seq = 1
+        return fr
+
+    def _keep(self, body):
+        """The frame's bytes to the kept file: a temp file made 0600 (mkstemp, so never world-readable, even for an
+        instant) that replaces the old one. A failure leaves the old file: a kept frame is a convenience."""
+        tmp = None
+        try:
+            fd, tmp = tempfile.mkstemp(dir=os.path.dirname(self.path), prefix="." + FRAME_KEPT + ".", suffix=".tmp")
+            with os.fdopen(fd, "wb") as f:
+                f.write(body)
+            os.replace(tmp, self.path)
+        except (OSError, ValueError):
+            if tmp:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+
+    def subscribe(self):
+        with self.cond:
+            if self.subs == 0:
+                self.ticked = False  # this run has not ticked yet: a frame held until it does is stale
+            self.subs += 1
+            self.cond.notify_all()
+            if self.thread is None:
+                self.thread = threading.Thread(target=self._run, daemon=True, name="live-frames")
+                self.thread.start()
+
+    def unsubscribe(self):
+        with self.cond:
+            self.subs -= 1
+
+    def close(self):
+        with self.cond:
+            self.closed = True
+            self.cond.notify_all()
+
+    def take(self, seen):
+        """The newest frame after the sequence number `seen`, waiting up to STREAM_S for one: (frame, stale), or
+        (None, False) when there is none yet or the views closed. A stream's first frame is stale when it is held over."""
+        with self.cond:
+            self.cond.wait_for(lambda: self.closed or (self.frame is not None and self.frame.seq > seen), STREAM_S)
+            f = self.frame
+            if self.closed or f is None or f.seq <= seen:
+                return None, False
+            first = seen == 0 and (f.kept or self.building or self.redo or not self.ticked)  # redo: a build failed
+        if seen == 0 and not first and f.stamp is not None:
+            first = self._moved(f.stamp)  # the inputs changed since that frame: its rebuild is due, so it is stale
+        return f, first
+
+    def _moved(self, stamp):
+        try:
+            return self.stamp() != stamp
+        except Exception:  # an input that will not read now: the frame is not trusted as current
+            return True
+
+    def _run(self):
+        while True:
+            with self.cond:
+                while not self.closed and not self.subs:  # idle with no stream: no build (subscribe and close notify)
+                    self.cond.wait()
+                if self.closed:
+                    return
+            try:
+                self._tick()
+            except Exception:  # the thread outlives a bad tick: the next one builds again
+                with self.cond:
+                    self.building, self.redo = False, True
+            with self.cond:
+                end = time.monotonic() + STREAM_S
+                while not self.closed and time.monotonic() < end:
+                    self.cond.wait(end - time.monotonic())
+                if self.closed:
+                    return
+
+    def _tick(self):
+        now = time.monotonic()
+        try:
+            stamp = self.stamp()
+        except Exception:  # an input that will not read: rebuild rather than trust the held frame
+            stamp = None
+        f = self.frame
+        if f is not None and not self.redo and stamp is not None and f.stamp == stamp and now - f.built < FRAME_MAX_S:
+            return self._publish(_Frame(dict(f.s, at=c.now()), stamp, f.built), keep=False)  # the stamp held: no build
+        with self.cond:
+            self.building = True
+        try:
+            s = self.build()
+        except Exception:  # a build that raises: the held frame stays, and the next tick builds again
+            with self.cond:
+                self.building, self.redo = False, True
+            return None
+        self._publish(_Frame(s, stamp, now), keep=True)
+
+    def _publish(self, fr, keep):
+        """Hold the frame and wake the streams; then, after them, write the kept file (at most every KEEP_S)."""
+        with self.cond:
+            self.seq += 1
+            fr.seq = self.seq
+            self.frame, self.building, self.redo, self.ticked = fr, False, False, True
+            self.cond.notify_all()
+        if keep and (self.kept_at is None or time.monotonic() - self.kept_at >= KEEP_S):
+            self.kept_at = time.monotonic()
+            self._keep(fr.body)  # the bytes already encoded for the streams: no second encode
+
+
+def _frames_of(srv, p, all_):
+    """The view's Frames, made on first use. The caller holds srv.once."""
+    key = ("all",) if all_ else ("p", p.dir)
+    f = srv.frames.get(key)
+    if f is None:
+        if all_:
+            d = srv.project
+            f = Frames(lambda: snapshot_all(d, base=snapshot(d, fresh=True)), lambda: _stamp_all(d),
+                       os.path.join(d.dir, "live-frame-all.json"), clean=_strip_hidden)
+        else:
+            f = Frames(lambda: snapshot(p, fresh=True), lambda: _stamp(p), os.path.join(p.dir, "live-frame.json"))
+        srv.frames[key] = f
+    return f
 
 
 def machine():
@@ -857,12 +1114,13 @@ class Handler(settingsserve.Handler):
             return self._send(404, "not found")
         self._send(200, data, ctype=TYPES[ext] + ("; charset=utf-8" if ext in (".css", ".js", ".svg", ".json") else ""))
 
-    def _stream(self, p, snap=None):
-        snap = snap or snapshot
+    def _stream(self, p, all_=False):
+        """T-5549: the view's frames (one builder for every stream of it); the first event at once, from the held frame."""
         srv = self.server
         with srv.once:
             if srv.streams >= STREAMS_MAX:
                 return self._send(503, "too many streams")
+            frames = _frames_of(srv, p, all_)
             srv.streams += 1
         try:
             self.send_response(200)
@@ -870,10 +1128,18 @@ class Handler(settingsserve.Handler):
                          ("Content-Security-Policy", "default-src 'none'"), ("X-Content-Type-Options", "nosniff")):
                 self.send_header(k, v)
             self.end_headers()
-            while not srv.stop.is_set():
-                self.wfile.write(b"event: state\ndata: " + json.dumps(snap(p), ensure_ascii=False).encode() + b"\n\n")
-                self.wfile.flush()
-                srv.stop.wait(STREAM_S)
+            frames.subscribe()
+            try:
+                seen = 0
+                while not srv.stop.is_set():
+                    f, stale = frames.take(seen)
+                    if f is None:
+                        continue
+                    seen = f.seq
+                    self.wfile.write(b"event: state\ndata: " + (f.stale_body() if stale else f.body) + b"\n\n")
+                    self.wfile.flush()
+            finally:
+                frames.unsubscribe()
         except (OSError, ValueError):
             pass  # the page went away
         finally:
@@ -947,7 +1213,7 @@ class Handler(settingsserve.Handler):
             slug = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("project", [""])[0]
             if slug == "all":  # T-3730
                 return self._json(snapshot_all(self.server.project)) if path == "/api/state" else self._stream(
-                    self.server.project, snapshot_all)
+                    self.server.project, all_=True)
             p = resolve(self.server.project, slug)
             if p is None:
                 return self._send(404, "unknown project")
@@ -983,6 +1249,7 @@ def make(p, port=0):
     server.token, server.session = secrets.token_urlsafe(32), _session(p)
     server.once, server.project, server.last = threading.Lock(), p, time.monotonic()
     server.stop, server.streams = threading.Event(), 0
+    server.frames = {}  # T-5549: the views' Frames, by view (made by the first stream of each)
     return server, server.token
 
 
@@ -1033,6 +1300,10 @@ def serve(server, stop=None):
                         write_url(server.project, _url(server))
     finally:
         stop.set()  # open streams end
+        with server.once:  # T-5549: and the frame builders stop with them
+            views = list(getattr(server, "frames", {}).values())
+        for f in views:
+            f.close()
         server.server_close()
 
 
