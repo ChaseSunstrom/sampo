@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- A land writes a parked lane's lane_stop and Log line the moment it parks it, so lane recover and the lane pilot see the park while the land still runs (T-5852).
 - The land no longer retries every hand-close leftover's identical refusal at each train boundary: a code-only change backs off 10 minutes, doubling per identical refusal up to 6 hours, while a brief or tip change or a landed FIX retries at once (T-5823).
 - sampo selfcheck files one 'Wire or retire' capture a day for a feature with no real use in 14 days (T-5710).
 - A live train runs the repo-shape classes once on the merged batch before anything lands, so a red or cut batch lands nothing (T-5590).
