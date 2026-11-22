@@ -3518,8 +3518,9 @@ LEFT_PER_TRAIN = 8
 
 
 def _retry_due(p, tid):
-    """T-3969: a leftover whose close may pass now: never refused, its brief or lane changed since, or the refusal is
-    older than REFUSAL_TTL_S (a closed one: only a done task, whose lane is all that's left)."""
+    """T-3969: a leftover whose close may pass now: never refused, its brief or lane changed since, the refusal is
+    older than its backoff (T-5823: a code-only change waits, doubling per identical refusal) or REFUSAL_TTL_S (a
+    closed one: only a done task, whose lane is all that's left)."""
     from sampo import cli
     b = cli.need_brief(p, tid)
     if b.status in c.CLOSED and b.status != "done":
@@ -3536,18 +3537,34 @@ def _code_id():
     return (c._git(lib, "rev-parse", "HEAD:./", timeout=10, fail="") or "").strip()[:12]
 
 
+REFUSAL_BACKOFF_S = 600  # T-5823: the wait after a refusal's first appearance when only Sampo's code changed; doubles per repeat
+
+
 def _refused_before(b, tip):
-    """The reason the last land's close was refused when the brief, the lane tip and Sampo's code are as they were
-    then, else None."""
+    """The reason the last land's close was refused when the brief and the lane tip are as they were then and Sampo's
+    code is too, else None. T-5823: every train changes the code, so a code-only change (same reason, brief, tip) holds
+    the refusal for REFUSAL_BACKOFF_S, doubling per identical refusal in a row, capped at REFUSAL_TTL_S, instead of
+    retrying at once (eight leftovers cost a minute each at every train boundary). A brief or tip change, a
+    different reason or a released FIX (QUEUED_AGAIN) retries at once."""
+    last, n = None, 0
     for line in reversed(b.section("Log").splitlines()):
         if QUEUED_AGAIN in line:  # T-5791: the FIX the close waited for landed: the refusal before it no longer holds
-            return None
-        if m := re.search(r"^- (\S+) land: close refused: (.*) @ (\w+) (\w*)(?: (\w+))? ?$", line):
-            at = c.parse_ts(m.group(1))
-            if not at or time.time() - at.timestamp() > REFUSAL_TTL_S:
-                return None
-            return m.group(2) if (m.group(3), m.group(4), m.group(5) or "") == (_brief_hash(b), tip, _code_id()) else None
-    return None
+            break
+        if not (m := re.search(r"^- (\S+) land: close refused: (.*) @ (\w+) (\w*)(?: (\w+))? ?$", line)):
+            continue
+        if last is None:
+            last = m
+        elif m.group(2, 3, 4) != last.group(2, 3, 4):  # another reason, brief or tip: the run of identical refusals ends
+            break
+        n += 1
+    if last is None:
+        return None
+    at = c.parse_ts(last.group(1))
+    if not at or last.group(3, 4) != (_brief_hash(b), tip):
+        return None
+    wait = (REFUSAL_TTL_S if (last.group(5) or "") == _code_id()
+            else min(REFUSAL_TTL_S, REFUSAL_BACKOFF_S * 2 ** min(n - 1, 20)))
+    return last.group(2) if time.time() - at.timestamp() <= wait else None
 
 
 QUEUED_AGAIN = "land: close queued again"  # T-5791: the Log line of a close released when its express FIX landed

@@ -602,7 +602,13 @@ class Land(LandCase):
         b.set_section("Log", re.sub(r"(?m)^(- \S+ land: close refused: .* @ \w+ \w*) \w+$", r"\1 0000beef",
                                     b.section("Log")))
         c.save_brief(p, b)
-        self.assertNotIn("no retry", self.land().stderr)
+        # T-5823: a code-only change backs off (10 minutes, doubled per identical refusal), not a retry at every land
+        self.assertRegex(self.land().stderr, rf"left for a hand close {d}: .*no retry")
+        b = c.find_brief(p, d)
+        b.set_section("Log", re.sub(r"(?m)^- \S+ (land: close refused)", rf"- {c.iso(time.time() - 3 * 3600)} \1",
+                                    b.section("Log")))
+        c.save_brief(p, b)
+        self.assertNotIn("no retry", self.land().stderr)  # its backoff passed: the changed code may answer differently
         b = c.find_brief(p, d)
         b.set_section("Approach", b.section("Approach") + "\nchanged\n")
         c.save_brief(p, b)
@@ -1448,6 +1454,88 @@ class AcceptDuringMerge(LandCase):
             out = self.accept(a)  # the merge is over: the same accept starts the land
             spawn.assert_called_once()
             self.assertIn("land started in the background", out)
+
+
+class LeftoverBackoff(LandCase):
+    """T-5823: a hand-close leftover's refusal was keyed on the whole Sampo tree, which every train changes, so the same
+    eight refusals (a minute each) ran again at every train boundary. An identical refusal whose only change is the
+    code backs off, doubling per identical refusal; the brief, the lane tip or a landed FIX retry at once."""
+
+    WHY = "docs impact missing: no DOCS line; its lane is kept"
+
+    def refused(self, tid, ages_min, why=None, tip="abc1234", code="old"):
+        """The brief's Log after refusals made `ages_min` minutes ago (oldest first), and the brief."""
+        p = c.find_project(self.repo)
+        b = c.find_brief(p, tid)
+        for age in ages_min:
+            b.append_log(f"land: close refused: {why or self.WHY} @ {train._brief_hash(b)} {tip} {code}",
+                         ts=c.iso(time.time() - age * 60))
+        c.save_brief(p, b)
+        return c.find_brief(p, tid)
+
+    def asked(self, b, tip="abc1234", code="new"):
+        with mock.patch.object(train, "_code_id", lambda: code):
+            return train._refused_before(b, tip)
+
+    def test_leftover_backoff_a_code_only_change_waits_and_doubles_per_identical_refusal(self):
+        a = self.lane(1, "a.txt", when=OLD)
+        b = self.refused(a, [300, 200, 5])  # refused 3 times, the last 5 minutes ago: 40 minutes' wait
+        self.assertEqual(self.asked(b), self.WHY, "the code changed since, the wait has not passed: no retry")
+        self.assertEqual(self.asked(b, code="old"), self.WHY, "the same code: no retry, as before")
+        for age, held in ((39, True), (41, False)):  # a fresh brief each: the last refusal's age is what counts
+            x = self.lane(10 + age, f"x{age}.txt", when=OLD)
+            y = self.refused(x, [300, 200, age])
+            self.assertEqual(self.asked(y) is not None, held, f"3 refusals, the last {age} min ago")
+        x = self.lane(3, "c.txt", when=OLD)
+        one = self.refused(x, [9])
+        self.assertIsNotNone(self.asked(one), "one refusal: 10 minutes' wait")
+        x = self.lane(4, "d.txt", when=OLD)
+        self.assertIsNone(self.asked(self.refused(x, [11])), "one refusal 11 min ago: retried")
+
+    def test_leftover_backoff_is_capped_at_the_refusal_ttl_and_the_ttl_ends_the_same_code_memo_too(self):
+        a, d = self.lane(1, "a.txt", when=OLD), self.lane(2, "d.txt", when=OLD)
+        many = self.refused(a, [3000 - 100 * i for i in range(20)] + [5 * 60])  # 21 refusals, the last 5 h ago
+        self.assertEqual(self.asked(many), self.WHY, "the doubled wait is capped at the TTL, not past it")
+        many = self.refused(d, [7 * 60])
+        self.assertIsNone(self.asked(many, code="old"), "older than the TTL: retried")
+        self.assertIsNone(self.asked(many), "older than the TTL: retried")
+
+    def test_leftover_backoff_a_brief_or_tip_change_retries_at_once(self):
+        a = self.lane(1, "a.txt", when=OLD)
+        b = self.refused(a, [300, 200, 5])
+        self.assertIsNone(self.asked(b, tip="def5678"), "the lane moved")
+        p = c.find_project(self.repo)
+        b.set_section("Notes", "a line the builder added")
+        c.save_brief(p, b)
+        self.assertIsNone(self.asked(c.find_brief(p, a)), "the brief changed")
+
+    def test_leftover_backoff_a_different_reason_starts_the_count_over_and_a_landed_fix_retries_at_once(self):
+        a = self.lane(1, "a.txt", when=OLD)
+        b = self.refused(a, [300, 200, 100])
+        b = self.refused(a, [15], why="no audit recorded")  # a new reason: one refusal of its kind, 10 minutes' wait
+        self.assertIsNone(self.asked(b), "its own wait (10 min) has passed 15 minutes on")
+        x = self.lane(2, "b.txt", when=OLD)
+        b = self.refused(x, [300, 200, 5])
+        self.assertIsNotNone(self.asked(b))
+        p = c.find_project(self.repo)
+        b.append_log(f"{train.QUEUED_AGAIN}: T-9000 landed")
+        c.save_brief(p, b)
+        self.assertIsNone(self.asked(c.find_brief(p, x)), "the FIX it waited for landed: retried now")
+
+    def test_leftover_backoff_retry_due_follows_it(self):
+        a = self.lane(1, "a.txt", when=OLD)
+        p = c.find_project(self.repo)
+        tip = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=self.brief(a).meta["lane"],
+                             capture_output=True, text=True, check=True).stdout.strip()
+        self.assertTrue(train._retry_due(p, a), "never refused: due")
+        self.refused(a, [300, 200, 5], tip=tip)
+        with mock.patch.object(train, "_code_id", lambda: "new"):
+            self.assertFalse(train._retry_due(p, a), "refused 3 times, only the code changed: backing off")
+        b = self.refused(a, [])
+        b.append_log(f"{train.QUEUED_AGAIN}: T-9000 landed")
+        c.save_brief(p, b)
+        with mock.patch.object(train, "_code_id", lambda: "new"):
+            self.assertTrue(train._retry_due(p, a), "a landed FIX releases it")
 
 
 if __name__ == "__main__":
