@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- `kalevala select` writes a Landed section into gen-N/select.md and lineage.md, listing each child of the gen's GIANT task with its status and its tower's score delta from the scores select already holds (T-5025).
 - `sampo fold set/page/--json` records one verdict per inbox or queued task in a fold ledger, lists every task with its verdict or "unfolded" on one page, and counts the standalone ones (T-5020).
 - `sampo.steward_dup` finds duplicate and foldable open tasks with a hashed word and bigram TF-IDF cosine over title and criteria, no training, bounded to milliseconds, and never pairs a task with its dependency (T-5019).
 - Capture placement verdict: `place_capture` says new, join, merge or duplicate with the target task, reason, backend and probability, from `models.decide` with the word-overlap rule as the under-the-bar fallback (T-5011).
