@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- Discovered and followup captures file up to 40 a day on a clean record (was 12), and a budget the user sets is their allowance, raising it or capping it (T-5722).
 - The state-move guard asks only about a command whose program runs Sampo, so a grep over plugin/lib or a commit message that names sampo passes with a HOME or TMPDIR assignment in front (T-5547).
 - A change now gets a model-free process tier (trivial, small, normal or risky) from its claimed tier, files, diff and linked tests, with sensitive, hook and guard changes always at risky (T-5713).
 - Brainstorm and directions keep a lean SKILL.md stub, with their full steps in references/procedure.md and a doctor cap on each stub, so a compaction re-attaches less (T-5601).
