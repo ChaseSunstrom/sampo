@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 
 from sampo import core as c
 
@@ -948,7 +949,7 @@ def follow_gaps(p, b):
         return []
     named = "; ".join(f"f-{x['key']} {c.fit(c.plain(x['body']), 60)}" for x in todo[:3])  # a train's refusal line is cut: lead with them
     return [f"{len(todo)} follow-up(s) captured on {b.id} are unsettled ({named}" + (" …" if len(todo) > 3 else "")
-            + f"): sampo task follow {b.id} KEY --done | --capture | --drop --why \"…\" settles each (no key lists them)"]
+            + f"): sampo task follow {b.id} KEY --done | --capture | --drop --why \"…\" settles each, --drain files them all, the small ones in one batch (no key lists them)"]
 
 
 def safe_follow_gaps(p, b):
@@ -1015,12 +1016,13 @@ def refile_follow(p, host):
 
 
 def task_follow(p, args):
-    """sampo task follow ID [KEY…] [--done | --capture | --drop --why "…"]: list the follow-ups captured on a task, or settle
-    them (each named by its key: read first, never every open one at once)."""
+    """sampo task follow ID [KEY…] [--done | --capture | --drop --why "…" | --drain]: list the follow-ups captured on a task,
+    or settle them (each named by its key: read first, never every open one at once; --drain files every open one, the
+    small ones in one batch host for a haiku builder, T-5717)."""
     from sampo import cli
-    flags = [n for n in ("done", "capture", "drop") if getattr(args, n, False)]
+    flags = [n for n in ("done", "capture", "drop", "drain") if getattr(args, n, False)]
     if len(flags) > 1:
-        raise cli.UsageError("one of --done, --capture, --drop at a time")
+        raise cli.UsageError("one of --done, --capture, --drop, --drain at a time")
     why = " ".join(str(getattr(args, "why", None) or "").split())
     if flags == ["drop"] and not why:
         raise cli.UsageError("--drop needs --why \"…\": a dropped follow-up says why it isn't needed")
@@ -1036,6 +1038,13 @@ def task_follow(p, args):
         unknown = [k for k in keys if k not in {x["key"] for x in items}]
         if unknown:
             raise cli.UsageError(f"no follow-up f-{unknown[0]} on {b.id}: sampo task follow {b.id} lists them")
+        if flags == ["drain"]:  # T-5717: every open one (or those named), the small ones in one batch host
+            got = drain_follow_ups(p, b, keys)
+            n = len(got["filed"])
+            return cli.out(args, dict(got, id=b.id),
+                           f"{b.id}: {n} follow-up(s) filed" + (f", {len(got['members'])} of them batched in {got['batch']}: "
+                                                                 f"{got['line']}" if got["batch"] else "")
+                           + f"; {len([x for x in follow_items(c.find_brief(p, b.id)) if _is_open(x)])} open.")
         todo = [x for x in items if _is_open(x) and (not keys or x["key"] in keys)]
         if not keys:  # never every open one at once: each is read, then named
             raise cli.UsageError(f"name the follow-up(s) (f-xxxxxxxx): sampo task follow {b.id} lists them")
@@ -1057,17 +1066,104 @@ def task_follow(p, args):
                    + f"; {len([x for x in follow_items(b) if _is_open(x)])} open.")
 
 
+DRAIN_MAX = 6  # T-5717: the most follow-ups one drain host takes: one haiku builder holds six small ones
+DRAIN_AC = "the tests linked to the change pass :: sampo check --affected"  # a builder brief refuses a host with no verify
+
+
+def _small_follow(p, item, tid):
+    """T-5717: whether a filed follow-up is small enough for the drain host: the process tier (trivial or small) from the
+    paths its text names. No named path, no score: it stays alone. A text that names only docs and tests is scored as a
+    one-line change to them (it is no code); one that names code is scored on its claimed tier, with no linked tests
+    known, so only a claimed S passes."""
+    files = named_paths(_whole(p, item))
+    b = c.find_brief(p, tid)
+    if not files or not b:
+        return False
+    prose = all(c.DOC.search(f) or c._TEST_DIR.search(f) for f in files)
+    diff = "".join(f"diff --git a/{f} b/{f}\n@@ -1 +1 @@\n+x\n" for f in files) if prose else ""
+    return c.process_tier(b.tier, b.type, files, diff, {})[0] in ("trivial", "small")
+
+
+def _undo_batch(p, h, members):
+    """A batch host that was made but not finished: its members go back unbatched and it is dropped, each step on its
+    own so one failure leaves the rest done. Best effort: the drain's caller must never see an error from this."""
+    for tid in members:
+        try:
+            m = c.find_brief(p, tid)
+            if m and h is not None and m.meta.get("batched_in") == h.id:
+                m.meta.pop("batched_in", None)
+                m.append_log(f"unbatched: the drain host {h.id} could not be made")
+                c.save_brief(p, m)
+        except Exception:
+            pass
+    if h is not None:
+        try:
+            hh = c.find_brief(p, h.id)
+            if hh:
+                hh.meta["status"] = "dropped"
+                hh.meta.pop("batch", None)
+                hh.append_log("dropped: the drain could not finish making this host")
+                c.save_brief(p, hh)
+        except Exception:
+            pass
+
+
+def drain_follow_ups(p, host, keys=None, via=""):
+    """T-5717: files every open follow-up of host (those named by keys, when given) as a task of its own (_take), marked
+    captured and logged, saved as it goes so a failure part way leaves the rest open; then makes ONE batch host of the
+    small ones (_small_follow, at most DRAIN_MAX, two or more) with the batch maker: tier S, harness plan drain, one
+    criterion with a verify command, for one haiku builder (sampo lane brief HOST --model haiku, a line printed here,
+    no agent started). The caller holds c.lock(p.dir) (it isn't reentrant: the batch is made with it held). A batch the
+    maker refuses leaves its members filed alone. {"filed": [(key, id)], "batch": host id or None, "members": [ids],
+    "line": the launch line or ""}."""
+    from sampo import cli
+    want = {str(k).removeprefix("f-") for k in keys or ()}
+    filed, small = [], []
+    for x in [x for x in follow_items(host) if _is_open(x) and (not want or x["key"] in want)]:
+        tid = _take(p, host, x)
+        _set_mark(host, {x["key"]: f"captured {tid}"})
+        host.append_log(f"follow-ups settled{via}: f-{x['key']} captured {tid}")
+        c.save_brief(p, host)
+        filed.append((x["key"], tid))
+        if len(small) < DRAIN_MAX and _small_follow(p, x, tid):
+            small.append(tid)
+    batch, line = None, ""
+    if len(small) >= 2:
+        h = None
+        try:
+            names = "; ".join(c.fit(c.find_brief(p, t).title, 30) for t in small)
+            h, _ = cli._make_batch(p, small, c.fit(f"Drain {host.id}'s follow-ups: {names}", 120), held=True)
+            h.meta["tier"] = "S"  # the maker rates a batch of three or more M; these are small by their score
+            h.meta["harness_plan"] = "drain"  # own plan: plan_gaps skips the readings and options
+            # the maker wrote each member's own criterion and a step each: they stay (a member closes done with the host,
+            # so a host that holds only the shared check would close a member nobody did); the shared check joins them
+            h.set_section("Interpretation", h.section("Interpretation").rstrip("\n") + " The host's criteria are every "
+                          "member's own plus the drain's check: a member is closed done only when the host is, so a "
+                          "member criterion not met keeps the host open (T-5717).")
+            h.add_ac(*c.split_verify(DRAIN_AC))
+            c.save_brief(p, h)
+            batch, line = h.id, f"sampo lane brief {h.id} --model haiku"
+            host.append_log(f"follow-ups drained{via}: batch {h.id} of {', '.join(small)}")
+            c.save_brief(p, host)
+        except Exception as e:  # the settle never raises from here: the members stay filed alone, the why on the Log
+            batch, line = None, ""
+            _undo_batch(p, h, small)
+            try:
+                host.append_log(f"follow-ups drained{via}: no batch ({c.fit(str(e) or type(e).__name__, 100)})")
+                c.save_brief(p, host)
+            except Exception:
+                pass
+    if filed:
+        c.regen_views(p)
+    return {"filed": filed, "batch": batch, "members": small if batch else [], "line": line}
+
+
 def settle_follow_ups(p, b):
     """T-5535: `sampo task follow ID KEY --capture` for every open follow-up of a merged, reviewed lane's task: each is
     filed as a task of its own (_take), marked captured and named in a Log line of its own, saved as it goes, so a
-    failure part way leaves the rest open for the next land. The caller holds c.lock(p.dir). [(key, the new task's id)]."""
-    got = []
-    for x in [x for x in follow_items(b) if _is_open(x)]:
-        tid = _take(p, b, x)
-        _set_mark(b, {x["key"]: f"captured {tid}"})
-        b.append_log(f"follow-ups settled (land): f-{x['key']} captured {tid}")
-        c.save_brief(p, b)
-        got.append((x["key"], tid))
-    if got:
-        c.regen_views(p)
-    return got
+    failure part way leaves the rest open for the next land. T-5717: the small ones are drained into one batch host
+    (drain_follow_ups), its launch line printed on stderr. The caller holds c.lock(p.dir). [(key, the new task's id)]."""
+    got = drain_follow_ups(p, b, via=" (land)")
+    if got["line"]:
+        print(f"{b.id}: small follow-ups batched in {got['batch']}: {got['line']}", file=sys.stderr)
+    return got["filed"]

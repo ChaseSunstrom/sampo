@@ -4753,15 +4753,16 @@ def cmd_batch(args):
         f"{h.id}; each member closes done in {h.id})")
 
 
-def _make_batch(p, ids, title, tier=None, gate=None):
-    """`tier` (T-5478): `lane brief --ready` batches small tasks and keeps the host small, so it needs no M plan. An S
+def _make_batch(p, ids, title, tier=None, gate=None, held=False):
+    """`held` (T-5717): the caller already holds c.lock(p.dir) (the lock is not reentrant, a second take times out).
+    `tier` (T-5478): `lane brief --ready` batches small tasks and keeps the host small, so it needs no M plan. An S
     host of up to 4 members owes the S audits (self, and the adversary one on sensitive files) on the combined diff: a
     deliberate trade for one cold start, not one per member. `gate(stand_in)` returns a refusal text or None; it runs on
     an in-memory copy of the host before the host takes an id (a UsageError, nothing written)."""
     ids = list(dict.fromkeys(x.upper() for x in ids))
     if len(ids) < 2:
         raise UsageError("a batch is two or more items")
-    with c.lock(p.dir):
+    with contextlib.nullcontext() if held else c.lock(p.dir):
         members = [need_brief(p, i) for i in ids]
         everything = c.load_briefs(p)
         act, by_id = c.active_brief(everything, p.lane), {x.id: x for x in everything}
@@ -10039,6 +10040,8 @@ def _build_parser(only=None):
     t.add_argument("--done", action="store_true", help="settled: handled in this task (no key: every open one)")
     t.add_argument("--capture", action="store_true", help="file each as a task of its own")
     t.add_argument("--drop", action="store_true", help="not needed (needs --why)")
+    t.add_argument("--drain", action="store_true", help="file every open one (or those named) as a task of its own, the small "
+                                                        "ones in one batch host for a haiku builder (T-5717)")
     t.add_argument("--why", help="why a dropped follow-up isn't needed")
     t = tadd("finding")  # T-0743
     t.add_argument("id")
