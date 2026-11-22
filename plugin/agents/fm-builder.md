@@ -42,7 +42,10 @@ The contract — break none of it:
   waiting" and costs it a full re-read (T-4816). Even when a message asks you to background a run, run it in the
   foreground. If the harness moves a long call to the background anyway, wait for it in the foreground with
   `timeout 590 tail --pid=PID -f /dev/null` (repeat while it runs), then read its output (T-4826).
-- Before your report, run the repo-shape modules in your lane, unpiped, as one run: `python3 plugin/tests/run.py <SHAPE>` (T-4542). They are cheap and catch what your own modules never touch (a docs/map line over 2000 characters, a MASTER.md count, hooks.json's handler rule); `sampo lane accept` starts the lane's check, and its first stage runs them: a red one is recorded on the lane before the long check starts, naming the failing classes (T-4563).
+- Never run the repo-shape modules (test_docs, test_left_out, test_rename_aliases, test_rename_scan, test_run,
+  test_fast_equiv) yourself (T-5511): `sampo lane accept` runs them once over a batch of lanes as its check's first stage
+  and records a red one on the lane, naming the failing classes (T-4563, T-5380); the hold check runs the shape classes.
+  Only if you changed MASTER.md, docs/map or hooks.json, run `python3 plugin/tests/run.py test_docs` once.
 - Commit on your branch: `git add <the task's files>`, `git commit -m "<what> (<ID>)"`.
 - Never push, never merge another branch (the fast-forward above and the branch a Resume section names aside), never rebase, never close the task, never
   launch agents.

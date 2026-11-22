@@ -1,6 +1,5 @@
-"""T-4542, T-4563: the repo-shape tests are one list (core.REPO_SHAPE: its modules, then its module.Class entries). The builder
-contract names the modules before the report (fm-builder.md through the <SHAPE> placeholder, lanes.contract() substitutes
-them). sampo lane accept starts the lane's check and returns at once (T-4563): the check's child runs the modules first,
+"""T-4542, T-4563: the repo-shape tests are one list (core.REPO_SHAPE: its modules, then its module.Class entries). A builder
+never runs them itself (T-5511: the accept stage and the hold check already do, so a third run only waits for slots). sampo lane accept starts the lane's check and returns at once (T-4563): the check's child runs the modules first,
 before its long part. Red records the refusal on the lane and ends the child; green is recorded at the tip and the hold
 check runs without the classes (--shape-green), a fresh run without them holds the lane clean at that tip; cut or a tree
 without the modules goes on as before, and a retry runs no module again. The runs here are stubbed (c.run_command,
@@ -33,15 +32,15 @@ class ContractShape(unittest.TestCase):
         self.assertFalse(hasattr(c, "REPO_SHAPE_MODULES"), "one list, not two constants")
         self.assertFalse(hasattr(c, "REPO_SHAPE_CLASSES"), "one list, not two constants")
 
-    def test_the_shape_modules_are_named_in_the_builder_contract(self):  # T-4542
+    def test_the_builder_contract_leaves_the_shape_modules_to_the_accept_stage(self):  # T-4542, T-5511
         with open(AGENT, encoding="utf-8") as f:
             agent = f.read()
-        self.assertIn("<SHAPE>", agent)
-        self.assertIn("Before your report", agent)
+        self.assertNotIn("<SHAPE>", agent)
         text = slanes.contract("T-9", "abc123", "/main")
-        self.assertNotIn("<SHAPE>", text)
-        self.assertIn("python3 plugin/tests/run.py " + " ".join(MODULES), text)
-        self.assertIn("Before your report", text)
+        self.assertNotIn("python3 plugin/tests/run.py " + " ".join(MODULES), text,
+                         "a builder's own shape run is the third copy: accept's first stage and the hold check run them")
+        self.assertIn("Never run the repo-shape modules", text)
+        self.assertIn("sampo lane accept", text)
 
 
 class ShapeRun(unittest.TestCase):

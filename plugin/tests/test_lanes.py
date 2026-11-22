@@ -1588,8 +1588,7 @@ class BuilderContractOneSource(unittest.TestCase):
         self.assertGreater(len(rules), 8)
         text = slanes.contract("T-9", "abc123", "/main")
         for r in rules:
-            self.assertIn(r.replace("<ID>", "T-9").replace("<BASE>", "abc123").replace("<MAIN>", "/main")
-                          .replace("<SHAPE>", " ".join(slanes.c.repo_shape_modules())), text)  # T-4542
+            self.assertIn(r.replace("<ID>", "T-9").replace("<BASE>", "abc123").replace("<MAIN>", "/main"), text)
         self.assertNotIn("<ID>", text)
 
     def test_brief_driven_agents_omit_claude_md(self):
