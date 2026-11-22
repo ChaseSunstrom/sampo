@@ -1214,6 +1214,130 @@ class Lanes(ForemanTestCase):
                                 "in pkg/cfg.py", ["pkg/cfg.py"])
         self.assertIn("def load_config():", text, "the backticked name ranks ahead of the six common ones")
 
+    def _section(self, text, head):  # T-5682: a brief's section by its heading, its trailing blank line left out
+        if head not in text:
+            return ""
+        return (head + text.split(head)[1].split("\n## ")[0]).rstrip("\n")
+
+    def test_brief_carries_the_outline_of_each_scope_file(self):  # T-5682: a scope file's defs with their lines, capped
+        many = "".join(f"def fn_{i}(x):\n    return x + {i}\n\n\n" for i in range(70))
+        self._commit_files({"pkg/many.py": many, "pkg/small.py": "def tiny():\n    return 1\n\n\ndef tiny_two():\n    return 2\n",
+                            ".env": "def make_env():\n    return 1\n"}, "two scope files and a credential")
+        text = self._task_brief("Outline", "tiny returns 1 :: true", "Make tiny return 1 in pkg/small.py",
+                                ["pkg/many.py", "pkg/small.py", ".env"])
+        section = self._section(text, "## Where things are")
+        self.assertIn("pkg/small.py: tiny_two 5-6", section, "a def's name with its first and last line")
+        self.assertNotIn("tiny 1-2", section, "tiny is named, so the code section pastes it and the outline skips it")
+        self.assertIn("pkg/many.py: fn_0 1-2, ", section)
+        self.assertIn("fn_59 ", section, "the unused share of the small file goes to the big one: sixty defs fit")
+        self.assertNotIn("fn_60 ", section, "the rest are left out")
+        self.assertIn("and 10 more not listed", section, "and the count left out is named")
+        self.assertNotIn("make_env", text, "a credential-named file's def stays out of the brief")
+        self.assertNotIn(".env", section, "nor its name in the outline")
+
+    def test_the_outline_lists_top_level_defs_before_nested_ones(self):  # T-5682: a class's method comes after the module's defs
+        self._commit_files({"pkg/order.py": "class Box:\n    def inner_m(self):\n        return 1\n\n\ndef top_b():\n    return 2\n"},
+                           "a class with a method, then a def")
+        text = self._task_brief("Order", "the file is kept :: true", "Keep pkg/order.py as it is", ["pkg/order.py"])
+        self.assertIn("pkg/order.py: Box 1-3, top_b 6-7, inner_m 2-3", self._section(text, "## Where things are"))
+
+    def test_brief_carries_the_callers_of_the_named_functions(self):  # T-5682: up to 4 callers, the rest counted
+        self._commit_files({
+            "pkg/engine.py": "def run_engine(n):\n    return n * 2\n",
+            "pkg/a_user.py": "from pkg.engine import run_engine\n",
+            "pkg/b_calls.py": "".join(f"x{i} = run_engine({i})\n" for i in range(5)),
+        }, "an engine and its callers")
+        text = self._task_brief("Engine", "run_engine doubles n :: true", "Make `run_engine` double n in pkg/engine.py",
+                                ["pkg/engine.py"])
+        section = self._section(text, "## Callers of the named functions")
+        self.assertIn("run_engine: 6 callers, 2 more not listed", section)
+        self.assertIn("- pkg/a_user.py:1: from pkg.engine import run_engine", section, "a caller in another file, file:line")
+        self.assertIn("- pkg/b_calls.py:3: x2 = run_engine(2)", section)
+        self.assertNotIn("pkg/b_calls.py:4", section, "a fifth caller is counted, not listed")
+        self.assertNotIn("def run_engine", section, "the definition is not a caller")
+
+    def test_the_outline_and_callers_sections_stay_under_their_caps(self):  # T-5682: 8 files and 6 names, still bounded
+        long = "".join(f"def a_rather_long_function_name_{i}(x):\n    return x\n\n\n" for i in range(60))
+        scope = {f"pkg/mod{k}.py": long.replace("def a_", f"def m{k}_a_") for k in range(8)}
+        names = ["alpha_fn", "beta_fn", "gamma_fn", "delta_fn", "eps_fn", "zeta_fn"]
+        scope["pkg/mod0.py"] += "".join(f"def {n}(x):\n    return x\n\n\n" for n in names)  # the named defs are scope defs
+        calls = "".join(f"res_{n}_{i} = {n}({i}) + " + "x" * 90 + "\n" for n in names for i in range(6))
+        self._commit_files({**scope, "pkg/callers.py": calls}, "eight scope files, six named defs and many callers")
+        text = self._task_brief("Long", "alpha_fn returns x :: true",
+                                "Make `alpha_fn`, `beta_fn`, `gamma_fn`, `delta_fn`, `eps_fn` and `zeta_fn` return x in "
+                                "the scope's files", list(scope))
+        where = self._section(text, "## Where things are")
+        named = self._section(text, "## Callers of the named functions")
+        self.assertTrue(where and named, "both sections are carried")
+        self.assertLessEqual(len(where.encode()), 1200, "the outline holds its 1,200 bytes")
+        self.assertLessEqual(len(named.encode()), 800, "the callers hold their 800 bytes")
+        self.assertIn("more not listed", where, "the cut is named")
+        self.assertIn("more not listed", named, "and so is the cut of the callers")
+
+    def _brief_of(self, title, ac, step, scope):  # T-5682 review: a task's brief object, for the helpers read in-process
+        args = [x for s in scope for x in ("--scope", s)]
+        self.fm("lane", "max", "20")
+        tid = first(self.fm("task", "new", title, "--type", "FEATURE", "--tier", "S", "--ac", ac, *args, "--step", step,
+                            "--json").stdout)["id"]
+        return c.find_brief(c.find_project(self.repo), tid)
+
+    def test_the_callers_name_only_defs_of_the_scope_files_of_four_or_more_characters(self):  # T-5682 review
+        self._commit_files({
+            "pkg/engine.py": "def run_engine(n):\n    return n * 2\n\n\ndef ab():\n    return 1\n",
+            "pkg/user.py": "from pkg.engine import run_engine\n\nrun_engine(1)\nab()\nghost_fn()\n",
+        }, "an engine, its caller and a name that is not a def")
+        text = self._task_brief("Names", "run_engine doubles n :: true",
+                                "Make `run_engine` double n, and `ab` and `ghost_fn` stay as they are in pkg/engine.py",
+                                ["pkg/engine.py"])
+        section = self._section(text, "## Callers of the named functions")
+        self.assertIn("run_engine: 2 callers", section)
+        self.assertNotIn("ab:", section, "a name of three characters or fewer is left out")
+        self.assertNotIn("ghost_fn", section, "a name that is no def of a scope file is left out")
+
+    def test_the_code_caller_is_listed_before_a_test_or_a_doc_that_names_the_function(self):  # T-5682 review
+        tests = "".join(f"def test_run_engine_{i}():\n    assert run_engine({i}) == {2 * i}\n\n\n" for i in range(5))
+        self._commit_files({
+            "pkg/engine.py": "def run_engine(n):\n    return n * 2\n",
+            "pkg/test_engine.py": "from pkg.engine import run_engine\n\n\n" + tests,
+            "docs/engine.md": "run_engine doubles n, see pkg/user.py\n",
+            "pkg/user.py": "from pkg.engine import run_engine\n\nrun_engine(1)\n",
+        }, "an engine, its test, its doc and its caller")
+        text = self._task_brief("Engine doc", "run_engine doubles n :: true",
+                                "Make `run_engine` double n in pkg/engine.py", ["pkg/engine.py"])
+        section = self._section(text, "## Callers of the named functions")
+        self.assertIn("- pkg/user.py:1: from pkg.engine import run_engine", section, "the code caller is listed")
+        self.assertLess(section.index("pkg/user.py:1"), section.index("pkg/test_engine.py:"), "ahead of the test's lines")
+        self.assertNotIn("docs/engine.md", section, "a doc is not searched")
+
+    def test_the_callers_read_stops_at_200_lines(self):  # T-5682 review: a busy name is read to 200 lines, no further
+        self._commit_files({"pkg/engine.py": "def run_engine(n):\n    return n\n",
+                            "pkg/busy.py": "".join(f"x{i} = run_engine({i})\n" for i in range(250))}, "a busy caller")
+        text = self._task_brief("Busy", "run_engine returns n :: true",
+                                "Make `run_engine` return n in pkg/engine.py", ["pkg/engine.py"])
+        section = self._section(text, "## Callers of the named functions")
+        self.assertIn("run_engine: 200+ callers, 196 more not listed", section, "the count stops where the read stops")
+
+    def test_the_credential_verdict_is_asked_once_per_path(self):  # T-5682 review: nine caller lines, one verdict
+        from unittest import mock
+        import fmguard
+        from sampo import lanes as slanes
+        self._commit_files({"pkg/engine.py": "def run_engine(n):\n    return n\n",
+                            "pkg/busy.py": "".join(f"x{i} = run_engine({i})\n" for i in range(9))}, "a caller with nine lines")
+        b = self._brief_of("Cache", "run_engine returns n :: true", "Make `run_engine` return n in pkg/engine.py", ["pkg/engine.py"])
+        with mock.patch("fmguard._is_credential", wraps=fmguard._is_credential) as verdict:
+            slanes.callers_lines(self.repo, "HEAD", b)
+        asked = [call.args[0] for call in verdict.call_args_list]
+        self.assertEqual(sum(p.endswith("pkg/busy.py") for p in asked), 1, "one verdict for the file, not one a line")
+
+    def test_a_spent_callers_deadline_lists_no_callers(self):  # T-5682 review: one deadline for the whole section
+        from unittest import mock
+        from sampo import lanes as slanes
+        self._commit_files({"pkg/engine.py": "def run_engine(n):\n    return n\n", "pkg/user.py": "run_engine(1)\n"},
+                           "an engine and a caller")
+        b = self._brief_of("Deadline", "run_engine returns n :: true", "Make `run_engine` return n in pkg/engine.py", ["pkg/engine.py"])
+        with mock.patch.object(slanes, "CALLERS_SECONDS", -1):
+            self.assertEqual(slanes.callers_lines(self.repo, "HEAD", b), [])
+
     def test_lane_friction_cap_unused_slot_and_a_gone_worktree(self):
         # T-1709: the drive compared to the default 2, not fm lane max; an unused brief and a gone worktree said nothing
         from sampo import hooks

@@ -53,6 +53,21 @@ class Brief(_Tasks):
         self.assertIn("For a FIX record `sampo task prove T-9 --run", copy)
         self.assertIn("lane accept", copy)  # why: the close refuses a FIX with no proof
 
+    def test_the_contract_has_a_code_start_card(self):  # T-5682: the brief's map first, then a card, then a range
+        """2026-11-22: 0 of 100 builders called sampo outline or the calling cards; they opened with grep, sed and whole-file
+        Reads. The contract's card names the brief's map, the two cards and the range read, and what a whole-file Read costs."""
+        from sampo import lanes as slanes
+        text = read_text(os.path.join(PLUGIN, "agents", "fm-builder.md"))
+        rules = [r for r in text.split("\n- ") if r.startswith("Code-start card")]
+        self.assertEqual(len(rules), 1, "one rule, in the contract")
+        flat = " ".join(rules[0].split())
+        for want in ("Where things are", "Callers of the named functions", "sampo sym PATH:NAME", "sampo outline PATH",
+                     "Read with offset and limit", "400 lines"):
+            self.assertIn(want, flat)
+        self.assertLess(len(rules[0].encode()), 450, "the rule stays under 450 bytes")
+        copy = " ".join(slanes.contract("T-9", "abc123", "/main").split())
+        self.assertIn("sampo sym PATH:NAME", copy, "the brief's copy carries the card")
+
     def test_a_recovered_builder_may_merge_the_branch_its_resume_section_names(self):  # T-5475
         """2026-11-21: recovered builders read 'git merge <old branch>' in the Resume section and 'never merge another
         branch' in the contract, obeyed the contract and re-authored their lanes from scratch."""
