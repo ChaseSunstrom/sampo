@@ -3287,6 +3287,69 @@ class LaneRecovery(ForemanTestCase):
         self.assertNotIn(f"fm lane recover {tid}", self.fm("next").stdout, "a blocked task is not recovered")
 
 
+class RecoverPastBacklog(ForemanTestCase):
+    """T-5933: recovering a lane that already has a branch is finishing work, not starting new: the land backlog bar and
+    the unmerged cap hold new lanes only (sampo do sweep-lanes was refused T-5771 by 21 waiting lanes). Deliberate:
+    recover_all briefs every stopped lane at once (finishing beats starting, builders are not scarce), and the unmerged
+    cap is exempt too (the criterion asks for it). A branch already merged into HEAD is not exempt. Temporary repos."""
+    stopped_builder, git, second_task = Lanes.stopped_builder, Lanes.git, Lanes.second_task
+
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+
+    def test_recover_of_a_parked_lane_is_not_held_by_the_backlog_but_a_new_lane_is(self):
+        from sampo import train
+        p = c.find_project(self.repo)
+        wait = [f"T-{9000 + i}" for i in range(max(21, 2 * train.BATCH_MAX + 1, slanes.UNMERGED_MAX + 1))]
+        self.assertGreater(len(wait), slanes.land_backlog_cap())
+        self.assertGreaterEqual(len(wait), slanes.UNMERGED_MAX)
+        tid, path = self.stopped_builder()
+        fresh = first(self.fm("task", "new", "Next", "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true",
+                              "--step", "s", "--json").stdout)["id"]
+        self.fm("task", "set", fresh, "approved=true")
+        with mock.patch.object(slanes, "_slots", return_value=([], list(wait), [])):
+            with self.assertRaises(c.PolicyError) as e:  # a brand-new lane is still refused
+                slanes.builder_brief(p, c.find_brief(p, fresh), argparse.Namespace(model=None, json=False))
+            self.assertIn("finished lanes wait", str(e.exception))
+            self.assertTrue(os.path.isdir(path))
+            main = c.main_worktree(p.root) or p.root
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):  # the recovery briefs a builder on the kept branch
+                slanes.recover(p, c.find_brief(p, tid), main, argparse.Namespace(model=None, json=False))
+        self.assertIn(f"{tid}: builder brief", out.getvalue())
+        self.assertNotIn("finished lanes wait", out.getvalue())
+
+    def test_a_recovery_with_a_kept_branch_passes_both_caps_with_no_reason(self):
+        p = c.find_project(self.repo)
+        tid, _ = self.stopped_builder()
+        wait = [f"T-{9000 + i}" for i in range(slanes.UNMERGED_MAX + 1)]
+        out = io.StringIO()
+        with mock.patch.object(slanes, "_slots", return_value=([], wait, [])), contextlib.redirect_stdout(out):
+            slanes.recover(p, c.find_brief(p, tid), c.main_worktree(p.root) or p.root,
+                           argparse.Namespace(model=None, json=False))
+        self.assertIn(f"{tid}: builder brief", out.getvalue())
+        self.assertIn(f"/audits/{tid}.builder.md", out.getvalue())
+        self.assertTrue(os.path.exists(os.path.join(p.dir, "audits", f"{tid}.builder.md")), "the brief is written")
+
+    def test_a_kept_branch_already_merged_into_head_still_meets_the_backlog_bar(self):
+        # T-5933 review: resume --force on a merged lane's leftover branch is no unfinished work
+        p = c.find_project(self.repo)
+        tid = self.second_task()
+        wait = [f"T-{9000 + i}" for i in range(slanes.UNMERGED_MAX + 1)]
+        brief = lambda: slanes.builder_brief(p, c.find_brief(p, tid), argparse.Namespace(model=None, json=False),
+                                             resume_branch=f"foreman/{tid}")
+        with mock.patch.object(slanes, "_slots", return_value=([], wait, [])), \
+                mock.patch.object(slanes, "_merged_in_head", return_value=True):
+            with self.assertRaises(c.PolicyError) as e:
+                brief()
+        self.assertIn("finished lanes wait", str(e.exception))
+        subprocess.run(["git", "-C", self.repo, "commit", "--allow-empty", "-qm", f"Merge {tid}: done"], check=True)
+        with mock.patch.object(slanes, "_slots", return_value=([], wait, [])):
+            with self.assertRaises(c.PolicyError):  # the same with a real merge commit in HEAD
+                brief()
+
+
 class RaceBase(ForemanTestCase):
     """T-2339: a race at plan time. Temporary repos only; a builder is simulated by a worktree and a commit."""
     OPTIONS = ("1) widen the race; fails if: builders converge 2) use what exists: two sides; fails if: a tie "

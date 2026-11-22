@@ -4735,20 +4735,24 @@ def builder_brief(p, b, args, resume_branch=None, after="", stacked=None):
     # T-5411: kith marked 37 tasks blocked on these refusals; a blocked task needs a hand unblock after the land, a planned one
     # is briefed again by sampo lane brief --ready once the land drains
     stay = f"leave {b.id} planned, not blocked: sampo lane brief --ready briefs it once the land drains"
-    if len(waiting) > hold and b.priority != "urgent":  # T-4938: finishing beats starting; urgent work drains the pile
+    # T-5933: a recovery or resume of a lane that already has its branch is finishing work, not starting new: it passes
+    # both caps (21 waiting lanes refused sampo do sweep-lanes's recovery of T-5771); a brand-new lane is held as before
+    # T-5933: a branch already merged into HEAD (resume --force on a leftover) is no unfinished work: the bar still holds
+    queue = [] if resume_branch is not None and not _merged_in_head(c.main_worktree(p.root) or p.root, b.id) else waiting
+    if len(queue) > hold and b.priority != "urgent":  # T-4938: finishing beats starting; urgent work drains the pile
         if why:
-            print(f"sampo: {b.id} briefed past the land backlog ({len(waiting)} finished lanes wait to land, the bar is "
+            print(f"sampo: {b.id} briefed past the land backlog ({len(queue)} finished lanes wait to land, the bar is "
                   f"{hold}): {why}", file=sys.stderr)
         else:
             raise _batch_refusal(c.PolicyError(
-                f"{len(waiting)} finished lanes wait to land, more than two trains ({hold}): land them first (sampo lane "
+                f"{len(queue)} finished lanes wait to land, more than two trains ({hold}): land them first (sampo lane "
                 f"land --bg), or give a reason to start this one anyway (sampo lane brief {b.id} --why REASON); {stay}"))
-    if len(waiting) >= UNMERGED_MAX and b.priority == "urgent":  # T-3964: urgent work trains first and drains the pile
-        print(f"sampo: {b.id} is urgent: briefed past the unmerged cap ({len(waiting)} finished lanes wait, the cap is "
+    if len(queue) >= UNMERGED_MAX and b.priority == "urgent":  # T-3964: urgent work trains first and drains the pile
+        print(f"sampo: {b.id} is urgent: briefed past the unmerged cap ({len(queue)} finished lanes wait, the cap is "
               f"{UNMERGED_MAX})", file=sys.stderr)
-    elif len(waiting) >= UNMERGED_MAX:
-        raise _batch_refusal(c.PolicyError(f"{len(waiting)} finished lanes wait unmerged ({', '.join(waiting[:8])}…): land them "
-                                           f"first: {c.merge_hint(waiting)}; {stay}"))
+    elif len(queue) >= UNMERGED_MAX:
+        raise _batch_refusal(c.PolicyError(f"{len(queue)} finished lanes wait unmerged ({', '.join(queue[:8])}…): land them "
+                                           f"first: {c.merge_hint(queue)}; {stay}"))
     # T-2797: five lanes and a design agent drove load to 3.5 per core: gates timed out. T-3243: but the first lane is
     # never starved by moderate load (Sampo's own sweeps and fills held 1.7-3.7 per CPU for three hours, nothing built)
     # T-4158: Sampo's own nice-19 gate runs (a land train, a close) held it at 2-3 per CPU for 40 min: only work at nice 0 counts
