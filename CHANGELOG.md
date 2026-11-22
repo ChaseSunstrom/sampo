@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- Panels gain eight more moving kinds drawn from real data: a git metro map, a trace waterfall, a treemap, log rain, a health radar, hourglass budgets, a decision tree and a circle pack, each with its calling card; metro names and radar ring labels keep clear of lines and stations, and panels in one sheet column share its width (T-3737).
 - `sampo panels render SPEC --html` writes one self-contained animated page (30 fps at most, still under reduced motion, an optional feed for live stats), and `--term` draws the panels in the terminal in true-colour half blocks, braille and real text (T-3734).
 - sampo lane accept now queues the lane and starts no background land while a sampo lane merge holds the train lock, saying the merge is running, instead of a land that was refused at once (T-5816).
 - The behind verify is started again when a pending merge has no runner, runs the repo-shape classes first, and a red between two lanes that were each green alone files one express trunk-red FIX instead of a revert, with blocked closes queued to close again when it lands (T-5791).
