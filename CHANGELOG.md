@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- PreToolUse guard calls get a 20 s harness limit (was 5 s), and a guard call over 2 s logs one hook_slow event per session per 30 s naming its tool and slowest phase (T-5533).
 - Sampo lane land and lane train lower their own niceness to 10 at the start (FOREMAN_LAND_NICE sets another level), so each close's criteria re-run no longer competes with builders or counts as foreground load in the lane gate (T-5527).
 - A red behind-verify now excuses classes its first parent also fails and classes green alone, one per class, and a conflicted revert settles itself when its classes pass on trunk, while sampo next names any red or conflict record with the command that settles it (T-5518).
 - Discovered and followup captures file up to 40 a day on a clean record (was 12), and a budget the user sets is their allowance, raising it or capping it (T-5722).
