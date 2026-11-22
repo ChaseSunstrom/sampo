@@ -1939,5 +1939,122 @@ class Provenance(Base):
         self.assertEqual(after, before, "nine bench passes and nine test failures leave the order as it was")
 
 
+class Reach(Base):
+    """T-5609: sampo card reach holds each card's own example out one at a time and scores it against the deck without
+    it: a number that moves only when the ranker or a description moves (never with the call ledger). The value tests
+    run in process on this test's own deck (card_dirs patched: the shipped seed cards would move every count); the CLI
+    tests run on the real deck and assert the shape and sameness, never a value."""
+
+    def setUp(self):
+        super().setUp()
+        p = mock.patch.object(callcards, "card_dirs", return_value=[self.cards_dir])
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_reach_json_has_the_keys_and_the_rates_are_numbers(self):
+        out = json.loads(self.fm("card", "reach", "--json").stdout)
+        for key in ("n", "hit_at_1", "hit_at_3", "unreached", "no_examples", "misses"):
+            self.assertIn(key, out)
+        self.assertGreater(out["n"], 0, "the shipped deck has examples to hold out")
+        self.assertIsInstance(out["hit_at_1"], float)
+        self.assertLessEqual(out["hit_at_1"], out["hit_at_3"])
+        self.assertEqual(set(out["misses"]), {"n", "now_fit"})
+
+    def test_reach_returns_hit_at_1_hit_at_3_and_an_unreached_list(self):
+        self.card("shout", examples=["shout the readme", "uppercase the notes"])
+        out = callcards.reach()
+        self.assertEqual(out["n"], 2, "one held-out probe per example")
+        self.assertIsInstance(out["hit_at_1"], float)
+        self.assertLessEqual(out["hit_at_1"], out["hit_at_3"])
+        self.assertIsInstance(out["unreached"], list)
+
+    def test_reach_a_single_card_whose_example_is_its_only_match_is_a_hit(self):
+        self.card("shout", purpose="shout: uppercase or lowercase one text file", examples=["shout the readme"])
+        self.card("zebra", purpose="count zebra stripes", examples=["how many zebra stripes"])
+        out = callcards.reach()
+        self.assertEqual(out["n"], 2)
+        self.assertEqual(out["hit_at_1"], 1.0, "each example is the only card text that names its words")
+        self.assertEqual(out["hit_at_3"], 1.0)
+        self.assertEqual(out["unreached"], [])
+        self.assertEqual(out["no_examples"], [])
+
+    def test_reach_twin_cards_sharing_an_example_do_not_find_it_at_one(self):
+        # the leakage trap: with the example left in its own card, each twin would find itself at 100%; held out, the
+        # other twin (which still holds the words) wins, so neither is reached at 1
+        for name in ("twin-a", "twin-b"):
+            self.card(name, purpose="uppercase or lowercase one text file", examples=["shout the readme"])
+        out = callcards.reach()
+        self.assertEqual(out["n"], 2)
+        self.assertLess(out["hit_at_1"], 1.0, "a held-out example must not find itself on a twin")
+        self.assertEqual(out["hit_at_1"], 0.0)
+        self.assertEqual(out["unreached"], ["twin-a", "twin-b"])
+
+    def test_reach_a_card_with_no_examples_is_listed_under_no_examples_and_never_unreached(self):
+        self.card("bare", examples=[])
+        self.card("shout", examples=["shout the readme"])
+        out = callcards.reach()
+        self.assertEqual(out["no_examples"], ["bare"])
+        self.assertNotIn("bare", out["unreached"])
+        self.assertEqual(out["n"], 1, "only shout's example is a probe")
+
+    def test_reach_no_cards_gives_zero_probes_and_no_rate(self):
+        out = callcards.reach()
+        self.assertEqual(out["n"], 0)
+        self.assertIsNone(out["hit_at_1"])
+        self.assertIsNone(out["hit_at_3"])
+        self.assertEqual(out["unreached"], [])
+
+    def test_reach_same_input_gives_the_same_output_twice(self):
+        self.card("shout", examples=["shout the readme", "uppercase the notes"])
+        self.card("zebra", purpose="count zebra stripes", examples=["how many zebra stripes"])
+        first = self.fm("card", "reach", "--json").stdout
+        second = self.fm("card", "reach", "--json").stdout
+        self.assertEqual(first, second)
+
+    def test_reach_does_not_change_when_calls_are_added_to_the_ledger(self):
+        # both cards fit the probe "shout the readme" at the floor; the ledger gives quiet the better pass rate, so rank()
+        # must move to quiet first, while reach orders on the words alone and its numbers must not move
+        self.card("shout", purpose="shout the readme loudly", examples=["shout the readme"])
+        self.card("quiet", purpose="shout the readme quietly", examples=["quiet the readme"])
+        before = self.fm("card", "reach", "--json").stdout
+        reach_before = callcards.reach()
+        order_before = [cd["name"] for _, cd in callcards.rank("shout the readme")]
+        for _ in range(5):
+            callcards._record_call("quiet", callcards._result("quiet", "applied"), 0.5)
+            callcards._record_call("shout", callcards._result("shout", "checker_failed"), 0.5)
+        self.assertTrue(os.path.exists(callcards.calls_path()), "the ledger was written, so the test means something")
+        self.assertEqual(order_before, ["shout", "quiet"], "on the words alone shout comes first")
+        self.assertEqual([cd["name"] for _, cd in callcards.rank("shout the readme")], ["quiet", "shout"],
+                         "the ledger moves rank, so the ledger was read")
+        self.assertEqual(self.fm("card", "reach", "--json").stdout, before)
+        self.assertEqual(callcards.reach(), reach_before)
+
+    def test_reach_misses_count_filed_pick_misses_that_today_s_deck_reaches(self):
+        self.assertEqual(callcards.pick("count zebra stripes today")["status"], "no_card")  # files a miss
+        self.assertEqual(callcards.reach()["misses"], {"n": 1, "now_fit": 0})
+        self.card("zebra", purpose="count zebra stripes", examples=["how many zebra stripes"])
+        self.assertEqual(callcards.reach()["misses"], {"n": 1, "now_fit": 1})
+
+    def test_reach_a_request_that_matches_only_on_common_words_is_not_counted_as_reached(self):
+        # "count" is the only word the deck shares with the second request: it fits at the pick floor but not at the
+        # cover floor cardauthor uses, so it stays unreached; the first request names the card's words and is reached
+        self.assertEqual(callcards.pick("count zebra stripes today")["status"], "no_card")
+        self.assertEqual(callcards.pick("count the files today")["status"], "no_card")
+        self.card("zebra", purpose="count zebra stripes", examples=["how many zebra stripes"])
+        self.assertEqual(callcards.reach()["misses"], {"n": 2, "now_fit": 1})
+
+    def test_reach_a_duplicated_example_is_held_out_by_value_and_counted_once(self):
+        # the two copies of the example are one probe, and neither copy may find its own card through the card's text
+        self.card("count", purpose="count things", examples=["how many zebra stripes", "how many zebra stripes"])
+        self.card("zebra", purpose="zebra animal pictures", examples=["zebra photos"])
+        out = callcards.reach()
+        self.assertEqual(out["n"], 2, "two distinct examples, one probe each")
+        self.assertIn("count", out["unreached"], "its own copy of the example must not find it")
+
+    def test_reach_text_output_prints_hit_at_1_and_hit_at_3_first(self):
+        text = self.fm("card", "reach").stdout
+        self.assertRegex(text, r"^hit@1 \d\.\d\d, hit@3 \d\.\d\d over \d+ held-out example")
+
+
 if __name__ == "__main__":
     unittest.main()

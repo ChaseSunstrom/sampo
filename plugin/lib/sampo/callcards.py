@@ -1732,10 +1732,12 @@ def _card_text(card):
     return " ".join([card["name"].replace("-", " "), card.get("purpose", ""), *card.get("examples", [])])
 
 
-def _index(root=None):
+def _index(root=None, found=None):
     """T-5605: the cards read once, with their word sets, document frequencies and scoring function: (found, docs, df,
-    score). A caller scoring many texts (cardauthor.pending), or one text and the words it shares, pays for them once."""
-    found = cards(root)[0]
+    score). A caller scoring many texts (cardauthor.pending), or one text and the words it shares, pays for them once.
+    found: the deck to score against (T-5609: reach passes a copy with one example held out); default: the cards in
+    root."""
+    found = cards(root)[0] if found is None else found
     docs = {n: _tokens(_card_text(cd)) for n, cd in found.items()}
     df = {}
     for toks in docs.values():
@@ -1753,9 +1755,23 @@ def _index(root=None):
     return found, docs, df, score
 
 
-def scorer(root=None):
-    """A function text -> [(lexical score, card)] for every card, unordered (see _index)."""
-    return _index(root)[3]
+def scorer(root=None, found=None):
+    """A function text -> [(lexical score, card)] for every card, unordered (see _index; found: the deck to score
+    against, default the cards in root)."""
+    return _index(root, found)[3]
+
+
+def _lexical_order(scored, stats=None):
+    """The one order rank and reach share (T-5609) over [(score, card)]: the cards at or over LEXICAL_FLOOR first (the
+    floor is the raw score, as pick's); with stats (rank passes call_stats; reach passes none), those ordered by their
+    smoothed pass rate, a card with no calls at 1/2; then score best first to 9 decimals (a float sum's last bit can
+    differ between runs); then name."""
+    def key(t):
+        s, cd = t
+        fits = s >= LEXICAL_FLOOR
+        by_calls = -pass_rate(stats.get(cd["name"])) if stats is not None and fits else 0
+        return (not fits, by_calls, -round(s, 9), cd["name"])
+    return sorted(scored, key=key)
 
 
 def rank(text, k=5, root=None):
@@ -1763,11 +1779,50 @@ def rank(text, k=5, root=None):
     examples is the score; the cards at or over LEXICAL_FLOOR come first, ordered by their smoothed pass rate from
     calls.jsonl (a card with no calls sits at 1/2) and by score within one rate, then the rest by score. root: the repo
     the cards would run in (cards(root))."""
-    out = scorer(root)(text)
-    stats = call_stats()  # T-4919: what fits (the floor decides) is ordered by how its calls went; lexical breaks ties
-    out.sort(key=lambda x: (x[0] < LEXICAL_FLOOR, -pass_rate(stats.get(x[1]["name"])) if x[0] >= LEXICAL_FLOOR else 0,
-                            -x[0], x[1]["name"]))
-    return out[:k]
+    # T-4919: what fits (the floor decides) is ordered by how its calls went; lexical breaks ties
+    return _lexical_order(scorer(root)(text), call_stats())[:k]
+
+
+def reach(root=None):
+    """T-5609: how often the lexical ranker finds a card from its own examples. Each example is held out of its card
+    (an example is part of its own card's text, so left in it the card finds itself at 100%) and scored against the deck
+    without it: a hit at k is the asked card in the top k at or over LEXICAL_FLOOR. Each held-out example is removed by
+    value, so a duplicated example is one probe and no copy of it finds its own card. reach reads no call stats: it
+    orders with _lexical_order alone, so the number moves when the ranker, a description or an example moves, not with
+    calls.jsonl. misses: the filed pick misses (cardauthor.requests; a mined request is not one), now_fit when today's
+    deck reaches them at cardauthor's COVER_FLOOR (a request matching only on common words is not reached; on the text
+    requests() keeps, 600 characters). unreached: the cards none of whose examples hit at k=3; no_examples: the cards
+    with nothing to hold out."""
+    from sampo import cardauthor
+    found = cards(root)[0]
+    probes, hits1, hits3, unreached, no_examples = 0, 0, 0, [], []
+    for name in sorted(found):
+        held = found[name].get("examples") or []
+        examples = list(dict.fromkeys(held))  # by value: a duplicate is one probe
+        if not examples:
+            no_examples.append(name)
+            continue
+        reached = False
+        for ex in examples:
+            deck = dict(found)
+            deck[name] = dict(found[name], examples=[e for e in held if e != ex])  # the asked example held out, by value
+            ordered = _lexical_order(scorer(root, deck)(ex))
+            pos = [cd["name"] for _, cd in ordered].index(name)
+            fits = ordered[pos][0] >= LEXICAL_FLOOR  # a card under the floor is a miss, as pick says no_card
+            probes += 1
+            if fits and pos == 0:
+                hits1 += 1
+            if fits and pos < 3:
+                hits3 += 1
+                reached = True
+        if not reached:
+            unreached.append(name)
+    filed = [r for r in cardauthor.requests() if r["source"] == "miss"]
+    score = scorer(root, found)
+    now_fit = sum(1 for r in filed if max((s for s, _ in score(r["text"])), default=0) >= cardauthor.COVER_FLOOR)
+    return {"n": probes, "hit_at_1": round(hits1 / probes, 3) if probes else None,
+            "hit_at_3": round(hits3 / probes, 3) if probes else None, "unreached": unreached,
+            "no_examples": no_examples, "misses": {"n": len(filed), "now_fit": now_fit}}
 
 
 def brief_fits(text, root=None):
@@ -1978,6 +2033,18 @@ def cmd_card(args):
         print(json.dumps({"cards": r, "floor": LEXICAL_FLOOR}) if js else "\n".join(
             f"{x['score']:.3f}{'  ' if x['fits'] else '- '} {x['name']}: {x['purpose']}"
             + (f" [{x['calls']} call(s), pass rate {x['pass_rate']:.2f}]" if x["calls"] else "") for x in r) or "no cards yet")
+        return 0
+    if act == "reach":  # T-5609: a look at the lexical ranker; nothing is filed or run
+        r = reach(root)
+        if js:
+            print(json.dumps(r))
+            return 0
+        hit1, hit3 = (("n/a" if x is None else f"{x:.2f}") for x in (r["hit_at_1"], r["hit_at_3"]))
+        print(f"hit@1 {hit1}, hit@3 {hit3} over {r['n']} held-out example(s)")
+        print(f"unreached: {', '.join(r['unreached']) or 'none'}")
+        if r["no_examples"]:
+            print(f"no examples (not scored): {', '.join(r['no_examples'])}")
+        print(f"misses: {r['misses']['n']} filed, {r['misses']['now_fit']} the deck reaches today")
         return 0
     if act == "bench":
         out = args.out or os.path.join(root, "research", "callcards", "bench.jsonl")
