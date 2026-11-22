@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- sampo lane list now trial-merges every open lane against main and against each other with git merge-tree and prints a "Will conflict:" line naming the clashing files, so clashes show before you merge (--no-preview skips it) (T-3268).
 - A merged lane whose only ignored files are the guard's ward index (and guard-scripts.json) is now removed by the close without a hand step (T-5529).
 - Fleet: with fleet claims on (opt-in, off for a sensitive project or with no network), focusing a task takes its claim; another clone's focus is refused naming the holder's machine and until when, a lapsed lease can be taken over, and the edit hook refuses once the claim is lost (T-3330).
 - Kalevala opens towers by itself for the areas and capabilities Genesis grows in the root Frame: at most 2 a generation, each logged as a birth act whose undo pauses the tower, never for a hand-edited Frame entry or while the parent generation waits for its select; (T-3326).
