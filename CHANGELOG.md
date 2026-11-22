@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- The test cache counts a plain module-level function as its own unit, not part of its module's body, so adding, removing or re-signing one no longer reruns every class that imported the module (module edits that moved the shared key fell from 56% to 41% of 300 commits) (T-5499).
 - Builders no longer run the six repo-shape modules before their report: `sampo lane accept` already runs them once over a batch of lanes and the hold check runs the shape classes, so each lane stops paying a third 8-minute, slot-bound run (T-5511)
 - Trunk is green again in six test classes every lane reported red: the fmmapmerge shim, three classified env switches, the panel report reads core.TIERS, two commands moved off shared help positions, and the night test checks an unconditional job (T-5506)
 - The CPU panel can no longer report more cores than the machine has: each read scales the per-kind estimate to the exact busy clock, where a long-lived process first seen, or a reparented tree's reaped ticks, had shown tests at 24 cores on 16 and a 438-core peak (T-5512)
