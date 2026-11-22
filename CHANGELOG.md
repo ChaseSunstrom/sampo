@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- `sampo scorecard` reads the direction's seven measures (asks not landed, landed not shipped, lanes waiting, agent CPU share, tokens per closed task, steers per day, Kalevala towers climbing) against named bars, and the hourly tick captures one task for a measure past its bar on two ticks in a row (T-3845).
 - Self-check now names lanes that outlived their task and background jobs still listed long after their agent reported, each with its count and age, and a hand close removes its own merged lane (T-3540).
 - The guard no longer refuses a python heredoc whose only mention of Sampo is inside strings or comments (for example after cd DIR; or a chain of plain commands); code that imports sampo, execs its string or imports from an unknown folder is still refused (T-3538).
 - `sampo models local off|on` keeps every model served on this machine unused (Ollama, LM Studio and every loopback profile; an own remote box stays): the hourly night job had loaded an 8B model here after the user's "stop running the local models here", because nothing durable held the stop (T-5504).
