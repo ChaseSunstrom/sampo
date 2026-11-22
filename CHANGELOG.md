@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- CI on main: the guard's script read can no longer be left marked open by the budget signal (Python 3.12), the writer-index and shared-temp tests no longer race a finished build or kill their own process group (crowded runners, macOS), and the fast build's equivalence probe reruns a first-call difference once and names what differs when it refuses (T-5064).
 - A land whose last ship finds a running ship already carrying every commit no longer spends the publish grant: the running ship pushes them and spends it, instead of being refused at its push after its tests (T-5058).
 - The always-on rules file is now `plugin/rules/sampo.md` with `plugin/rules/foreman.md` kept as a symlink to it, every reader takes the name from one constant, and the guard protects both names as core (T-5048).
 - The yardstick reads the stored bench, SWE-bench and Terminal-Bench rows into one shape and gives, per kind, Claude's pass rate minus a local model's over only the tasks both ran; duel and ablation runs stay apart from plain Sampo, infrastructure failures stay out of the rates, LAN hosts count as local, and kinds with too few paired tasks are marked (T-5006).
