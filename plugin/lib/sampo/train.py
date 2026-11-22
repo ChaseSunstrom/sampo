@@ -3608,7 +3608,7 @@ class _Closer:
         with self.cv:
             self.holding = on
             if not on and self.later:
-                self.q.extend(self.later)
+                self.q[:0] = self.later  # T-5873: proven, waiting only for their commit: fast, so they go first
                 self.later = []
                 self._wake()
 
@@ -3666,6 +3666,19 @@ class _Closer:
             dropped = [t for ids in self.q + self.later for t in ids]
             self.q, self.later = [], []
             return dropped
+
+    def drain(self, budget):
+        """T-5873: the land restarts on new code: the closes queued and the ones that waited for the train (hold(False) put
+        them first) run until the closer is idle or `budget` seconds pass, then it stops (the running batch finishes).
+        What was still queued after the budget, for the caller to say: each is merged and open for the next land."""
+        end = time.monotonic() + budget
+        with self.cv:
+            if self.later and not self.holding:
+                self.q[:0], self.later = self.later, []
+                self._wake()
+            while not self.idle() and (left := end - time.monotonic()) > 0:
+                self.cv.wait(min(left, 1.0))
+        return self.stop()
 
     def join(self):
         with self.cv:
@@ -3937,6 +3950,11 @@ def _land_trains(p, main, batch, owed, closer=None):
         return False
     left = landed + gone  # merged and open (a train by hand, a land cut short): closed after each train's own (T-3884)
     fixwait.update(_fix_waiting(p, main, left))  # T-5791: an earlier land's closes that wait for their FIX stay out of the closes
+    # T-5873: every merged-and-open leftover goes on the closer before the first train (not LEFT_PER_TRAIN after one: a
+    # land that restarts after its first train never reached the rest); a close refused before answers from its memo, fast.
+    # One batch each: a stop's trim and a restart's drain act between batches, so one batch of sixty would run to its end
+    for t in left:
+        to_close([t])
     waiting = set(lanes.awaiting_merge(p, briefs)) - set(landed)
     sort(x for x in briefs if x.id in waiting)
     seen = set(waiting) | set(landed)
@@ -4089,8 +4107,13 @@ def _land_trains(p, main, batch, owed, closer=None):
         if rest:
             print(f"sampo lane land: {len(rest)} landed lane(s) left merged and open for the next land: "
                   f"{', '.join(rest)}", file=sys.stderr, flush=True)
-    elif restart:  # a restart's leftovers close under the new code (it finds them merged and open again)
-        closer.stop()
+    elif restart:  # T-5873: the closes queued (and the ones waiting for their commit) run first, bounded; the rest closes
+        # under the new code (the next land finds it merged and open): stop() alone dropped them all, one close per land
+        n0 = len(closed)
+        dropped = closer.drain(RESTART_CLOSE_S)
+        closer.join()
+        print(f"sampo lane land: closed {len(closed) - n0} before restart ({len(dropped)} left for the next land)",
+              file=sys.stderr, flush=True)
     else:
         to_close([t for t in left if t not in queued])  # one tried at a boundary was said there
     closer.join()  # T-5368: the land's last ship and its summary come after every close
@@ -4384,6 +4407,7 @@ def _brief_hash(b):
 REFUSAL_TTL_S = 6 * 3600
 # ponytail: leftovers retried per train boundary, so 50 prepped closes don't hold up the next train; raise it if they pile
 LEFT_PER_TRAIN = 8
+RESTART_CLOSE_S = 300  # T-5873: a land restarting on new code runs its queued closes this long (in all) before it execs
 
 
 def _retry_due(p, tid):

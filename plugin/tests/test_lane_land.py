@@ -472,7 +472,7 @@ class Land(LandCase):
                                                 f"closed {b}"]), r.stderr)
         at = {s: i for i, s in enumerate(steps)}
         self.assertEqual(steps[0], f"train 1: {a}", r.stderr)
-        self.assertLess(at[f"closed {a}"], at[f"closed {early}"], "a train's own lanes close before the leftovers")
+        # T-5873: the leftover is queued at the land's start (it closes beside train 1): no order against a's close
         self.assertLess(at[f"train 2: {b}"], at[f"closed {b}"], r.stderr)
 
     def test_a_refused_leftover_is_tried_once_per_land_until_its_brief_changes(self):
@@ -1666,8 +1666,10 @@ class StopReason(LandCase):
         got, err, closes, _ = self.land_with(red)
         self.assertIn("the base is red", got["stopped"])
         self.assertIn("sampo lane land: stopped: the base is red", err, err)
-        self.assertEqual(closes, [], f"a stopped land closes no leftover (the next land does): {closes}")
-        self.assertEqual([self.brief(t).status for t in left], ["active"] * 4, "left merged and unclosed for the next land")
+        # T-5873: the leftovers are queued at the land's start, so the first may already run when the stop comes; the
+        # stop trims the queued rest (the next land closes them)
+        self.assertLessEqual(closes, left[:1], f"a stopped land closes no more than the leftover already running: {closes}")
+        self.assertEqual([self.brief(t).status for t in left[1:]], ["active"] * 3, "left merged and unclosed for the next land")
 
     def test_stop_reason_a_train_refused_only_by_a_close_holding_trunk_is_tried_again(self):
         a = self.lane(1, "one.txt", when=OLD)
@@ -1783,11 +1785,14 @@ class StopReason(LandCase):
         text = err.getvalue()
         mine = [t for t in got["landed"] if t not in left]
         self.assertEqual(len(mine), 2, (got["landed"], text))
-        self.assertEqual(sorted(begun), sorted(mine), f"the two this land merged close, no leftover does: {begun}\n{text}")
+        # T-5873: the leftovers are queued at the land's start: the first one is running when the stop comes (it finishes);
+        # the stop trims the queued ones, which the next land closes
+        self.assertEqual(sorted(begun), sorted(mine + left[:1]), f"the two this land merged and the running leftover close: {begun}\n{text}")
         line = next((x for x in text.splitlines() if "left merged and open for the next land" in x), "")
-        self.assertIn("sampo lane land: 3 landed lane(s) left merged and open for the next land: ", line, text)
-        for t in left:
+        self.assertIn("sampo lane land: 2 landed lane(s) left merged and open for the next land: ", line, text)
+        for t in left[1:]:
             self.assertIn(t, line)
+        self.assertNotIn(left[0], line)
         for t in mine:
             self.assertNotIn(t, line)
 
@@ -1804,6 +1809,117 @@ class StopReason(LandCase):
         self.assertEqual(dropped, ["T-1"])
         self.assertEqual(ran, [["T-2"]], ran)
         self.assertFalse(closer.stopped)
+
+
+class RestartClose(LandCase):
+    """T-5873: a land restarting on new code called closer.stop(), which dropped every close still queued or waiting in
+    `later`: since 07:00 each land process closed at most one lane and 60 merged lanes stayed open. The restart drains the
+    closer first (bounded by RESTART_CLOSE_S), and a new land queues every leftover before its first train."""
+
+    def setUp(self):
+        super().setUp()
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(self.repo)
+        self.p = c.find_project(self.repo)
+
+    def stamps(self, *seq):
+        n = []
+        return mock.patch("sampo.train._code_stamp", side_effect=lambda: seq[min(len(n.append(0) or n) - 1, len(seq) - 1)])
+
+    def test_restart_close_drain_runs_the_queued_closes_and_the_ones_waiting_for_their_commit(self):
+        ran = []
+        closer = train._Closer()
+        closer.work = lambda ids: ran.append(list(ids))
+        closer.hold(True)  # a train runs: three closes wait queued behind it (nothing starts: no thread yet), two for the commit
+        closer.after_train(["T-4"])
+        closer.after_train(["T-5"])
+        closer.hold(False)  # the train ended: the proven closes are back on the queue
+        for t in ("T-1", "T-2", "T-3"):
+            closer.put([t])
+        left = closer.drain(30)
+        self.assertEqual(sorted(ran), [["T-1"], ["T-2"], ["T-3"], ["T-4"], ["T-5"]], ran)
+        self.assertEqual(left, [])
+        self.assertTrue(closer.stopped)
+        self.assertTrue(closer.idle())
+
+    def test_restart_close_drain_puts_the_closes_waiting_only_for_their_commit_first(self):
+        ran = []
+        closer = train._Closer()
+        closer.work = lambda ids: ran.append(list(ids))
+        closer.hold(True)
+        closer.after_train(["T-9"])
+        closer.q.append(["T-1"])  # queued, not started (no put: no thread)
+        closer.hold(False)
+        closer.drain(30)
+        self.assertEqual(ran[0], ["T-9"], ran)
+
+    def test_restart_close_drain_stops_at_its_budget_and_names_what_it_left(self):
+        go, began, ran = threading.Event(), threading.Event(), []
+
+        def work(ids):
+            ran.append(list(ids))
+            began.set()
+            go.wait(30)
+        closer = train._Closer()
+        closer.work = work
+        closer.put(["T-1"])
+        closer.put(["T-2"])
+        closer.put(["T-3"])
+        self.assertTrue(began.wait(10))
+        t0 = time.monotonic()
+        left = closer.drain(0.3)
+        self.assertLess(time.monotonic() - t0, 5, "the budget bounds the wait")
+        self.assertEqual(left, ["T-2", "T-3"], "the running batch finishes; the rest is named")
+        go.set()
+        closer.join()
+        self.assertEqual(ran, [["T-1"]], "nothing starts after the drain")
+
+    def test_restart_close_a_restarting_land_closes_its_leftovers_and_says_how_many(self):
+        left = []
+        for i in range(3):  # merged by a train of one and left open: leftovers
+            tid = self.lane(i + 1, f"left{i}.txt", when=OLD)
+            self.audited(tid)
+            self.returned(tid, f"Lane {i + 1}")
+            self.train(tid)
+            left.append(tid)
+        two = [self.lane(n, f"n{n}.txt", when=OLD) for n in (7, 8)]
+        self.audited(*two)
+        for tid in two:
+            self.returned(tid, f"Lane {tid}")
+        err = io.StringIO()
+        with self.stamps("old", "new"), self.in_project(), contextlib.redirect_stderr(err):
+            got = train.land(self.p, self.repo, 1)
+        self.assertTrue(got["restart"], got)
+        self.assertEqual([self.brief(t).status for t in left], ["done"] * 3, err.getvalue())
+        self.assertEqual(sorted(got["closed"]), sorted(left + two[:1]), got)
+        self.assertRegex(err.getvalue(), r"closed 4 before restart \(0 left for the next land\)")
+
+    def test_restart_close_a_new_land_queues_every_leftover_before_its_first_train(self):
+        left = []
+        for i in range(10):  # more than LEFT_PER_TRAIN: the first train's boundary alone would queue 8
+            tid = self.lane(i + 1, f"left{i}.txt", when=OLD)
+            self.audited(tid)
+            self.returned(tid, f"Lane {i + 1}")
+            self.train(tid)
+            left.append(tid)
+        a = self.lane(30, "a.txt", when=OLD)
+        self.audited(a)
+        self.returned(a, "Lane 30")
+        put, at_train = [], []
+        real_put, real_train = train._Closer.put, train.train
+
+        def spy(closer, ids, front=False):
+            put.extend(ids)
+            return real_put(closer, ids, front)
+
+        def trained(p, main, ids, *a_, **k):
+            at_train.append(list(put))  # what was on the closer when the first train started
+            return real_train(p, main, ids, *a_, **k)
+        with self.in_project(), mock.patch.object(train._Closer, "put", spy), mock.patch.object(train, "train", trained):
+            got = train.land(self.p, self.repo, 1)
+        self.assertEqual(sorted(got["closed"]), sorted(left + [a]), got)
+        self.assertEqual(sorted(at_train[0]), sorted(left),
+                         f"all {len(left)} leftovers queued before the first train (LEFT_PER_TRAIN is {train.LEFT_PER_TRAIN})")
 
 
 class AcceptDuringMerge(LandCase):
