@@ -7,6 +7,7 @@ c.run_record, train._shape_run, train._run_check); none starts a real test run."
 # map-links: plugin/lib/sampo/train.py
 import fcntl
 import os
+import tempfile
 import threading
 import time
 import unittest
@@ -36,21 +37,62 @@ class ContractShape(unittest.TestCase):
         with open(AGENT, encoding="utf-8") as f:
             agent = f.read()
         self.assertNotIn("<SHAPE>", agent)
-        text = slanes.contract("T-9", "abc123", "/main")
+        with tempfile.TemporaryDirectory() as repo:
+            os.makedirs(os.path.join(repo, "plugin", "tests"))
+            open(os.path.join(repo, "plugin", "tests", "run.py"), "w", encoding="utf-8").close()
+            text = slanes.contract("T-9", "abc123", repo)
         self.assertNotIn("python3 plugin/tests/run.py " + " ".join(MODULES), text,
                          "a builder's own shape run is the third copy: accept's first stage and the hold check run them")
-        self.assertIn("Never run the heavy repo-shape modules", text)
+        self.assertIn("Never run the heavy repo-shape modules", text, "a project with the test runner carries the rule (T-5595)")
         self.assertIn("sampo lane accept", text)
 
-    def test_the_builder_runs_the_three_cheap_scans_once_before_the_report(self):  # T-5817
+    def test_the_builder_runs_the_three_cheap_scans_once_before_the_report(self):  # T-5817, T-5595
         # live mode runs no accept check (T-5447), so a silent cut test_left_out catches in 3 s reached a train
-        flat = " ".join(slanes.contract("T-9", "abc123", "/main").split())
+        with tempfile.TemporaryDirectory() as repo:
+            os.makedirs(os.path.join(repo, "plugin", "tests"))
+            open(os.path.join(repo, "plugin", "tests", "run.py"), "w", encoding="utf-8").close()
+            flat = " ".join(slanes.contract("T-9", "abc123", repo).split())
         self.assertIn("python3 plugin/tests/run.py test_left_out test_docs", flat)
         self.assertIn("python3 plugin/tests/run.py test_run -k EnvClassified", flat)
         self.assertIn("once, before your report", flat)
         for heavy in ("test_rename_aliases", "test_rename_scan", "test_fast_equiv"):
             self.assertNotIn("run.py " + heavy, flat)
             self.assertIn(heavy, flat, "named as the train's")
+
+
+class ContractRepoRules(unittest.TestCase):
+    def test_repo_rules_reach_a_builder_only_in_a_project_with_the_test_runner(self):  # T-5595
+        """The Sampo-repo-only rules (plugin/bin, run.py's --deadline, the repo-shape modules) leave the agent definition
+        every builder loads; a brief carries them only where plugin/tests/run.py exists (kith builders carry less)."""
+        with open(AGENT, encoding="utf-8") as f:
+            agent = f.read()
+        for words in ("Never run the heavy repo-shape modules", "python3 plugin/tests/run.py test_docs", "--deadline S",
+                      "plugin/bin/sampo", "T-4399"):
+            self.assertNotIn(words, agent, "a repo-only rule is in the agent definition: " + words)
+        self.assertIn("Never run `sampo check --affected` or the full `sampo check`", agent)
+        with tempfile.TemporaryDirectory() as plain, tempfile.TemporaryDirectory() as repo:
+            os.makedirs(os.path.join(repo, "plugin", "tests"))
+            open(os.path.join(repo, "plugin", "tests", "run.py"), "w", encoding="utf-8").close()
+            kith = slanes.brief_contract("T-9", "abc123", plain)
+            here = slanes.brief_contract("T-9", "abc123", repo)
+        self.assertNotIn("Never run the heavy repo-shape modules", kith)
+        self.assertNotIn("--deadline S", kith)
+        self.assertIn("Never run the heavy repo-shape modules", here)
+        self.assertIn("--deadline S", here)
+        self.assertIn(slanes.repo_rules().strip(), here)
+        self.assertNotIn(slanes.repo_rules().strip(), kith)
+        self.assertGreater(len(here.encode()) - len(kith.encode()), 800, "the repo rules are the difference")
+
+    def test_contract_carries_the_repo_rules_where_the_test_runner_is(self):  # T-5595
+        with tempfile.TemporaryDirectory() as plain, tempfile.TemporaryDirectory() as repo:
+            os.makedirs(os.path.join(repo, "plugin", "tests"))
+            open(os.path.join(repo, "plugin", "tests", "run.py"), "w", encoding="utf-8").close()
+            with_runner = slanes.contract("T-9", "abc123", repo)
+            without = slanes.contract("T-9", "abc123", plain)
+        self.assertIn(slanes.repo_rules().strip(), with_runner, "contract() with repo_here: the repo rules follow the rules")
+        self.assertIn("--deadline S", with_runner)
+        self.assertNotIn("Never run the heavy repo-shape modules", without)
+        self.assertIn("Never push, never merge another branch", without, "the shared rules reach every project")
 
 
 class ShapeRun(unittest.TestCase):

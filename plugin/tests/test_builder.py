@@ -45,7 +45,7 @@ class Agent(ForemanTestCase):
 class Brief(_Tasks):
     def test_the_contract_tells_a_fix_builder_to_record_task_prove(self):  # T-4209
         """Lanes landed 'left for a hand close: no red→green proof': the contract names the verb, in the agent file and in
-        the brief's copy with the real id."""
+        the contract text contract() renders for a real id (the one a brief carries when its agent lacks the rules)."""
         flat = " ".join(read_text(os.path.join(PLUGIN, "agents", "fm-builder.md")).split())
         self.assertIn("For a FIX record `sampo task prove <ID>", flat)
         from sampo import lanes as slanes
@@ -89,12 +89,66 @@ class Brief(_Tasks):
         self.assertIn("run `git merge worktree-old-lane`", brief)
         self.assertIn("the one merge besides the fast-forward that the rules allow", brief)
 
+    def test_the_brief_points_at_the_agent_contract(self):  # T-5595
+        """The brief's contract section is the base line sampo lane start reads, the real ids and a legend. The rules
+        live once, in the agent definition the builder loads as its system prompt: the 9.7 KB copy is not in the brief."""
+        from sampo import lanes as slanes
+        tid = self.task("Pointed")
+        head = git(self.repo, "rev-parse", "HEAD").strip()
+        brief = read_text(json.loads(self.fm("lane", "brief", tid, "--json").stdout)["path"])
+        self.assertEqual(brief.count(slanes.CONTRACT_HEADING), 1)
+        section = brief.split(slanes.CONTRACT_HEADING, 1)[1]
+        flat = " ".join(section.split())
+        self.assertIn(f"Start from the main checkout's commit {head} with `sampo lane start {tid}`", flat)
+        for key, value in (("<ID>", tid), ("<BASE>", head), ("<MAIN>", self.repo)):
+            self.assertIn(f"{key} = {value}", flat, "the legend gives the real values")
+        self.assertNotIn("Never run the heavy repo-shape modules", flat)
+        self.assertNotIn("Never push, never merge", flat)
+        self.assertLess(len(section.encode()), 2500, "the short contract, not the whole rules copy")
+
+    def test_the_brief_carries_the_full_contract_when_the_agent_lacks_it(self):  # T-5595
+        """An agent definition with no rules marker: the brief carries the whole contract text, so a builder is never
+        left without rules. contract() still renders the same text for the same agent file."""
+        import argparse
+        import contextlib
+        import io
+        from unittest import mock
+        from sampo import core as c, lanes as slanes
+        tid = self.task("Lacks")
+        head = git(self.repo, "rev-parse", "HEAD").strip()
+        real = slanes.agent_text()
+        self.assertIn("break none of it:\n", real)
+        bare = real.replace("break none of it:\n", "the rules follow:\n")
+        p = c.find_project(self.repo)
+        buf = io.StringIO()
+        with mock.patch.object(slanes, "agent_text", return_value=bare), contextlib.redirect_stdout(buf):
+            slanes.builder_brief(p, c.find_brief(p, tid), argparse.Namespace(json=True, model=None, why=None))
+            full = " ".join(slanes.contract(tid, head, self.repo).split())
+        brief = read_text(json.loads(buf.getvalue())["path"])
+        flat = " ".join(brief.split())
+        self.assertEqual(brief.count(slanes.CONTRACT_HEADING), 1)
+        self.assertIn(full, flat, "the brief's contract is contract()'s text")
+        self.assertIn("Never push, never merge another branch", flat)
+        self.assertIn(f"Start from the main checkout's commit {head} with `sampo lane start {tid}`", flat)
+
+    def test_a_brief_in_a_project_with_the_test_runner_carries_the_repo_rules(self):  # T-5595
+        """The Sampo-repo-only rules (the repo-shape modules, run.py's --deadline) reach a builder whose project has
+        plugin/tests/run.py; the same brief in a project without it does not carry them (the Brief test above)."""
+        os.makedirs(os.path.join(self.repo, "plugin", "tests"), exist_ok=True)
+        open(os.path.join(self.repo, "plugin", "tests", "run.py"), "w", encoding="utf-8").close()
+        tid = self.task("Runner")
+        brief = " ".join(read_text(json.loads(self.fm("lane", "brief", tid, "--json").stdout)["path"]).split())
+        self.assertIn("Never run the heavy repo-shape modules", brief)
+        self.assertIn("--deadline S", brief)
+        self.assertIn("Start from the main checkout's commit", brief)
+
     def test_a_self_contained_brief_and_the_agent_call(self):
         tid = self.task("Parse dates")
         res = json.loads(self.fm("lane", "brief", tid, "--json").stdout)
         brief = read_text(res["path"])
-        for part in ("Parse dates works", "python3 -c 'print(1)'", "build it", f"sampo focus {tid}", "never push"):
+        for part in ("Parse dates works", "python3 -c 'print(1)'", "build it", f"sampo lane start {tid}"):
             self.assertIn(part.lower(), brief.lower())
+        self.assertIn("never push", read_text(os.path.join(PLUGIN, "agents", "fm-builder.md")).lower(), "the rules are the agent's")
         self.assertIn('isolation: "worktree"', res["agent"])
         self.assertIn("sampo:fm-builder", res["agent"])
         self.assertIn("builder", self.fm("task", "show", tid).stdout)
@@ -126,32 +180,34 @@ class Brief(_Tasks):
         tid = self.task("Based")
         brief = read_text(json.loads(self.fm("lane", "brief", tid, "--json").stdout)["path"])
         head = git(self.repo, "rev-parse", "HEAD").strip()
-        self.assertIn(head, brief)
-        self.assertIn("merge --ff-only", brief)
+        agent = read_text(os.path.join(PLUGIN, "agents", "fm-builder.md"))  # T-5595: the rules are the agent's
+        self.assertIn(head, brief)  # the base line of the brief's short contract
+        self.assertIn(f"<MAIN> = {self.repo}", brief, "the legend gives the main checkout the rules name")
+        self.assertIn("merge --ff-only", agent)
         # T-3142: main moved between the brief and the launch: a worktree ahead of BASE (BASE its ancestor) builds
-        self.assertIn("is-ancestor <BASE> HEAD", read_text(os.path.join(PLUGIN, "agents", "fm-builder.md")))
-        self.assertIn("isolated in the worktree", brief)
-        self.assertIn("main thread", brief)
-        # T-1196: builders hit the isolation refusal 31 times by cd-ing into the main checkout: name it, and pwd
-        self.assertIn(f"main checkout ({self.repo})", " ".join(brief.split()))
-        self.assertIn("`pwd`", brief)
+        self.assertIn("is-ancestor <BASE> HEAD", agent)
+        self.assertIn("isolated in the worktree", agent)
+        self.assertIn("main thread", agent)
+        # T-1196: builders hit the isolation refusal 31 times by cd-ing into the main checkout: the rule names it, and pwd
+        self.assertIn("main checkout (<MAIN>)", agent)
+        self.assertIn("`pwd`", agent)
 
     def test_the_brief_says_edit_with_the_edit_tool(self):
         # T-0399 (JARVIS 2026-10-09): builders edited files with `python3 - <<'E' … s.replace(…)` and `cat > f <<EOF`;
         # Claude Code's isolation refused each as "too complex", five in ten minutes
         tid = self.task("Edits")
-        brief = read_text(json.loads(self.fm("lane", "brief", tid, "--json").stdout)["path"])
-        self.assertIn("Edit and Write tools", brief)
-        self.assertIn("too complex", brief)
+        agent = read_text(os.path.join(PLUGIN, "agents", "fm-builder.md"))  # T-5595: the rule is the agent's
+        self.assertIn("Edit and Write tools", agent)
+        self.assertIn("too complex", agent)
 
     def test_brief_leaves_the_changelog_to_the_main_thread(self):
         # T-0428: with merge=union a lane's "Unreleased" line merged under a section released after the lane started;
         # the builder reports the line and the main thread adds it at finish
         tid = self.task("Changelog")
-        brief = read_text(json.loads(self.fm("lane", "brief", tid, "--json").stdout)["path"])
-        self.assertIn("Don't edit CHANGELOG.md", brief)
-        self.assertIn("changelog line", brief)
-        self.assertIn("final report", brief)
+        agent = read_text(os.path.join(PLUGIN, "agents", "fm-builder.md"))  # T-5595: the rule is the agent's
+        self.assertIn("Don't edit CHANGELOG.md", agent)
+        self.assertIn("changelog line", agent)
+        self.assertIn("final report", agent)
 
     def test_builder_model_follows_the_tier(self):
         # T-0373: "not everything needs to be opus if opus orchestrates"; T-1796: M builders too (Opus M lanes were
@@ -742,10 +798,11 @@ class PassingShapes(_Tasks):
             self.assertIn(shape, self.block())
         self.assertIn("1500 characters", contract)  # T-5598: the report cap is a rule, so the brief's copy carries it
 
-    def test_the_lane_brief_carries_the_passing_shapes(self):
+    def test_the_lane_brief_leaves_the_passing_shapes_to_the_agent(self):  # T-5595: the agent file carries them once
         tid = self.task("Shaped")
         brief = read_text(json.loads(self.fm("lane", "brief", tid, "--json").stdout)["path"])
-        self.assertIn(self.block(), brief)
+        self.assertNotIn(self.block(), brief, "the brief does not repeat the agent's shapes")
+        self.assertIn("sampo lane start " + tid, brief)
 
     def test_passing_shapes_go_to_a_subagent_in_a_managed_worktree_only(self):
         # T-4139: a subagent in a linked worktree of a managed project is told the shapes; one in the main checkout (a

@@ -243,8 +243,9 @@ class LaneTrailerWalk(ForemanTestCase):
 
 class ContractAsksForTrailers(ForemanTestCase):
     def test_the_builder_contract_asks_for_the_close_lines_as_trailers_in_its_last_commit(self):  # T-5496
-        """The brief's copy of the contract (generated from agents/fm-builder.md) tells the builder to put its close
-        lines in its last commit's message, so a land can close the lane with no hand step."""
+        """The contract() text (rendered from agents/fm-builder.md, the one a brief carries when its agent lacks the rules)
+        tells the builder to put its close lines in its last commit's message, so a land can close the lane with no hand
+        step."""
         flat = " ".join(lanes.contract("T-9", "abc123", "/main").split())
         self.assertIn("your last commit carries the same lines as trailers", flat)
         self.assertIn('-m "CHANGELOG: …" -m "TITLE: …"', flat)

@@ -2623,6 +2623,15 @@ class BuilderContractOneSource(unittest.TestCase):
             self.assertIn("timeout parameter", flat)
             self.assertIn("timeout 590 tail --pid=PID -f /dev/null", flat)
 
+    def test_the_reproducer_carries_the_worktree_rules(self):  # T-5595
+        # The brief's contract no longer repeats the worktree rules and sampo:fm-reproducer runs from the same brief, so
+        # its own agent file must carry them: a reproducer that cds into the main checkout breaks the same lane contract.
+        flat = " ".join(read_text(os.path.join(os.path.dirname(__file__), "..", "agents", "fm-reproducer.md")).split())
+        for rule in ("Stay in your worktree (the folder you start in)", "never cd into the main checkout",
+                     "no `cd X &&` chains", "Edit and Write only", "sampo lease take FILE",
+                     "Never run `sampo check --affected` or the full `sampo check`"):
+            self.assertIn(rule, flat)
+
 
 class _LaneRepo(ForemanTestCase):
     """git(), lane() and base(); no tests of its own (T-3815), so AndonClear shares them without rerunning BoardLanes."""
@@ -5077,7 +5086,7 @@ class LaneStart(_LaneRepo):
         base = self.git(self.repo, "rev-parse", "HEAD").strip()
         self.assertIn(base, text)
         with open(brief, "w", encoding="utf-8") as f:
-            f.write(text.replace(base, "deadbee" * 5 + "ab"[:5], 1))
+            f.write(text.replace(base, "deadbee" * 5 + "ab"[:5]))  # every copy: the contract's legend has one too (T-5595)
         r = self.fm("lane", "start", "T-0001", cwd=path, check=False)
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("could not compare", r.stderr + r.stdout)
@@ -5098,6 +5107,20 @@ class LaneStart(_LaneRepo):
         self.assertEqual(self.active(path), "T-0001")
         self.assertNotIn("deadbee", r.stderr + r.stdout)
         self.assertNotIn("not checked", r.stdout, "the contract's base was found and checked: " + base[:7])
+
+    def test_start_reads_the_base_from_the_short_contract(self):  # T-5595
+        """The brief's contract is now the base line, the ids and a legend, not the rules: start still reads the base
+        from it, and a base the lane lacks is refused with the command that fetches it."""
+        path, brief = self.lane_with_brief(main_commit_between=True)
+        base = self.git(self.repo, "rev-parse", "HEAD").strip()
+        text = read_text(brief)
+        self.assertIn(f"Start from the main checkout's commit {base} with `sampo lane start T-0001`", text)
+        self.assertNotIn("Never run the heavy repo-shape modules", text, "the short contract carries no rules copy")
+        r = self.fm("lane", "start", "T-0001", cwd=path, check=False)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn(f"git merge --ff-only {base}", r.stderr + r.stdout)
+        self.assertNotIn("not checked", r.stderr + r.stdout, "the base was found in the short contract")
+        self.assertIsNone(self.active(path))
 
     def test_start_is_for_a_lane_and_for_its_own_task(self):
         path, _ = self.lane_with_brief()

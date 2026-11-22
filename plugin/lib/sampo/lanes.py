@@ -765,6 +765,13 @@ CONTRACT_HEADING = "## Your contract (sampo:fm-builder)\n"  # contract() writes 
 BRIEF_BASE = re.compile(r"Start from the main checkout's commit ([0-9a-f]{7,40})\b")  # the contract's first rule, filled in
 BUILT_ON_MARK = "Built on"  # T-5725: the line builder_brief adds after the rules when the base is a dependency's lane tip
 BUILT_ON = re.compile(rf"^- {BUILT_ON_MARK} (T-\d+) \(unlanded lane\)", re.M)
+CONTRACT_MARK = "break none of it:\n"  # T-5595: the agent file's rules follow it; a file without it gives its body as the rules
+def repo_rules():
+    """T-5595: the rules only a project with plugin/tests/run.py (Sampo's own repo) has: a brief carries them only there."""
+    return """- Bare `sampo` (or `fm`) from your worktree re-runs your lane's own plugin/bin (T-2843); if its stderr line doesn't name your worktree, use `python3 plugin/bin/sampo` for every sampo call (a bare one lints and writes the main install's files).
+- Your test runs: `python3 plugin/tests/run.py test_x -k name`; a long one takes `--deadline S`: if a shell `timeout` ends it (SIGTERM, exit 143), the run prints `ended from outside`, names the classes it killed and the ones not run, rather than dying silent (T-4399).
+- Never run the heavy repo-shape modules (test_rename_aliases, test_rename_scan, test_fast_equiv, the whole of test_run) yourself (T-5511): `sampo lane accept` runs them once over a batch of lanes as its check's first stage and records a red one on the lane, naming the failing classes (T-4563, T-5380); the hold check runs the shape classes. The three cheap scans (about 40 s together on a loaded host) you run once, before your report (T-5817): live mode runs no accept check (T-5447), and a silent cut that `test_left_out` finds in 3 s stopped a train: unpiped, in the foreground, `python3 plugin/tests/run.py test_left_out test_docs` and `python3 plugin/tests/run.py test_run -k EnvClassified`. Red: fix it in your lane, or name it in your report.
+"""
 
 
 def start(p, args):
@@ -1143,14 +1150,42 @@ def builders_cap(p):
     return v if isinstance(v, int) and 1 <= v <= BUILDERS_MAX else BUILDERS
 
 
-def contract(id, base, main):
-    """T-1290: the builder rules live once, in agents/fm-builder.md; the brief carries them with the real ids."""
+def agent_text():
+    """T-5595: the agent definition every builder loads as its system prompt, as the plugin ships it."""
     with open(os.path.join(os.path.dirname(os.path.abspath(os.path.dirname(__file__))), "..", "agents", "fm-builder.md"), encoding="utf-8") as f:
-        rules = f.read().split("break none of it:\n")[1].split("\n\nReport in")[0]
+        return f.read()
+
+
+def repo_here(main):
+    """T-5595: a project with plugin/tests/run.py is Sampo's own repo: it gets repo_rules() too."""
+    return os.path.exists(os.path.join(main, "plugin", "tests", "run.py"))
+
+
+def contract(id, base, main):
+    """T-1290: the builder rules live once, in agents/fm-builder.md; the brief carries them with the real ids. T-5595: the
+    full text, with repo_rules() where repo_here(main); an agent file with no CONTRACT_MARK gives its body as the rules."""
+    text = agent_text()
+    rules = text.split(CONTRACT_MARK)[1].split("\n\nReport in")[0] if CONTRACT_MARK in text else text.split("\n---\n", 1)[-1]
     rules = "\n".join(l for l in rules.splitlines() if not l.startswith("("))  # the note about this very copy
+    if repo_here(main):
+        rules += "\n" + repo_rules()
     for k, v in (("<ID>", id), ("<BASE>", base), ("<MAIN>", main)):  # T-5511: no <SHAPE>: the accept stage runs those modules
         rules = rules.replace(k, v)
     return CONTRACT_HEADING + rules
+
+
+def brief_contract(id, base, main):
+    """T-5595: the brief's contract. The rules are the agent definition's, which every builder loads, so the brief gives
+    this task's values and base; the repo-only rules come only where repo_here(main). An agent file with no rules mark
+    gives the whole contract() text instead, so a builder is never left without rules."""
+    if CONTRACT_MARK not in agent_text():
+        return contract(id, base, main)
+    lines = ["The rules are the agent definition's (sampo:fm-builder, your system prompt): they are not repeated here. "
+             "This task's values for them:",
+             f"- <ID> = {id}", f"- <BASE> = {base}", f"- <MAIN> = {main}",
+             f"- Start from the main checkout's commit {base} with `sampo lane start {id}`, in your worktree (the folder "
+             f"you start in)."]
+    return CONTRACT_HEADING + "\n".join(lines) + "\n" + (repo_rules() if repo_here(main) else "")
 
 
 def stopped(p, briefs=None):
@@ -4590,7 +4625,7 @@ def builder_brief(p, b, args, resume_branch=None, after="", stacked=None):
     parts += ["## Standing rules", "Checked before the merge (sampo check --affected runs their tests); break none:",
               *STANDING, *[f"- {d}: {t}" for d, t in standing_decisions(p)], ""]
     parts += cargo_brief(p)  # T-4575
-    parts.append(contract(b.id, base, p.root))
+    parts.append(brief_contract(b.id, base, p.root))
     if stack:  # T-5725: lane start reads this line (BUILT_ON): the base is a dependency's tip, merged when HEAD isn't behind it
         parts.append(f"- {BUILT_ON_MARK} {stack[0]} (unlanded lane): the base above is that lane's tip, not main's commit. "
                      f"`sampo lane start {b.id}` fast-forwards your worktree to it, or merges it when main moved on (the "

@@ -168,7 +168,9 @@ class Claims(Base):
         tid = self.task(title="Lane work", tier="S", focus=False, scope=["x.py", "lib/*.py"])
         path = json.loads(self.fm("lane", "brief", tid, "--json").stdout)["path"]
         with open(path) as f:
-            self.assertRegex(f.read(), r"(?:fm|sampo) lease take")  # T-2855: the contract teaches sampo since T-2778
+            self.assertIn(f"sampo lane start {tid}", f.read())  # T-5595: only this brief names its lane's start command
+        agent = read_text(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "agents", "fm-builder.md"))
+        self.assertRegex(agent, r"(?:fm|sampo) lease take")  # T-2855: the contract teaches sampo since T-2778
         out = self.fm("lease", "list").stdout
         self.assertIn("x.py::*", out)
         self.assertIn(tid, out)
