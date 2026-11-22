@@ -123,6 +123,62 @@ class CheckLog(AcceptCase):
         self.assertTrue(said and os.path.join(self.tmp, "check.log") in said[-1], said)
 
 
+class CullAllRed(unittest.TestCase):
+    """T-5880: a class red in every lane's subset tree is no lane's: the cull reruns it once on the base alone and parks no
+    lane for it (the 10:05 land parked 16 of 16 lanes for test_fast_equiv.Passthrough, a flake under load)."""
+
+    @staticmethod
+    def shape(extra=None):
+        """Every subset is red on test_x.K; `extra` {lane: class} adds a red class when that lane is in the subset."""
+        def run(sel, fresh=False):
+            names = ["test_x.K"] + [v for k, v in (extra or {}).items() if k in sel]
+            return train.ShapeVerdict("red", ", ".join(names), 1.0)
+        return run
+
+    def cull(self, rerun, ids=("a", "b", "c"), extra=None):
+        asked, notes = [], []
+
+        def base_rerun(names):
+            asked.append(names)
+            return train.ShapeVerdict(rerun, names if rerun == "red" else "", 1.0)
+        got = train._shape_cull(list(ids), self.shape(extra), base_rerun=base_rerun, notes=notes)
+        return got, asked, notes
+
+    def test_cull_all_red_a_base_that_is_red_on_the_rerun_parks_no_lane_and_names_the_class(self):
+        got, asked, notes = self.cull("red")
+        self.assertEqual(got, {}, "nothing parked: the class is red without any lane")
+        self.assertEqual(asked, ["test_x.K"], "one rerun of the class, on the base")
+        self.assertEqual(notes, [("test_x.K", "red", 3)])
+
+    def test_cull_all_red_a_base_that_is_green_on_the_rerun_is_a_flake_and_parks_no_lane_either(self):
+        got, asked, notes = self.cull("green")
+        self.assertEqual(got, {})
+        self.assertEqual(asked, ["test_x.K"])
+        self.assertEqual(notes, [("test_x.K", "green", 3)])
+
+    def test_cull_all_red_a_lane_with_a_red_class_of_its_own_stays_parked_for_that_one_only(self):
+        got, asked, notes = self.cull("green", extra={"b": "test_y.M"})
+        self.assertEqual(list(got), ["b"])
+        self.assertEqual(got["b"][1], "test_y.M")
+        self.assertNotIn("test_x.K", got["b"][0])
+        self.assertEqual(asked, ["test_x.K"])
+
+    def test_cull_all_red_a_class_red_in_only_some_lanes_trees_runs_no_base_rerun(self):
+        asked, notes = [], []
+
+        def shape(sel, fresh=False):
+            return train.ShapeVerdict("red", "test_x.K", 1.0) if "b" in sel else train.ShapeVerdict("green", "", 1.0)
+        got = train._shape_cull(["a", "b", "c"], shape, base_rerun=lambda n: asked.append(n), notes=notes)
+        self.assertEqual(list(got), ["b"])
+        self.assertEqual((asked, notes), ([], []))
+
+    def test_cull_all_red_no_base_rerun_given_parks_as_before_and_a_cut_rerun_parks_nothing(self):
+        self.assertEqual(sorted(train._shape_cull(["a", "b"], self.shape())), ["a", "b"])
+        with self.assertRaises(train.c.PolicyError) as e:
+            train._shape_cull(["a", "b"], self.shape(), base_rerun=lambda n: train.ShapeVerdict("cut", "", 1.0))
+        self.assertIn("no lane parked", str(e.exception))
+
+
 PIPE_FILE = "plugin/lib/sampo/train.py"
 
 

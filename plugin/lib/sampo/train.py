@@ -1230,7 +1230,7 @@ def _live_shape(wt, p=None, main=None, base=None, classes=None):
 SHAPE_CULL_WALLS = 2  # T-5806: the fresh shape seconds one cull may spend, in batch walls (shape_batch_wall()); cache hits are free
 
 
-def _shape_cull(ids, shape, suspects=(), budget=None):
+def _shape_cull(ids, shape, suspects=(), budget=None, base_rerun=None, notes=None):
     """T-5806: {lane id: (why, its classes)} the lanes to park so the rest of `ids` (merge order) is green on the repo-shape
     classes, from `shape(ids subset, fresh=False) -> ShapeVerdict` (the caller merges that subset on a fresh tree and
     caches a verdict per tree; `fresh` skips the cache).
@@ -1241,7 +1241,11 @@ def _shape_cull(ids, shape, suspects=(), budget=None):
     is parked with the earlier lane it needs (a second bisect), both, as no lane is red alone there. The bisect takes a
     red to be monotonic: when no prefix of the whole batch is red, the batch's red is run once more, uncached, and a green
     rerun lands it all with nothing parked (a flake). A cut run (no verdict) raises, and so does a search that has spent
-    `budget` fresh seconds (default SHAPE_CULL_WALLS batch walls): nothing is parked then."""
+    `budget` fresh seconds (default SHAPE_CULL_WALLS batch walls): nothing is parked then.
+    T-5880: when every lane ids is parked and a class is red in all their trees, no lane is to blame for it (a base red, or
+    a flake under load, as 16 of 16 lanes parked for test_fast_equiv.Passthrough): `base_rerun(class) -> ShapeVerdict`
+    runs it once on the base alone, the class is dropped from every park (a lane left with none is not parked) whatever the
+    rerun says, and (class, the rerun's verdict, number of lanes) is appended to `notes`. A cut rerun raises."""
     parked, spent = {}, [0.0]
     cap = SHAPE_CULL_WALLS * shape_batch_wall() if budget is None else budget
     order = {i: n for n, i in enumerate(ids)}
@@ -1287,6 +1291,22 @@ def _shape_cull(ids, shape, suspects=(), budget=None):
             parked[i] = (f"its merge turns the repo-shape classes red ({red.names or 'unnamed'})" + (
                 f" together with {other[0]}, parked with it: neither is red alone" if other else ""), red.names)
         pool = [i for i in pool if i not in group]
+    if base_rerun and len(ids) > 1 and len(parked) == len(ids):  # T-5880: a class red in every lane's tree is no lane's
+        sets = [{n for n in re.split(r"[,\s]+", w[1]) if n} for w in parked.values()]
+        for k in sorted(set.intersection(*sets)):
+            v = base_rerun(k)  # the class alone on the base, once, as the subset trees ran it
+            if v.verdict == "cut":
+                raise c.PolicyError(f"the repo-shape class {k} is red in all {len(ids)} subset trees and its rerun on the "
+                                    f"base has no verdict ({v.why}): nothing landed and no lane parked")
+            if notes is not None:
+                notes.append((k, v.verdict, len(ids)))
+            for i in list(parked):
+                why, names = parked[i]
+                left = [n for n in re.split(r"[,\s]+", names) if n and n != k]
+                if left:
+                    parked[i] = (why.replace(f"({names})", f"({', '.join(left)})", 1), ", ".join(left))
+                else:
+                    del parked[i]
     return parked
 
 
@@ -1335,6 +1355,29 @@ def _base_shape_red(p, main, base):
     red = sorted(n.strip() for n in names.split(",") if n.strip()) if verdict == "red" else []
     c.update_meta(p, **{LIVE_SHAPE_BASE: {"sha": base, "red": red}})
     return red
+
+
+def _base_shape_rerun(p, main, base, classes):
+    """T-5880: a ShapeVerdict for the repo-shape `classes` (joined) run once more on the bare `base`, as a subset tree runs
+    them (narrowed, niced, the same wall), never from the cache. A red run is kept as the base's (meta, with the classes
+    already kept for it) and filed once as the trunk-red FIX (_trunk_red_capture never raises); a base that will not build
+    is a cut (no verdict)."""
+    wt = c.scratch_tree("sampo-shape-base-", main)
+    t0 = time.monotonic()
+    try:
+        if _git(main, "worktree", "add", "-q", "--detach", wt, base).returncode or not _shape_tree(wt):
+            return ShapeVerdict("cut", "the base tree would not build")
+        verdict, names = _shape_run(wt, shape_batch_wall(), classes)
+    finally:
+        _git(main, "worktree", "remove", "--force", wt)
+        shutil.rmtree(wt, ignore_errors=True)
+        c.scratch_release(wt)
+    secs = time.monotonic() - t0
+    if verdict == "red":
+        red = sorted({*(_base_shape_cached(p, base) or []), *(n.strip() for n in names.split(",") if n.strip())})
+        c.update_meta(p, **{LIVE_SHAPE_BASE: {"sha": base, "red": red}})
+        _trunk_red_capture(p, base, red)
+    return ShapeVerdict(verdict, names, secs)
 
 
 def _held(p, b, main, tip):
@@ -2262,7 +2305,13 @@ def _run(p, main, ids, defer_verify=False, judged=None):
 
             mods = {_mod(n) for n in re.split(r"[,\s]+", first.names) if n}
             sus = {i for i in ids_m if mods & ({_stem(f) for f in diff(i)} | {_stem(t) for t in reach(i)})}
-            parked = _shape_cull(ids_m, shape, sus)
+            notes = []  # T-5880: (class, base rerun verdict, lanes) for a class red in every lane's subset tree
+            parked = _shape_cull(ids_m, shape, sus, base_rerun=lambda k: _base_shape_rerun(p, main, base, k), notes=notes)
+            for k, verdict, n in notes:
+                print(f"sampo lane land: repo-shape class {c.fit(c.plain(k), 100)} red in all {n} subset trees: base rerun "
+                      f"{verdict}, no lane parked for it", file=sys.stderr, flush=True)
+                c.log_event(p, "lane_train_shape_all_red", data={"class": c.fit(c.plain(k), 100), "lanes": n, "base_rerun": verdict,
+                                                                 "kind": "base red" if verdict == "red" else "flaky under load"})
             kept = build(base, [(b, tips[b.id]) for b, _ in pool if b.id not in parked])
             ensure_wt()
             if not kept or _git(wt, "rev-parse", "HEAD^{tree}").stdout.strip() == tree0:

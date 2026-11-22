@@ -362,6 +362,34 @@ class Train(TrainCase):
                          f"each split narrows to its own classes: {runs}")
         self.assertEqual(runs.count(full), 4, f"whole runs: the batch, the base, the kept build of each split: {runs}")
 
+    def test_live_shape_cull_all_red_a_class_red_in_every_subset_tree_parks_no_lane_and_the_land_says_so(self):
+        # T-5880: 16 of 16 lanes parked at 10:05 for a class that flaked under load: the base is run on it once, alone
+        self.fm("lane", "mode", "live")
+        log = os.path.join(self.tmp, "shape-args")
+        os.makedirs(os.path.join(self.repo, "plugin", "tests"))
+        with open(os.path.join(self.repo, "plugin", "tests", "run.py"), "w") as f:
+            f.write("import os, sys\n"
+                    "args = sys.argv[1:]\n"
+                    "if '--last' in args:\n    sys.exit(3)\n"
+                    f"open({log!r}, 'a').write(' '.join(args) + '\\n')\n"
+                    "lanes = any(os.path.exists(n) for n in ('a.txt', 'b.txt', 'd.txt'))\n"
+                    # the base is green on its whole run (the first) and red on the narrowed rerun
+                    "red = lanes or any('::' in a for a in args)\n"
+                    "if red:\n    print('  failed class: test_docs.Cls')\n"
+                    "sys.exit(1 if red else 0)\n")
+        self.git("add", "plugin")
+        self.git("commit", "-qm", "a Sampo tree with its runner")
+        ids = [self.lane(1, "a.txt"), self.lane(2, "b.txt"), self.lane(3, "d.txt")]
+        r = self.train(*ids, env={"FM_POSTMERGE_CMD": "true", "FOREMAN_NO_BACKGROUND": "1"})
+        out = r.stdout + r.stderr
+        for name in ("a.txt", "b.txt", "d.txt"):
+            self.assertTrue(os.path.exists(os.path.join(self.repo, name)), f"{name} landed: {out}")
+        self.assertNotRegex(out, r"left out ")
+        self.assertIn("repo-shape class test_docs.Cls red in all 3 subset trees: base rerun red, no lane parked for it", out)
+        for tid in ids:
+            self.assertNotIn("left out of a merge train", json.dumps(json.loads(
+                self.fm("task", "show", tid, "--json").stdout).get("log", "")), f"{tid} is not parked")
+
     def test_live_shape_confirm_a_second_new_red_on_the_kept_build_stops_the_land_with_nothing_parked(self):
         # T-5853: one more split, then the land stops: a lane parked in the first round is not parked for a refused land
         self.narrow_trunk()
