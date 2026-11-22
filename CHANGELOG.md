@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- A task now records whether the user said it (asked: verbatim) or Sampo derived it, the queue and inbox put the user's asks ahead of everything derived, the longest-waiting first, and sampo queue shows the split (T-5494).
 - lane brief --ready puts ready S tasks of one type that name the same file (at most 4) into one batch host, so one builder takes them instead of one cold start each; --no-batch turns it off (T-5478).
 - `sampo lane fixes ID` names the lane's builder agent and the SendMessage line with the review findings, or the transcript-based resume line once it returned, so a review round no longer starts a cold builder (T-5477).
 - A waiting merge-train gate keeps first claim on freed test slots for its whole wait instead of only the first 300 s, while small and narrow lane runs still take the reserve slots beside it (T-5050).
