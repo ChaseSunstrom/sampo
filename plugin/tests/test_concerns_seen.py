@@ -74,6 +74,7 @@ class Seen(ForemanTestCase):
         tid = self.task(title="fix the page layout css", scope=["plugin/lib/x.py"])
         self.touch(tid, "plugin/lib/x.py")
         self.touch(tid, "plugin/tests/test_ui.css")
+        self.assertEqual(cn.user_facing(self.p, self.brief(tid)), [], "the title's words and a test's css decide nothing")
         with mock.patch.object(cn, "_events", side_effect=AssertionError("read")):
             self.assertEqual(cn.surface_gaps(self.p, self.brief(tid)), [], "words in the title decide nothing")
 
@@ -197,3 +198,13 @@ class Seen(ForemanTestCase):
         b.append_log("surface waived: CI box has no browser and the page has no URL")
         c.save_brief(self.p, b)
         self.assertEqual(cn.surface_gaps(self.p, self.brief(tid)), [])
+
+    def test_task_done_refuses_a_web_edit_on_unit_evidence_and_names_the_surface_run(self):  # the CLI close is wired
+        tid = self.task()
+        self.touch(tid, "web/app.css")
+        self.fm("task", "step", tid, "add", "restyle the page")
+        self.fm("task", "step", tid, "done", "1", "--evidence", "python3 plugin/tests/run.py test_x", "ok", check=False)
+        r = self.fm("task", "done", tid, check=False)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("web/app.css", r.stdout + r.stderr)
+        self.assertIn("sampo smoke", r.stdout + r.stderr)
