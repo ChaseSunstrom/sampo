@@ -10050,7 +10050,7 @@ def _build_parser(only=None):
                                                          "(paths, URLs, emails, file names, task ids and the project "
                                                          "name are removed; other names in the prose are not)")
     s.add_argument("state", nargs="?", choices=["on", "off"])
-    s = add("digest", lazy("sampo.cost", "cmd_digest"), tier=("Reports", 970), help="the week in one screen: tasks, grades, lessons, decisions, cost")
+    s = add("digest", lazy("sampo.cost", "cmd_digest"), tier=("Reports", 970), help="the week in one screen: tasks, grades, lessons, decisions, cost, flow by stage (vs the last day's snapshot)")
     s.add_argument("--days", type=float, default=7)
     s.add_argument("--say", action="store_true", help="read it aloud too, with the first of say, spd-say, espeak-ng or "
                                                       "espeak installed (T-1549)")

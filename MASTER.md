@@ -163,6 +163,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmfits` (T-3499: situation probes: an unused verb or skill whose moment is now, with its numbers… [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmfixes` (T-1032: known fixes, `sampo fix list|add|rm`: a failed Bash command… [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmflow` (T-1639: `sampo flow FILE`, a journey of goto/click/type/expect/wait… [→ files-lib-2](docs/map/files-lib-2.md)
+- `fmflowreport` (T-5503: the Flow section and `flow` key of `sampo digest`, request-to-done by stage, agents, tests, guard… [→ ops-3](docs/map/ops-3.md)
 - `fmfoldpage` (T-5020: `sampo fold set ID VERDICT [--to ID] [--evidence path:line] [--why T]`, `fold pa… [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmforesight` (T-2554: `_requests(p, clean=True)` leaves out briefs a Genesis… [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmfriction` (`sampo friction`: the self-improvement digest and trigger… [→ files-lib-2](docs/map/files-lib-2.md)

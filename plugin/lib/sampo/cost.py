@@ -1602,6 +1602,9 @@ def cmd_digest(args):
         if any(n > 1 for n in fails.values()) else []
     lines += [f"Tokens: ≈ {_human(tokens)} input-equivalent (fm cost for the breakdown)"] if tokens else []
     lines += [unex] if unex else []
+    from sampo import flowreport  # T-5503: request-to-done by stage, agents, tests, guard, made/closed; once-a-day snapshot
+    flow, flow_lines = flowreport.report(p, args.days)
+    lines += flow_lines
     try:  # T-2273: what closed without a green run here
         got = c.unproven_summary(p, args.days)
         unproven, kinds = got["rows"], got["counts"]
@@ -1621,7 +1624,7 @@ def cmd_digest(args):
     lines += ["Usage burn:"] + [f"- {a} → {b}" for a, b in burn] if burn else []
     cli.out(args, {"learned": learn, "done": [b.id for b in done], "grades": dict(grades), "lessons": lessons, "review": review, "decided": decided,
                      "blocked": [b.id for b in blocked], "unproven": [r["id"] for r in unproven], "stale_plans": stale, "deferred_triage": triage, "failures": dict(fails.most_common(5)), "tokens": tokens,
-                     "burn": burn},
+                     "burn": burn, "flow": flow},
               "\n".join(lines))
     if getattr(args, "say", False):  # T-1549: the digest read aloud, when a speech program is installed
         say("\n".join(lines))
