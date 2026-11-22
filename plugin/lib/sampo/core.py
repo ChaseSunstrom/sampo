@@ -6721,6 +6721,33 @@ def gap_field(g):
     return ""
 
 
+GAP_KINDS = ("interpretation", "approach", "criteria", "steps", "rival", "approval", "door", "other")
+
+
+def gap_kind(g):
+    """T-5887: the kind of one plan gap, from a fixed list (never the gap's own words): gap_field's fields, an approval
+    (the user's yes, an M or L wait), a door (an Undo line), else other."""
+    g = str(g)
+    if gap_field(g):
+        return gap_field(g)
+    if g.startswith(("approval", "the user's yes")):
+        return "approval"
+    if g.startswith("an Undo:") or "untracked data" in g:
+        return "door"
+    return "other"
+
+
+def log_plan_gate_refused(p, gaps, task=None, where="focus"):
+    """T-5887: one ledger event per refusal by the plan gate, naming the kinds of gap and where it refused (focus or
+    lane): cardmine counts the kinds that repeat across tasks. Never raises: a refusal must reach the caller as it was."""
+    try:
+        kinds = sorted({gap_kind(g) for g in gaps})
+        if kinds:
+            log_event(p, "plan_gate_refused", task=task, data={"kinds": kinds, "where": where})
+    except Exception:  # a ledger that cannot be written changes nothing about the refusal
+        pass
+
+
 def plan_skeleton(b, gaps):
     """(entry, lines, others, rival): the PLANS.json entry for brief b as it is now, a <TODO: gap> in the field of each gap
     the file can hold, the "- " line of each of those, the gaps it cannot hold (short), and the rival gaps."""

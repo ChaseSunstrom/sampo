@@ -4671,6 +4671,7 @@ def builder_brief(p, b, args, resume_branch=None, after="", stacked=None):
     if gaps:  # T-0823: the builder's first act is fm focus, which refuses these
         said = _plan_refusal(p, b, gaps)  # T-5728: every gap at once, the skeleton file, the rival read started
         if said:
+            c.log_plan_gate_refused(p, gaps, task=b.id, where="lane")  # T-5887: cardmine counts the kinds that repeat
             raise c.PolicyError(said)
     if not [v for _, v in b.verify_cmds() if v]:
         raise cli.UsageError(f"{b.id} has no criterion with a verify command: a builder needs checks it can run "

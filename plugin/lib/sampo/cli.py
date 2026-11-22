@@ -5377,6 +5377,7 @@ def _focus_refusal(p, target):
                             f"never on main: sampo lane brief {target.id}")
     gaps = [] if target.status in ("active", "verifying") else c.plan_gaps(target, c.effective_autonomy(p))
     if gaps:
+        c.log_plan_gate_refused(p, gaps, task=target.id, where="focus")  # T-5887
         raise c.PolicyError(f"{target.id} isn't planned enough to start: missing {', '.join(gaps)} "
                             f"(sampo task set/ac/step, or /sampo:intake; sampo next says what's next)")
     if c.held_elsewhere(target, p.lane):  # T-0134: one checkout works a task at a time

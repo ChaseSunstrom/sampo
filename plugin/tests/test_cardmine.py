@@ -13,7 +13,7 @@ from helpers import SampoTestCase
 from test_callcards import CHECK_UPPER, SCHEMA, UPPER
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
-from sampo import callcards, cardmine  # noqa: E402
+from sampo import callcards, cardmine, repeats  # noqa: E402
 from sampo import core as c  # noqa: E402
 
 SECRET = "sk-live-4f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c"
@@ -41,6 +41,11 @@ class Base(SampoTestCase):
         self.p =c._project("mine", self.repo)
         os.makedirs(os.path.join(self.p.dir, "tasks"))
         self.bench = os.path.join(self.tmp, "bench.jsonl")
+        self.seqs = []  # the routines `sampo repeats --sequences` finds: none unless a test sets some (no transcript walk)
+        seq = mock.patch.object(repeats, "sequences", lambda p, days=repeats.SEQ_DAYS: {
+            "sequences": self.seqs, "days": days, "truncated": False})
+        seq.start()
+        self.addCleanup(seq.stop)
 
     # --- fixtures, one per source
     def card(self, name, purpose):
@@ -85,6 +90,17 @@ class Base(SampoTestCase):
                 rows.append({"ts": f"{day}00:{s:02d}:{i:02d}Z", "session_id": f"sess-{start + s}", "kind": "tool",
                              "tool": n, "target": prompt("fix"), "ok": True, "project": project})
         self.rows(os.path.join(c.state_dir(), "events.jsonl"), sorted(rows, key=lambda r: r["ts"]))
+
+    def routines(self, *rows):
+        """What `sampo repeats --sequences` returns (T-3921), as cardmine reads it: rows are (calls, count, sessions)."""
+        self.seqs = [{"calls": list(calls), "count": n, "sessions": s, "saved": n * (len(calls) - 1),
+                      "example": [prompt("fix")] * len(calls)} for calls, n, s in rows]
+
+    def refusals(self, n, gaps=("step",), tasks=2, where="focus", event="plan_gate_refused"):
+        """n plan-gate refusals on `tasks` different tasks, each naming the gaps."""
+        for i in range(n):
+            c.log_event(self.p, event, task=f"T-{100 + i % tasks:04d}",
+                        data={"kinds": sorted({c.gap_kind(g) for g in gaps}), "where": where})
 
     def mine(self, **kw):
         return cardmine.mine(self.p, bench=self.bench, **kw)
@@ -386,6 +402,131 @@ class Dedupe(Base):
             t.join()
         self.assertEqual(sorted(out), [0, 0, 0, 1])
         self.assertEqual(len(self.filed()), 1)
+
+
+class Repeats(Base):
+    """T-5887: the sessions' own repeated chores are card requests too: routines `sampo repeats --sequences` ranks, the
+    plan gate's refusals by the kind of gap, and the guard refusals Sampo forgave."""
+    ROUTINE = ("sampo task evidence", "git status", "sampo lane accept")
+
+    def test_a_routine_of_three_calls_in_two_sessions_becomes_a_request_naming_its_source_and_count(self):
+        self.routines((self.ROUTINE, 5, 3))
+        r = self.mine()
+        got = self.by("routine")
+        self.assertEqual(len(got), 1, got)
+        row = got[0]
+        self.assertEqual((set(row), row["count"], row["key"].startswith("routine:")), (KEYS, 5, True))
+        self.assertEqual(row["examples"][0]["tools"], list(self.ROUTINE))
+        self.assertEqual(row["examples"][0]["sessions"], 3)
+        self.assertIn("sampo task evidence", row["title"])
+        self.assertIn("5", row["why"])
+        self.assertIn("sampo repeats", row["why"])
+        self.assertEqual(len(r["added"]), 1)
+
+    def test_a_routine_of_two_calls_or_one_session_is_not_a_request(self):
+        self.routines((("git status", "git diff"), 9, 4), (self.ROUTINE, 6, 1))
+        self.mine()
+        self.assertEqual(self.by("routine"), [])
+
+    def test_only_the_top_routines_are_requested_per_run_and_a_second_run_adds_nothing(self):
+        self.routines(*[((f"sampo task {w}", f"git {w}", "Edit"), 10 - i, 2) for i, w in enumerate(
+            ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"])])
+        first = self.mine()
+        self.assertEqual(len(self.by("routine")), cardmine.NEW_TOP)
+        self.assertEqual(self.by("routine")[0]["count"], 10)
+        second = self.mine()
+        self.assertEqual((second["added"], len(self.by("routine"))), ([], cardmine.NEW_TOP))
+        self.assertEqual(len(first["added"]), cardmine.NEW_TOP)
+
+    def test_a_routine_is_deduped_against_an_open_request_and_a_card(self):
+        self.routines((self.ROUTINE, 5, 3))
+        self.mine()
+        title = self.by("routine")[0]["title"]
+        os.remove(callcards.requests_path())
+        self.rows(callcards.requests_path(), [{"at": "x", "source": "hand", "title": title, "why": "w", "count": 1,
+                                               "examples": []}])
+        self.assertEqual(self.mine()["added"], [], "an open hand-written request with the same title")
+        os.remove(callcards.requests_path())
+        self.card("sampo-evidence", "sampo task evidence git status sampo lane accept")
+        r = self.mine()
+        self.assertEqual((r["added"], r["covered"]), ([], 1), "a card that ranks for it covers it")
+
+    def test_a_routine_keeps_command_names_and_drops_other_words(self):
+        self.routines((("sampo task evidence", "grep fooBarQuux hunter2 " + SECRET, "Agent sampo:fm-builder"), 4, 2),
+                      (("Read", f"curl https://jane@example.test/{SECRET}", "Edit"), 4, 2))
+        self.mine()
+        with open(callcards.requests_path()) as f:
+            mined = f.read()
+        for bad in (SECRET, "sk-live", "fooBar", "hunter2", "jane", "example.test"):
+            self.assertNotIn(bad, mined)
+        self.assertIn("grep", mined)
+
+    def test_a_routine_the_repeats_scan_cannot_read_files_nothing(self):
+        with mock.patch.object(repeats, "sequences", side_effect=OSError("no transcripts")):
+            self.assertEqual(self.mine()["added"], [])
+
+    def test_a_repeated_plan_gate_refusal_kind_becomes_a_request_naming_its_source_and_count(self):
+        self.refusals(4, gaps=("Approach (options → choice → why): 3+ options", "step"))
+        self.refusals(3, gaps=("acceptance criterion",), where="lane")
+        self.mine()
+        got = {r["key"]: r for r in self.by("plan_refusal")}
+        self.assertEqual(set(got), {"plan:approach", "plan:steps", "plan:criteria"}, got)
+        self.assertEqual((got["plan:approach"]["count"], got["plan:criteria"]["count"]), (4, 3))
+        self.assertIn("plan gate", got["plan:approach"]["why"])
+        self.assertIn("4", got["plan:approach"]["why"])
+        self.assertEqual(set(got["plan:approach"]), KEYS)
+
+    def test_a_plan_kind_refused_twice_or_on_one_task_is_not_a_repeat(self):
+        self.refusals(2, gaps=("step",))
+        self.refusals(5, gaps=("acceptance criterion",), tasks=1)  # one task asked again and again is that task's gap
+        self.mine()
+        self.assertEqual(self.by("plan_refusal"), [])
+
+    def test_plan_refusals_are_deduped_on_a_second_run(self):
+        self.refusals(4, gaps=("step",))
+        self.assertEqual(len(self.mine()["added"]), 1)
+        self.assertEqual(self.mine()["added"], [])
+
+    def test_a_guard_refusal_sampo_forgave_three_times_becomes_a_request(self):
+        for _ in range(3):
+            c.log_event(self.p, "guard_forgiven", data={"category": "rewrite", "rule": "sed-in-place"})
+        c.log_event(self.p, "guard_forgiven", data={"category": "other", "rule": "x"})
+        self.mine()
+        got = self.by("guard_false")
+        self.assertEqual([(r["key"], r["count"]) for r in got], [("guard:rewrite:sed-in-place", 3)])
+        self.assertIn("forgave", got[0]["why"])
+
+    def test_the_new_sources_carry_no_secret_or_prompt_word(self):
+        self.routines((("sampo task evidence", "git status", "Edit"), 4, 2))
+        self.refusals(3, gaps=("step",))
+        for _ in range(3):
+            c.log_event(self.p, "guard_forgiven", data={"category": "rewrite", "rule": prompt("fix")})
+        self.mine()
+        self.assertEqual({r["source"] for r in self.filed()}, {"routine", "plan_refusal"})
+        with open(callcards.requests_path()) as f:
+            mined = f.read()
+        for bad in (SECRET, "fooBar", "jane", "hunter2"):
+            self.assertNotIn(bad, mined)
+
+    def test_a_refused_plan_gate_logs_the_kinds_of_gap_it_named(self):
+        c.log_plan_gate_refused(self.p, ["Interpretation: 2 readings", "step", "a cold rival read (x)",
+                                         "approval (M tier needs it)", "an Undo: line on step 2", "something new"],
+                                task="T-0001", where="lane")
+        ev = c.ledger_tail(self.p, 5, kinds=["plan_gate_refused"])
+        self.assertEqual(len(ev), 1)
+        self.assertEqual(ev[0]["task"], "T-0001")
+        self.assertEqual(ev[0]["data"], {"kinds": ["approval", "door", "interpretation", "other", "rival", "steps"],
+                                         "where": "lane"})
+
+    def test_a_focus_refusal_for_a_thin_plan_is_logged_as_a_plan_gate_refusal(self):
+        from sampo import cli
+        b = c.Brief.new("T-0777", "Thin plan", "FIX", "S", raw="x")
+        with mock.patch.object(c, "effective_autonomy", lambda p, meta=None: "standard"), \
+                self.assertRaises(c.PolicyError):
+            cli._focus_refusal(self.p, b)
+        ev = c.ledger_tail(self.p, 5, kinds=["plan_gate_refused"])
+        self.assertEqual([(e["task"], e["data"]["where"]) for e in ev], [("T-0777", "focus")])
+        self.assertIn("criteria", ev[0]["data"]["kinds"])
 
 
 if __name__ == "__main__":

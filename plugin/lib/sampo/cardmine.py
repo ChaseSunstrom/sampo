@@ -2,8 +2,10 @@
 
 Four sources, one reader each: pick misses (callcards' requests.jsonl rows that carry the task text), failed bench
 scenarios (the bench's rows and the misses it filed), closed FIX briefs whose titles repeat, and tool-call sequences
-that repeat across sessions (the event log's tool events). One writer appends the requests to that same requests.jsonl,
-each {at, source, title, why, count, examples}.
+that repeat across sessions (the event log's tool events). T-5887 adds the sessions' own chores: the routines `sampo
+repeats --sequences` ranks (3+ calls, 2+ sessions), the plan gate's refusals by kind of gap (plan_gate_refused ledger
+events) and the guard refusals Sampo forgave (guard_forgiven), so cards cover planning and ops, not only file utilities.
+One writer appends the requests to that same requests.jsonl, each {at, source, title, why, count, examples}.
 
 A request holds aggregates only: counts, verbs and file kinds drawn from the fixed lists below, tool names that look
 like names, failure classes and tiers. No word of a prompt, a brief, a file, a path or a secret is copied: a word
@@ -48,8 +50,18 @@ KINDS = {"py": "python", "python": "python", "js": "javascript", "javascript": "
          "css": "css", "svg": "svg", "sql": "sql", "txt": "text", "csv": "csv", "xml": "xml", "swift": "swift"}
 COUNTED = ("verb", "verbs", "kinds", "kind", "class", "misses", "nearest_score_max", "scenarios", "tasks", "tiers",
            "tools", "sessions")  # the keys an example may carry
-SOURCES = ("pick_miss", "bench_fail", "fix_repeat", "tool_sequence")
+SOURCES = ("pick_miss", "bench_fail", "fix_repeat", "tool_sequence", "routine", "plan_refusal", "guard_false")
+# T-5887: the sessions' own chores (routines, plan-gate refusals, forgiven guard refusals): fewer per run, so a first run
+# over a long history asks for the dozen that repeat most, not forty
+NEW_TOP = 5
+NEW_SOURCES = ("routine", "plan_refusal", "guard_false")
+ROUTINE_MIN_CALLS, ROUTINE_MIN_SESSIONS = 3, 2  # a routine: 3+ calls in 2+ sessions
+MIN_REFUSALS = 3  # refusals of one plan-gap kind (over 2+ tasks) or one forgiven guard rule before it is a request
+LEDGER_ROWS = 20000  # ledger events read for the refusals: the newest
 
+_SUBCMD = re.compile(r"[a-z][a-z-]{0,20}")
+_AGENT = re.compile(r"[A-Za-z][A-Za-z0-9_:-]{0,30}")
+_RULE = re.compile(r"[A-Za-z0-9_.:-]{1,40}")
 _WORD = re.compile(r"[a-z]+")
 _EXT = re.compile(r"[A-Za-z0-9_)\]]\.([A-Za-z]{1,10})(?![A-Za-z0-9_])")
 _TOOL = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,39}")
@@ -247,6 +259,90 @@ def _tool_sequences(events, slug):
              "examples": [{"tools": list(g), "sessions": n}]} for g, n in kept.items()]
 
 
+def _call_name(token):
+    """One call of a routine as a name and nothing else: its first word when that looks like a command or a tool name,
+    plus the next two for sampo and git (their subcommands) and one for an Agent launch (its type). Quoted values, paths
+    and ids are already placeholders; any other word of the command is dropped, and a call with no such name is None."""
+    words = str(token).split()
+    if not words or not _TOOL.fullmatch(words[0]):
+        return None
+    head, keep, rx = words[0], 0, _SUBCMD
+    if head in ("sampo", "git"):
+        keep = 2
+    elif head == "Agent":
+        keep, rx = 1, _AGENT
+    out = [head]
+    for w in words[1:1 + keep]:
+        if not rx.fullmatch(w):
+            break
+        out.append(w)
+    return " ".join(out)
+
+
+def _routines(report):
+    """`sampo repeats --sequences` routines (T-3921: multi-call chores the main session and its builders repeat) of
+    ROUTINE_MIN_CALLS or more calls seen in ROUTINE_MIN_SESSIONS or more sessions, one candidate each by its call names."""
+    out = []
+    for x in (report.get("sequences") or []) if isinstance(report, dict) else []:
+        if not isinstance(x, dict):
+            continue
+        calls, n, ses = x.get("calls"), x.get("count"), x.get("sessions")
+        if not isinstance(calls, list) or len(calls) < ROUTINE_MIN_CALLS or not all(isinstance(t, str) for t in calls):
+            continue
+        if not all(isinstance(v, int) and not isinstance(v, bool) for v in (n, ses)) or ses < ROUTINE_MIN_SESSIONS:
+            continue
+        names = [_call_name(t) for t in calls]
+        if None in names:
+            continue
+        out.append({"source": "routine", "title": "routine: " + " > ".join(names), "subject": " ".join(names).lower(),
+                    "key": "routine:" + ">".join(names), "count": n,
+                    "why": f"sampo repeats --sequences: {n} runs in {ses} sessions of {' then '.join(names)} "
+                           f"({len(names)} calls by hand each time)",
+                    "examples": [{"tools": names, "sessions": ses}]})
+    return out
+
+
+def _plan_refusals(rows, since):
+    """Plan-gate refusals (plan_gate_refused ledger events: the kinds of gap a focus or a lane brief refused for) by kind:
+    a kind refused MIN_REFUSALS times across at least two tasks is a request (one task asked again is that task's gap)."""
+    n, tasks = collections.Counter(), collections.defaultdict(set)
+    for e in rows:
+        d = e.get("data")
+        if e.get("event") != "plan_gate_refused" or not isinstance(d, dict) or str(e.get("ts") or "") < since:
+            continue
+        for k in d.get("kinds") if isinstance(d.get("kinds"), list) else []:
+            if k in c.GAP_KINDS:
+                n[k] += 1
+                tasks[k].add(str(e.get("task")))
+    out = []
+    for k, cnt in n.items():
+        if cnt < MIN_REFUSALS or len(tasks[k]) < 2:
+            continue
+        out.append({"source": "plan_refusal", "title": f"plan gate refusals: {k} gap", "subject": f"plan {k}",
+                    "key": f"plan:{k}", "count": cnt,
+                    "why": f"the plan gate refused {cnt} times over {len(tasks[k])} tasks for a missing {k}: "
+                           f"planning that a card could do or check",
+                    "examples": [{"class": k, "tasks": len(tasks[k]), "misses": cnt}]})
+    return out
+
+
+def _guard_forgiven(rows, since):
+    """Guard refusals Sampo took back (guard_forgiven: a rewrite that passed next) by category and rule, a false refusal
+    repeated MIN_REFUSALS times; both names are written only when they look like names."""
+    n = collections.Counter()
+    for e in rows:
+        d = e.get("data")
+        if e.get("event") != "guard_forgiven" or not isinstance(d, dict) or str(e.get("ts") or "") < since:
+            continue
+        cat, rule = d.get("category"), d.get("rule")
+        if isinstance(cat, str) and _CLASS.fullmatch(cat) and isinstance(rule, str) and _RULE.fullmatch(rule):
+            n[(cat, rule)] += 1
+    return [{"source": "guard_false", "title": f"guard false refusals: {cat} {rule}", "subject": f"guard {cat} {rule}",
+             "key": f"guard:{cat}:{rule}", "count": cnt,
+             "why": f"the guard refused {cat} ({rule}) {cnt} times and Sampo forgave it: a safe form a card could do",
+             "examples": [{"class": cat, "misses": cnt}]} for (cat, rule), cnt in n.items() if cnt >= MIN_REFUSALS]
+
+
 # --- dedupe and write --------------------------------------------------------------------------------------------------
 
 def _norm(title):
@@ -289,7 +385,7 @@ def _offer(cands):
     out = []
     for src in SOURCES:
         mine = sorted((x for x in cands if x["source"] == src), key=lambda x: (-x["count"], x["title"]))
-        out += mine[:TOP]
+        out += mine[:NEW_TOP if src in NEW_SOURCES else TOP]
     return out
 
 
@@ -309,7 +405,14 @@ def mine(p, write=True, bench=None, since=None):
         tools = _tool_sequences(c.global_events(since), p.slug)  # streamed: no list of the window's events
     except OSError:
         tools = []
-    cands = _offer(_pick_misses(requests) + _bench_fails(_read(bench), requests) + _fix_repeats(briefs) + tools)
+    try:  # T-5887: the routines the sessions repeat, ranked by sampo repeats --sequences
+        from sampo import repeats
+        routines = _routines(repeats.sequences(p))
+    except Exception:  # an unreadable transcript folder or a changed report is no routine, never a failed run
+        routines = []
+    ledger = c.ledger_tail(p, LEDGER_ROWS, kinds=["plan_gate_refused", "guard_forgiven"])
+    cands = _offer(_pick_misses(requests) + _bench_fails(_read(bench), requests) + _fix_repeats(briefs) + tools
+                   + routines + _plan_refusals(ledger, since) + _guard_forgiven(ledger, since))
     # the card check is the slow part and needs no lock: it runs before the write holds one
     fresh = [x for x in cands if not _covered(x, p.root)]
     covered = len(cands) - len(fresh)
