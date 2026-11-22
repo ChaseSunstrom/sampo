@@ -287,6 +287,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmcardmine` (T-4920, T-4838 part B: `sampo.cardmine.mine(p)` turns pick misses, failed bench rows, repeated closed FIX… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmsteward_dup` (T-5019, slice of T-4315: `sampo.steward_dup.run(p, args)` finds duplicate and foldable open tasks by hashed word and bigram TF-IDF cosine over title and criteria, no training… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmbenchswe` (sampo/bench_swe, T-3746: `sampo bench swe`, SWE-bench Verified through Smith in each instance's docker image… [→ files-lib-4](docs/map/files-lib-4.md)
+- `fmexamgrade` (T-5055: `sampo.examgrade.grade(result, events)`, the hard exam's… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmdockershim` (T-3746: the docker-exec tool shim, `sampo-bench-*` containers only… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmyardstick` (T-5006, slice of T-4314: `sampo.yardstick.rows()` reads the bench, SWE and Terminal-Bench result… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmmint`… [→ files-lib-4](docs/map/files-lib-4.md)
