@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- sampo bench arms now run in a fresh one-commit repo of the base, so an agent can no longer read the hidden tests or reference fix from git history, and a transcript audit voids any run that touched the answers (T-3364).
 - A seeded sample of kept moons is re-judged blind by the kill and tier judges on a model other than the one that kept each, so the funnel's bar has a measured hold rate (T-5180).
 - A card.json hooks key runs small confined scripts at set points of a call (before, after_gen, after_check, after_apply, on_fail), one child per used point at about 22 ms, and none when nothing is declared (T-5946).
 - sampo tidy --report (and --json) lists, per project and in total, each Sampo-owned kind's size, count, newest use, owner and what its cap would free, within a time budget that names anything it could not size (T-5951).
