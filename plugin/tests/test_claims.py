@@ -3,6 +3,7 @@ holder and its task."""
 # map-links: plugin/agents/fm-builder.md
 import json
 import os
+import subprocess
 
 from helpers import read_text
 from test_bus import Base
@@ -175,6 +176,31 @@ class Claims(Base):
         r = self.fm("lease", "take", "x.py::f", env=B, check=False)
         self.assertEqual(r.returncode, 0, "a lane's pre-claim is advisory: the take notes it (T-3283)")
         self.assertIn(tid, r.stderr + r.stdout)
+
+    def test_a_lane_take_over_a_sibling_lanes_hold_notes_it_and_takes_the_lease(self):
+        # T-5720: parallel builders share the lead's session id, so a sibling lane's hold reads as the same session and
+        # stalled T-5591, T-5709 and T-5712 at a take that refused; another session's hold still refuses
+        lane = os.path.join(self.tmp, "lane")
+        subprocess.run(["git", "-C", self.repo, "worktree", "add", "-q", "-b", "foreman/lane", lane], check=True)
+        self.fm("task", "new", "One", "--type", "FIX", "--tier", "S", "--ac", "x :: true", "--step", "s", "--focus", env=A)
+        self.assertEqual(self.fm("lease", "take", "a.py::f", env=A).returncode, 0)
+        self.fm("task", "new", "Two", "--type", "FIX", "--tier", "S", "--ac", "x :: true", "--step", "s", "--focus",
+                env=A, cwd=lane)
+        r = self.fm("lease", "take", "a.py", env=A, cwd=lane, check=False)  # file-wide: overlaps the main task's a.py::f
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("Took 1 lease(s)", r.stdout)
+        self.assertIn("sibling lane", r.stderr, "the take names the sibling's hold it went over")
+        self.assertEqual(len([v for v in self.fm_json("lease", "list")["leases"] if v["file"] == "a.py"]), 2,
+                         "both tasks' claims stay: the main checkout's a.py::f and the lane's a.py::*")
+        self.fm("lease", "drop", "a.py::f", env=A)  # only the lane's take holds a.py now
+        with open(os.path.join(self.repo, "a.py"), "w") as f:
+            f.write("def f():\n    return 1\n")
+        _, out = self.note("sess-b", "Edit", {"file_path": os.path.join(self.repo, "a.py"),
+                                              "old_string": "return 1", "new_string": "return 2"})
+        self.assertEqual(out.get("permissionDecision"), "deny", "the sibling's take is a real hold, not advisory")
+        r = self.fm("lease", "take", "a.py::f", env=B, cwd=lane, check=False)
+        self.assertEqual(r.returncode, 1, "another session's explicit hold still refuses")
+        self.assertIn("overlaps session sess-a", r.stderr)
 
 
 class ClaimsReview(Base):

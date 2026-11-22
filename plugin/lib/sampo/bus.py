@@ -755,10 +755,14 @@ def cmd_lease(args):
                     rel = os.path.join(p.root, rel)
                 rel = os.path.relpath(os.path.abspath(rel), p.root)
                 todo.append((rel, sym or "*"))
+
+            def sibling(v):  # T-5720: a builder lane shares its parent's session id, so another task's hold of mine here
+                return bool(p.lane) and act is not None and v["session"] == me and v.get("task") != act.id
             hits = [(f"{r}::{s}", v) for r, s in todo for v in claim_overlaps(p, r, s, me, act, data)]
             # T-3283: a lane's pre-claim (lane-<id>) is advisory, as edits treat it (T-1138): a take notes it, never refuses
             lanes = [(t, v) for t, v in hits if v["session"].startswith("lane-")]
-            hits = [(t, v) for t, v in hits if not v["session"].startswith("lane-")]
+            sibs = [(t, v) for t, v in hits if sibling(v)]  # T-5720: advisory like a pre-claim: noted, never refused
+            hits = [(t, v) for t, v in hits if not v["session"].startswith("lane-") and not sibling(v)]
             if args.action == "take" and hits and not args.warn:  # T-1068: refuse the whole claim, taking none of it
                 if getattr(args, "json", False):
                     cli.out(args, {"refused": [{"target": t, "session": v["session"], "task": v.get("task")}
@@ -770,6 +774,9 @@ def cmd_lease(args):
                 print(f"warning: {t} overlaps {_who(v)}", file=sys.stderr)
             for t, v in lanes if args.action == "take" else []:
                 print(f"note: {t} overlaps lane pre-claim {_who(v)}; taken (pre-claims are advisory)", file=sys.stderr)
+            for t, v in sibs if args.action == "take" else []:
+                print(f"note: {t} overlaps {_who(v)} in a sibling lane (a lane shares its parent's session id); taken",
+                      file=sys.stderr)
             for rel, sym in todo:
                 if args.action == "drop":  # T-1216: a file named alone drops each of its symbol leases too
                     hit = lambda v: v["project"] == p.slug and v["file"] == rel and (sym == "*" or v["symbol"] == sym)
@@ -782,7 +789,7 @@ def cmd_lease(args):
                     data = {k: v for k, v in data.items() if not (hit(v) and (args.force or mine(v)))}
                 else:
                     _claim(data, p, me, act.id if act else None, rel, sym, args.minutes * 60,
-                           advisory=any(not v["session"].startswith("lane-")  # T-3283: a lane's pre-claim alone isn't a hold
+                           advisory=any(not v["session"].startswith("lane-") and not sibling(v)  # T-3283, T-5720: not holds
                                         for v in claim_overlaps(p, rel, sym, me, act, data)))
             _write_leases(data)
     for v in forced:  # T-3371: a forced drop of another holder's lease is logged and the holder told
