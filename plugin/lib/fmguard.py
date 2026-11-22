@@ -130,8 +130,9 @@ def _user_only_hit(word, arg):
 USER_ONLY = {"core", "remote", "plugin", "confirm"}  # granted only by the user's reply to `fm ask`, never by `fm task set --allow`
 # (confirm, T-0289: a request a child found in an old transcript is worked only after the user says it's theirs)
 FILE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
-_CORE_DIRS = ("lib", "bin", "hooks", "evals", "integrations", "native")  # plugin/…: Foreman's code (integrations:
-# T-0340; native: T-3571, sampo-fast's source and the binary hooks/fast runs)
+_CORE_DIRS = ("lib", "bin", "hooks", "evals", "integrations", "native", "macros")  # plugin/…: Foreman's code (integrations:
+# T-0340; native: T-3571, sampo-fast's source and the binary hooks/fast runs; macros: T-3923, the routines `sampo do`
+# runs unguarded, so a routine's file is core like the code it calls)
 # T-1328: Foreman's own config that becomes a command (code.toml), runs Python (tui.toml, tui/) or picks where code is
 # sent (models.json): an agent that writes one runs what it likes on the next fm code
 _CORE_CONFIG = ("code.toml", "tui.toml", "models.json")

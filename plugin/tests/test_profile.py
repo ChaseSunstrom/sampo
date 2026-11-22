@@ -88,7 +88,10 @@ class Profile(SampoTestCase):
         os.makedirs(plain)
         self.assertEqual(self.hook("SessionStart", {"cwd": plain}, env=self.env).stdout.strip(), "")
         self.assertNotIn("Keep replies", self.context(self.hook("SessionStart", {}, env=self.env)))
-        self.assertEqual(self.hook("SubagentStartContext", {"agent_type": "x"}, env=self.env).stdout.strip(), "")
+        # T-3923: a subagent with no profile still starts with the one-call routines' line, and nothing else
+        from sampo import macros
+        self.assertEqual(self.context(self.hook("SubagentStartContext", {"agent_type": "x"}, env=self.env)),
+                         macros.start_line())
         self.assertIn("no profile", self.fm("profile", "show", env=self.env).stdout)
         self.assertFalse(os.path.exists(os.path.join(self.home, "state", "profile", "profile.md")))
 
@@ -127,6 +130,8 @@ class Profile(SampoTestCase):
         out = self.hook("SubagentStartContext", {"agent_type": "general-purpose", "agent_id": "a1"})
         ctx = self.context(out)
         self.assertIn("Full autonomy", ctx)
+        from sampo import macros
+        ctx = ctx.replace("\n\n" + macros.start_line(), "")  # T-3923: the routines' line has its own 300-character cap
         self.assertLessEqual(len(ctx.encode()), profile.BRIEF_MAX)
         self.assertEqual(json.loads(out.stdout)["hookSpecificOutput"]["hookEventName"], "SubagentStart")
 
@@ -144,8 +149,10 @@ class Profile(SampoTestCase):
             self.assertIn(profile.WITHHELD, ctx)
             self.assertNotIn("Keep replies", ctx)
             self.assertNotIn("Full autonomy", ctx)
-            self.assertEqual(self.hook("SubagentStartContext", {"agent_type": "general-purpose", "agent_id": "a1"},
-                                       env=self.env).stdout.strip(), "")
+            from sampo import macros  # T-3923: the routines' line is no profile text: it alone reaches the subagent
+            self.assertEqual(self.context(self.hook("SubagentStartContext", {"agent_type": "general-purpose",
+                                                                             "agent_id": "a1"}, env=self.env)),
+                             macros.start_line())
             for verb in ("rebuild", "check"):
                 got = self.fm("profile", verb, env=self.env, check=False)
                 self.assertNotEqual(got.returncode, 0, verb)

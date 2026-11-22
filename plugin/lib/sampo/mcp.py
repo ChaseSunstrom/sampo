@@ -1,6 +1,7 @@
 """fm mcp (T-0245): Sampo's memory and state as read-only MCP tools over stdio — JSON-RPC 2.0, one message a line,
 stdlib only — so other agents and clients can read the project's state, next action, recall, research notes and
-briefs. Each tool runs the matching read-only fm command (the CLI stays the one implementation); everything sent is
+briefs. Each tool runs the matching read-only fm command (the CLI stays the one implementation), except do (T-3923),
+which runs a registered one-call routine's verbs; everything sent is
 redacted; a sensitive project serves nothing. Registering it (`claude mcp add foreman -- fm mcp`) is the user's
 step: the guard asks for the plugin category.
 T-0946: plus the stack library (lib_suggest, lib_search, lib_show) and the read-only instruments (outline, sym,
@@ -123,6 +124,12 @@ TOOLS = [
      _obj(["kind", "prompt", "choices"], kind=_str("what is decided, e.g. intake-type", cap=40),
           prompt=_str("the question", cap=4000),
           choices={"type": "array", "items": {"type": "string", "maxLength": 80}, "minItems": 2, "maxItems": 12}), None),
+    # T-3923: one call runs a routine (plugin/macros, sampo do NAME): the same five lines the CLI prints; the name must be
+    # a registered routine's, so a client sends no verb of its own
+    ("do", "Run a Sampo one-call routine (sampo do NAME; `sampo do --list` names them): its steps run in order and it "
+     "answers the five lines sampo do prints. The one tool here that changes state, by the routine's verbs.",
+     _obj(["name"], name=_str("the routine's name, e.g. sweep-lanes", cap=40)),
+     lambda a, p: ["do", _need(a, "name", r"[a-z][a-z0-9-]{0,39}")]),
 ]
 MAX_LINE = 1_000_000
 
@@ -180,9 +187,11 @@ def _timeout():
 
 def _fm(p, argv, stdin="", ok=(0,)):
     # T-0946: stdin is given (empty by default), so a tool never reads the server's own message stream
+    env = dict(os.environ, FOREMAN_NO_BACKGROUND="1")
+    if argv[:1] == ["do"]:  # T-3923: a routine's `lane land --bg` starts its land, as it does by hand
+        env.pop("FOREMAN_NO_BACKGROUND", None)
     r = subprocess.run([sys.executable, os.path.join(c.PLUGIN_ROOT, "bin", "fm"), *argv], cwd=p.root, input=stdin,
-                       capture_output=True, text=True, errors="replace", timeout=_timeout(),
-                       env=dict(os.environ, FOREMAN_NO_BACKGROUND="1"))
+                       capture_output=True, text=True, errors="replace", timeout=_timeout(), env=env)
     # an allowed non-zero exit (fm find's 1, findings) with nothing on stdout is a crash's traceback, not an answer
     bad = r.returncode not in ok or (r.returncode != 0 and not r.stdout.strip())
     return ((r.stderr or r.stdout) if bad else r.stdout), bad

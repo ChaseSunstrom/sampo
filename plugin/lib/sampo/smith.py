@@ -517,6 +517,25 @@ TOOLS = [
      "parameters": {"type": "object", "required": ["summary"], "properties": {"summary": {"type": "string"}}}},
 ]
 
+
+def macro_tools():
+    """T-3923: the one tool that runs a registered one-call routine (sampo do NAME, plugin/macros), its description the
+    routines' names and abouts; [] when no routine is registered, so a project without one gets no tool."""
+    from sampo import macros
+    listed = macros.menu(400)
+    if not listed:
+        return []
+    return [{"name": "do", "description": "Run one of Sampo's one-call routines by its name (sampo do --list names them "
+             f"all): its steps run in order and it answers the five lines sampo do prints. Routines: {listed}.",
+             "parameters": {"type": "object", "required": ["name"], "properties": {
+                 "name": {"type": "string", "description": "the routine's name, e.g. sweep-lanes"}}}}]
+
+
+def with_macros(tools, read_only, only_done):
+    """T-3923: the tool list plus the routines' tool for a run that can act: a question (read_only) and a survey's
+    wrap-up (only_done) run no routine."""
+    return tools if read_only or only_done else tools + macro_tools()
+
 PLAN_PROMPT = """You plan one coding task for Smith's harness. Reply with only one JSON object:
 {"type": "FIX|FEATURE|CLEAN|PERFORMANCE|SECURITY|RESEARCH", "tier": "S|M", "title": "...",
  "criteria": [{"text": "what is true when it is done", "verify": "a shell command that exits 0 only then",
@@ -2563,6 +2582,8 @@ class Run:
             if name == "done":
                 self.summary = arg("summary", default="") if isinstance(a.get("summary"), str) else ""
                 return "step finished", True
+            if name == "do":  # T-3923: a registered routine, run as one command (its five lines back)
+                return self.macro(a), False
             if name == "read":
                 res = self.seen_read(arg("path"), arg("start", int, 1), arg("lines", int, READ_LINES))
                 self.note_opened(a.get("path"))  # T-4425: the survey compares the map with what was opened
@@ -3567,6 +3588,16 @@ class Run:
         return (f"timed out after {RUN_TIMEOUT} s" if code is None else f"exit {code}") + (f"\n{out}" if out else "") \
             + (f"\n{note}" if note else "")
 
+    def macro(self, a):
+        """T-3923: a routine (plugin/macros) run as `sampo do NAME` through run_cmd, so the guard and the run's bounds
+        hold for it; the name is checked against the routine name pattern first, never passed on as text."""
+        from sampo import macros
+        name = a.get("name")
+        if not isinstance(name, str) or not macros.NAME.fullmatch(name):
+            return "error: do needs name as a routine's name, e.g. sweep-lanes (sampo do --list names them)"
+        cmd = f"{shlex.quote(sys.executable)} {shlex.quote(os.path.join(core.PLUGIN_ROOT, 'bin', 'sampo'))} do {name}"
+        return re.sub(r"^exit 0\n?", "", self.run_cmd(cmd))
+
     def note_fail(self, cmd, code, out, secs=None):
         """T-4292: a criterion's verify command that ran (by the harness or by the model's `run`) leaves its last failure
         (the command and what it printed), or clears it when it passed: `unprovable` compares its self-checks with this.
@@ -4355,6 +4386,8 @@ class Run:
                 "type": "object", "required": ["name", "inputs"], "properties": {
                     "name": {"type": "string", "enum": [cd["name"] for cd in self.offered()]},
                     "inputs": {"type": "object", "description": "the card's inputs, as the system prompt lists them"}}}}]
+        if tools:  # T-3923: a run that can act is offered the routines (none when no routine is registered)
+            tools = with_macros(tools, self.read_only, self.only_done)
         if tools and self.reason == "state":  # T-3006: every action may carry the state
             tools = [dict(t, parameters=dict(t["parameters"], properties=dict(t["parameters"]["properties"],
                                                                                 state=STATE_PROP))) for t in tools]

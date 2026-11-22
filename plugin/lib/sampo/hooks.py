@@ -998,6 +998,10 @@ def session_start(pl):
         from sampo import recover
         if reboot := recover.note(p):
             out["additionalContext"] += "\n\n" + reboot
+    if not os.environ.get("FOREMAN_WORKER_OF") and not _oneoff():  # T-3923: the one-call routines, one line
+        from sampo import macros
+        if routines := macros.start_line():
+            out["additionalContext"] += "\n\n" + routines
     if pl.get("source") == "compact":
         try:
             note = _requests_note(p, sid, cap=min(REQUEST_TEXT_CAP, 9000 - len(out["additionalContext"])))
@@ -2768,6 +2772,35 @@ def _first_time(sid, key):
         return True
     except OSError:
         return False
+
+
+def _by_hand_note(pl):
+    """T-3923: the note the first time a session runs a routine's first two calls by hand (sampo do NAME runs it in one
+    call), once per routine per session: "" otherwise. The session's last Bash command's verb words (macros.calls) are
+    kept in its state file for the next call to be read against; never the command's text, flags or paths."""
+    from sampo import macros
+    sid = pl.get("session_id")
+    if not sid or not re.fullmatch(r"[\w-]{1,100}", sid):
+        return ""
+    ti = pl.get("tool_input")
+    cur = macros.calls(ti.get("command") if isinstance(ti, dict) else None)
+    path = os.path.join(c.state_dir(), "sessions", f"{sid}.lastbash")
+    prev = []
+    try:
+        with open(path, encoding="utf-8") as f:
+            prev = [tuple(v) for v in json.load(f) if isinstance(v, list) and all(isinstance(x, str) for x in v)]
+    except (OSError, ValueError, TypeError):
+        pass
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    c.write_atomic(path, json.dumps([list(v) for v in cur[-8:]]), durable=False)
+    if not cur:
+        return ""
+    routines = macros.load()[0]
+    name = macros.by_hand(prev, cur, routines)
+    if not name or not _first_time(sid, "macro-" + name):
+        return ""
+    about = c.fit(" ".join(c.plain(routines[name]["about"]).split()), 120)
+    return c.fit(f"Sampo: that call starts a routine; `sampo do {name}` runs it all in one call ({about}).", 380)
 
 
 def _skill_once(sid, hint, peek=False):
@@ -5080,7 +5113,8 @@ def _post_tool_use(pl, ok=True):
             _event({"kind": "bg_start", "session_id": pl.get("session_id"), "id": m.group(1), "agent": True})
     if ok and p and tool == "Bash":
         _grant_prompted(pl, p)
-        note = _bash_touches(pl, p)
+        routine = _by_hand_note(pl)  # T-3923: read first, so the session's last call is kept whatever _bash_touches says
+        note = "\n\n".join(filter(None, [_bash_touches(pl, p), routine]))
         if note:
             return {"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": note}}
     if ok and p and tool in FILE_TOOLS:
@@ -7371,7 +7405,8 @@ def subagent_context(pl):
     except Exception:
         log_error("SubagentStart", _tb())
         text = ""
-    text = "\n\n".join(part for part in (text, PASSING_SHAPES if _worktree_agent(pl) else "") if part)
+    from sampo import macros  # T-3923: the one-call routines, one line (a builder keeps its own contract above)
+    text = "\n\n".join(part for part in (text, PASSING_SHAPES if _worktree_agent(pl) else "", macros.start_line()) if part)
     return {"hookSpecificOutput": {"hookEventName": "SubagentStart", "additionalContext": text}} if text else None
 
 

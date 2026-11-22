@@ -1527,6 +1527,10 @@ class Core(GuardCase):
             ("{fhome}/plugin/tests/test_core.py", None),
         ], self.write)
 
+    def test_a_routine_file_is_core(self):
+        # T-3923: sampo do runs a routine's verbs in a fresh process the guard never sees, so writing one is core
+        self.run_table([("{fhome}/plugin/macros/x.json", "core")], self.write)
+
     def test_bash_write_to_core(self):
         self.assertBlocked(self.bash("sed -i 's/x/y/' {fhome}/plugin/hooks/hooks.json"), "core")
 
