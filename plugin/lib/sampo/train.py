@@ -2619,6 +2619,7 @@ def _land_trains(p, main, batch, owed):
     gone = [b.id for b in briefs if b.status == "done" and os.path.isdir(b.meta.get("lane") or "") and merged(b)]
     parked, ready, trains, stopped, stale, restart = [], [], 0, "", set(), False
     closed, hand, shipped = [], [], None
+    settled = []  # T-5535: the closes that settled a gap of their own (the summary's "N settled")
     by, tested = {}, {}  # T-3994: each lane's brief, and the tip each verdict judged (a park holds only that tip)
     times, background, asked = [], not os.environ.get("FOREMAN_NO_BACKGROUND") and not c.panicked(), False
     ship_failed = None  # the newest request's failure to start a ship (None once a later one started or joined)
@@ -2643,7 +2644,7 @@ def _land_trains(p, main, batch, owed):
         return None
 
     def close(ids):  # T-3796: each lane closes once its train lands it, not after the whole pile has trained
-        done, left = close_landed(p, main, ids)
+        done, left = close_landed(p, main, ids, settled=settled)
         closed.extend(done)
         hand.extend(left)
 
@@ -2810,22 +2811,23 @@ def _land_trains(p, main, batch, owed):
     shipped = last if last and not last[1].startswith("nothing to ship") else shipped or last
     grant, said = shipped or (None, "")
     hand = list(dict(hand).items())  # a leftover retried after its brief changed: its newest answer
-    return {"landed": landed, "closed": [t for t, _ in closed], "hand": hand, "parked": parked, "trains": trains,
+    return {"landed": landed, "closed": [t for t, _ in closed], "hand": hand, "settled": settled, "parked": parked, "trains": trains,
             "stopped": stopped, "restart": restart, "ship": said, "ship_grant": grant, "lines": closed,
             "train_times": times, "ship_asked": asked, "ship_failed": ship_failed}
 
 
-def close_landed(p, main, ids, who="sampo lane land"):
+def close_landed(p, main, ids, who="sampo lane land", settled=None):
     """T-4596: the one close every landing path makes (a land's trains, a multi-id sampo lane merge, sampo lane land
     --merged): each id's task closes through `_close` (sampo task finish's own checks, re-run on the trunk; nothing
     forced) and its lane goes with it. ([(id, the close's last line)], [(id, why it is left for a hand close)]); one
-    lane's refusal or error never costs the others theirs. The gates need no run of their own here: finish reuses the
+    lane's refusal or error never costs the others theirs. settled (T-5535) collects the ids whose close settled a gap.
+    The gates need no run of their own here: finish reuses the
     full pass on record for the trunk's code tree, which the CHANGELOG line each close commits leaves valid (the code
     tree leaves CHANGELOG.md out), so N closes cost one gate run at most, the first, and none after a train."""
     closed, hand = [], []
     for tid in ids:
         try:
-            why, last = _close(p, main, tid)
+            why, last = _close(p, main, tid, settled)
         except Exception as e:  # noqa: BLE001 — one lane's close never costs the others theirs
             why, last = f"{type(e).__name__}: {e}", ""
         (hand if why else closed).append((tid, why or last))
@@ -2932,6 +2934,7 @@ def land_merged(p, main, drop_empty=False):
         except c.LockTimeout:
             raise c.PolicyError("another sampo lane land is running; it closes the lanes it lands") from None
         on, left, empty = _merged_lanes(p, main)
+        settled = []  # T-5535: the closes below that settled a gap of their own
         if on:  # T-4658: the machine before any gate or close, as land() and train() check it. Nothing is checked when no
             # merged lane waits for its close: the empty lanes' removal below frees disk, it takes none.
             why = paused_stop(p) or machine_stop(p)  # T-5044: a pause refuses its gate too
@@ -2955,7 +2958,8 @@ def land_merged(p, main, drop_empty=False):
                 left.extend((t, why) for t, _ in on)
                 on = []
                 gate = "one sampo check on the trunk, red"
-        closed, hand = close_landed(p, main, [t for t, _ in on], who="sampo lane land --merged") if on else ([], [])
+        closed, hand = close_landed(p, main, [t for t, _ in on], who="sampo lane land --merged", settled=settled) \
+            if on else ([], [])
         left.extend(hand)
         for tid, why in left:
             try:
@@ -2963,7 +2967,7 @@ def land_merged(p, main, drop_empty=False):
             except Exception as e:  # noqa: BLE001 — the Log line is a note: it never costs the sweep its result
                 print(f"sampo lane land --merged: no note on {tid}: {type(e).__name__}", file=sys.stderr)
     return {"closed": [t for t, _ in closed], "left": left, "lines": closed, "gate": gate,
-            "empty": [(t, w) for t, _, w in kept], "dropped": dropped}
+            "empty": [(t, w) for t, _, w in kept], "dropped": dropped, "settled": settled}
 
 
 def _note_left(p, tid, why):
@@ -3039,10 +3043,53 @@ def _refused_before(b, tip):
     return None
 
 
-def _close(p, main, tid):
+SETTLE_LOCK_S = 30  # T-5535: the wait for the brief's lock before a close settles its gaps (a timeout leaves them to finish)
+
+
+def _settle_mechanical(p, tid, sha):
+    """T-5535: settles the three mechanical blockers a merged, audited lane's close would otherwise leave to a hand close,
+    and records each as one Log line: a file edited outside its scope gets a 'scope:' reason naming the reviewed tip;
+    each open follow-up is captured to the inbox (triggers.settle_follow_ups); a step with no evidence of its own (an M
+    or L task) takes the first criterion's command as its run. ([the kinds settled], that run for finish's --run or None).
+    The caller only asks once the task's audits are fresh: a lane without one settles nothing."""
+    from sampo import cli, triggers
+    kinds, run = [], None
+    try:
+        with c.lock(p.dir, timeout=SETTLE_LOCK_S):  # released before finish, which takes the same lock itself
+            b = cli.need_brief(p, tid)
+            touches, _, _ = cli._task_files(p, b)
+            if cli._scope_gaps(p, b, touches):
+                b.append_log(f"scope: widened by the lane diff reviewed and merged at tip {sha} (land)")
+                kinds.append("scope")
+            first = next(((n, cmd) for n, cmd in b.verify_cmds() if cmd), None) if b.tier != "S" else None
+            bare = [s for s in b.steps() if not s.done and not b.has_evidence(step=s.n)] if first else []
+            for s in bare:  # a retried close finds its step's line already logged: one line per step, once
+                if f"steps settled (land): step {s.n} " not in b.section("Log"):
+                    b.append_log(f"steps settled (land): step {s.n} took criterion {first[0]}'s run "
+                                 f"({c.fit(first[1], 60)})")
+                run = first[1]
+            if bare:
+                kinds.append("steps")
+            if kinds:
+                c.save_brief(p, b)
+            if triggers.settle_follow_ups(p, b):
+                kinds.append("follow-ups")
+    except c.LockTimeout:  # the close goes on: what it still lacks, finish names and a hand close settles
+        return [], None
+    return kinds, run
+
+
+def _closed_text(got):
+    """T-5535: 'N closed', and 'N closed (M settled)' when M of those closes settled a gap of their own."""
+    m = len(got.get("settled") or [])
+    return f"{len(got['closed'])} closed" + (f" ({m} settled)" if m else "")
+
+
+def _close(p, main, tid, settled=None):
     """('', 'TITLE — the close's last line'), or (why it's left for a hand close, ''). The task closes from the main
     checkout with its lane still in place, which goes only once the close is done: a refused close keeps it for a fix.
-    Only audits made after the lane's tip commit count, and the close's lenses name that tip."""
+    Only audits made after the lane's tip commit count, and the close's lenses name that tip. A close that settled a gap
+    of its own (T-5535) appends its id to settled once finish has closed it."""
     from sampo import cli
     from sampo import lanes
     if why := held_by_active(p, main, ids=[]):  # T-4692: a focus that came meanwhile holds only by an uncommitted changelog
@@ -3089,6 +3136,8 @@ def _close(p, main, tid):
     # T-5496: finish reads only its brief's Close fields, so a trailer's lines go to it as flags
     keys = ("changelog", "lesson", "numbers", "docs")
     tip = [] if brief_fields else [f"--{k.replace('_', '-')}={f[k]}" for k in keys if f.get(k)]
+    kinds, run = _settle_mechanical(p, tid, sha)  # T-5535: the audits are fresh, so the gaps a hand close would settle are settled here
+    run_arg = ["--run", run] if run else []
     t_finish = time.monotonic()  # T-4600: the close's wall time, lock wait included, beside the steps the finish itself reports
     # T-5444: a live land's close re-runs no linked tests: the behind suite runs them all on the merged head and reverts
     live_skip = ["--skip-affected", "live landing: the behind suite verifies the merged head and reverts a red merge"] \
@@ -3097,7 +3146,7 @@ def _close(p, main, tid):
         with train_lock_closing(p):  # T-4540: the close commits on trunk: it waits for a running train (bounded), not beside it
             rc, out, err = _sampo(["task", "finish", tid, "--audit", f"{LAND_AUDIT} (lane tip {sha})", "--result", seen,
                                    *[x for lens in sorted(set(fresh) - {"self"}) for x in ("--lens", f"{lens}: {seen}")],
-                                   *why_arg, *tip, *live_skip, "--commit", title])
+                                   *why_arg, *tip, *live_skip, *run_arg, "--commit", title])
     except c.LockTimeout:
         return ("a running train holds trunk: the close waits for it, and the next land retries it"
                 + ("; its lane is kept" if path else ""), "")
@@ -3108,6 +3157,8 @@ def _close(p, main, tid):
         c.save_brief(p, nb)
         return why, ""
     finish_s = time.monotonic() - t_finish
+    if kinds and settled is not None:  # T-5535: counted once it has closed, not when it settled
+        settled.append(tid)
     done = cli.need_brief(p, tid)
     t_lane = time.monotonic()
     if path and done.meta.get("lane"):
@@ -3172,7 +3223,7 @@ def cmd_land(p, args, main):
             raise cli.UsageError("sampo lane land --merged takes none of --batch, --first or --bg: it trains nothing")
         got = land_merged(p, main, drop_empty=getattr(args, "drop_empty", False))
         lines = [f"Land --merged: {len(got['closed']) + len(got['left'])} lane(s) already on the trunk: "
-                 f"{len(got['closed'])} closed, {len(got['left'])} left active ({got['gate']})."
+                 f"{_closed_text(got)}, {len(got['left'])} left active ({got['gate']})."
                  if got["closed"] or got["left"] else "Land --merged: no lane with an open task is on the trunk."
                  if not got["empty"] and not got["dropped"] else "Land --merged: no lane with landed work is on the trunk."]
         lines += [f"  closed {t}: {c.fit(c.plain(x), 160)}" for t, x in got.pop("lines")]
@@ -3225,7 +3276,7 @@ def cmd_land(p, args, main):
         else:
             wait = f"ship still running: {os.path.join(p.dir, 'ship.log')}"
             got["ship"], got["ship_log"] = wait, os.path.join(p.dir, "ship.log")
-    lines = [f"Land: {len(got['landed'])} lane(s) landed in {got['trains']} train(s): {len(got['closed'])} closed, "
+    lines = [f"Land: {len(got['landed'])} lane(s) landed in {got['trains']} train(s): {_closed_text(got)}, "
              f"{len(got['hand'])} left for a hand close, {len(got['parked'])} parked."
              if got["landed"] or got["parked"] or got["stopped"] else "Land: no finished lane waits on a merge."]
     lines += [f"  Train {t['train']}: {len(t['lanes'])} lane(s), gate {t['gate']} min, waiting {t['waiting']} min"

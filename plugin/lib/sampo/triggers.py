@@ -1026,3 +1026,19 @@ def task_follow(p, args):
     return cli.out(args, {"id": b.id, "settled": marks},
                    f"{b.id}: {len(marks)} follow-up(s) settled" + (f" ({', '.join(marks.values())})" if marks else "")
                    + f"; {len([x for x in follow_items(b) if _is_open(x)])} open.")
+
+
+def settle_follow_ups(p, b):
+    """T-5535: `sampo task follow ID KEY --capture` for every open follow-up of a merged, reviewed lane's task: each is
+    filed as a task of its own (_take), marked captured and named in a Log line of its own, saved as it goes, so a
+    failure part way leaves the rest open for the next land. The caller holds c.lock(p.dir). [(key, the new task's id)]."""
+    got = []
+    for x in [x for x in follow_items(b) if _is_open(x)]:
+        tid = _take(p, b, x)
+        _set_mark(b, {x["key"]: f"captured {tid}"})
+        b.append_log(f"follow-ups settled (land): f-{x['key']} captured {tid}")
+        c.save_brief(p, b)
+        got.append((x["key"], tid))
+    if got:
+        c.regen_views(p)
+    return got
