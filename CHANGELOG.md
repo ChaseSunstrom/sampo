@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- A builder brief names up to three read cards that fit its task on two rare shared words, under "## Calling cards" (T-5605).
 - The write hook runs rustfmt on a .rs file after an Edit or Write, quietly and bounded, so builders stop running cargo fmt as turns (T-5600).
 - run.py takes file::Class ids and check --affected names the classes the run cache saw reach a change, and a lane's named run no longer resamples 1 in 10 of its cache hits (T-5588).
 - The guard test walks sampo's real argparse tree and requires every option or positional that takes a command (by name, help or a CMD metavar) to be refused when it carries a dangerous one, or exempted with a reason that fails when stale; the guard now reads about 20 more stored-command flags (task --bench/--probe, capture --signal, readme --cmd, ship --test, goal --done-when, exam --tes… (T-5345).
