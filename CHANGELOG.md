@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- Kalevala climbs unattended: each round starts one headless Claude session for every tower step that only a session takes (the first seed, Missions, intake, critique, gap map, blind spots, report), with no file-editing tools, a spend cap, Opus where the step is reasoning and Sonnet elsewhere, two at a time; drift, review and sweep run as jobs; a tower that fails one step twice is held si… (T-3843).
 - The lead gets one note to batch independent reads after three single-read turns in a row, quiet for the next 40 calls, and the builder and reviewer agents carry the same batching line (T-5592).
 - PreToolUse guard calls get a 20 s harness limit (was 5 s), and a guard call over 2 s logs one hook_slow event per session per 30 s naming its tool and slowest phase (T-5533).
 - Sampo lane land and lane train lower their own niceness to 10 at the start (FOREMAN_LAND_NICE sets another level), so each close's criteria re-run no longer competes with builders or counts as foreground load in the lane gate (T-5527).
