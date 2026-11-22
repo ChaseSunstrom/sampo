@@ -1231,8 +1231,14 @@ def stop_causes(p, briefs=None, fresh=False):
     return out
 
 
-def pm_stuck_line(p, minutes=30):
-    """T-3141: landed merges whose background verify has waited longer than this: they are unverified on main."""
+def _pm_age_ts(r, key="at"):
+    return (c.parse_ts(r.get(key)) or c.parse_ts(r.get("at")) or c.parse_ts(c.now())).timestamp()
+
+
+def pm_stuck_line(p, minutes=30, bad_minutes=10):
+    """T-3141: landed merges whose background verify has waited longer than this: they are unverified on main.
+    T-5518: and a red or conflict record older than `bad_minutes`: it holds every land (the revert normally clears a red
+    one in minutes), with the one command that settles it."""
     d, idx = _pm_dir(p), os.path.join(p.dir, "postmerge.idx")  # hook path: stat the folder, rescan only when it changed
     try:
         m = os.stat(d).st_mtime_ns
@@ -1243,20 +1249,32 @@ def pm_stuck_line(p, minutes=30):
             seen = json.load(f)
     except (OSError, ValueError):
         seen = {}
-    if seen.get("m") == m:
-        if seen.get("oldest") is None or time.time() - seen["oldest"] <= minutes * 60:
+    now = time.time()
+    if seen.get("m") == m and "bad" in seen:  # an index an older Sampo wrote has no "bad": rescan once
+        if ((seen.get("oldest") is None or now - seen["oldest"] <= minutes * 60)
+                and (seen["bad"] is None or now - seen["bad"] <= bad_minutes * 60)):
             return ""
     else:
-        ts = [(c.parse_ts(r.get("at")) or c.parse_ts(c.now())).timestamp()
-              for r in pm_records(p).values() if r["state"] in ("pending", "running")]
+        recs = pm_records(p).values()
+        ts = [_pm_age_ts(r) for r in recs if r["state"] in ("pending", "running")]
+        bad = [_pm_age_ts(r, "red_at") for r in recs if r["state"] in ("red", "conflict")]
         try:
-            c.write_atomic(idx, json.dumps({"m": m, "oldest": min(ts) if ts else None}))
+            c.write_atomic(idx, json.dumps({"m": m, "oldest": min(ts) if ts else None, "bad": min(bad) if bad else None}))
         except OSError:
             pass
     old = [f"{r['task']} ({s[:9]})" for s, r in pm_records(p).items() if r["state"] in ("pending", "running")
-           and (time.time() - (c.parse_ts(r.get("at")) or c.parse_ts(c.now())).timestamp()) > minutes * 60]
-    return ("Landed merge(s) still unverified after " + str(minutes) + "+ min: " + ", ".join(old)
-            + ". Start the suite: fm lane verify") if old else ""
+           and now - _pm_age_ts(r) > minutes * 60]
+    # a red record is still on trunk and its revert is retried by a plain verify; --reset calls a record reverted, which is
+    # true only of a conflict (the revert did not apply and trunk may pass without it): never offered for a red one
+    held = [f"{r['task']} ({s[:9]}, {r['state']}: {c.fit(', '.join(map(str, r.get('classes') or [])) or 'no class named', 80)}): "
+            + (f"sampo lane verify --reset {s[:9]}" if r["state"] == "conflict" else "sampo lane verify (it retries the revert)")
+            for s, r in pm_records(p).items()
+            if r["state"] in ("red", "conflict") and now - _pm_age_ts(r, "red_at") > bad_minutes * 60]
+    return " ".join(x for x in (
+        ("Landed merge(s) still unverified after " + str(minutes) + "+ min: " + ", ".join(old)
+         + ". Start the suite: fm lane verify") if old else "",
+        ("A red or conflicted merge record holds every land for " + str(bad_minutes) + "+ min (its revert did not apply, "
+         "or trunk is red): " + "; ".join(held) + ".") if held else "") if x)
 
 
 def recovery_line(p, briefs, full):
@@ -4047,7 +4065,8 @@ def _merge_gated(p, b, main, branch, tip, files):
 
 # ---- T-3141: a merge lands after its fast checks; the full suite runs on that merge afterwards, in a separate process
 # (a thread would share the GIL), and a red suite reverts exactly that merge commit. One record per merge sha under the
-# project's postmerge/ folder: state pending | running | green | red | reverted | conflict. Records are read and
+# project's postmerge/ folder: state pending | running | green | red | reverted | conflict | inherited | settled
+# (T-5518: inherited = red only in classes trunk failed before the merge; settled = a conflict trunk now passes). Records are read and
 # written under one lock, so a second runner finds the state settled and does nothing.
 
 def _pm_dir(p):
@@ -4069,6 +4088,8 @@ def pm_records(p):
 
 
 def pm_set(p, sha, **kv):
+    if kv.get("state") in ("red", "conflict"):
+        kv.setdefault("red_at", c.now())  # T-5518: when it began to hold the lands: what pm_stuck_line ages
     with c.lock(_pm_dir(p)):
         r = pm_records(p).get(sha)
         if r:
@@ -4241,8 +4262,16 @@ def train_lock_closing(p, timeout=None):
 
 def pm_after_train(p, main):
     """T-4540: a red merge whose revert waited for a train is reverted by a detached pass now the train is done."""
-    if any(r["state"] == "red" for r in pm_records(p).values()):
+    if any(r["state"] == "red" for r in pm_records(p).values()) or pm_conflict_due(p, main):
         pm_spawn(p, main)
+
+
+def pm_conflict_due(p, main):
+    """T-5518: True when a record in conflict was not yet checked against main's HEAD as it is now (_pm_settle stamps
+    settle_head), so a pass has something new to learn. A conflict checked at this HEAD gives the next pass nothing:
+    no spawn loop on a trunk that has not moved."""
+    due = [r for r in pm_records(p).values() if r["state"] == "conflict"]
+    return bool(due) and any(r.get("settle_head") != _git(main, "rev-parse", "HEAD").stdout.strip() for r in due)
 
 
 def pm_spawn(p, main):
@@ -4285,7 +4314,7 @@ def pm_wait(p, main):
 
 
 def _pm_check(p, main):
-    bad, waiting = [], False
+    bad, waiting, conflicted = [], False, False
     for sha, r in pm_records(p).items():
         if r["state"] in ("red", "conflict"):
             if _pm_reverted(main, sha):
@@ -4293,15 +4322,21 @@ def _pm_check(p, main):
                 c.write_atomic(os.path.join(_pm_dir(p), f"{sha}.json"), json.dumps(r))
             else:
                 waiting = waiting or r["state"] == "red"
+                conflicted = conflicted or r["state"] == "conflict"
                 bad.append(f"{r['task']} ({sha[:9]}, {r['state']}: {r.get('classes') or 'see the ledger'})")
     if bad:
-        if waiting:  # T-4540: a revert that lost its train's lock is retried by a pass now, not only by the train's end
+        # T-4540: a revert that lost its train's lock is retried by a pass now, not only by the train's end;
+        # T-5518: so is a conflict whose trunk moved since it was last checked
+        if waiting or pm_conflict_due(p, main):
             pm_spawn(p, main)
         raise c.PolicyError("merges wait: the full suite is red on a landed merge: " + "; ".join(bad)
-                            + ". It is reverted automatically, or revert it by hand (git revert -m 1 <sha>)")
+                            + (". A red merge is reverted automatically" if waiting else "")
+                            + (". A conflicted one settles itself once trunk passes its classes" if conflicted else "")
+                            + ", or revert it by hand (git revert -m 1 <sha>)")
 
 
 _FAILED = re.compile(r"^(?:FAIL|ERROR): \w+ \(([\w.]+)\)", re.M)
+_NOT_RUN = re.compile(r"not started|still running|ended from outside")  # run.py's words for a class that never finished
 
 
 def pm_classes(out, code):
@@ -4385,6 +4420,25 @@ def _pm_lost_record(p, sha, r, tries):
     return True
 
 
+def _pm_trunk_red(p, tid, sha, classes, partial=False):
+    """T-5518: `classes` fail on sha's first parent too: trunk's red, not this merge's. Logged on the merge's task and
+    captured once (a key on the class set) as a trunk-red FIX; a capture that fails never changes the verdict."""
+    from sampo import cli
+    names = ", ".join(c.fit(c.plain(k), 100) for k in classes[:8])
+    c.log_event(p, "postmerge_inherited", task=tid, data={"sha": sha, "classes": classes})
+    note = f"not reverted for {names}: already fail on {sha[:9]}'s first parent (trunk-red)" if partial else \
+        f"not reverted: {', '.join(classes)} already fail on {sha[:9]}'s first parent"
+    cli.mutate(p, tid, lambda x: x.append_log(note), "postmerge_inherited", {"sha": sha})
+    try:
+        from sampo import eco
+        key = "Trunk red: " + ", ".join(c.fit(c.plain(k), 100) for k in sorted(classes))  # the full set, in one order
+        eco.capture_once(p, f"Trunk red: {names}" + f"\n\nThe full suite fails these classes on trunk before {sha[:9]} (the verify of {tid} "
+                                  "found them red on its first parent as well). Fix them or find what turned them red; "
+                                  "no merge is reverted for them.", "FIX", "trunk-red", key=key)
+    except Exception as e:  # noqa: BLE001: the verdict stands without the capture
+        c.log_event(p, "postmerge_capture_failed", task=tid, data={"error": c.fit(str(e), 200)})
+
+
 def pm_verify(p, main, sha):
     """Run the full suite on the merge in a throwaway worktree; green records it, red reverts that commit."""
     from sampo import cli
@@ -4405,6 +4459,7 @@ def pm_verify(p, main, sha):
             _git(wt, "revert", "--abort")  # ours: this worktree's own revert
             pm_set(p, sha, state="conflict", note="could not rebuild the tree to re-verify on")
             c.log_event(p, "lane_revert_conflict", task=r["task"], data={"sha": sha, "reverts": gone})
+            _pm_settle(p, main, sha)  # T-5518: trunk as it is now may pass what the rebuild could not be judged on
             return True
         full = _pm_uncached_due(p)
         if full:
@@ -4426,19 +4481,30 @@ def pm_verify(p, main, sha):
                 reach, unrelated = reds, []
             if again:
                 c.wait_for_load(f"lane verify {sha[:9]}")  # T-3425: the alone-rerun waits for load like a gate
-            if again and not c.run_command(wt, again, c.load_scaled(900), niced=True, low=True)[0]:
-                flaky = reds
-            elif again and isinstance(reach, list) and not reach:
-                pass  # red alone, but only in classes the docs-only merge cannot reach: no parent run needed
-            elif again:  # T-3213: red alone too; does main just before this merge fail the same classes?
-                _git(wt, "reset", "--hard", "-q", f"{sha}^1")
-                if not gone or not _git(wt, "revert", "-m", "1", "--no-commit", "--no-edit", *reversed(gone)).returncode:
-                    pcode, pout = c.run_command(wt, again, c.load_scaled(900), niced=True, low=True)
-                    # T-3224: inherited only when the parent names each red class failing; a parent run that
-                    # names none ("no test matches" for a class the merge added, a crash) leaves the red this merge's
-                    named = {m.rpartition(".")[0] or m for m in _FAILED.findall(pout)}
-                    if pcode and set(reach) <= named:
-                        inherited = reach
+            acode, aout = c.run_command(wt, again, c.load_scaled(900), niced=True, low=True) if again else (1, "")
+            if again and not acode:
+                flaky, reach = reds, []
+            else:
+                if again and acode and acode != 124 and not _NOT_RUN.search(aout) and isinstance(reach, list):
+                    # T-5518: green alone is a flake per class: the alone run names the classes still red (a run naming
+                    # none says nothing per class; one that did not finish proves nothing about the classes it lacks).
+                    # A module-level error (setUpClass names the module) holds every red class of that module
+                    alone = {m.rpartition(".")[0] or m for m in _FAILED.findall(aout)}
+                    flaky = [k for k in reds if alone and k not in alone and k.rpartition(".")[0] not in alone]
+                    reach = [k for k in reach if k not in flaky]
+                if again and isinstance(reach, list) and not reach:
+                    pass  # red alone, but only in classes the docs-only merge cannot reach (or green alone): no parent run
+                elif again:  # T-3213: red alone too; does main just before this merge fail the same classes?
+                    _git(wt, "reset", "--hard", "-q", f"{sha}^1")
+                    if not gone or not _git(wt, "revert", "-m", "1", "--no-commit", "--no-edit", *reversed(gone)).returncode:
+                        pcode, pout = c.run_command(wt, again, c.load_scaled(900), niced=True, low=True)
+                        # T-3224: a class is inherited only when the parent names it failing; a parent run that
+                        # names none ("no test matches" for a class the merge added, a crash) leaves the red this merge's.
+                        # T-5518: per class: the classes the parent also fails are excused, the rest stay blamed
+                        named = {m.rpartition(".")[0] or m for m in _FAILED.findall(pout)}
+                        if pcode:
+                            inherited = [k for k in reach if k in named]
+                            reach = [k for k in reach if k not in named]
         vanished = _tree_lost(wt)  # T-4728: judged before the finally removes it: the reruns above ran in this tree too
     finally:
         _git(main, "worktree", "remove", "--force", wt)
@@ -4451,19 +4517,17 @@ def pm_verify(p, main, sha):
         cli.mutate(p, r["task"], lambda x: (x.append_log(note), x.meta.update(lane_verified=sha)),
                    "lane_verified", {"sha": sha})
         return True
-    if flaky:
+    if inherited:  # T-5518: the classes red on main before this merge are trunk's, whatever else this merge is blamed for
+        _pm_trunk_red(p, r["task"], sha, inherited, partial=bool(reach))
+    if flaky and not reach and not inherited:  # T-5518: not every red class is the merge's by now: flaky ones are per class
         pm_set(p, sha, state="green", flaky=flaky, **({"unrelated": unrelated} if unrelated else {}))
         c.log_event(p, "postmerge_flaky", task=r["task"], data={"sha": sha, "classes": flaky, "unrelated": unrelated})
         note = f"verified: green on {sha[:9]}; {', '.join(flaky)} failed only inside the full suite, green alone (flaky)"
         cli.mutate(p, r["task"], lambda x: (x.append_log(note), x.meta.update(lane_verified=sha)),
                    "lane_verified", {"sha": sha})
         return True
-    if inherited:  # the red was on main before this merge: it stays with the merge that brought it, no revert
-        pm_set(p, sha, state="inherited", classes=inherited)
-        c.log_event(p, "postmerge_inherited", task=r["task"], data={"sha": sha, "classes": inherited})
-        cli.mutate(p, r["task"], lambda x: x.append_log(
-            f"not reverted: {', '.join(inherited)} already fail on {sha[:9]}'s first parent"),
-            "postmerge_inherited", {"sha": sha})
+    if inherited and not reach:  # the red was on main before this merge: it stays with the merge that brought it, no revert
+        pm_set(p, sha, state="inherited", classes=inherited, **({"flaky": flaky} if flaky else {}))
         return True
     if code == 124:  # a timeout proves nothing: no revert; once more, then unverified
         c.log_event(p, "postmerge_timeout", task=r["task"], data={"sha": sha, "tries": tries})
@@ -4480,6 +4544,41 @@ def pm_verify(p, main, sha):
         return False
     pm_set(p, sha, state="red", classes=reach or reds or pm_classes(out, code), reached_by=files[:20])
     return _pm_revert(p, main, sha) or True
+
+
+def _pm_settle(p, main, sha):
+    """T-5518: a record in conflict (its revert, or the rebuild of its tree, did not apply) holds every land until someone
+    acts: 2026-11-21, 93 lanes for about 5 hours. Its blamed classes alone run on main's HEAD in a scratch tree (no
+    classes named: the whole suite): green there means trunk already passes what the merge was blamed for, so the record
+    settles ("fixed forward"); red keeps the conflict. Run once per HEAD (settle_head), so a pass on a trunk that has not
+    moved costs nothing. Never raises: True only when it settled."""
+    r = pm_records(p).get(sha)
+    head = _git(main, "rev-parse", "HEAD").stdout.strip()
+    if not r or r["state"] != "conflict" or not head or r.get("settle_head") == head:
+        return False
+    classes = [k for k in (r.get("classes") or []) if not k.startswith("suite exit")]
+    cmd = pm_rerun_cmd(main, classes) or ("" if classes else pm_cmd(main, p=p))
+    green = False
+    if cmd:
+        try:
+            green = _pm_cmd_green_at(main, head, cmd, limit=900 if classes else 3600)
+        except c.PolicyError:
+            return False  # the scratch tree was lost: no verdict, the next pass tries again
+    with c.lock(_pm_dir(p)):  # the check and the write as one step: a reset or another pass may have settled it meanwhile
+        cur = pm_records(p).get(sha)
+        if not cur or cur["state"] != "conflict":
+            return False
+        cur.update(**({"state": "settled", "note": f"fixed forward on {head[:9]}"} if green else {"settle_head": head}))
+        c.write_atomic(os.path.join(_pm_dir(p), f"{sha}.json"), json.dumps(cur))
+    if not green:  # no command to run counts as checked too: the head is stamped, so no pass spawns for it again
+        return False
+    why = ", ".join(classes) or "the full suite"
+    c.log_event(p, "postmerge_settled", task=r["task"], data={"sha": sha, "head": head, "classes": classes})
+    from sampo import cli
+    cli.mutate(p, r["task"], lambda x: x.append_log(f"settled: {why} pass on {head[:9]}; the revert of {sha[:9]} did "
+                                                    "not apply and none is needed (fixed forward)"),
+               "postmerge_settled", {"sha": sha})
+    return True
 
 
 def _pm_revert(p, main, sha):
@@ -4508,6 +4607,7 @@ def _pm_revert(p, main, sha):
     if code:
         pm_set(p, sha, state="conflict")
         c.log_event(p, "lane_revert_conflict", task=r["task"], data={"sha": sha, "classes": classes})
+        _pm_settle(p, main, sha)  # T-5518: a conflict holds every land: settle it at once when trunk already passes
         return True
     pm_set(p, sha, state="reverted")
     with c.lock(_pm_dir(p)):  # the merges stacked on it are verified again, on main as it is without this one
@@ -4575,6 +4675,8 @@ def pm_run(p, main):
     from sampo import release
     patience = release._ship_cap()  # T-4718: all the waiting for a project's ships this pass does, together
     for _ in range(1000):  # bounded: a requeue loop can't spin forever
+        for s in [s for s, r in pm_records(p).items() if r["state"] == "conflict"]:
+            _pm_settle(p, main, s)  # T-5518: once per HEAD each (settle_head): a conflict clears when trunk passes
         recs = pm_records(p)
         red = [s for s, r in recs.items() if r["state"] == "red"]
         if red:
@@ -4645,15 +4747,16 @@ def _pm_green_at(p, main, sha, reds=None):
         c.scratch_release(tmp)
 
 
-def _pm_cmd_green_at(main, sha, cmd):
-    """T-3800: True when `cmd` (the red classes alone) passes on sha's tree, in a throwaway worktree."""
+def _pm_cmd_green_at(main, sha, cmd, limit=900):
+    """T-3800: True when `cmd` (the red classes alone) passes on sha's tree, in a throwaway worktree. `limit`: its
+    seconds (T-5518: a conflict's settle with no class named runs the whole suite)."""
     tmp = c.scratch_tree("fm-verify-", main)  # T-4735: the owned scratch root, locked while this lives
     wt = os.path.join(tmp, "wt")
     try:
         if _git(main, "worktree", "add", "--detach", wt, sha).returncode:
             return False
         c.wait_for_load(f"lane verify {sha[:9]}")  # as pm_verify's alone-rerun waits
-        code = c.run_command(wt, cmd, c.load_scaled(900), niced=True, low=True)[0]  # T-4197: a lane verify's run; T-4570
+        code = c.run_command(wt, cmd, c.load_scaled(limit), niced=True, low=True)[0]  # T-4197: a lane verify's run; T-4570
         if _tree_lost(wt):  # T-4728: 127 from a removed folder is no red class: the bisection would blame a merge
             raise c.PolicyError(f"{VERIFY_GONE} ({sha[:9]}); nothing judged, the next pass runs it again")
         return not code

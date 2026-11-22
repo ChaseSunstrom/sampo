@@ -2626,7 +2626,8 @@ def start_verify(p, main, owed):
     queue's lock), so a second start is harmless. It never raises: the landed lanes and the ship's result must stand."""
     from sampo import lanes
     try:
-        if not owed[0] and not any(r.get("state") in ("pending", "red") for r in lanes.pm_records(p).values()):
+        if (not owed[0] and not any(r.get("state") in ("pending", "red") for r in lanes.pm_records(p).values())
+                and not lanes.pm_conflict_due(p, main)):  # T-5518: nor a conflict whose trunk moved since it was checked
             return
         owed[0] = False
         lanes.pm_spawn(p, main)
