@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- A resumed Smith run whose held-tests record can't be read now drops its keep check instead of passing every red, and a test that printed PASSED but failed stays FAILED (T-5051).
 - The merge train's base probe and each lane's probe stamp their tests/run.py run with an id and name every failing test with its first exception line from that run's record in the base-red reason, the lane's blame and its flaky note, so nobody reruns to learn them (T-5047).
 - A paused machine now stops `sampo lane train` and `sampo lane land` at once with a line saying the pause stops the gates and to resume first, instead of running the merges and calling the base red (T-5044).
 - sampo doctor warns when demo.mp4 or live.mp4 is older than the cast it is rendered from or runs over 2 seconds off its length, naming the command that remakes it (T-5039).
