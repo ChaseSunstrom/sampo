@@ -684,6 +684,16 @@ def code_tree(root, tree=None):
             return None
 
 
+def mirror_excludes(root):
+    """T-5913: the pathspecs worktree_tree leaves out of a tree, and the only files a comparison against one may ignore
+    (the hook's check that a lane holds nothing past a commit uses the same list, so the two cannot drift). fm sync's
+    mirror (.sampo/**.md) changes with every fm call: not the work being audited. Anything else put in that folder
+    still counts. An ignored mirror needs no exclude, and git add refuses one naming it."""
+    return [s for m in MIRRORS if os.path.isdir(os.path.join(root, m)) and not mirror_ignored(root, m)
+            for s in (f":(exclude,glob){m}/**/*.md", f":(exclude,glob){m}/**/*.jsonl",
+                      f":(exclude){m}/.gitattributes")]  # T-3333: the line logs too
+
+
 def worktree_tree(root, timeout=None):
     """The full git tree object of the working files (see worktree_id); `git diff <rev> <tree>` shows every change
     since <rev>, untracked files included. The throwaway index starts as a copy of the real one (mtimes kept, so git's
@@ -700,11 +710,7 @@ def worktree_tree(root, timeout=None):
                                   capture_output=True, text=True, timeout=left(10)).stdout.strip()
             if real and os.path.isfile(real):
                 shutil.copy2(real, env["GIT_INDEX_FILE"])
-            # fm sync's mirror (.sampo/**.md) changes with every fm call: not the work being audited. Anything else
-            # put in that folder still counts. An ignored mirror needs no exclude, and git add refuses one naming it.
-            spec = [s for m in MIRRORS if os.path.isdir(os.path.join(root, m)) and not mirror_ignored(root, m)
-                    for s in (f":(exclude,glob){m}/**/*.md", f":(exclude,glob){m}/**/*.jsonl",
-                              f":(exclude){m}/.gitattributes")]  # T-3333: the line logs too
+            spec = mirror_excludes(root)
             subprocess.run(["git", "-C", root, "add", "-A", "--", ".", *spec], env=env,
                            capture_output=True, timeout=left(120), check=True)
             tree = subprocess.run(["git", "-C", root, "write-tree"], env=env, capture_output=True, text=True,

@@ -8397,30 +8397,35 @@ def _reviewer_task(turns, earlier, msg, act):
     return tid, ""
 
 
-def _names_head(b, p, turns, now):
-    """T-5913: (rebind, why): whether the lane's current head commit is the one the last user turn (the SendMessage
-    delta round; Claude Code's injected reminders are already out of `turns`) names, as a hex word of 7 or more
-    characters the head's id starts with, AND the lane holds nothing but that commit: its working files (tracked
-    and untracked, the sync mirror aside) equal the head's tree and the tree id `now`. The lead typed the commit it
-    told the reviewer to read, so an approve of it is for the tree the lane has now; a file changed after it is no part
-    of that review (why: what stopped it, '' when no head was named or git could not say)."""
+def _names_head(b, p, turns):
+    """T-5913: (tree, why): the id (12 characters, as worktree_id) of the lane's tree when the lane's current head commit
+    is the one the last user turn (the SendMessage delta round; Claude Code's injected reminders are already out of
+    `turns`) names, as a hex word of 7 or more characters the head's id starts with, AND the lane holds nothing but that
+    commit: its working files (tracked and untracked) differ from the head's tree in nothing worktree_tree leaves out
+    (core.mirror_excludes: the sync mirror's .md and .jsonl files, no more). The lead typed the commit it told the
+    reviewer to read, so an approve of it is for the tree the lane has now; a file changed after it is no part of that
+    review. Slow (a tree build and a diff): the caller runs it before it takes the lock, then compares the id with the
+    tree it stamps. why: what stopped it, '' when no head was named or git could not say; tree '' unless clean."""
     if len(turns) < 2:
-        return False, ""
+        return "", ""
     lane = str(b.meta.get("lane") or "")
     root = lane if lane and os.path.isdir(lane) else p.root
     head = c._git(root, "rev-parse", "HEAD", timeout=10).strip().lower()
     if not re.fullmatch(r"[0-9a-f]{40,64}", head):
-        return False, ""
+        return "", ""
     if not any(head.startswith(w) for w in re.findall(r"\b[0-9a-f]{7,64}\b", turns[-1].lower())):
-        return False, ""
+        return "", ""
     tree = c.worktree_tree(root, timeout=60)
-    diff = c._git(root, "diff", "--name-only", head, tree, timeout=30, proc=True) if tree else None
-    if not tree or tree[:12] != now or diff is None or diff.returncode != 0:
-        return False, "the named head's tree could not be compared with the lane's"
-    left = [x for x in diff.stdout.splitlines() if x and not any(x.startswith(m + "/") for m in c.MIRRORS)]
+    # --no-renames: a file moved out of the code into the mirror folder lists its deletion too; the pathspec is the
+    # allow-list worktree_tree itself leaves out, so nothing else is let through
+    diff = c._git(root, "diff", "--no-renames", "--name-only", head, tree, "--", ".", *c.mirror_excludes(root),
+                  timeout=30, proc=True) if tree else None
+    if not tree or diff is None or diff.returncode != 0:
+        return "", "the named head's tree could not be compared with the lane's"
+    left = [x for x in diff.stdout.splitlines() if x]
     if left:
-        return False, f"uncommitted changes since the named head ({len(left)} file{'' if len(left) == 1 else 's'})"
-    return True, ""
+        return "", f"uncommitted changes since the named head ({len(left)} file{'' if len(left) == 1 else 's'})"
+    return tree[:12], ""
 
 
 def _reviewer_return(p, tid, pl, msg, asked_at=None, turns=()):
@@ -8440,6 +8445,11 @@ def _reviewer_return(p, tid, pl, msg, asked_at=None, turns=()):
         return
     kind, words = verdict
     aid = str(pl.get("agent_id") or "")
+    named, why_not = "", ""
+    if kind != "changes" and len(turns) >= 2:  # T-5913: the tree build and the diff run before the lock, not under it
+        b0 = c.find_brief(p, tid)
+        if b0 is not None and b0.meta.get("review_tree"):
+            named, why_not = _names_head(b0, p, turns)
     with c.lock(p.dir, timeout=LOCK_QUICK):
         b = c.find_brief(p, tid)
         if b is None:
@@ -8455,14 +8465,14 @@ def _reviewer_return(p, tid, pl, msg, asked_at=None, turns=()):
                         data={"who": aid or "fm-reviewer", "tree": now[:12]})
         else:
             briefed = b.meta.get("review_tree") or ""
-            moved = ""
-            if briefed and briefed != now:
-                rebind, moved = _names_head(b, p, turns, now)
-                if rebind:
-                    # T-5913: a delta round on the moved lane: its SendMessage turn names the head commit and the lane
-                    # holds nothing past it, so the review is of this tree
-                    b.append_log(f"review tree moved {briefed[:12]} to {now[:12]}: the delta round's prompt names the lane's head")
-                    b.meta["review_tree"] = briefed = now
+            moved = why_not
+            if briefed and briefed != now and named and named == now:
+                # T-5913: a delta round on the moved lane: its SendMessage turn names the head commit and the lane
+                # held nothing past it when that was checked (the same tree as now), so the review is of this tree
+                b.append_log(f"review tree moved {briefed[:12]} to {now[:12]}: the delta round's prompt names the lane's head")
+                b.meta["review_tree"] = briefed = now
+            elif named:
+                moved = "the lane changed after its tree was compared with the named head"
             if not briefed or briefed != now:  # the review judged another tree than the one there is now: nothing counts
                 c.log_event(p, "reviewer_unbound", task=tid, session=pl.get("session_id"),
                             data={"agent_id": aid, "why": "no tree was briefed" if not briefed
@@ -8475,7 +8485,7 @@ def _reviewer_return(p, tid, pl, msg, asked_at=None, turns=()):
             lenses = slanes.reviewer_lenses(msg)
             if same or b.meta.get("changes_asked_tree", "") != now:
                 # the same reviewer's approve, or a tree the changes were not asked on: its mark is answered
-                for key in ("changes_asked", "changes_asked_at", "changes_asked_tree", "changes_lenses"):
+                for key in ("changes_asked", "changes_asked_at", "changes_asked_tree"):
                     b.meta.pop(key, None)
             from sampo import train  # its audit row rule: the same row, once, as a typed `lane accept --audit`
             who = f"{pl.get('agent_type')} {aid}".strip()

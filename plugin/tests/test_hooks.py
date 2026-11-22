@@ -7415,6 +7415,37 @@ class ReviewerBind(ForemanTestCase):
         self.assertEqual(self.lenses(), [])
         self.assertTrue(any("uncommitted" in w for w in self.unbound()), self.unbound())
 
+    def test_an_edit_to_a_mirror_folder_file_that_is_code_after_the_head_is_refused(self):
+        os.makedirs(os.path.join(self.repo, ".sampo"), exist_ok=True)
+        policy = os.path.join(self.repo, ".sampo", "policy.toml")
+        with open(policy, "w", encoding="utf-8") as f:
+            f.write("a = 1\n")
+        head = self.commit()
+        with open(policy, "w", encoding="utf-8") as f:
+            f.write("a = 2\n")  # repo policy, read as code: not a mirror file worktree_tree leaves out
+        self.stop(APPROVE_ALL, [self.prompt(self.tid), f"re-review commit {head[:9]}"])
+        self.assertEqual(self.lenses(), [])
+        self.assertTrue(any("uncommitted" in w for w in self.unbound()), self.unbound())
+
+    def test_a_src_file_moved_into_the_mirror_folder_after_the_head_is_refused(self):
+        os.makedirs(os.path.join(self.repo, "src"), exist_ok=True)
+        with open(os.path.join(self.repo, "src", "a.py"), "w", encoding="utf-8") as f:
+            f.write("x = 1\n" * 20)
+        head = self.commit()
+        os.makedirs(os.path.join(self.repo, ".sampo"), exist_ok=True)
+        os.rename(os.path.join(self.repo, "src", "a.py"), os.path.join(self.repo, ".sampo", "a.py"))  # a rename in the diff
+        self.stop(APPROVE_ALL, [self.prompt(self.tid), f"re-review commit {head[:9]}"])
+        self.assertEqual(self.lenses(), [])
+        self.assertTrue(any("uncommitted" in w for w in self.unbound()), self.unbound())
+
+    def test_a_mirror_markdown_edit_after_the_head_still_rebinds(self):
+        os.makedirs(os.path.join(self.repo, ".sampo"), exist_ok=True)
+        head = self.commit()
+        with open(os.path.join(self.repo, ".sampo", "T-1.md"), "w", encoding="utf-8") as f:
+            f.write("a mirror file fm sync rewrites\n")
+        self.stop(APPROVE_ALL, [self.prompt(self.tid), f"re-review commit {head[:9]}"])
+        self.assertEqual(self.lenses(), ["intent", "adversary"])
+
     def test_a_rebound_tree_carries_no_earlier_lens_unless_the_reply_restates_it(self):
         self.stop(CHANGES_ONE, [self.prompt(self.tid)])
         head = self.commit()
