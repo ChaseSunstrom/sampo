@@ -39,7 +39,7 @@ ERR_MAX = 4 * 1024  # the verb's stderr: its last bytes name the exit
 WHY_MAX = 300  # the reason reaches the lead's line and the task's Log, so it is bounded
 LOG_MAX = 256 * 1024  # pilot.log past this is kept aside as pilot.log.1 before the next pilot appends
 TRIES = 3  # a busy project lock is tried this many times, as the builder mark is
-OUTCOMES = ("queued", "exception")
+OUTCOMES = ("queued", "accepted", "changes", "exception")  # T-6011: queued is the resolver's; accepted and changes the lane pilot verb's
 PREFIX = "pilot-"  # a pilot's ledger session: pilot-<TID>
 VERB_ENV = "FOREMAN_PILOT_VERB"  # a test's stub of the verb (a SAMPO_ name would be mirrored to FOREMAN_ at core's import)
 ABSENT = re.compile(r"(?:invalid choice: |unknown )'pilot'")  # the answer from a sampo without the verb yet (argparse or the lane's own)
@@ -206,8 +206,15 @@ def returned(pl):
     return started
 
 
+def _why(text):
+    """T-6011 review: a reason from the verb or its stderr (text a reviewer model wrote after reading the builder's files)
+    on its way to the Log and the lead's line: one line, no control or bidi character, cut, and marked as data when it
+    reads like an instruction."""
+    return c.defang(c.plain(" ".join(str(text or "").split()))[:WHY_MAX])
+
+
 def _exception(why):
-    return {"outcome": "exception", "rounds": 0, "why": why[:WHY_MAX]}
+    return {"outcome": "exception", "rounds": 0, "why": _why(why)}
 
 
 def _tail(f, cap):
@@ -249,24 +256,47 @@ def _verb(p, tid):
         errs = " ".join(_tail(err, ERR_MAX).split())
     if rc == 2 and ABSENT.search(errs):
         return {"outcome": "absent", "rounds": 0, "why": ""}
-    if rc != 0:
-        tail = errs[-WHY_MAX:]
-        return _exception(f"pilot could not run: exit {rc}" + (f": {tail}" if tail else ""))
-    lines = [x for x in text.splitlines() if x.strip()]
     try:
-        data = json.loads(lines[-1]) if lines else None  # the answer is the verb's last line; its log lines come before
-    except ValueError:
-        data = None
-    if not isinstance(data, dict):
-        return _exception("pilot could not run: no JSON answer")
-    if data.get("tid") not in (None, tid):
-        return _exception("pilot could not run: answered for another task")
+        got = _answer(text, tid)
+    except ValueError as e:
+        got = None
+        bad = str(e)
+    if rc != 0:  # T-6011: an exception outcome exits 1 after it printed its answer: that answer, not the exit, is the why
+        if got and got["outcome"] == "exception":
+            return got
+        return _exception(f"pilot could not run: exit {rc}" + (f": {errs[-WHY_MAX:]}" if errs else ""))
+    return got or _exception(f"pilot could not run: {bad}")
+
+
+def _answer(text, tid):
+    """T-6011: {outcome, rounds, why} from the verb's stdout, or ValueError naming what is wrong with it. The answer is
+    the verb's last line (one compact JSON object; its log lines come before); failing that the whole stdout is one JSON
+    document, and a {"lanes": [row]} sweep document with this one lane in it is unwrapped (that row's why is `reason`)."""
+    lines = [x for x in text.splitlines() if x.strip()]
+    data, swept = None, False
+    for cand in ([lines[-1]] if lines else []) + ([text] if len(lines) > 1 else []):
+        try:
+            got = json.loads(cand)
+        except ValueError:
+            continue
+        rows = got.get("lanes") if isinstance(got, dict) else None
+        if isinstance(rows, list):
+            rows = [x for x in rows if isinstance(x, dict) and x.get("tid") == tid]
+            got = rows[0] if len(rows) == 1 else None
+            swept = got is not None
+        if isinstance(got, dict):
+            data = got
+            break
+    if data is None:
+        raise ValueError("no JSON answer")
+    if not swept and data.get("tid") != tid:  # T-6011 review: an answer outside a sweep names its task, or it is not ours
+        raise ValueError("answered for another task" if data.get("tid") else "the answer names no task")
     outcome = data.get("outcome")
     if outcome not in OUTCOMES:
-        return _exception(f"pilot could not run: unknown outcome {str(outcome)[:40]!r}")
+        raise ValueError(f"unknown outcome {str(outcome)[:40]!r}")
     rounds = data.get("rounds")
-    return {"outcome": outcome, "rounds": rounds if type(rounds) is int and rounds >= 0 else 0,
-            "why": " ".join(str(data.get("why") or "").split())[:WHY_MAX]}
+    why = data["why"] if "why" in data else data.get("reason")
+    return {"outcome": outcome, "rounds": rounds if type(rounds) is int and rounds >= 0 else 0, "why": _why(why)}
 
 
 def _settle(p, tid, res, served):
@@ -312,6 +342,11 @@ def report(p, tid, res, served):
     n = res["rounds"]
     if res["outcome"] == "queued":
         text = f"{tid}: queued to land, fixed in {n} {'round' if n == 1 else 'rounds'} ({res['seconds']} s)"
+    elif res["outcome"] == "accepted":  # T-6011: the lane pilot verb's own outcomes (lanepilot.py), not an exception
+        note = f" ({res['why']})" if res["why"] else ""
+        text = f"{tid}: lane pilot accepted{note} ({res['seconds']} s)"
+    elif res["outcome"] == "changes":
+        text = f"{tid}: lane pilot: {res['why'] or 'changes needed'}"
     else:
         text = f"{tid}: lane pilot exception: {res['why'] or 'no reason given'}"
     fresh = True

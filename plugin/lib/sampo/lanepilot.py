@@ -78,6 +78,7 @@ def gate(p, b, main):
         return f"the contract is over ({why})"
     # round 3: timing=False, so a dry run or a sweep never starts the hook bench (it takes the machine lock); the accept
     # runs land_holds with its timing
+    # T-4805 exempt: a hold check before the review, no landing of its own; the accept's land records the landing (lanes.log_landed)
     return lanes.land_holds(p, b, main, tip, timing=False, review=False) or train._check_hold(b, tip, main) or ""
 
 
@@ -192,6 +193,22 @@ def line(r):
     return f"{r['tid']}: exception: {r['reason']}"
 
 
+ANSWER_FINDINGS, ANSWER_TEXT = 20, 300  # T-6011: the one-line answer's bounds (the trigger reads at most pilotsig.ANSWER_MAX)
+
+
+def answer(r):
+    """T-6011: one lane's `--json` answer as ONE compact line, which pilotsig reads as the verb's last line: tid, outcome,
+    rounds (reviews run: 1 when the reviewers read the lane), why, lenses, findings. ASCII-escaped, so no newline or U+2028
+    ends it early; findings and text are cut, so it stays under the reader's cap."""
+    def cut(x):
+        return " ".join(str(x).split())[:ANSWER_TEXT]
+    row = {"tid": r["tid"], "outcome": r["outcome"], "rounds": 1 if r["outcome"] in ("accepted", "changes") else 0,
+           "why": cut(r["reason"]), "lenses": [cut(x) for x in r["lenses"]],
+           "findings": [cut(x) for x in r["findings"][:ANSWER_FINDINGS]], "model": cut(r["model"]),
+           "seconds": r["seconds"]}
+    return json.dumps(row, separators=(",", ":"))
+
+
 def _crashed(tid, e):
     """T-5706 item 6: the row for a lane whose pilot raised: one line, and the sweep goes on to the next lane."""
     return {"tid": tid, "outcome": "exception", "lenses": [], "findings": [], "model": "", "seconds": 0.0,
@@ -231,6 +248,10 @@ def cmd(p, args, main):
         except Exception as e:  # noqa: BLE001 - one lane's crash is its row, not the sweep's end
             rows.append(_crashed(i, e))
     text = "\n".join(line(r) for r in rows) or "no returned lane awaits a pilot"
+    one = getattr(args, "json", False) and not getattr(args, "all", False) and len(rows) == 1
+    if one:
+        print(answer(rows[0]))  # T-6011: one lane's answer is one compact line (the trigger reads the last line); --all keeps {lanes}
     if any(r["outcome"] == "exception" for r in rows):  # one line, nonzero: the top level prints the message once
         raise cli.UsageError(text)
-    cli.out(args, {"lanes": rows}, text)
+    if not one:
+        cli.out(args, {"lanes": rows}, text)
