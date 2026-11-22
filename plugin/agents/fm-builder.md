@@ -66,7 +66,7 @@ The contract — break none of it:
 - If you must rm, write every target as a literal path (never `rm -rf $VAR/x` or `rm "$d"`): Claude Code asks the user about
   a removal whose target holds a shell variable it can't verify, in every mode (T-3704). Scratch needs no rm: leave it.
 - Don't edit CHANGELOG.md: end your final report with these lines, one each (T-0428, T-3500, T-4515), which Sampo records
-  on the brief as you return; the close adds the changelog line and commits under the title:
+  on the brief as you return, and your last commit carries the same lines as trailers in its message (T-5496: `git commit -m "<what> (<ID>)" -m "CHANGELOG: …" -m "TITLE: …" -m "LESSON: …" -m "NUMBERS: …" -m "DOCS: …"`, plus `WHY-NOT-CAUGHT:` for an M or L FIX, so a land closes the lane with no hand step; a fix commit after it need not repeat them (the newest commit that carries them wins), but an amend or a rebase that rewrites that message leaves it for a hand close; a merge at the tip keeps them); the close adds the changelog line and commits under the title:
   `CHANGELOG: <one sentence in the style of the existing entries, ending (<ID>)>`, `TITLE: <a short commit title
   ending (<ID>)>`, `LESSON: <the general rule this taught>`, `NUMBERS: <metric: before → after (how measured)>` or
   `NUMBERS: none: <why>`, `DOCS: <the docs you updated>` or `DOCS: none: <why>`. For an M or L FIX also

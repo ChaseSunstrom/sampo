@@ -2988,7 +2988,8 @@ def _close_gaps(b):
     from sampo import cli
     from sampo import lanes
     proof = [g] if (g := b.proof_gap()) else []
-    f = lanes.close_fields(b.section(lanes.CLOSE_FIELDS))
+    f = lanes.close_fields(b.section(lanes.CLOSE_FIELDS)) or lanes.lane_trailers(
+        b.meta.get("lane") or "", b.meta.get("base") or "", b.id)  # T-5496: the commits' trailers, if the brief has none
     if not f.get("changelog"):
         return proof + ["no CHANGELOG line in its Close fields"]
     return proof + cli._field_gaps(b, SimpleNamespace(docs=f.get("docs"), numbers=f.get("numbers"), lesson=f.get("lesson"),
@@ -3056,12 +3057,14 @@ def _close(p, main, tid):
         return "", f"{b.title} — already closed in its lane"
     sha = _git(path, "rev-parse", "--short", "HEAD").stdout.strip() if path else ""
     last = float(_git(path, "log", "-1", "--format=%ct").stdout.strip() or 0) if path else 0.0
-    f = lanes.close_fields(b.section(lanes.CLOSE_FIELDS))
+    brief_fields = lanes.close_fields(b.section(lanes.CLOSE_FIELDS))
+    f = brief_fields or lanes.lane_trailers(path, b.meta.get("base") or "", tid)  # T-5496: no Close fields: trailers
     if not f.get("changelog"):
         if "close lines not stored" in b.section("Log"):  # T-4599: the stop hook saw lines the tail rule refused
             return ("no close fields on its brief (its builder's report had close lines, not at its end: "
                     "fill them with sampo task set ID --section 'Close fields')", "")
-        return "no close fields on its brief (none came from a builder's report: it held no CHANGELOG line, or none stopped here)", ""
+        return ("no close fields on its brief (none came from a builder's report or its commits' trailers: "
+                "it held no CHANGELOG line, or none stopped here)"), ""
     line, why = lanes.close_line(f["changelog"], "changelog", tid)
     if why:
         return why, ""
@@ -3083,6 +3086,9 @@ def _close(p, main, tid):
     # T-4515: the builder's WHY-NOT-CAUGHT line goes on as the close's why-not-caught; the brief's own section wins
     own = b.section("Why not caught").strip() or not f.get("why_not_caught")
     why_arg = [] if own else [f"--why-not-caught={f['why_not_caught']}"]
+    # T-5496: finish reads only its brief's Close fields, so a trailer's lines go to it as flags
+    keys = ("changelog", "lesson", "numbers", "docs")
+    tip = [] if brief_fields else [f"--{k.replace('_', '-')}={f[k]}" for k in keys if f.get(k)]
     t_finish = time.monotonic()  # T-4600: the close's wall time, lock wait included, beside the steps the finish itself reports
     # T-5444: a live land's close re-runs no linked tests: the behind suite runs them all on the merged head and reverts
     live_skip = ["--skip-affected", "live landing: the behind suite verifies the merged head and reverts a red merge"] \
@@ -3091,7 +3097,7 @@ def _close(p, main, tid):
         with train_lock_closing(p):  # T-4540: the close commits on trunk: it waits for a running train (bounded), not beside it
             rc, out, err = _sampo(["task", "finish", tid, "--audit", f"{LAND_AUDIT} (lane tip {sha})", "--result", seen,
                                    *[x for lens in sorted(set(fresh) - {"self"}) for x in ("--lens", f"{lens}: {seen}")],
-                                   *why_arg, *live_skip, "--commit", title])
+                                   *why_arg, *tip, *live_skip, "--commit", title])
     except c.LockTimeout:
         return ("a running train holds trunk: the close waits for it, and the next land retries it"
                 + ("; its lane is kept" if path else ""), "")

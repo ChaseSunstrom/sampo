@@ -2318,6 +2318,69 @@ def close_fields(text, tail=False):
     return got
 
 
+TRAILER_WALK = 30  # T-5496: how many commits behind a lane's tip its close trailers are read from
+
+
+_COMMIT_CLOSE = re.compile(r"[*_`]*(CHANGELOG|TITLE|LESSON|NUMBERS|DOCS|WHY-NOT-CAUGHT)[*_`]*[ \t]*:")  # column 0 only
+_GIT_TRAILER = re.compile(r"[A-Za-z][A-Za-z0-9-]*:[ \t]")  # Claude-Session:, Co-Authored-By: (after the close lines)
+_CHANGELOG_ID = re.compile(r"\((T-\d{4,})\)\W*$")
+
+
+def _commit_close(msg):
+    """T-5496: a commit message's close fields, read as a report's final close block is: the last run of close lines
+    at column 0 outside a code fence (blank lines between them allowed), with only git trailers after it. A line in a
+    fence, a quote or a bullet is not a close line. None when the message has no close line, so the walk goes on to
+    the older commit; {} when a line of text follows the block. A close line the defang check drops still counts, so
+    the walk stops at this commit."""
+    lines = msg.splitlines()
+    fence, marks = False, set()
+    for i, ln in enumerate(lines):
+        if ln.lstrip().startswith(("```", "~~~")):
+            fence = not fence
+        elif not fence and _COMMIT_CLOSE.match(ln):
+            marks.add(i)
+    if not marks:
+        return None
+    last = max(marks)
+    if any(ln.strip() and not _GIT_TRAILER.match(ln) for ln in lines[last + 1:]):
+        return {}
+    first = last
+    while first and (first - 1 in marks or not lines[first - 1].strip()):
+        first -= 1
+    return close_fields("\n".join(lines[first:last + 1]))
+
+
+def _names_task(fields, tid):
+    """T-5496: whether a commit's close fields are this lane's: its CHANGELOG ends with this task's id, and the brief
+    path's checks (close_line: no link, no other task's id) pass for its CHANGELOG and TITLE."""
+    m = _CHANGELOG_ID.search(fields.get("changelog", ""))
+    if not m or m.group(1) != tid:
+        return False
+    return all(not close_line(fields[k], k, tid)[1] for k in ("changelog", "title") if k in fields)
+
+
+def lane_trailers(path, base, tid):
+    """T-5496: the close fields a builder's commits carry as trailers (their message's CHANGELOG, TITLE, LESSON,
+    NUMBERS, DOCS and WHY-NOT-CAUGHT lines, read as a report's close block is), so a lane closes in the land with no
+    Close fields on its brief. The newest commit that has close lines decides: it gives them when its CHANGELOG names this
+    task (tid) and passes the brief path's checks, and gives {} otherwise, so a stacked lane never takes a lower
+    lane's trailers. Read on the first-parent chain without merges from the lane's base (its recorded start point, a
+    commit id; anything else is not passed to git) to its tip, at most TRAILER_WALK commits back: a fix commit without
+    trailers keeps the earlier ones, and a trunk merge at the tip (T-5513) is skipped. With no base only the tip is
+    read. {} when none says, or the lane is gone. The same redaction and checks apply."""
+    if not path or not os.path.isdir(path):
+        return {}
+    if not re.fullmatch(r"[0-9a-f]{7,64}", base or ""):
+        base = ""
+    walk, rng = (TRAILER_WALK, f"{base}..HEAD") if base else (1, "HEAD")
+    out = c._git(path, "log", "--no-merges", "--first-parent", f"-{walk}", "--format=%B%x00", rng, timeout=10, fail="")
+    for msg in out.split("\x00"):
+        fields = _commit_close(msg)
+        if fields is not None:
+            return fields if _names_task(fields, tid) else {}
+    return {}
+
+
 def close_text(fields):
     """The Close fields section for `fields`: the lines close_fields reads back."""
     return "".join(f"{k.upper().replace('_', '-')}: {fields[k]}\n" for k in CLOSE_KEYS if fields.get(k))
