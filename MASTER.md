@@ -198,6 +198,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmlake` (T-2974: the training lake, `sampo exam models --export DIR [--with-agent]`: outcome-labelled… [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmrecover` (T-3928, `sampo/recover.py`): a restart nobody announced. `cli.main` wraps `lane land`, `lane train`… [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmjobsreg` (T-5031, `sampo.jobsreg`: `sampo jobs add NAME --why WHY` registers a job started by hand in the… [→ files-lib-2](docs/map/files-lib-2.md)
+- `fmpulse` (T-5591, `sampo.pulse`): `sampo pulse [--wait N]` is one read-only screen: load and free disk, the builder lanes, the last day's train, and the long verbs' jobs with each log's last line; `--wait N` returns when a job ends or the board changes.
 - `fmlandlock` (T-1607: a sampo smith worker's writes confined with Landlock… [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmmacros` (T-3922, `sampo.macros`): `sampo do NAME` runs a routine from `plugin/macros/*.json` (1 to 3 verb steps… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmlane_overlap` (T-3285, `sampo/lane_overlap.py`): `scan()` gives `sampo lane list` one `OVERLAP A and B:` line per… [→ files-lib-2](docs/map/files-lib-2.md)
