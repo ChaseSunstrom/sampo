@@ -101,3 +101,16 @@ class ConflictEdit(ForemanTestCase):
         self.conflict()
         self.assertNotIn("blocked", said(lane_file), "the resolver's own lane's conflicted file")
         self.assertIn("blocked confine", said(main_file), "the same edit outside the lane")
+
+
+class KillGroupPid(ForemanTestCase):
+    """T-5899: os.killpg(1, …) is kill(-1, …): every process the user owns. A mocked Popen's pid is a Mock, and a
+    MagicMock converts to 1 (__index__), so a test's stub once ended the whole desktop session three times."""
+
+    def test_only_a_plain_int_pid_over_one_reaches_killpg(self):
+        with mock.patch.object(pilotsig.os, "killpg") as killpg:
+            for pid in (mock.MagicMock(), mock.Mock(), None, True, "77", 0, 1, -1):
+                pilotsig._kill_group(mock.Mock(pid=pid))
+            killpg.assert_not_called()
+            pilotsig._kill_group(mock.Mock(pid=4242))
+            killpg.assert_called_once_with(4242, pilotsig.signal.SIGKILL)

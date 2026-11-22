@@ -218,8 +218,11 @@ def _tail(f, cap):
 
 def _kill_group(proc):
     """The verb's children die with it: its session is its own process group, and the group is killed whole."""
+    pid = proc.pid
+    if type(pid) is not int or pid <= 1:  # T-5899: killpg(1) is every process of the user; a Mock's pid converts to 1
+        return
     try:
-        os.killpg(proc.pid, signal.SIGKILL)
+        os.killpg(pid, signal.SIGKILL)
     except OSError:
         pass  # the group is already gone
 
