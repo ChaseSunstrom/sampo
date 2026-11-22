@@ -302,7 +302,7 @@ def _profile(name, d, where):
         p["ctx_variant"] = d["ctx_variant"]
     if "seed_timeout" in d:  # T-5377: seconds the bench's generation run gives one seed call (louhi._gen_smith)
         st = d["seed_timeout"]
-        if isinstance(st, bool) or not isinstance(st, (int, float)) or not st > 0:
+        if isinstance(st, bool) or not isinstance(st, (int, float)) or not (0 < st < math.inf):
             bad("seed_timeout must be a positive number of seconds")
         p["seed_timeout"] = st
     if "small" in d:  # T-3974: small-model mode on for this profile (smith reads profile["small"] is True)

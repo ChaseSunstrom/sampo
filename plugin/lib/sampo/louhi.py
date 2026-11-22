@@ -904,7 +904,7 @@ class BenchCut(Exception):
     """T-5377: the run's wall-clock deadline passed: this backend and the ones after it are cut, not failed."""
 
 
-GEN_K, TIER_SAMPLE = 16, 8 # moons grown per generative profile, and how many of the survivors the review model tiers
+GEN_K, TIER_SAMPLE = 16, 8  # moons grown per generative profile, and how many of the survivors the review model tiers
 
 
 def _pct(xs, q):

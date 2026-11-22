@@ -790,8 +790,10 @@ def build(out):
     from sampo import louhi
     from sampo import core
     rows, frozen = [], {}  # T-3093: the model bench, tolerant of absent files
+    proj = None  # T-5377: the verdict refuses a backend that trained on this project, as `exam models` does
     try:  # T-3064: the bench rows live in the project's state, not the repo (copied over once if only the repo has them)
-        bench = core.bench_path(core.find_project(ROOT))
+        proj = core.find_project(ROOT)
+        bench = core.bench_path(proj)
     except AttributeError:
         bench = os.path.join(ROOT, "state", core.BENCH_REL)
     for name, path in (("bench.jsonl", bench), ("frozen.json", os.path.join(ROOT, "research", "models", "frozen.json"))):

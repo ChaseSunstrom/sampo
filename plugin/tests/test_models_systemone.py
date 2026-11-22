@@ -73,7 +73,7 @@ class Systemone(tm.Base):
             return m.configured()[1]["slow"]
         self.assertEqual(load(1800)["seed_timeout"], 1800)
         self.assertEqual(load(90.5)["seed_timeout"], 90.5)
-        for bad in (0, -5, True, "600", None):
+        for bad in (0, -5, True, "600", None, float("inf"), float("nan")):
             with self.assertRaisesRegex(m.ModelError, "seed_timeout must be a positive number of seconds", msg=repr(bad)):
                 load(bad)
 
