@@ -298,6 +298,145 @@ class Train(TrainCase):
         got = train._shape_cull(list("abcdef"), cached, budget=1)
         self.assertEqual(list(got), ["f"], "runs from the cache cost no seconds")
 
+    def narrow_trunk(self):
+        """T-5853: a live project whose stand-in shape runner logs the classes each run was given (one line a run; a run
+        naming `module::Class` runs only those) and is red on up to three classes: test_docs.Cls (RED.txt is in the tree),
+        test_run.Other (OTH.txt, RED.txt not: a red the first run masks) and test_run.Wide (W.txt, neither of the others:
+        again masked, and only a whole run sees it). Returns the log's path."""
+        self.fm("lane", "mode", "live")
+        log = os.path.join(self.tmp, "shape-args")
+        os.makedirs(os.path.join(self.repo, "plugin", "tests"))
+        with open(os.path.join(self.repo, "plugin", "tests", "run.py"), "w") as f:
+            f.write("import os, sys\n"
+                    "args = sys.argv[1:]\n"
+                    "if '--last' in args:\n    sys.exit(3)\n"
+                    f"open({log!r}, 'a').write(' '.join(args) + '\\n')\n"
+                    "want = lambda k: not any('::' in a for a in args) or k.replace('.', '::') in args\n"
+                    "has = os.path.exists\n"
+                    "red = [k for k, on in (('test_docs.Cls', has('RED.txt')),\n"
+                    "                       ('test_run.Other', has('OTH.txt') and not has('RED.txt')),\n"
+                    "                       ('test_run.Wide', has('W.txt') and not has('RED.txt') and not has('OTH.txt'))) "
+                    "if on and want(k)]\n"
+                    "for k in red:\n    print('  failed class: ' + k)\n"
+                    "sys.exit(1 if red else 0)\n")
+        self.git("add", "plugin")
+        self.git("commit", "-qm", "a Sampo tree with its runner")
+        return log
+
+    def shape_runs(self, log):
+        with open(log) as f:
+            return [line.split() for line in f.read().splitlines()]
+
+    def test_live_shape_cull_runs_only_the_red_classes_on_each_subset_tree_and_the_kept_build_once_in_full(self):
+        # T-5853: 11 subset trees at about 4 min each held a train for 40 min; the red classes alone run in seconds
+        log = self.narrow_trunk()
+        full = list(c.repo_shape_modules())
+        ids = [self.lane(1, "a.txt"), self.lane(2, "RED.txt"), self.lane(3, "b.txt"), self.lane(4, "d.txt")]
+        r = self.train(*ids, env={"FM_POSTMERGE_CMD": "true", "FOREMAN_NO_BACKGROUND": "1"})
+        out = r.stdout + r.stderr
+        for name in ("a.txt", "b.txt", "d.txt"):
+            self.assertTrue(os.path.exists(os.path.join(self.repo, name)), f"{name} landed: {out}")
+        self.assertFalse(os.path.exists(os.path.join(self.repo, "RED.txt")), "the culprit is not landed")
+        runs = self.shape_runs(log)
+        narrow = [x for x in runs if x != full]
+        self.assertTrue(narrow, f"the cull ran subset trees: {runs}")
+        self.assertTrue(all(x == ["test_docs::Cls"] for x in narrow), f"a subset tree runs only the red class: {narrow}")
+        self.assertEqual(len(runs) - len(narrow), 3, f"whole runs: the batch, the base, the kept build once: {runs}")
+
+    def test_live_shape_confirm_a_class_red_only_on_the_kept_builds_full_run_gets_one_more_split_on_it(self):
+        # T-5853: the narrowed subsets never ran test_run.Other: the kept build's whole run does, and splits it once
+        log = self.narrow_trunk()
+        full = list(c.repo_shape_modules())
+        ids = [self.lane(1, "a.txt"), self.lane(2, "RED.txt"), self.lane(3, "OTH.txt"), self.lane(4, "d.txt")]
+        r = self.train(*ids, env={"FM_POSTMERGE_CMD": "true", "FOREMAN_NO_BACKGROUND": "1"})
+        out = r.stdout + r.stderr
+        for name in ("a.txt", "d.txt"):
+            self.assertTrue(os.path.exists(os.path.join(self.repo, name)), f"{name} landed: {out}")
+        for name in ("RED.txt", "OTH.txt"):
+            self.assertFalse(os.path.exists(os.path.join(self.repo, name)), f"{name} parked: {out}")
+        self.assertRegex(out, rf"left out {ids[1]}: .*test_docs.Cls")
+        self.assertRegex(out, rf"left out {ids[2]}: .*test_run.Other")
+        runs = self.shape_runs(log)
+        self.assertEqual({tuple(x) for x in runs if x != full}, {("test_docs::Cls",), ("test_run::Other",)},
+                         f"each split narrows to its own classes: {runs}")
+        self.assertEqual(runs.count(full), 4, f"whole runs: the batch, the base, the kept build of each split: {runs}")
+
+    def test_live_shape_confirm_a_second_new_red_on_the_kept_build_stops_the_land_with_nothing_parked(self):
+        # T-5853: one more split, then the land stops: a lane parked in the first round is not parked for a refused land
+        self.narrow_trunk()
+        ids = [self.lane(1, "a.txt"), self.lane(2, "RED.txt"), self.lane(3, "OTH.txt"), self.lane(4, "W.txt")]
+        head = self.git("rev-parse", "HEAD")
+        r = self.train(*ids, check=False, env={"FM_POSTMERGE_CMD": "true", "FOREMAN_NO_BACKGROUND": "1"})
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertEqual(self.git("rev-parse", "HEAD"), head, "nothing landed")
+        self.assertIn("test_run.Wide", out)
+        self.assertIn("nothing landed", out)
+        self.assertNotRegex(out, r"left out ")
+        for tid in ids:
+            self.assertNotIn("left out of a merge train", json.dumps(json.loads(
+                self.fm("task", "show", tid, "--json").stdout).get("log", "")), f"{tid} is not parked")
+
+    def test_shape_run_names_the_classes_it_is_given_and_a_class_the_tree_lacks_is_not_red(self):
+        # T-5853: `module.Class` runs as run.py's `module::Class`; a name no test matches fails the whole run there
+        from sampo import train
+        cmds = []
+
+        def run(path, cmd, wall, **kw):
+            cmds.append(cmd)
+            if "test_gone::Cls" in cmd:
+                return 1, "run.py: no test matches test_gone::Cls\n"
+            return 0, ""
+        with mock.patch.object(c, "run_command", side_effect=run), mock.patch.object(c, "run_record", return_value=None):
+            self.assertEqual(train._shape_run("/t", 5, "test_docs.Cls, test_run.Other"), ("green", ""))
+            self.assertTrue(cmds[0].endswith("run.py test_docs::Cls test_run::Other"), cmds[0])
+            cmds.clear()
+            self.assertEqual(train._shape_run("/t", 5, "test_gone.Cls, test_run.Other"), ("green", ""))
+            self.assertEqual(len(cmds), 2, "the name no test matches is dropped and the rest run")
+            self.assertTrue(cmds[1].endswith("run.py test_run::Other"), cmds[1])
+            cmds.clear()
+            self.assertEqual(train._shape_run("/t", 5, "test_gone.Cls"), ("green", ""), "a class the tree lacks: no red")
+            self.assertEqual(len(cmds), 1)
+            cmds.clear()
+            train._shape_run("/t", 5, "bad name; rm -rf x, a.b.c")
+            self.assertEqual(len(cmds), 1)
+            self.assertIn(" ".join(c.repo_shape_modules()), cmds[0], "a name that is no class id runs the whole set")
+            self.assertNotIn("rm", cmds[0])
+
+    def test_shape_run_a_red_class_that_prints_the_no_match_phrase_stays_red(self):
+        # T-5853 review: the phrase is only run.py's own early exit (no test ran); a class's output may echo it
+        from sampo import train
+        cmds = []
+
+        def run(path, cmd, wall, **kw):
+            cmds.append(cmd)
+            return 1, ("run.py: no test matches test_run::Other\n.F\nRan 3 tests in 0.1s\nFAILED (failures=1)\n"
+                       "  failed class: test_run.Other\n")
+        with mock.patch.object(c, "run_command", side_effect=run), mock.patch.object(c, "run_record", return_value=None):
+            self.assertEqual(train._shape_run("/t", 5, "test_run.Other"), ("red", "test_run.Other"))
+        self.assertEqual(len(cmds), 1, "the name was not dropped")
+
+    def test_shape_run_a_module_that_fails_to_import_is_run_bare_not_dropped_as_green(self):
+        # T-5853 review: run.py names a failed import `unittest.loader._FailedTest.<module>`, so `module::Class` matches
+        # nothing there: the module exists in the tree, so it runs whole and its import failure is the red
+        from sampo import train
+        tree = os.path.join(self.tmp, "tree")
+        os.makedirs(os.path.join(tree, "plugin", "tests"))
+        with open(os.path.join(tree, "plugin", "tests", "test_bad.py"), "w") as f:
+            f.write("import nothing_here\n")
+        cmds = []
+
+        def run(path, cmd, wall, **kw):
+            cmds.append(cmd)
+            if "::" in cmd:
+                return 1, "run.py: no test matches " + ", ".join(w for w in cmd.split() if "::" in w) + "\n"
+            return 1, "  failed class: unittest.loader._FailedTest\n"
+        with mock.patch.object(c, "run_command", side_effect=run), mock.patch.object(c, "run_record", return_value=None):
+            got = train._shape_run(tree, 5, "test_bad.Cls, test_gone.Cls")
+        self.assertEqual(got[0], "red", got)
+        self.assertEqual(len(cmds), 2, cmds)
+        self.assertTrue(cmds[1].endswith("run.py test_bad"), "the bare module stays, the class of no module is dropped")
+
     def test_live_shape_refuses_a_batch_when_the_base_has_no_shape_verdict_and_parks_no_lane(self):
         # T-5806 review: a base cut says so (no lane is blamed for a class the base may carry), and names no wall it was not cut at
         self.shape_trunk("os.path.exists('RED.txt') or (not os.path.exists('a.txt') and sys.exit(1))")  # the bare base: no class named

@@ -1199,18 +1199,19 @@ class ShapeVerdict(typing.NamedTuple):
         return ""
 
 
-def _live_shape(wt, p=None, main=None, base=None):
+def _live_shape(wt, p=None, main=None, base=None, classes=None):
     """T-5590: the live train's one repo-shape run on the merged tree, before anything lands (a module, an env name or a
     help position a lane adds is red here, not on trunk). T-5806: a ShapeVerdict, so _run splits a red batch by lane:
     green when the tree is green or not a Sampo tree (_shape_tree).
     T-5805: given the project, main and the base sha, a red tree runs the base's shape too (once per base, cached) and is
     red only for the classes not red on the base: those are trunk's, filed once as an express FIX (the key is the class
     set) and never stop a train (a class red on the merged tree but green on the base still does). A base with no
-    verdict forgives nothing."""
+    verdict forgives nothing.
+    T-5853: `classes` (the red classes a batch run named, joined) runs only those: a subset tree of the cull."""
     if not _shape_tree(wt):
         return ShapeVerdict("green")
     t0 = time.monotonic()
-    verdict, names = _shape_run(wt, shape_batch_wall())
+    verdict, names = _shape_run(wt, shape_batch_wall(), classes) if classes else _shape_run(wt, shape_batch_wall())
     secs = time.monotonic() - t0
     if verdict == "red" and p is not None and main and base:
         try:
@@ -2225,43 +2226,70 @@ def _run(p, main, ids, defer_verify=False, judged=None):
         _shape_cull blames, each left out with the classes named (its log, `left`), rebuilt on the base. Each subset is
         merged on a fresh tree and judged once per tree (a verdict is kept per tree hash, the batch's own included). A cut
         run is no verdict: the land stops with nothing parked, as before. The lanes whose diff (or the tests it reaches)
-        touches a red class's module are tried first."""
+        touches a red class's module are tried first.
+        T-5853: a subset tree runs only the red classes (`first.names`: seconds, where the whole set took minutes under
+        load); the kept build then gets one whole run before it lands (none when it is the batch's own tree, whose
+        narrowed rerun cleared its red). A class red only there (a subset never ran it) gets one more split on it; a
+        red again, or a cut, ends the land with nothing parked: the lanes are marked only once the build is green."""
         if first.verdict != "red":
             raise c.PolicyError("the merged batch's repo-shape run did not pass, nothing landed: " + first.why)
-        ids_m = [b.id for b, _ in merged]
-        ensure_wt()
-        seen = {_git(wt, "rev-parse", "HEAD^{tree}").stdout.strip(): first}
-
         if _base_shape_cached(p, base) is None:  # _live_shape ran the base for this red and got no verdict
             raise c.PolicyError(f"the repo-shape run of the base {base[:9]} has no verdict (cut at {SHAPE_BATCH_WALL_ENV}="
                                 f"{shape_batch_wall()} s, or its tree would not build), so no lane can be blamed for a class "
                                 f"the base may carry: nothing landed and no lane parked ({first.why})")
 
-        def shape(sel, fresh=False):
-            trunk_watch()  # a moved trunk ends the search: its verdicts are of a base that is gone
-            n = len(left)
-            build(base, [(b, tips[b.id]) for b, _ in merged if b.id in sel])
-            conflicts, left[n:] = left[n:], []  # a merge conflict of a subset is the final build's to name
-            if conflicts:  # the lane is judged absent there: no verdict, as a cut
-                return ShapeVerdict("cut", f"the subset does not merge ({conflicts[0][0]}: {conflicts[0][1]})")
+        def split(first, pool):
+            """(parked {id: (why, classes)}, the kept build, its whole-set ShapeVerdict, trees judged) for one red."""
+            ids_m = [b.id for b, _ in pool]
             ensure_wt()
-            key = _git(wt, "rev-parse", "HEAD^{tree}").stdout.strip()
-            if key in seen and not fresh:
-                return seen[key]._replace(secs=0.0)  # a cache hit costs no shape seconds
-            seen[key] = _live_shape(wt, p, main, base)  # base-relative: a class red on the base is no lane's
-            return seen[key]
+            tree0 = _git(wt, "rev-parse", "HEAD^{tree}").stdout.strip()
+            seen = {tree0: first}  # narrowed verdicts per tree (the batch's own red names exactly those classes)
 
-        mods = {_mod(n) for n in re.split(r"[,\s]+", first.names) if n}
-        sus = {i for i in ids_m if mods & ({_stem(f) for f in diff(i)} | {_stem(t) for t in reach(i)})}
-        parked = _shape_cull(ids_m, shape, sus)
+            def shape(sel, fresh=False):
+                trunk_watch()  # a moved trunk ends the search: its verdicts are of a base that is gone
+                n = len(left)
+                build(base, [(b, tips[b.id]) for b, _ in pool if b.id in sel])
+                conflicts, left[n:] = left[n:], []  # a merge conflict of a subset is the final build's to name
+                if conflicts:  # the lane is judged absent there: no verdict, as a cut
+                    return ShapeVerdict("cut", f"the subset does not merge ({conflicts[0][0]}: {conflicts[0][1]})")
+                ensure_wt()
+                key = _git(wt, "rev-parse", "HEAD^{tree}").stdout.strip()
+                if key in seen and not fresh:
+                    return seen[key]._replace(secs=0.0)  # a cache hit costs no shape seconds
+                # base-relative: a class red on the base is no lane's; T-5853: only the red classes run
+                seen[key] = _live_shape(wt, p, main, base, first.names)
+                return seen[key]
+
+            mods = {_mod(n) for n in re.split(r"[,\s]+", first.names) if n}
+            sus = {i for i in ids_m if mods & ({_stem(f) for f in diff(i)} | {_stem(t) for t in reach(i)})}
+            parked = _shape_cull(ids_m, shape, sus)
+            kept = build(base, [(b, tips[b.id]) for b, _ in pool if b.id not in parked])
+            ensure_wt()
+            if not kept or _git(wt, "rev-parse", "HEAD^{tree}").stdout.strip() == tree0:
+                return parked, kept, ShapeVerdict("green"), len(seen)
+            trunk_watch()
+            return parked, kept, _live_shape(wt, p, main, base), len(seen)  # the one whole run of the kept build
+
+        ids_m, pool, parked, trees, classes = [b.id for b, _ in merged], merged, {}, 0, []
+        for rnd in (1, 2):
+            got, pool, full, n = split(first, pool)
+            parked.update(got)
+            trees += n
+            classes.append(first.names)
+            if full.verdict == "green":
+                break
+            if full.verdict == "cut" or rnd == 2:
+                raise c.PolicyError(full.why + (f" (the split of {classes[-1]} left it red)" if full.verdict == "red" else "")
+                                    + ": nothing landed and no lane parked")
+            first = full
         for i in (i for i in ids_m if i in parked):
             left.append((i, parked[i][0]))
             cli.mutate(p, i, lambda x, w=parked[i][0]: x.append_log("left out of a merge train: " + w), "lane_train_red",
                        {"cmd": "repo-shape", "failing": [n for n in re.split(r"[,\s]+", parked[i][1]) if n],
                         "blamed": "shape bisection"})
         c.log_event(p, "lane_train_shape_cull", data={"parked": sorted(parked), "kept": [i for i in ids_m if i not in parked],
-                                                       "classes": first.names, "trees": len(seen)})
-        return build(base, [(b, tips[b.id]) for b, _ in merged if b.id not in parked])
+                                                       "classes": ", ".join(classes), "trees": trees})
+        return pool
 
     try:
         merged = build(base, cands)
@@ -5502,21 +5530,57 @@ def shape_batch_wall():
     return got if got > 0 else SHAPE_BATCH_WALL_S
 
 
-def _shape_run(path, wall=None):
+_SHAPE_CLASS_ID = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?")  # a failing class as the run record names it: module[.Class]
+_NO_TEST_MATCHES = re.compile(r"(?m)^run\.py: no test matches ([^\n;]*)")  # run.py's own line, as its early exit prints it
+_TESTS_RAN = re.compile(r"(?m)^Ran [1-9]\d* tests?\b")  # a run that ran tests did not end for want of a match
+
+
+def _shape_selectors(classes):
+    """T-5853: run.py's names for `classes` (the red classes a run named, joined: `module.Class` becomes `module::Class`,
+    a bare module stays), or None for the whole repo-shape set: no class, or a name that is no class id (never put
+    into a command)."""
+    names = [n for n in re.split(r"[,\s]+", classes or "") if n]
+    if not names or not all(_SHAPE_CLASS_ID.fullmatch(n) for n in names):
+        return None
+    return list(dict.fromkeys(n.replace(".", "::") for n in names))
+
+
+def _shape_run(path, wall=None, classes=None):
     """T-4542: ('green' | 'red' | 'cut', the failing classes named) for the repo-shape modules run once in the lane's tree,
     niced. Red names the classes its run record carries (else the classes its output names). Cut is no verdict (the
     deadline, a run that left no record and named no class): the lane's own check runs the same classes with --hold.
-    T-5380: `wall` (seconds) replaces SHAPE_WALL_S: a batch's run has its own."""
-    cmd = "python3 plugin/tests/run.py " + " ".join(c.repo_shape_modules())
-    rid = c.new_run_id(cmd)
-    code, out = c.run_command(path, cmd, wall or SHAPE_WALL_S, niced=True, run_id=rid)
-    if code == 0:
-        return "green", ""
+    T-5380: `wall` (seconds) replaces SHAPE_WALL_S: a batch's run has its own.
+    T-5853: `classes` (the names a red run gave) narrows the run to them: a tree that has none of a class (a lane adds
+    its module, and the subset leaves that lane out) is not red there, so run.py's "no test matches" for a name drops
+    it and the rest run (none left: green). Only run.py's own line counts (at a line start, no "Ran N tests" line), and
+    a class whose module file is in the tree runs as the bare module (it may fail to import)."""
+    names = _shape_selectors(classes)
+    while True:
+        cmd = "python3 plugin/tests/run.py " + " ".join(names or c.repo_shape_modules())
+        rid = c.new_run_id(cmd)
+        code, out = c.run_command(path, cmd, wall or SHAPE_WALL_S, niced=True, run_id=rid)
+        if code == 0:
+            return "green", ""
+        gone = {n.strip() for n in m.group(1).split(",")} & set(names) if names and code == 1 and (
+            m := _NO_TEST_MATCHES.search(out or "")) and not _TESTS_RAN.search(out) else set()
+        if not gone:
+            break
+        # a `module::Class` whose module file is in the tree matches nothing when that module fails to import (run.py
+        # names it `unittest.loader._FailedTest.<module>`): the bare module runs, and its import failure is the red
+        left = []
+        for n in names:
+            mod = n.partition("::")[0]
+            if n not in gone:
+                left.append(n)
+            elif "::" in n and mod not in gone and os.path.isfile(os.path.join(path, "plugin", "tests", mod + ".py")):
+                left.append(mod)  # a bare module is dropped when it matches nothing too, so this ends
+        if not (names := list(dict.fromkeys(left))):
+            return "green", ""
     rec = c.run_record(path, cmd, rid) if code else None
     if code == 124 or (rec or {}).get("not_run"):
         return "cut", ""
-    names = sorted({f["class"] for f in (rec or {}).get("failed") or [] if f.get("class")}) or c.failed_classes(out)
-    return ("red", ", ".join(names)) if names else ("cut", "")
+    got = sorted({f["class"] for f in (rec or {}).get("failed") or [] if f.get("class")}) or c.failed_classes(out)
+    return ("red", ", ".join(got)) if got else ("cut", "")
 
 
 def _shape_wanted(b, main, tip):
