@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- sampo lane recover and resume of a lane that already has its branch are no longer refused by the land-backlog bar or the unmerged cap, so 21 waiting lanes can't hold a recovery; a new lane is still held (T-5933).
 - An auto-approved read no longer lets git diff, log, show or blame run a repo-configured diff driver or textconv: read_only passes them only with --no-ext-diff --no-textconv (blame: --no-textconv) or in an allow-listed form that shows no file content (T-5916).
 - A pure spawn module holds the one agent-type to model table, fills a spawn's missing model from it and refuses a lookup sent to a general agent, for the Agent hook, headless builders and cost view to share (T-5835).
 - sampo recover now reads the user journal and kernel log first and names the likely cause of a session loss (OOM kill, reboot, user-wide SIGKILL) instead of assuming a restart, lists each open lane's last command from the guard's per-task stamp in the minute before it, and holds a lane that preceded two losses (not offered for relaunch, refused by lane recover until sampo recover --relea… (T-5903).
