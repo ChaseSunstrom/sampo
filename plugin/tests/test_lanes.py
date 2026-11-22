@@ -534,6 +534,34 @@ class Lanes(ForemanTestCase):
         self.fm("lane", "rm", tid)
         self.assertFalse(os.path.exists(path))
 
+    def test_rm_discards_a_folder_holding_only_the_guard_ward_index(self):
+        # T-5529: the guard rebuilds state/ward-index/ward-index-<stamp>.json (and its .failed/.building marks and the
+        # .json.<pid>.tmp a write leaves) on use, like guard-scripts.json; those alone never block rm, another file does
+        tid = self.new("Ward", self.repo, focus=False)
+        path = json.loads(self.fm("lane", "new", tid, "--json").stdout)["path"]
+        common = subprocess.run(["git", "-C", path, "rev-parse", "--git-common-dir"], capture_output=True,
+                                text=True).stdout.strip()
+        with open(os.path.join(path, common, "info", "exclude"), "a") as f:
+            f.write("state/\n")
+        stamp = "0123456789abcdef0123"  # fmguard._index_stamp's shape: 20 hex digits
+        os.makedirs(os.path.join(path, "state", "ward-index"))
+        names = [f"ward-index-{stamp}.json", f"ward-index-{stamp}.failed", f"ward-index-{stamp}.building",
+                 f"ward-index-{stamp}.json.4242.tmp"]
+        for n in names:
+            with open(os.path.join(path, "state", "ward-index", n), "w") as f:
+                f.write("{}\n")
+        with open(os.path.join(path, "state", "guard-scripts.json"), "w") as f:
+            f.write("{}\n")
+        for other in (os.path.join("state", "other.json"), os.path.join("state", "ward-index", "notes.json")):
+            with open(os.path.join(path, other), "w") as f:
+                f.write("{}\n")
+            p = self.fm("lane", "rm", tid, check=False)
+            self.assertNotEqual(p.returncode, 0, f"{other} is still kept")
+            self.assertIn("state/", p.stderr)
+            os.remove(os.path.join(path, other))
+        self.fm("lane", "rm", tid)
+        self.assertFalse(os.path.exists(path))
+
     def fast_lane(self, title, ignored=(), untracked=()):
         """T-5078: a merged lane holding sampo-fast's build outputs, ignored through info/exclude as the repo's
         .gitignore does, and any `untracked` files left unignored (an older base's .gitignore). plugin/native is

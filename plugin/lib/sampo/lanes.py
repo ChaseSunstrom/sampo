@@ -3369,8 +3369,11 @@ _CACHE = re.compile(r"(^|/)(__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache
                     # T-0833: build output; a lane starts with no ignored files, so these are its own builds
                     r"target|build|dist|zig-out|\.zig-cache|zig-cache|cmake-build-[\w-]+)(/|$)|\.py[co]$|"
                     r"(^|/)\.coverage(\.[\w.-]+)?$")
-# T-1685: the guard's script verdicts, rebuilt on use; T-2289: a builder's scratch folder, throwaway by contract (T-2259)
-_LANE_CACHE = re.compile(r"(^|/)state/guard-scripts\.json$|^\.fm-scratch/")
+# T-1685: the guard's script verdicts, rebuilt on use; T-2289: a builder's scratch folder, throwaway by contract (T-2259);
+# T-5529: the guard's ward index (fmguard's ward-index-<20 hex>.json, its .failed/.building marks and the
+# .json.<pid>.tmp a write leaves), rebuilt on use the same way; any other file under state/ still blocks
+_LANE_CACHE = re.compile(r"(^|/)state/guard-scripts\.json$|^\.fm-scratch/|"
+                         r"(^|/)state/ward-index/ward-index-[0-9a-f]+\.(json|failed|building|json\.\d+\.tmp)$")
 # T-5078: the native fast path's outputs in plugin/native (fastbuild.BIN, SUM, SRC and the .sampo-fast-* temp copies
 # its writes leave; test_lanes checks these against fastbuild's own names): rebuilt by doctor --repair, never work
 _FAST_BUILD = re.compile(r"^plugin/native/(sampo-fast(\.sha256|\.src)?|\.sampo-fast-[^/]+)$")
