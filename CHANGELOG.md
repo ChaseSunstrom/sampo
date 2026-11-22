@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- Sampo's misses count now includes every avoidable steer, and a steer matching an earlier filed task counts as a catch (T-5712).
 - `CHANGELOG: Outcome targets: a regressed target files a discovered task with its numbers and leads sampo next (T-5709).
 - A builder's return starts one detached lane pilot that writes one pilot_done event and one line to the lead, and `sampo lane stats` prints the builder-done to landed median and the lead turns per landed lane (T-5708).
 - A subagent's compaction gets one line naming its task, lane and next action instead of the lead's whole project block (T-5685).
