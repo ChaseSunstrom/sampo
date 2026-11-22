@@ -69,6 +69,9 @@ print(f"- HIGH — `{path}:{line}` — returns None — restore the value — hi
 class SeedReview(ForemanTestCase):
     def test_seeded_bugs_score_a_reviewer_by_whether_it_names_them(self):
         self.fm("init")
+        # T-5584: bench seed-review is a gated verb (a --reviewer command may be a Claude CLI), so this fixture project
+        # turns its own switch on; the real project's stays off. Both reviewers below are local stubs: no model runs.
+        self.fm("claude-bench", "on")
         for n in range(3):
             with open(os.path.join(self.repo, f"m{n}.py"), "w") as f:
                 f.write("".join(f"def f{i}(x):\n    return x + {i}\n\n\n" for i in range(4)))
