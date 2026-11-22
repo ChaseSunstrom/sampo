@@ -318,6 +318,22 @@ class Propose(Base):
         self.assertEqual(got["find bare except clauses in a Python file"]["source"], "propose")
         self.assertEqual(got["find bare except clauses in a Python file"]["why"], "bug tasks")
 
+    def test_propose_fit_rules_and_admitted_examples_are_in_the_prompt(self):
+        """T-5829: tonight's local grow admitted 0 of 13 (10 unfit): the proposer must know what a card fits."""
+        w = Writer(json.dumps({"requests": []}))
+        cardauthor.propose(self.p, n=3, ask=w, root=self.repo)
+        system = cardauthor.PROPOSE_SYSTEM
+        for rule in ("ONE file kind", "deterministic", "no cross-file judgement"):
+            self.assertIn(rule, system)
+        for card in ("py-outline", "py-none-guard"):  # two admitted examples, read from the shipped cards
+            self.assertIn(card, w.asked[0][1])
+        self.assertIn("Fit examples", w.asked[0][1])
+        for ex in cardauthor.FIT_EXAMPLES:
+            self.assertTrue(ex in w.asked[0][1])
+        self.assertEqual(len(cardauthor.FIT_EXAMPLES), 2)
+        for card in ("py-outline", "py-none-guard"):  # the examples name cards that still ship
+            self.assertTrue(os.path.isdir(os.path.join(c.PLUGIN_ROOT, "cards", card)))
+
     def test_propose_survives_a_writer_that_gives_nothing(self):
         r = cardauthor.propose(self.p, n=3, ask=Writer("no json here"), root=self.repo)
         self.assertEqual(r["added"], [])
