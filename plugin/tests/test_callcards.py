@@ -892,6 +892,98 @@ class Cli(Base):
             self.assertIn("--limit must be at least 1", p.stdout + p.stderr)
 
 
+class Help(Base):
+    """T-5608: `sampo card help NAME` prints at most three lines from the card's schema: the required keys, the optional
+    ones and one call line. A card with many optional keys is still three lines; no run, no confinement needed."""
+
+    def test_card_help_names_the_required_and_optional_keys_and_one_call_line(self):
+        out = self.fm("card", "help", "py-callers").stdout.splitlines()
+        self.assertLessEqual(len(out), 3, out)
+        self.assertEqual(out[0], "required: name (string)", out)
+        self.assertEqual(out[1], "optional: none", out)
+        self.assertEqual(out[2], "call: sampo card call py-callers name=<name>", out)
+
+    def test_card_help_stays_three_lines_on_a_card_with_many_optional_keys(self):
+        props = {"path": {"type": "string", "format": "path"},
+                 "mode": {"type": "string", "enum": ["upper", "lower"], "default": "upper"},
+                 "note": {"type": "string", "maxLength": 40}}
+        props.update({f"opt{i}": {"type": "integer", "default": i} for i in range(30)})
+        self.card("wide", inputs={"type": "object", "required": ["path"], "properties": props})
+        out = self.fm("card", "help", "wide").stdout.splitlines()
+        self.assertLessEqual(len(out), 3, out)
+        self.assertEqual(out[0], "required: path (string)", out)
+        self.assertIn("mode (string: upper|lower, default upper)", out[1], out)
+        self.assertIn("note (string)", out[1], out)
+        self.assertIn("more", out[1], "the optional keys past the cap are counted, not printed")
+        self.assertEqual(out[2], "call: sampo card call wide path=<path>", out)
+
+    def test_card_help_example_takes_a_required_enums_first_value(self):
+        self.card("pick", inputs={"type": "object", "required": ["mode", "count"], "properties": {
+            "mode": {"type": "string", "enum": ["lower", "upper"]}, "count": {"type": "integer"}}})
+        out = self.fm("card", "help", "pick").stdout.splitlines()
+        self.assertEqual(out[0], "required: mode (string: lower|upper), count (integer)", out)
+        self.assertEqual(out[-1], "call: sampo card call pick mode=lower count=<count>", out)
+
+    def test_card_help_a_newline_in_a_card_s_schema_cannot_add_a_line(self):
+        self.card("odd", inputs={"type": "object", "required": ["mode\nx"], "properties": {
+            "mode\nx": {"type": "string", "enum": ["a\nb", "c"]}, "note\n": {"type": "string", "default": "x\ny"}}})
+        out = self.fm("card", "help", "odd").stdout.splitlines()
+        self.assertEqual(len(out), 3, out)
+        self.assertEqual(out[0], "required: mode x (string: a b|c)", out)
+
+    def test_card_help_an_escape_byte_in_a_card_cannot_reach_the_terminal_and_a_long_enum_is_capped(self):
+        self.card("loud", inputs={"type": "object", "required": ["mode"], "properties": {
+            "mode": {"type": "string", "enum": [f"v{i}" for i in range(14)]},
+            "note": {"type": "string", "default": "\x1b[2Jbad"}, "wide": {"type": "string", "default": "w" * 2000}}})
+        raw = self.fm("card", "help", "loud").stdout
+        self.assertNotIn("\x1b", raw)
+        out = raw.splitlines()
+        self.assertEqual(len(out), 3, out)
+        self.assertTrue(all(len(line) <= 300 for line in out), [len(line) for line in out])
+        self.assertIn("mode (string: v0|v1|v2|v3|v4|v5|v6|v7|v8|v9|v10|v11|+2)", out[0], out)
+        self.assertIn("note (string, default [2Jbad)", out[1], out)
+
+    def test_card_help_an_unknown_card_names_the_nearest(self):
+        p = self.fm("card", "help", "py-caller", check=False)
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("py-callers", p.stdout + p.stderr)
+
+
+class Compact(Base):
+    """T-5608: a read card's facts print as compact JSON with empty values dropped: 0 and false survive, --json keeps its
+    form, and a py-callers payload is at least a fifth smaller than the indent=2 print it replaces."""
+
+    def test_compact_facts_drop_empty_values_recursively_and_keep_zero_and_false(self):
+        got = callcards._compact({"n": 0, "ok": False, "s": "", "l": [], "d": {}, "x": None,
+                                  "nest": {"a": [], "b": {"c": "", "z": 0}}, "items": [{"k": None, "v": 1}, None, ""]})
+        self.assertEqual(got, {"n": 0, "ok": False, "nest": {"b": {"z": 0}}, "items": [{"v": 1}]})
+        self.assertEqual(callcards._compact("text"), "text")
+
+    def test_compact_facts_a_py_callers_payload_is_at_least_a_fifth_smaller_than_indent_two(self):
+        self.write("cart.py", "def total(items):\n    return sum(items)\n\n\nprint(total([1]))\n")
+        r = callcards.call("py-callers", {"name": "total"}, self.repo, cache=False)
+        self.assertEqual(r["status"], "facts", r)
+        indented = json.dumps(r["facts"], indent=2)
+        compact = json.dumps(callcards._compact(r["facts"]), separators=(",", ":"))
+        self.assertLessEqual(len(compact) * 5, len(indented) * 4, (len(compact), len(indented)))
+        self.assertIn('"calls":[{', compact)
+        self.assertNotIn('"imports"', compact, "an empty list is dropped")
+        self.assertNotIn('"skipped"', compact, "an empty list is dropped")
+        self.assertIn('"truncated":false', compact, "false survives")
+
+
+@confined
+class CompactCli(Base):
+    """T-5608: the text print of a read card's facts is the compact form; --json is the same as before."""
+
+    def test_compact_facts_text_output_is_compact_and_json_is_unchanged(self):
+        self.card("measure", gen=FACTS, check="", read=True)
+        lines = self.fm("card", "call", "measure", "path=a.txt").stdout.splitlines()
+        self.assertEqual(lines[1], '{"size":12}', lines)
+        out = self.fm("card", "call", "measure", "path=a.txt", "--json").stdout
+        self.assertIn('"facts": {"size": 12}', out)
+
+
 class Misses(SampoTestCase):
     """T-3488: a missed scenario files a card request naming its failure class, once per scenario and class; a bench row
     says whether a card applied a change in its run."""

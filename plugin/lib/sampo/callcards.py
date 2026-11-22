@@ -1852,6 +1852,62 @@ def _coerce(card, pairs):
     return out
 
 
+def _empty(v):
+    return v is None or (isinstance(v, (str, list, dict)) and not v)
+
+
+def _compact(v):
+    """T-5608: a facts value with its empty values dropped, recursively: None, '', [] and {} go; 0 and false stay."""
+    if isinstance(v, dict):
+        out = {k: _compact(x) for k, x in v.items()}
+        return {k: x for k, x in out.items() if not _empty(x)}
+    if isinstance(v, list):
+        return [x for x in (_compact(x) for x in v) if not _empty(x)]
+    return v
+
+
+def _one_line(v):
+    """A value as one line: controls (a newline, an escape) become spaces, so a card's text can't add a line to the help
+    or move the terminal."""
+    return " ".join(re.sub(r"[\x00-\x1f\x7f-\x9f]", " ", str(v)).split())
+
+
+def _help(cd):
+    """T-5608: a card's call line from its inputs schema, at most three lines: the required keys with their type, enum
+    values and default; the optional keys (at most eight, the rest counted); one `sampo card call NAME key=value` example
+    built from the required keys (an enum takes its first value, anything else <key>)."""
+    schema = cd["inputs"]
+    props = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+    req = [k for k in (schema.get("required") if isinstance(schema.get("required"), list) else []) if isinstance(k, str)]
+
+    def prop(k):
+        return props.get(k) if isinstance(props.get(k), dict) else {}
+
+    def text(k):
+        s, t = prop(k), prop(k).get("type")
+        head = ("|".join(str(x) for x in t) if isinstance(t, list) else str(t)) if t is not None else ""
+        if isinstance(s.get("enum"), list):
+            vals = [_one_line(x) for x in s["enum"]]
+            vals = "|".join(vals[:12]) + (f"|+{len(vals) - 12}" if len(vals) > 12 else "")
+            head = f"{head}: {vals}" if head else vals
+        d = s.get("default")
+        extra = [f"default {d if isinstance(d, str) else json.dumps(d, default=str)}"] if "default" in s else []
+        inner = ", ".join(x for x in [head] + extra if x)
+        return _one_line(f"{k} ({inner})" if inner else k)
+
+    def example(k):
+        s = prop(k)
+        if isinstance(s.get("enum"), list) and s["enum"]:
+            return _one_line(s["enum"][0])
+        return f"<{_one_line(k)}>"
+
+    opt = [k for k in props if k not in req]
+    shown = ", ".join(text(k) for k in opt[:8]) + (f", +{len(opt) - 8} more" if len(opt) > 8 else "")
+    call = " ".join([f"sampo card call {cd['name']}"] + [f"{_one_line(k)}={example(k)}" for k in req])
+    lines = [f"required: {', '.join(text(k) for k in req) or 'none'}", f"optional: {shown or 'none'}", f"call: {call}"]
+    return [ln if len(ln) <= 300 else ln[:297] + "..." for ln in lines]  # a card's long text can't flood the terminal
+
+
 def _root(args):
     if getattr(args, "root", None):
         return args.root
@@ -1943,6 +1999,9 @@ def cmd_card(args):
         cd = found[names[0]]
         print(json.dumps({k: v for k, v in cd.items() if k != "digest"}, indent=2))
         return 0
+    if act == "help":  # T-5608: the call line from the schema, three lines at most
+        print("\n".join(_help(found[names[0]])))
+        return 0
     if act == "call":
         cd = found[names[0]]
         if args.read_only and not cd["read"]:  # T-5603: judged from this load, so the card card_call checked is the one run
@@ -1959,7 +2018,8 @@ def cmd_card(args):
         else:
             print(f"{r['status']}{' (cached)' if r['cached'] else ''}" + (f": {r['error']}" if r["error"] else ""))
             if r["facts"] is not None:
-                print(json.dumps(r["facts"], indent=2) if not isinstance(r["facts"], str) else r["facts"])
+                print(json.dumps(_compact(r["facts"]), separators=(",", ":")) if not isinstance(r["facts"], str)
+                      else r["facts"])  # T-5608: compact, empty values dropped; --json is untouched
             if r["diff"]:
                 print(r["diff"], end="")
         return 0 if r["ok"] else 1

@@ -10140,12 +10140,13 @@ def _build_parser(only=None):
     s.add_argument("--alias", action="store_true", help="with --apply: leave a sys.modules shim at the old path")
     s = add("card", lazy("sampo.callcards", "cmd_card"), tier=("Finding your way", 645),
             help="calling cards: verified generators called by name with typed inputs, run confined, applied only "
-                 "when their checker passes (list, show, call NAME key=value..., test [NAME], rank \"<task>\", "
+                 "when their checker passes (list, show, help NAME (its call line from the schema), call NAME "
+                 "key=value..., test [NAME], rank \"<task>\", "
                  "bench [RUN]: fm code on one local model with cards off and on over an exam run's scenarios, "
                  "paired, with a sign test; no RUN sums --out; author \"<request>\": a writer, local models first, "
                  "drafts a card, admitted only when its own tests pass confined; grow: author the pending card "
                  "requests in a batch under --max-calls)")
-    s.add_argument("action", nargs="?", choices=["list", "show", "call", "test", "rank", "bench", "author", "grow"])
+    s.add_argument("action", nargs="?", choices=["list", "show", "help", "call", "test", "rank", "bench", "author", "grow"])
     s.add_argument("name", nargs="?")
     s.add_argument("rest", nargs="*", help="call: key=value inputs; rank: the task's words")
     s.add_argument("--inputs", metavar="JSON", help="call: the inputs as one JSON object")
