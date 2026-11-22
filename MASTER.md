@@ -291,6 +291,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmexamgrade` (T-5055: `sampo.examgrade.grade(result, events)`, the hard exam's… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmdockershim` (T-3746: the docker-exec tool shim, `sampo-bench-*` containers only… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmyardstick` (T-5006, slice of T-4314: `sampo.yardstick.rows()` reads the bench, SWE and Terminal-Bench result… [→ files-lib-4](docs/map/files-lib-4.md)
+- `fmfoldcheck` (T-5022, slice of T-4325, `sampo/foldcheck.py`: `sampo fold check [--n N] [--seed S] [--mark ID ok|refuted]`, the fold's second reader… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmmint`… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmsmoke` + `smoke_web.cjs` (`sampo smoke`: the web UI crawled in the project's… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmsplit` (`sampo task split`, `sampo task capsule`: a task's files partitioned… [→ files-lib-4](docs/map/files-lib-4.md)

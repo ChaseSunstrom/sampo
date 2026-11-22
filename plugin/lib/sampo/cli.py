@@ -9937,7 +9937,10 @@ def _build_parser(only=None):
     s.add_argument("words", nargs="*", help="with set: ID VERDICT")
     s.add_argument("--to", metavar="ID", default="", help="with set joined|merged: the task it went into")
     s.add_argument("--evidence", metavar="PATH:LINE", default="", help="with set: where the work is (needed for built)")
-    s.add_argument("--why", default="", help="with set: one line of reasoning")
+    s.add_argument("--why", default="", help="with set: one line of reasoning; with check --mark ID refuted: why it is refuted")
+    s.add_argument("--n", type=int, default=None, help="with check: how many built verdicts to sample (default 10 percent, at least 3)")
+    s.add_argument("--seed", type=int, default=0, help="with check: the seed of the sample (the same seed picks the same rows)")
+    s.add_argument("--mark", nargs=2, metavar=("ID", "ok|refuted"), help="with check: record the second reader's verdict on one built row")
     s = add("outline", lazy("sampo.map", "cmd_outline"), tier=("Finding your way", 350), help="a file's definitions with line ranges (read a range, not all)")
     s.add_argument("path")
     s.add_argument("--grep", metavar="PATTERN", help="keep only the definitions whose printed label (e.g. 'def NAME') "

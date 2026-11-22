@@ -1,7 +1,7 @@
 """T-5020 (slice of T-4325): the fold ledger. `sampo fold set ID VERDICT [--to ID] [--evidence path:line] [--why T]`
 records one verdict for a task; `sampo fold page` prints every captured and planned task (the inbox and the queue) with its
 verdict or 'unfolded'; `sampo fold [--json]` counts them, and counts the standalone ones (verdict stays, or no verdict).
-`sampo fold check` is T-5022's (foldcheck.cmd_check); until it is built it says so.
+`sampo fold check` is T-5022's second reader (foldcheck.cmd_check).
 
 The ledger is one file per project, fold.json in the project's state folder (task ids repeat across projects), apart from the briefs (no brief is rewritten, so a live lane's
 task file is never raced). Its schema is shared with foldcheck and does not change without it:
