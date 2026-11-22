@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- sampo lane recover takes back a lane the land parked for a merge conflict as soon as its builder has returned, without the 15-minute wait or the live-launcher refusal, and its brief names sampo:fm-resolver (T-5765).
 - The nightly model bench (and `exam models run --night`) now asks only loopback or own-server profiles, skipping and logging every other one without sending it task text or a key (T-5376).
 - A land that stops now prints its reason at once and leaves unclosed lanes for the next land, a train refused only by a close holding trunk is retried after it, lane land and lane train register the SIGUSR1 stack dump, and pulse and the drive line flag a train past twice its typical time (T-5793).
 - A lane whose ignored .cargo/config.toml holds only [build] target-dir, jobs or incremental is now removable, so merged kith lanes no longer stay open on their own target-dir config (T-5466).
