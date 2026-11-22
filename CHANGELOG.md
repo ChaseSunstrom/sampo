@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- sampo pulse shows the load, the disk, the lanes, the train and the long jobs with their logs' last lines, and --wait N returns early when a job ends or the board changes (T-5591).
 - Hard exam grading: a run's fix checks score with partial credit, broken keep checks are counted, a done said with a fix unmet or a keep broken is flagged false, and cost, minutes and instruments used are read from the run's events (T-5055).
 - Landscape files a claim's own source: a dash-and-link tail inside its claim, quote or date no longer names the source, and a line with two such tails files none (T-5560).
 - `sampo lease take` refuses a whole-file claim on a file over 1,500 lines and asks for FILE::function names (`--whole REASON` overrides, logged), and a lease holder is named by its task in refusals and warnings (T-5519).
