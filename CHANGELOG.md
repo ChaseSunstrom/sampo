@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- A live land train runs the hook timing bench only when a lane changes a file the hooks load and the repo-shape run only for the classes a changed file reaches (docs-only trains run none), and each land_train event carries seconds per phase (T-5935).
 - A live land trains every express lane at the head as one train, capped only by an explicit --batch, so fifty-four urgent lanes no longer take seven gates (T-5848).
 - The Approach plan gap in a refusal names 'fails if' and 'likely outcome' again, so the short line teaches the form the parser accepts (T-5904).
 - The guard no longer refuses a loop whose echo string holds a $var after a $( … ) pipeline (a for over a glob with du/ls substitutions): a $var after a stray ) in a substitution's tail read is text, not a command word; $v serve and $X $Y still refuse (T-5867).
