@@ -137,7 +137,7 @@ def mutate(p, tid, fn, event, data=None):
                 bus.release(p, b.id, preclaim=True)
             except Exception as e:  # the status changed already; a lease left to expire must not make that look failed
                 print(f"sampo: warning: leases of {b.id} not released: {e}", file=sys.stderr)
-        if event:  # None: fn logged its own events (one per step, T-3958)
+        if event and result is not False:  # None: fn logged its own events (one per step, T-3958); False: fn changed nothing (T-5981)
             c.log_event(p, event, task=b.id, data=data or {}, session=session())
         after = c.stage(b)
         if after != before:  # pane splits read these instead of proxy events

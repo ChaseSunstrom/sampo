@@ -1338,6 +1338,8 @@ def task_close(p, args):
     except c.LockTimeout as e:
         raise c.PolicyError(f"{b.id}: {e}: a train or another close holds the trunk; nothing was merged, run "
                             f"sampo big close {b.id} again") from e
+    finally:  # T-5981: a hand revert the check above settled under those locks reopens its task now they are down
+        lanes._pm_reopen_due(p, main)
     return _record(p, args, b, sha, tip, gate)  # outside the locks: pm_record and pm_set take the pm one themselves
 
 

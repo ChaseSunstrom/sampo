@@ -2584,6 +2584,17 @@ class GenesisDrift(ForemanTestCase):
         r = self.fm("genesis", "drift", "2", "--json", check=False, env=env)
         return json.loads(r.stdout), read_text(os.path.join(self.tower, "gen-2", "drift.md"))
 
+    def test_genesis_seed_records_the_generations_miss_rate_and_a_busy_lock_does_not_abort_it(self):
+        from sampo import moonscale
+        self.steers()
+        self.fm("genesis", "seed", "2")
+        hist = read_text(os.path.join(moonscale._dir(self.p), moonscale.MISS_HISTORY))
+        self.assertIn('"gen": 2', hist, "the seed verb records this generation's line")
+        from unittest import mock
+        from sampo import core
+        with mock.patch.object(moonscale.c, "lock", side_effect=core.LockTimeout("held")):
+            self.assertIsNone(moonscale.best_effort(moonscale.record_misses, self.p, 3))
+
     def test_a_seed_carries_each_unreversed_steer_and_drift_holds_it_to_them(self):
         from sampo import rune
         self.steers()

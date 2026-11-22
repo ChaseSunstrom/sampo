@@ -2997,6 +2997,14 @@ class App:
             self.message = f"couldn't undo {tid}: {_one_line(r.stderr or r.stdout)[:160]}"
             return None
         new, self.undone = git("rev-parse", "--short", "HEAD").stdout.strip(), sha
+        try:  # T-5981: a landed merge this revert takes off trunk reopens its done task (the sweep reads the new revert)
+            from sampo import core, lanes
+            root = self.root or os.getcwd()
+            proj = core.find_project(root)
+            if proj is not None and os.path.isdir(lanes._pm_dir(proj)):
+                lanes._pm_sweep_reverts(proj, root)
+        except Exception:  # noqa: BLE001: the undo stands; a project that can't be read has nothing to reopen
+            pass
         e = {"event": "undone", "text": f"{tid} undone: reverted by {new}", "task": tid, "revert": new, "ts": time.time()}
         path = os.path.join(self.history_dir, f"{tid}.events.jsonl") if self.history_dir else None
         if path and os.path.isfile(path):

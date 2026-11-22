@@ -280,6 +280,7 @@
 - A slow hook's log line now names where the time went: each PreToolUse note builder is its own stage, the watchdog names the function the hook is in, and `sampo friction` counts slow hook calls in their own row instead of as swallowed errors (T-4932).
 - sampo check --affected with no --timeout sizes its deadline from the selection's recorded class seconds, the rule a lane's own check uses, so a hand run of a hub's set is no longer cut off at a fixed 600 s; (T-4864).
 - `sampo task focus ID` now names `sampo focus ID` instead of a bare unknown-verb error (T-4933).
+- Moons learn from misses: each feature ask no kept moon predicted feeds the generator's prompts and up to eight new Sampo areas (the newest subjects first), and `sampo genesis seed N` records the miss rate per generation (T-3051).
 - sampo lane brief checks the files a brief names against the builder's base: a file only an open task's unlanded branch adds refuses the brief with that task and the depends_on to add, and a path no branch has is listed in the brief as one to create (T-4928).
 - The guard's refusal of a script too long to read now names its bytes, lines and the CPU seconds the reads spent, and gets the shorter-script hint (T-4925).
 - `sampo task show ID --full` prints the brief and its story in one call (T-4924).

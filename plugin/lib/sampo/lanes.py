@@ -6334,16 +6334,208 @@ def _pm_reverted(main, sha):
     return bool(_git(main, "log", "-1", "--format=%H", f"--grep=This reverts commit {sha}", "HEAD").stdout.strip())
 
 
+def _pm_anc(main, a, b):
+    """T-5981: is `a` an ancestor of `b`: True (git exits 0), False (1), None for anything else: 124 is a timeout, 127 no git,
+    128 an unknown object. A git that failed knows nothing, so it never reads as "not an ancestor"."""
+    code = _git(main, "merge-base", "--is-ancestor", a, b).returncode
+    return True if code == 0 else False if code == 1 else None
+
+
+def _pm_in_effect(main, sha, depth=0):
+    """T-5981: True when `sha`'s change is on trunk: it is an ancestor of HEAD (a reset or a rewritten trunk drops it) and no
+    revert of it is itself in effect; False when it is off; None when git could not say (a timeout, no git: never "off").
+    A revert leaves its merge in the history, so the ancestor test alone never sees one; a revert that was reverted (a hand
+    re-land) puts the change back, and a revert of that re-land takes it off again: the chain is read to its end (a revert
+    is always newer, so it ends, and `sha..HEAD` is all the log has to scan; `depth` bounds a pathological chain: on)."""
+    if depth == 0:
+        anc = _pm_anc(main, sha, "HEAD")
+        if anc is not True:
+            return anc
+    if depth >= 12:
+        return True
+    out = _git(main, "log", "--format=%H", f"--grep=This reverts commit {sha}", f"{sha}..HEAD")
+    if out.returncode:
+        return None
+    unknown = False
+    for s in out.stdout.split():
+        st = _pm_in_effect(main, s, depth + 1)
+        if st:
+            return False
+        unknown = unknown or st is None
+    return None if unknown else True
+
+
+def _pm_off_trunk(main, sha):
+    """T-5981: the merge `sha` is certainly not on trunk: not an ancestor of main, or reverted for good (see _pm_in_effect).
+    False when it is on, and when git could not say."""
+    return _pm_in_effect(main, sha) is False
+
+
+def _pm_landed_since(p, main, sha):
+    """T-5981: did the task of the merge `sha` land again after it: a newer record of the same task whose merge is on trunk.
+    True / False; None when git could not say for one of them (and none was found on). Reads the records fresh."""
+    recs = pm_records(p)
+    r = recs.get(sha) or {}
+    unknown = False
+    for o in recs.values():
+        if o.get("sha") and o.get("sha") != sha and o.get("task") == r.get("task") and o.get("n", 0) > r.get("n", 0):
+            st = _pm_in_effect(main, o["sha"])
+            if st:
+                return True
+            unknown = unknown or st is None
+    return None if unknown else False
+
+
+def _pm_reopen(p, main, sha, why):
+    """T-5981: a merge of `sha` left trunk (the verify's revert, one by hand, a reset): its task, when done, is open again
+    (planned, the reason in its log), so a feature that left trunk never reads as shipped (T-3051 stayed done while its
+    revert took moonscale._kept away, and T-5179 landed on it). Not when the task landed again since (a newer record of it
+    whose merge is on trunk), nor a task that is not done: the land closes those itself. Never raises. True: reopened;
+    False: nothing to reopen; None: could not (a busy lock, an unreadable file), so the caller keeps its retry flag."""
+    from sampo import cli
+    try:
+        tid = (pm_records(p).get(sha) or {}).get("task")
+        if not tid:
+            return False
+        landed = _pm_landed_since(p, main, sha)
+        if landed is not False:  # True: it landed again, nothing to reopen; None: git could not say, a later pass looks again
+            return None if landed is None else False
+        b = c.find_brief(p, tid)
+        if b is None:
+            c.log_event(p, "lane_reopen_failed", data={"sha": sha, "error": f"no brief {tid}"})  # gone for good: no retry
+            return False
+        if b.status != "done":
+            return False
+        note = f"reopened: its merge {sha[:9]} was reverted ({c.fit(c.plain(why), 200)}); the feature is off trunk until it lands again"
+        unsure = []
+
+        def reopen(x):
+            if x.status != "done":
+                return False
+            # under the project lock: a land marks its task done before its record is written, so the look above may have
+            # missed a re-land whose record has appeared since: read again here, where the brief and the record agree
+            again = _pm_landed_since(p, main, sha)
+            if again is not False:
+                unsure.append(again is None)
+                return False
+            x.meta["status"] = "planned"
+            x.append_log(note)
+            return True
+        _, did = cli.mutate(p, tid, reopen, "lane_reopened_by_revert", {"sha": sha, "why": c.fit(c.plain(why), 200)})
+        return None if unsure and unsure[0] else bool(did)
+    except (c.LockTimeout, OSError) as e:  # the flag stays: a later pass tries again
+        c.log_event(p, "lane_reopen_failed", data={"sha": sha, "error": c.fit(str(e), 200), "retry": True})
+        return None
+    except Exception as e:  # noqa: BLE001: the revert stands; a brief that is gone has nothing to reopen
+        c.log_event(p, "lane_reopen_failed", data={"sha": sha, "error": c.fit(str(e), 200)})
+        return False
+
+
+def _pm_off_settle(p, main, sha, why):
+    """T-5981: `sha` is off trunk: reopen its task first, then settle the record `reverted`; it keeps reopen_due while the
+    reopen could not run, so the next pass (_pm_reopen_due) tries again."""
+    res = _pm_reopen(p, main, sha, why)
+    pm_set(p, sha, state="reverted", note=why, reopen_due=res is None)
+
+
+def _pm_reopen_due(p, main):
+    """T-5981: reopen the tasks of merges a pass settled where no brief may be written (under the verify's lock, or the
+    train's: mutate waits on the project lock and times out): each record carries reopen_due until its reopen ran (or its
+    task needs none); a failed one stays flagged for the next pass. A flag set while git could not say whether the merge is
+    off trunk is read again here: a merge that is on (a hand re-land) needs none, one git still cannot place waits."""
+    try:
+        for sha, r in pm_records(p).items():
+            if r.get("reopen_due"):
+                try:
+                    st = _pm_in_effect(main, sha)
+                    if st is None:
+                        continue
+                    if st is False and _pm_reopen(p, main, sha, r.get("note") or "reverted by hand") is None:
+                        continue
+                    pm_set(p, sha, reopen_due=False)
+                except c.LockTimeout:
+                    pass
+    except Exception:  # noqa: BLE001: the caller's own verdict stands
+        pass
+
+
+PM_SWEEP_REVERTS = 500  # T-5981: the most revert commits one sweep reads; a longer backlog goes on at the next pass
+
+
+def _pm_sweep_reverts(p, main):
+    """T-5981: a merge that passed its verify (or never had one run) and was reverted by hand, or dropped by a reset, later
+    is no red or conflict record, so no other path sees it. The sweep reads the revert commits trunk gained since its last
+    pass (the head it stored, `sweep.json` in the verify folder; a cold start reads them all, oldest first, PM_SWEEP_REVERTS
+    a pass, a longer backlog logged `pm_sweep_capped` and resumed from where it stopped), and a record of a merge now off
+    trunk is reopened and settled `reverted`. A trunk that no longer contains the stored head was rewritten: every record is
+    checked. A running record keeps the stored head, so its revert is read again once it ends. Never raises."""
+    try:
+        recs = pm_records(p)
+        head = _git(main, "rev-parse", "HEAD").stdout.strip()
+        if not recs or not head:
+            return
+        mark = os.path.join(_pm_dir(p), "sweep.json")
+        try:
+            with open(mark) as f:
+                since = (json.load(f) or {}).get("head")
+        except (OSError, ValueError, AttributeError):
+            since = None
+        if since == head:
+            return
+        held = _pm_anc(main, since, head) if since else False  # cold: no stored head, every record is checked
+        if held is None:  # git could not say: the cursor stays, the next pass reads again
+            return
+        rewritten = not held
+        out = _git(main, "log", "--reverse", "--format=%H%x1f%b%x1e", "--grep=This reverts commit",
+                   f"{since}..{head}" if since and not rewritten else head)
+        if out.returncode:
+            return
+        rows = [x for x in out.stdout.split("\x1e") if x.strip()]
+        capped = len(rows) > PM_SWEEP_REVERTS
+        rows = rows[:PM_SWEEP_REVERTS]
+        named = set(re.findall(r"This reverts commit ([0-9a-f]{40})", "\n".join(rows)))
+        unsure = False
+        for sha, r in recs.items():
+            if r.get("state") in ("green", "inherited", "settled", "timeout", "unverified", "pending") \
+                    and (sha in named or rewritten):
+                st = _pm_in_effect(main, sha)
+                if st is None:  # git could not place it: skipped, and the cursor stays so it is read again
+                    unsure = True
+                elif st is False:
+                    _pm_off_settle(p, main, sha, "not in main" if _pm_anc(main, sha, head) is False else "reverted by hand")
+        if capped:
+            c.log_event(p, "pm_sweep_capped", data={"read": PM_SWEEP_REVERTS, "more": True})
+        running = {s for s, r in pm_records(p).items() if r.get("state") == "running"}
+        if unsure or (running and (rewritten or not capped)):
+            return
+        stop = len(rows)  # a capped pass stops its cursor before the first revert that names a running record
+        for i, row in enumerate(rows):
+            if capped and running & set(re.findall(r"This reverts commit ([0-9a-f]{40})", row)):
+                stop = i
+                break
+        if capped and stop == 0:
+            return
+        c.write_atomic(mark, json.dumps({"head": rows[stop - 1].split("\x1f")[0].strip() if capped else head}))
+    except Exception:  # noqa: BLE001: a sweep is a courtesy of the check; the caller's own verdict stands
+        pass
+
+
 def _pm_settled(p, main, sha):
     """T-4540: read under the train's lock, before a revert: True when there is nothing left to revert (the record
-    is no longer red, the revert is on trunk, or the merge is not in main). It settles the record when it can."""
+    is no longer red, the revert is on trunk, or the merge is not in main). It settles the record when it can. None when git
+    could not say whether the merge is in main (a timeout): neither settled nor to be reverted, a later pass looks again."""
     if pm_records(p).get(sha, {}).get("state") != "red":
         return True
-    if _git(main, "merge-base", "--is-ancestor", sha, "HEAD").returncode:
-        pm_set(p, sha, state="reverted", note="not in main")
+    # T-5981: under the train's lock no brief may be written (mutate waits on the project lock): the record says reopen_due and
+    # the caller reopens the task once that lock drops (_pm_reopen_due)
+    anc = _pm_anc(main, sha, "HEAD")
+    if anc is None:
+        return None
+    if not anc:
+        pm_set(p, sha, state="reverted", note="not in main", reopen_due=True)
         return True
     if _pm_reverted(main, sha):
-        pm_set(p, sha, state="reverted")
+        pm_set(p, sha, state="reverted", note="reverted by hand", reopen_due=_pm_in_effect(main, sha) is not True)
         return True
     return False
 
@@ -6351,8 +6543,12 @@ def _pm_settled(p, main, sha):
 def pm_wait(p, main):
     """Verify before landing: refuse a merge while a landed merge is red or its revert failed. A revert someone made by
     hand settles the record. Under the lock: merge() calls _pm_check again right before git merge."""
-    with c.lock(_pm_dir(p)):
-        _pm_check(p, main)
+    try:
+        with c.lock(_pm_dir(p)):
+            _pm_check(p, main)
+    finally:  # T-5981: a hand revert _pm_check settled (here, or under merge()'s or the big land's own check); it may raise
+        _pm_reopen_due(p, main)
+        _pm_sweep_reverts(p, main)
 
 
 def _pm_check(p, main):
@@ -6361,6 +6557,9 @@ def _pm_check(p, main):
         if r["state"] in ("red", "conflict"):
             if _pm_reverted(main, sha):
                 r["state"] = "reverted"
+                # T-5981: under this lock no brief is touched; the caller reopens its task after it (an unknown read keeps the flag)
+                r["reopen_due"] = _pm_in_effect(main, sha) is not True
+                r["note"] = "reverted by hand"
                 c.write_atomic(os.path.join(_pm_dir(p), f"{sha}.json"), json.dumps(r))
             else:
                 waiting = waiting or r["state"] == "red"
@@ -6777,8 +6976,12 @@ def _pm_revert(p, main, sha):
     """Revert a red merge on main. False when the tree is not clean for it (the record stays red; retried)."""
     from sampo import cli
     r = pm_records(p)[sha]
-    if _git(main, "merge-base", "--is-ancestor", sha, "HEAD").returncode:  # not in main's history: nothing to undo
-        pm_set(p, sha, state="reverted", note="not in main")
+    anc = _pm_anc(main, sha, "HEAD")
+    if anc is None:  # T-5981: git could not say (a timeout): the record stays red, a later pass retries
+        c.log_event(p, "postmerge_revert_waiting", task=r["task"], data={"sha": sha, "git": "the ancestor test failed"})
+        return False
+    if not anc:  # not in main's history: nothing to undo
+        _pm_off_settle(p, main, sha, "not in main")  # T-5981: the task reopens (first), then the record settles
         return True
     touched = set(_git(main, "diff", "--name-only", "-z", f"{sha}^1", sha).stdout.split("\0"))
     for line in _git(main, "status", "--porcelain", "-z", "--untracked-files=no").stdout.split("\0"):
@@ -6786,28 +6989,35 @@ def _pm_revert(p, main, sha):
             c.log_event(p, "postmerge_revert_waiting", task=r["task"], data={"sha": sha, "dirty": line[3:]})
             return False
     classes = r.get("classes") or []
+    settled, code = False, 0
     try:
         with train_lock(p):  # T-4540: a revert is a trunk commit: it waits for a running train (bounded), not beside it
-            if _pm_settled(p, main, sha):  # T-4540: the other pass (the original, or pm_after_train's) got here first
-                return True
-            code = _git(main, "revert", "-m", "1", "--no-edit", sha).returncode
-            if code and _git(main, "rev-parse", "-q", "--verify", "REVERT_HEAD").stdout.strip():  # ours, started just above
-                _git(main, "revert", "--abort")
+            settled = _pm_settled(p, main, sha)  # T-4540: the other pass (the original, or pm_after_train's) got here first
+            if settled is False:  # None: git could not read the ancestry (below): no revert is made on a guess
+                code = _git(main, "revert", "-m", "1", "--no-edit", sha).returncode
+                if code and _git(main, "rev-parse", "-q", "--verify", "REVERT_HEAD").stdout.strip():  # ours, started just above
+                    _git(main, "revert", "--abort")
     except c.LockTimeout:
         c.log_event(p, "postmerge_revert_waiting", task=r["task"], data={"sha": sha, "train": True})
         return False  # the record stays red: pm_after_train runs a pass once the running train is done
+    if settled is None:
+        c.log_event(p, "postmerge_revert_waiting", task=r["task"], data={"sha": sha, "git": "the ancestor test failed"})
+        return False
+    if settled:  # T-5981: settled under the train's lock, where no brief may be written: its task reopens now the lock is down
+        _pm_reopen_due(p, main)
+        return True
     if code:
         pm_set(p, sha, state="conflict")
         c.log_event(p, "lane_revert_conflict", task=r["task"], data={"sha": sha, "classes": classes})
         _pm_settle(p, main, sha)  # T-5518: a conflict holds every land: settle it at once when trunk already passes
         return True
-    pm_set(p, sha, state="reverted")
+    why = ", ".join(classes)
+    _pm_off_settle(p, main, sha, f"red after merge: {why}")  # T-5981: the done task reopens first, then the record settles
     with c.lock(_pm_dir(p)):  # the merges stacked on it are verified again, on main as it is without this one
         for o in pm_records(p).values():
             if o["n"] > r["n"] and o["state"] in ("green", "pending", "running", "red", "timeout", "unverified"):
                 o.update(state="pending", requeued=True, tries=0, after_reverts=(o.get("after_reverts") or []) + [sha])
                 c.write_atomic(os.path.join(_pm_dir(p), f"{o['sha']}.json"), json.dumps(o))
-    why = ", ".join(classes)
     by = c.joinmore(r.get("reached_by") or [], 5)
     # T-5684: the refusal is on the ledger too, so a resumed brief names it the way a plain refusal is named
     ts = c.now()  # T-5684: the mark and postmerge_at share it, so a later stop of another kind can't pass for this red
@@ -7030,7 +7240,15 @@ def _pm_cover(p, main, todo, newest, how=None, partial=False):
     classes (not the suite): the records say so, and none of them proves a full run."""
     from sampo import cli
     for s in todo:
-        if s != newest and (_git(main, "merge-base", "--is-ancestor", s, newest).returncode or _pm_reverted(main, s)):
+        if s != newest and _pm_anc(main, s, newest) is not True:  # not in newest's history, or git could not say: left as it is
+            continue
+        if s != newest and _pm_reverted(main, s):  # T-5981: taken off trunk by hand before its verify: settled, task reopened
+            rs = pm_records(p).get(s) or {}
+            if rs.get("state") == "pending" or (rs.get("state") == "running" and _pm_dead(rs)):
+                if _pm_off_trunk(main, s):
+                    _pm_off_settle(p, main, s, "reverted by hand")  # the task reopens first, then the record settles
+                else:
+                    pm_set(p, s, state="reverted", note="reverted by hand")
             continue
         r = pm_records(p).get(s)
         if not r or not (r["state"] == "pending" or (r["state"] == "running" and _pm_dead(r))):
