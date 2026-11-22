@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- sampo lane accept now queues the lane and starts no background land while a sampo lane merge holds the train lock, saying the merge is running, instead of a land that was refused at once (T-5816).
 - The behind verify is started again when a pending merge has no runner, runs the repo-shape classes first, and a red between two lanes that were each green alone files one express trunk-red FIX instead of a revert, with blocked closes queued to close again when it lands (T-5791).
 - Night's Kalevala rounds stop at a wall-clock cap and beat the heartbeat each round, a round's crash or a damaged manifest no longer breaks the night, a timed-out job's whole process group is killed, a revisited tower state pauses, the restart undo quotes its paths, a bare resume names --tower or --all, and a halt exits 6 (T-3265).
 - `sampo measure NAME [--max N|--min N] [--window DAYS]` prints the windowed median accept-to-live or accept-to-pushed minutes from the ledger's land_train and ship_done events and exits 1 when it misses a bound (T-5005).
