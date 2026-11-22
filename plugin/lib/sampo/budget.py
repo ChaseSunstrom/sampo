@@ -15,6 +15,7 @@ import os
 import re
 import threading
 import time
+import uuid
 
 from sampo import core as c
 
@@ -469,6 +470,116 @@ def check_subagent():
     why = subagent_pause()
     if why:
         raise BudgetError(f"budget: subagents wait while usage is ahead of pace ({why}); do it in the main thread")
+
+
+# T-5562: while subagent_pause holds, a launch runs on haiku instead of waiting (throughput continues while the burn falls
+# toward the horizon's allowance), at most HELD_AGENTS at once per session
+HELD_AGENTS = 3
+HELD_MODEL = "haiku"
+HELD_SCAN = 2 * 1024 * 1024  # bytes of the newest events.jsonl read for a session's running subagents
+HELD_SPAN = 3600  # a start older than this with no stop is a crashed agent (a lost stop event), not a running one
+HELD_PENDING_S = 120  # a launch's reserved slot frees after this long with no subagent_start of its own
+
+
+def _session_subagents(session_id, now=None):
+    """(running agent ids, their start times) of this session from the newest HELD_SCAN bytes of events.jsonl, within
+    HELD_SPAN s: an id with a subagent_start and no later subagent_stop. A session id that is not text, or an unreadable
+    file, has none (the cap is a spend control: it never blocks on what it cannot read)."""
+    if not isinstance(session_id, str) or not session_id:
+        return set(), []
+    now = now or time.time()
+    try:
+        with open(os.path.join(c.state_dir(), "events.jsonl"), "rb") as f:
+            size = f.seek(0, os.SEEK_END)
+            f.seek(max(0, size - HELD_SCAN))
+            data = f.read(HELD_SCAN)
+    except OSError:
+        return set(), []
+    if size > HELD_SCAN:
+        data = data[data.find(b"\n") + 1:]  # the first line of a partial read is cut
+    key = json.dumps(session_id, ensure_ascii=False).encode()
+    running, starts = set(), []
+    for line in data.split(b"\n"):
+        if key not in line or not (b"subagent_start" in line or b"subagent_stop" in line):
+            continue
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(e, dict) or e.get("session_id") != session_id:
+            continue
+        at = c.parse_ts(e.get("ts"))
+        if at is not None and now - at.timestamp() > HELD_SPAN:
+            continue
+        who = str(e.get("agent_id") or "")
+        if e.get("kind") == "subagent_start":
+            running.add(who)
+            if at is not None:
+                starts.append(at.timestamp())
+        elif e.get("kind") == "subagent_stop":
+            running.discard(who)
+    return running, sorted(starts)
+
+
+def live_subagents(session_id, now=None):
+    """T-5562: how many subagents of this session are running (see _session_subagents)."""
+    return len(_session_subagents(session_id, now)[0])
+
+
+def reserve_subagent(session_id, call_id, now=None):
+    """T-5562 review: take a slot for one launch before its SubagentStart event exists (that hook is async and writes the
+    event after the PreToolUse decision, so parallel launches in one turn all saw none running). Under a lock, count the
+    session's running subagents plus the launches reserved and not yet started, and when under HELD_AGENTS write an O_EXCL
+    marker named for the call (`call_id` = the tool_use_id, else a fresh token). A marker is spent by the first
+    subagent_start of the session at or after it, or after HELD_PENDING_S; the same call asked twice holds one slot.
+    (granted, running + pending); an unreadable state (nothing to count or write) grants."""
+    now = now or time.time()
+    sid = re.sub(r"[^\w.-]", "_", str(session_id))[:80] or "_"
+    name = re.sub(r"[^\w.-]", "_", str(call_id or ""))[:100].lstrip(".") or "t" + uuid.uuid4().hex
+    folder = os.path.join(c.state_dir(), "subagent-pending", sid)
+    held = None
+    try:
+        os.makedirs(folder, exist_ok=True)
+        for _ in range(60):  # c.lock writes its holder into the file, which a run's state tree would show: this one is empty
+            held = c.lock_hold(os.path.join(folder, ".lock"), blocking=False)
+            if held is not None:
+                break
+            time.sleep(0.05)
+        if held is None:
+            return True, 0
+        with held:
+            running, starts = _session_subagents(session_id, now)
+            marks = []
+            for n in os.listdir(folder):
+                if n.startswith("."):
+                    continue
+                try:
+                    at = os.stat(os.path.join(folder, n)).st_mtime
+                except OSError:
+                    continue
+                if now - at > HELD_PENDING_S:
+                    with contextlib.suppress(OSError):
+                        os.unlink(os.path.join(folder, n))
+                else:
+                    marks.append((at, n))
+            marks.sort()
+            free = list(starts)  # each start spends the oldest marker it is not earlier than
+            pending = []
+            for at, n in marks:
+                hit = next((s for s in free if s >= int(at)), None)
+                if hit is None:
+                    pending.append(n)
+                else:
+                    free.remove(hit)
+            used = len(running) + len([n for n in pending if n != name])
+            if used >= HELD_AGENTS:
+                return False, used
+            if name not in pending:
+                with contextlib.suppress(FileExistsError):
+                    os.close(os.open(os.path.join(folder, name), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+            return True, used + 1
+    except Exception:
+        return True, 0
 
 
 # T-5680: a Workflow script's agent() stage names a sampo:fm-* agentType (each has a maxTurns in its frontmatter: the

@@ -3315,8 +3315,140 @@ class CapabilityMiss(HookCase):
 
 
 class PreToolUse(HookCase):
-    def pre(self, tool, tool_input):
-        return self.hook("PreToolUse", {"tool_name": tool, "tool_input": tool_input})
+    def pre(self, tool, tool_input, **extra):
+        return self.hook("PreToolUse", dict({"tool_name": tool, "tool_input": tool_input}, **extra))
+
+    # T-5562: while subagent_pause holds, an Agent launch runs on haiku (at most HELD_AGENTS per session); a fork and a Workflow wait
+    def settle(self):
+        """The launches so far have started (their SubagentStart events are written): no slot is pending any more."""
+        shutil.rmtree(os.path.join(self.home, "state", "subagent-pending"), ignore_errors=True)
+
+    def hold(self, five=95):
+        """A statusline snapshot with the 5-hour window at `five`%: past 90 the subagents hold."""
+        folder = os.path.join(self.home, "state", "sessions")
+        os.makedirs(folder, exist_ok=True)
+        with open(os.path.join(folder, "snap.json"), "w") as f:
+            json.dump({"rate_limits": {"five_hour": {"used_percentage": five, "resets_at": int(time.time() + 3600)}}}, f)
+
+    def running(self, sid="sess-1", started=3, stopped=0, ago=60, kind_ids="a"):
+        """subagent_start events for `started` agents of a session, the first `stopped` of them stopped, `ago` s old."""
+        ts = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        rows = [{"kind": "subagent_start", "session_id": sid, "agent_id": f"{kind_ids}{i}", "ts": ts} for i in range(started)]
+        rows += [{"kind": "subagent_stop", "session_id": sid, "agent_id": f"{kind_ids}{i}", "ts": ts} for i in range(stopped)]
+        with open(os.path.join(self.home, "state", "events.jsonl"), "a") as f:
+            f.writelines(json.dumps(r) + "\n" for r in rows)
+
+    def test_subagent_route_held_agent_is_rewritten_to_haiku(self):
+        ti = {"subagent_type": "sampo:fm-recon", "prompt": "look", "description": "x", "model": "opus"}
+        free = self.pre("Agent", ti)
+        self.assertEqual((free.returncode, free.stdout.strip()), (0, ""), "no hold: no output, as before")
+        self.hold()
+        out = self.out_of(self.pre("Agent", ti))
+        self.assertEqual(out["permissionDecision"], "allow")
+        self.assertEqual(out["updatedInput"], dict(ti, model="haiku"), "the full tool_input, model haiku")
+        self.assertIn("5-hour usage 95%", out["permissionDecisionReason"])
+        self.assertIn("model opus → haiku", out["permissionDecisionReason"], "a named model replaced is said so")
+        bare = self.out_of(self.pre("Agent", {"subagent_type": "sampo:fm-recon", "prompt": "look"}))
+        self.assertIn("model inherited → haiku", bare["permissionDecisionReason"])
+        for tool in ("Task",):
+            self.assertEqual(self.out_of(self.pre(tool, ti))["updatedInput"]["model"], "haiku", tool)
+        self.settle()
+        on = self.pre("Agent", dict(ti, model="haiku"))
+        self.assertEqual((on.returncode, on.stdout.strip()), (0, ""), "already on haiku: nothing to rewrite")
+        self.hold(five=40)
+        off = self.pre("Agent", ti)
+        self.assertEqual(off.stdout.strip(), "", "the hold released: the launch passes as it asked")
+
+    def test_subagent_route_caps_a_held_session_and_denies_fork_and_workflow(self):
+        ti = {"subagent_type": "sampo:fm-recon", "prompt": "look"}
+        self.hold()
+        self.running(started=2, ago=3000)  # 50 min: still running
+        self.running(sid="other", started=5)  # another session's agents are its own
+        self.running(started=4, ago=2 * 3600, kind_ids="old")  # past the 1 h span: a lost stop, not a running agent
+        self.assertEqual(self.out_of(self.pre("Agent", ti))["permissionDecision"], "allow", "2 of 3 run")
+        self.settle()
+        self.running(started=1, kind_ids="b")
+        out = self.out_of(self.pre("Agent", ti))
+        self.assertEqual(out["permissionDecision"], "deny")
+        self.assertIn("3 subagents", out["permissionDecisionReason"])
+        self.assertIn("cap is 3", out["permissionDecisionReason"])
+        self.running(started=0, stopped=1, kind_ids="a")  # one stops: 2 run again
+        self.assertEqual(self.out_of(self.pre("Agent", ti))["permissionDecision"], "allow", "a stop frees a slot")
+        self.settle()
+        fork = self.out_of(self.pre("Agent", dict(ti, subagent_type="fork")))
+        self.assertEqual(fork["permissionDecision"], "deny", "a fork runs on the session's model")
+        self.assertIn("fork", fork["permissionDecisionReason"])
+        wf = self.out_of(self.pre("Workflow", {"script": "agent('x', {model: 'haiku'})"}))
+        self.assertEqual(wf["permissionDecision"], "deny")
+        self.assertIn("Workflow waits", wf["permissionDecisionReason"])
+        self.hold(five=40)
+        self.assertNotIn("Workflow waits", self.pre("Workflow", {"script": "agent('x', {model: 'haiku'})"}).stdout)
+
+    def pending(self):
+        folder = os.path.join(self.home, "state", "subagent-pending", "sess-1")
+        return sorted(n for n in os.listdir(folder) if not n.startswith(".")) if os.path.isdir(folder) else []
+
+    def test_subagent_route_five_back_to_back_launches_allow_three(self):
+        # T-5562 review: SubagentStart is async, so its event lands after the decision: a launch reserves its slot at once
+        ti = {"subagent_type": "sampo:fm-recon", "prompt": "look"}
+        self.hold()
+        got = [self.out_of(self.pre("Agent", ti, tool_use_id=f"toolu_{i}"))["permissionDecision"] for i in range(5)]
+        self.assertEqual(got, ["allow"] * 3 + ["deny"] * 2)
+        self.assertEqual(len(self.pending()), 3, "a denied launch reserves nothing")
+        again = self.out_of(self.pre("Agent", ti, tool_use_id="toolu_0"))  # the same call asked twice holds one slot
+        self.assertEqual(again["permissionDecision"], "allow")
+        self.assertEqual(len(self.pending()), 3)
+        self.running(started=2, ago=0)  # two of them start: their slots are the events' now, the third still pends
+        self.assertEqual(self.out_of(self.pre("Agent", ti, tool_use_id="toolu_9"))["permissionDecision"], "deny")
+        self.running(started=0, stopped=1)  # one returns
+        self.assertEqual(self.out_of(self.pre("Agent", ti, tool_use_id="toolu_10"))["permissionDecision"], "allow")
+        self.settle()
+        os.unlink(os.path.join(self.home, "state", "events.jsonl"))
+        for i in range(3):
+            self.pre("Agent", ti, tool_use_id=f"toolu_a{i}")
+        for n in os.listdir(os.path.join(self.home, "state", "subagent-pending", "sess-1")):
+            if not n.startswith("."):  # a launch that never started: its slot frees after a couple of minutes
+                os.utime(os.path.join(self.home, "state", "subagent-pending", "sess-1", n), (time.time() - 300,) * 2)
+        self.assertEqual(self.out_of(self.pre("Agent", ti, tool_use_id="toolu_b"))["permissionDecision"], "allow")
+
+    def test_subagent_route_five_parallel_launches_allow_three(self):
+        import concurrent.futures
+        ti = {"subagent_type": "sampo:fm-recon", "prompt": "look"}
+        self.hold()
+        with concurrent.futures.ThreadPoolExecutor(5) as ex:
+            outs = list(ex.map(lambda i: self.out_of(self.pre("Agent", ti, tool_use_id=f"toolu_p{i}"))["permissionDecision"],
+                               range(5)))
+        self.assertEqual(sorted(outs), ["allow"] * 3 + ["deny"] * 2)
+
+    def test_subagent_route_a_pace_off_project_is_never_held_whatever_the_hook_cwd(self):
+        # T-5562 review: the weekly lean is the payload's project, not the hook process's cwd
+        self.fm("init")
+        self.fm("drive", "on", "--pace", "off")
+        folder = os.path.join(self.home, "state", "sessions")
+        os.makedirs(folder, exist_ok=True)
+        with open(os.path.join(folder, "snap.json"), "w") as f:
+            json.dump({"rate_limits": {"seven_day": {"used_percentage": 95, "resets_at": int(time.time() + 6 * 86400)}}}, f)
+        elsewhere = os.path.join(self.tmp, "elsewhere")
+        os.makedirs(elsewhere)
+        ti = {"subagent_type": "sampo:fm-recon", "prompt": "look", "model": "opus"}
+        for tool, tin in (("Agent", ti), ("Workflow", {"script": "agent('x')"})):
+            r = subprocess.run([HOOK, "PreToolUse"], cwd=elsewhere, capture_output=True, text=True, timeout=60,
+                               input=json.dumps({"session_id": "sess-1", "cwd": self.repo, "tool_name": tool, "tool_input": tin,
+                                                 "hook_event_name": "PreToolUse"}),
+                               env=dict(os.environ, FOREMAN_HOME=self.home, FOREMAN_NO_PROMPT_MAC="1"))
+            self.assertNotIn("usage is ahead", r.stdout, tool)
+        self.fm("drive", "on", "--pace", "on")
+        r = subprocess.run([HOOK, "PreToolUse"], cwd=elsewhere, capture_output=True, text=True, timeout=60,
+                           input=json.dumps({"session_id": "sess-1", "cwd": self.repo, "tool_name": "Agent", "tool_input": ti,
+                                             "hook_event_name": "PreToolUse"}),
+                           env=dict(os.environ, FOREMAN_HOME=self.home, FOREMAN_NO_PROMPT_MAC="1"))
+        self.assertIn("haiku", r.stdout, "pace on: the same usage holds")
+
+    def test_subagent_route_matcher_names_workflow(self):
+        with open(os.path.join(os.path.dirname(HOOK), "hooks.json"), encoding="utf-8") as f:
+            first = json.load(f)["hooks"]["PreToolUse"][0]["matcher"]
+        for tool in ("Agent", "Task", "Workflow"):
+            self.assertRegex(tool, f"^(?:{first})$")
 
     def test_the_step_pointer_follows_edits_and_asks_once_after_eight(self):
         # T-0759: work on a later step without moving the band

@@ -1765,6 +1765,27 @@ class Lanes(ForemanTestCase):
         self.fm("task", "set", tid, "approved=true")
         return tid
 
+    def test_held_haiku_a_brief_is_written_not_refused_while_usage_holds(self):
+        # T-5562: usage ahead of pace used to refuse the brief ("do it in the main thread"); the builder runs on haiku instead
+        tid = self.second_task()
+        folder = os.path.join(c.state_dir(), "sessions")
+        os.makedirs(folder, exist_ok=True)
+        snap = os.path.join(folder, "snap.json")
+        with open(snap, "w") as f:
+            json.dump({"rate_limits": {"five_hour": {"used_percentage": 95, "resets_at": int(time.time() + 3600)}}}, f)
+        r = self.fm("lane", "brief", tid, "--json", check=False)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        got = json.loads(r.stdout)
+        self.assertEqual(got["model"], "haiku")
+        self.assertIn('model: "haiku"', got["agent"])
+        self.assertTrue(os.path.exists(got["path"]), "the brief is written")
+        self.assertTrue(any("5-hour usage 95%" in w and "haiku" in w for w in got["warnings"]), got["warnings"])
+        self.fm("lane", "rm", tid)
+        with open(snap, "w") as f:
+            json.dump({"rate_limits": {"five_hour": {"used_percentage": 20, "resets_at": int(time.time() + 3600)}}}, f)
+        free = json.loads(self.fm("lane", "brief", tid, "--json").stdout)
+        self.assertFalse(any("ahead of pace" in w for w in free["warnings"]), "no hold: no warning")
+
     def test_stalled_a_lane_stopped_days_ago_is_not_a_builder_out(self):
         # T-4153: T-3811 (stopped 2026-11-09) and T-3906 (2026-11-08) held 2 of 3 slots on 2026-11-10: no brief at load 36
         tid, _path = self.stopped_builder()

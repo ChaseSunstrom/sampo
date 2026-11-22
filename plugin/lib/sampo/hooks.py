@@ -3546,6 +3546,65 @@ def _workflow_stages(pl):
     return 0
 
 
+def _pre_answer(decision, why=None, updated=None):
+    out = {"hookEventName": "PreToolUse", "permissionDecision": decision}
+    if why:
+        out["permissionDecisionReason"] = why
+    if updated is not None:
+        out["updatedInput"] = updated
+    print(json.dumps({"hookSpecificOutput": out}))
+    return 0
+
+
+def _subagent_route(pl):
+    """T-5562: while budget.subagent_pause holds (the horizon's pace, the weekly floor, the 5-hour window) a subagent launch
+    runs on haiku instead of waiting, so work goes on while the burn falls toward the allowance: the call is allowed with
+    its input rewritten (model haiku). At most budget.HELD_AGENTS run at once in the session; a fork and a Workflow run on
+    the session's model, so they wait. No hold: no output."""
+    from sampo import budget as sbudget
+    held = sbudget.subagent_pause(c.find_project(_cwd(pl)))  # the payload's project: its pace-off steer applies, not the hook's cwd
+    if not held:
+        return 0
+    ti = pl.get("tool_input")
+    if not isinstance(ti, dict):
+        return 0
+    if ti.get("subagent_type") == "fork":
+        return _pre_answer("deny", f"Sampo: usage is ahead of the horizon's pace ({held}), and a fork runs on the session's "
+                                   f"model: name a subagent_type (it runs on {sbudget.HELD_MODEL} while this holds), or do "
+                                   f"it in the main thread.")
+    # a slot is taken now: the SubagentStart event that counts it is written by an async hook after this decision
+    # no tool_use_id (the harness always sends one): the input names the call, so a run's files are the same every time
+    import hashlib
+    call = pl.get("tool_use_id") or "in-" + hashlib.sha1(json.dumps(ti, sort_keys=True, default=str).encode()).hexdigest()[:16]
+    ok, live = sbudget.reserve_subagent(pl.get("session_id"), call)
+    if not ok:
+        return _pre_answer("deny", f"Sampo: usage is ahead of the horizon's pace ({held}): {live} subagents already run in "
+                                   f"this session, the cap is {sbudget.HELD_AGENTS} while it holds. Wait for one to "
+                                   f"return, then launch this one.")
+    named = str(ti.get("model") or "")
+    if sbudget.HELD_MODEL in named.lower():
+        return 0
+    return _pre_answer("allow", f"Sampo: usage is ahead of the horizon's pace ({held}): model {named or 'inherited'} → "
+                                f"{sbudget.HELD_MODEL} while usage holds.", dict(ti, model=sbudget.HELD_MODEL))
+
+
+def _workflow_held(pl):
+    """T-5562: a Workflow fans agents out on the session's model, so it waits while the usage hold lasts (True once the
+    denial is printed, False with no hold). A budget that fails to read never holds."""
+    try:
+        from sampo import budget as sbudget
+        held = sbudget.subagent_pause(c.find_project(_cwd(pl)))
+    except Exception:
+        log_error("PreToolUse", _tb())
+        return False
+    if not held:
+        return False
+    _pre_answer("deny", f"Sampo: usage is ahead of the horizon's pace ({held}): a Workflow waits until it eases. "
+                        f"Launch one Agent call at a time (they run on {sbudget.HELD_MODEL} meanwhile), or do it "
+                        f"in the main thread.")
+    return True
+
+
 def _pre_tool_use(raw):
     try:
         pl = json.loads(raw)
@@ -3563,11 +3622,7 @@ def _pre_tool_use(raw):
                                                          "permissionDecisionReason": why}}))
                 return 0
             try:
-                from sampo import budget as sbudget
-                sbudget.check_subagent()
-            except ValueError as e:  # BudgetError: over the cap
-                print(f"Sampo {e}", file=sys.stderr)
-                return 2
+                return _subagent_route(pl)
             except Exception:  # a spend cap, not a safety check: a broken budget never blocks work
                 log_error("PreToolUse", _tb())
             return 0
@@ -3625,7 +3680,9 @@ def _pre_tool_use(raw):
                                                          "permissionDecisionReason": why}}))
             return 0
         if tool not in GUARDED:
-            return _workflow_stages(pl) if tool == "Workflow" else 0  # T-5680: a Workflow's stages name a type or model
+            if tool != "Workflow":
+                return 0
+            return 0 if _workflow_held(pl) else _workflow_stages(pl)  # T-5680: a Workflow's stages name a type or model
         try:
             import fmguard as guard
             ctx, p, act, found, block = _guard_decision(pl, guard)

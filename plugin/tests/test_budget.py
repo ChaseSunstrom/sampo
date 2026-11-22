@@ -117,9 +117,11 @@ class Budget(ForemanTestCase):
         self.usage(seven_day=(50, 6 * 86400))  # half the week used with a seventh of it gone: under 75% (T-0364)
         self.assertEqual(self.hook("PreToolUse", agent).returncode, 0)
         self.usage(seven_day=(78, 6 * 86400))
-        out = self.hook("PreToolUse", agent)
-        self.assertEqual(out.returncode, 2)
-        self.assertIn("weekly usage 78%", out.stderr)
+        out = self.hook("PreToolUse", agent)  # T-5562: the hold rewrites the launch to haiku, never waits
+        self.assertEqual(out.returncode, 0)
+        got = json.loads(out.stdout)["hookSpecificOutput"]
+        self.assertEqual((got["permissionDecision"], got["updatedInput"]["model"]), ("allow", "haiku"))
+        self.assertIn("weekly usage 78%", got["permissionDecisionReason"])
 
     def test_fm_drive_pace_off_drops_no_work_for_usage_pace(self):
         from sampo import budget as bud  # T-2327 (user steer 2026-10-31, 3): never skip work for budget or pace
@@ -291,7 +293,8 @@ class Budget(ForemanTestCase):
         self.assertAlmostEqual(pace["allowance"], 0.417, places=2)
         self.assertGreater(pace["projected"], 100)
         agent = {"tool_name": "Agent", "tool_input": {"subagent_type": "sampo:fm-recon", "prompt": "x"}}
-        self.assertEqual(self.hook("PreToolUse", agent).returncode, 2, "the hook waits too: Python decides with a horizon")
+        held = json.loads(self.hook("PreToolUse", agent).stdout)["hookSpecificOutput"]  # Python decides with a horizon
+        self.assertEqual(held["updatedInput"]["model"], "haiku", "the hook runs it on haiku while the pace holds")
         open(os.path.join(c.state_dir(), "usage-samples.jsonl"), "w").close()  # a flat hour: the rate falls back
         bud.note_snapshot(self.week(60, now, 4), now=now - 2 * 3600)
         bud.note_snapshot(self.week(60, now, 4), now=now)
