@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- `sampo panels plan ROOT` reads any project into a panel spec of its real parts, and the new board-panels skill takes a session from plan to rendered, checked panels whenever a diagram or dashboard is drawn (T-3733).
 - sampo kalevala status now prints whole ids in number order (1, 2, 10) and shows the sealed towers once as a count instead of repeating "(sealed: True)" on every row, keeping each tower's last-step note (T-3510).
 - A live train whose merged batch adds a repo-shape red now bisects it by lane (the lanes the red classes name first, a pair that is red only together parked as a pair), parks only those with the class named and lands the rest, instead of refusing the whole land (T-5806).
 - bus.wake and modelup's /model best switch-back now type into a tmux pane only after tmuxpane.claude_here and the strict idle screen check pass (a bash pane, a pid mismatch and a reused pid get nothing typed), and a test drives smith.Run.phase through code_tick to its keeper journal row (T-5794).
