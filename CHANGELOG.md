@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- A ship refused on its full run now names up to three failing tests with their exception line, read from the first run's tests/run.py record (else the output's FAIL:/ERROR: blocks), so no second run is needed (T-5046).
 - `sampo lane brief --ready` holds back a planned task whose scope names a file a builder already out is working on (scope overlaps T-N), and still briefs a racing task beside it (T-5479).
 - A subagent's Bash call hung past 12 minutes is named in the drive and the tick with its agent, command and age, and told to message or stop it (T-5045).
 - `sampo.hooksmoke.run(plugin)` feeds a tree's own hook four payloads (SessionStart, UserPromptSubmit, a blocked and an allowed Bash call) in a scratch home and answers `(ok, why)` in under a second, naming the case that broke (T-5040).
