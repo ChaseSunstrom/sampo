@@ -3434,6 +3434,8 @@ def merge(p, b, main, unverified=None):
         return old
     _, old = cli.mutate(p, b.id, based, "lane_merge_base", {"branch": branch, "base": pre_merge})
     os.makedirs(_pm_dir(p), exist_ok=True)
+    from sampo import mapmerge
+    mapmerge.ensure(main)  # T-5472: the key-aware map driver .gitattributes names, before a train has written it
     with c.lock(_pm_dir(p)):  # T-3141: checked again right before git merge, and no record turns red between
         _pm_check(p, main)
         r = _git(main, "merge", "--no-ff", "-m", f"Merge {b.id}: {b.title}", tip)

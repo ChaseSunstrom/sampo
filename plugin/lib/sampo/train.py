@@ -467,21 +467,24 @@ def _neighbours(root, mods, cap=8):
     return sorted(mods) + near[:cap]
 
 
-_MAP_FILE = re.compile(r"docs/map/[^/\0]+\.md")
+_MAP_FILE = re.compile(r"MASTER\.md|docs/map/[^/\0]+\.md")  # T-5472: MASTER.md too
 _MARKER = re.compile(r"^(?:<{7}|>{7})(?: .*)?$|^={7}$", re.M)  # a conflict marker line
 
 
 def _map_only(files):
-    """T-4375: True when there are conflicted files and every one is a docs/map/*.md entry: two lanes that each add a
-    sentence to one long entry clash textually though nothing disagrees. One code file among them: False."""
+    """T-4375: True when there are conflicted files and every one is MASTER.md or a docs/map/*.md entry: two lanes
+    that each add a sentence to one long entry clash textually though nothing disagrees. One code file among them:
+    False."""
     return bool(files) and all(_MAP_FILE.fullmatch(f) for f in files)
 
 
 def _union_map(wt, files):
-    """T-4375: resolve the merge in `wt`, conflicted only in map files `files`, keeping both sides' lines: each file's
-    three index stages through `git merge-file --union` (no base stage, both sides added it: an empty base). All results
-    are read first and written only when every one is clean (no marker line, both sides present, a plain file); False
-    leaves the merge as it was, for the caller to abort."""
+    """T-4375: resolve the merge in `wt`, conflicted only in map files `files`: each file's three index stages through
+    the key-aware map merge (T-5472, sampo.mapmerge, keep_both: a line both sides rewrote is kept twice, never a line
+    the lane still had at its base after trunk changed or moved it; no base stage, both sides added it: an empty base).
+    All results are read first and written only when every one is clean (no marker line, a plain file). The files
+    where a line was kept twice ([] for none), or None leaving the merge as it was, for the caller to abort."""
+    from sampo import mapmerge
     stages = {}  # path: {stage: mode}
     r = _git(wt, "ls-files", "-u", "-z")
     for rec in r.stdout.split("\0"):
@@ -489,32 +492,30 @@ def _union_map(wt, files):
         parts = head.split()
         if len(parts) == 3 and path in files:
             stages.setdefault(path, {})[parts[2]] = parts[0]
-    done = {}
-    with tempfile.TemporaryDirectory(prefix="sampo-union-") as tmp:
-        for f in files:
-            got = stages.get(f, {})
-            if "2" not in got or "3" not in got or any(m not in ("100644", "100755") for m in got.values()) \
-                    or os.path.islink(os.path.join(wt, f)):
-                return False  # deleted on one side, or not a plain file: a real disagreement
-            paths = []
-            for n, name in (("2", "ours"), ("1", "base"), ("3", "theirs")):
-                out = subprocess.run(["git", "-C", wt, "show", f":{n}:{f}"], capture_output=True) if n in got else None
-                if out is not None and out.returncode:
-                    return False
-                with open(os.path.join(tmp, name), "wb") as fh:
-                    fh.write(out.stdout if out is not None else b"")
-                paths.append(os.path.join(tmp, name))
-            m = subprocess.run(["git", "merge-file", "--union", "-p", *paths], capture_output=True)
-            text = m.stdout.decode("utf-8", "replace")
-            if m.returncode or _MARKER.search(text):
-                return False
-            done[f] = m.stdout
+    done, doubled = {}, []
+    for f in files:
+        got = stages.get(f, {})
+        if "2" not in got or "3" not in got or any(m not in ("100644", "100755") for m in got.values()) \
+                or os.path.islink(os.path.join(wt, f)):
+            return None  # deleted on one side, or not a plain file: a real disagreement
+        texts = []
+        for n in ("1", "2", "3"):
+            out = subprocess.run(["git", "-C", wt, "show", f":{n}:{f}"], capture_output=True) if n in got else None
+            if out is not None and out.returncode:
+                return None
+            texts.append(out.stdout.decode("utf-8", "surrogateescape") if out is not None else "")
+        text, twice = mapmerge.merge(*texts, keep_both=True, path=f)
+        if _MARKER.search(text):
+            return None
+        done[f] = text.encode("utf-8", "surrogateescape")
+        if twice:
+            doubled.append(f)
     for f, data in done.items():
         with open(os.path.join(wt, f), "wb") as fh:
             fh.write(data)
         if _git(wt, "add", "--", f).returncode:
-            return False
-    return True
+            return None
+    return doubled
 
 
 def _merge_in(wt, b, tip, log, kept=None):
@@ -530,9 +531,10 @@ def _merge_in(wt, b, tip, log, kept=None):
     if not r.returncode:
         return _over_cap(wt, b, before, log)
     files = [f for f in _git(wt, "diff", "--name-only", "--diff-filter=U", "-z").stdout.split("\0") if f]
-    if kept is not None and _map_only(files) and _union_map(wt, files) and \
-            not _git(wt, *ident, "commit", "-m", msg).returncode:
-        kept[b.id] = sorted(files)
+    doubled = _union_map(wt, files) if kept is not None and _map_only(files) else None
+    if doubled is not None and not _git(wt, *ident, "commit", "-m", msg).returncode:
+        if doubled:  # T-5472: only a line kept twice needs a read; a clean key-aware merge needs none
+            kept[b.id] = sorted(doubled)
         return _over_cap(wt, b, before, log)
     _git(wt, "merge", "--abort")
     log.append((b.id, "conflicts with an earlier lane in the train" + (f": {c.joinmore(files, 8)}" if files else "")))
@@ -1208,6 +1210,8 @@ def _run(p, main, ids, defer_verify=False, judged=None):
     t1 = time.monotonic()
     if not cands:
         raise _none("nothing to merge: ", left)
+    from sampo import mapmerge
+    mapmerge.ensure(main)  # T-5472: the key-aware map driver .gitattributes names, in the config the tree shares
     wt = c.scratch_tree("sampo-train-", main)  # outside the main checkout; git worktree add takes the empty dir (T-4735: in the scratch root)
     r = _git(main, "worktree", "add", "-q", "--detach", wt, base)
     if r.returncode:
@@ -1762,14 +1766,14 @@ def _run(p, main, ids, defer_verify=False, judged=None):
 
 
 def _map_follow_up(p, maps):
-    """T-4375: one captured follow-up (source followup) for a train that merged lanes keeping both sides' lines in docs/map
-    entries, naming each lane and file: a line both sides rewrote is kept twice, so the stale one must go. One ledger
+    """T-4375: one captured follow-up (source followup) for a train that merged lanes keeping both versions of a map line
+    both sides rewrote (T-5472: only those), naming each lane and file: one of the two must go. One ledger
     event says what was merged. Returns the new task's id, '' when the capture failed (the landing never waits on it)."""
     from sampo import cli
     what = "; ".join(f"{i}: {', '.join(fs)}" for i, fs in maps)
     text = (f"Read the docs/map entries the train merged keeping both sides' lines ({what})\n\nThe lane train merged "
-            "these lanes with `git merge-file --union` because they clashed only in docs/map entries. A line both sides "
-            "rewrote is kept twice: read each merged entry and drop the stale line.")
+            "these lanes keeping both versions of a map line both sides rewrote (sampo.mapmerge, T-5472): read each "
+            "merged entry and keep one.")
     made = ""
     try:
         with c.lock(p.dir, timeout=5):
@@ -1859,7 +1863,7 @@ def _cmd_report(p, args, main, close, got, owed):
              f"{got['gate_runs']} gate run(s)" + (f" and {got['probes']} probe(s) of only the failing tests"
                                                   if got["probes"] else "") + f": {', '.join(got['merged'])}"]
     lines += [f"  left out {i}: {w}" for i, w in got["left_out"]] + [f"  note {i}: {w}" for i, w in got["notes"]]
-    lines += [f"  merged {i} keeping both sides' lines in {', '.join(fs)} (clashed only in docs/map)"
+    lines += [f"  merged {i} keeping both sides' lines in {', '.join(fs)} (both rewrote one map line)"
               for i, fs in got.get("map_merged") or []]  # T-4375
     if got.get("map_follow_up"):
         lines.append(f"  follow-up {got['map_follow_up']}: read the merged map entries (a line both sides rewrote is "

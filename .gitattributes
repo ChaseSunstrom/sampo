@@ -1,6 +1,7 @@
 # T-0427: every task adds a line under "## Unreleased"; a builder lane's line and the main line's merge as both
 CHANGELOG.md merge=union
-# T-4649: every lane appends a note to a map file; four lanes in a row conflicted on docs/map/files-lib-4.md
-docs/map/*.md merge=union
-# T-5445: one line per module, a new module beside a neighbour; 16 of 31 parked lanes conflicted only here
-MASTER.md merge=union
+# T-4649, T-5445: every lane adds a line beside a neighbour in a map file (16 of 31 parked lanes conflicted only here).
+# T-5472: not a union, which brought back a line the lane still had at its base after trunk changed or moved it: the
+# key-aware driver in plugin/lib/sampo/mapmerge.py (sampo writes merge.sampo-map.driver into the repo's config)
+docs/map/*.md merge=sampo-map
+MASTER.md merge=sampo-map

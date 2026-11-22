@@ -1,14 +1,19 @@
-"""T-5445: the files every lane appends a line to merge as a union, so two lanes adding lines next to each other never
-park on a conflict. On 2026-11-21 16 of 31 parked lanes conflicted only on adjacent MASTER.md lines (one line per
-module, a new module's line beside a neighbour's)."""
+"""T-5445: the files every lane appends a line to merge without a conflict, so two lanes adding lines next to each other
+never park. On 2026-11-21 16 of 31 parked lanes conflicted only on adjacent MASTER.md lines (one line per module, a new
+module's line beside a neighbour's). CHANGELOG.md is a union; T-5472: MASTER.md and docs/map/*.md go through the
+key-aware driver (sampo-map), since a union brought back lines trunk had changed or moved."""
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-SHARED = ("CHANGELOG.md", "MASTER.md", "docs/map/files-lib-1.md")
+sys.path.insert(0, os.path.join(ROOT, "plugin", "lib"))
+from sampo import mapmerge  # noqa: E402
+
+SHARED = {"CHANGELOG.md": "union", "MASTER.md": "sampo-map", "docs/map/files-lib-1.md": "sampo-map"}
 
 
 def git(cwd, *args):
@@ -23,6 +28,7 @@ class UnionMerge(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.repo, ignore_errors=True)
         shutil.copy(os.path.join(ROOT, ".gitattributes"), os.path.join(self.repo, ".gitattributes"))
         git(self.repo, "init", "-q", "-b", "main")
+        mapmerge.ensure(self.repo)
 
     def write(self, rel, text):
         path = os.path.join(self.repo, rel)
@@ -30,10 +36,10 @@ class UnionMerge(unittest.TestCase):
         with open(path, "w", encoding="utf-8") as f:
             f.write(text)
 
-    def test_every_shared_append_file_is_a_union_merge(self):
-        for rel in SHARED:
+    def test_every_shared_append_file_has_its_merge(self):
+        for rel, how in SHARED.items():
             out = git(self.repo, "check-attr", "merge", "--", rel).stdout.strip()
-            self.assertTrue(out.endswith(": union"), f"{rel}: {out}")
+            self.assertTrue(out.endswith(f": {how}"), f"{rel}: {out}")
 
     def test_two_lanes_adding_master_lines_beside_the_same_neighbour_merge_clean(self):
         self.write("MASTER.md", "# Map\n- `fma` one\n- `fmb` two\n- `fmc` three\n")

@@ -297,8 +297,8 @@ class Train(TrainCase):
         return [b for b in c.load_briefs(p) if b.meta.get("source") == "followup"]
 
     def test_map_only_conflict_keeps_both(self):
-        """T-4375: two lanes that each add a sentence to the same docs/map entry both land: the train keeps both sides'
-        lines (git merge-file --union) and says which lane and file; no conflict marker, nobody left out."""
+        """T-4375: two lanes that each add a sentence to the same docs/map entry both land; T-5472: the key-aware map
+        merge puts both sentences on the one entry line, so there is no copy to read and no follow-up."""
         self.map_base()
         a = self.lane(1, self.MAP, self.ENTRY.rstrip("\n") + " Lane one adds this.\n")
         b = self.lane(2, self.MAP, self.ENTRY.rstrip("\n") + " Lane two adds that.\n")
@@ -306,14 +306,38 @@ class Train(TrainCase):
         self.assertNotIn("left out", r.stdout)
         for tid in (a, b):
             self.assertTrue(self.meta(tid)["lane_stop"].startswith("merged"), r.stdout)
-        text = self.read(self.MAP)
-        self.assertIn("Lane one adds this.", text)
-        self.assertIn("Lane two adds that.", text)
-        self.assertNotRegex(text, r"(?m)^(<<<<<<<|=======|>>>>>>>)")
+        self.assertEqual(self.read(self.MAP), self.ENTRY.rstrip("\n") + " Lane one adds this. Lane two adds that.\n")
+        self.assertNotIn("keeping both", r.stdout)
+        self.assertEqual(self.followups(), [])
+        self.assertEqual(self.git("ls-files", "-u"), "")
+        self.assertEqual(self.git("status", "--porcelain", "--untracked-files=no"), "")
+
+    def test_map_rewrite_on_both_sides_keeps_both_lines_and_says_so(self):
+        """T-4375, T-5472: two lanes that rewrite the same words of one entry both land, both versions kept (the lane's
+        after trunk's), and the train names the lane and file for a read."""
+        self.map_base()
+        a = self.lane(1, self.MAP, "- `ops.py`: Lane one's words.\n")
+        b = self.lane(2, self.MAP, "- `ops.py`: Lane two's words.\n")
+        r = self.train(a, b)
+        self.assertNotIn("left out", r.stdout)
+        self.assertEqual(self.read(self.MAP), "- `ops.py`: Lane one's words.\n- `ops.py`: Lane two's words.\n")
         self.assertIn(f"merged {b} keeping both sides' lines in {self.MAP}", r.stdout)
         self.assertNotIn(f"merged {a} keeping", r.stdout, "the first lane merged cleanly")
         self.assertEqual(self.git("ls-files", "-u"), "")
-        self.assertEqual(self.git("status", "--porcelain", "--untracked-files=no"), "")
+
+    def test_a_lane_beside_a_master_line_main_repointed_keeps_no_stale_copy(self):
+        """T-5472: the 2026-11-21 case: main repointed a module's MASTER.md line, the lane (made before) added its own
+        module's line beside the old one. A union kept both copies; the train's map driver keeps main's line once."""
+        self.map_base(".gitattributes", "MASTER.md merge=sampo-map\n")
+        self.map_base("MASTER.md", "- `a.py` one [→ old](docs/map/old.md)\n- `b.py` two\n")
+        a = self.lane(1, "MASTER.md", "- `a.py` one [→ old](docs/map/old.md)\n- `n.py` the lane's\n- `b.py` two\n")
+        self.map_base("MASTER.md", "- `a.py` one [→ new](docs/map/new.md)\n- `b.py` two\n")
+        r = self.train(a)
+        self.assertTrue(self.meta(a)["lane_stop"].startswith("merged"), r.stdout)
+        self.assertEqual(self.read("MASTER.md"), "- `a.py` one [→ new](docs/map/new.md)\n- `n.py` the lane's\n- `b.py` two\n")
+        self.assertNotIn("keeping both", r.stdout)
+        self.assertIn("mapmerge.py", self.git("config", "--get", "merge.sampo-map.driver"),
+                      "the train wrote the driver its merges use")
 
     def test_map_only_conflict_with_the_base_keeps_both(self):
         """T-4375: the 2026-11-11 case: main moved and added a line to the same entry; the lane is not parked."""
@@ -330,7 +354,7 @@ class Train(TrainCase):
         self.assertIn("Lane adds this.", text)
         self.assertIn("Main adds that.", text)
         self.assertNotRegex(text, r"(?m)^(<<<<<<<|=======|>>>>>>>)")
-        self.assertIn(self.MAP, r.stdout)
+        self.assertEqual(text.count("`ops.py`"), 1, "one entry line carries both (T-5472)")
 
     def cap_base(self, left):
         """T-4980: a map file `left` bytes under its cap: two entries with a filler line between, so two lanes each
@@ -398,9 +422,9 @@ class Train(TrainCase):
         captures none."""
         self.map_base()
         self.map_base("docs/map/files.md", "- `f.py`: files.\n")
-        a = self.lane(1, self.MAP, self.ENTRY.rstrip("\n") + " One.\n")
-        b = self.lane(2, self.MAP, self.ENTRY.rstrip("\n") + " Two.\n")
-        d = self.lane(3, self.MAP, self.ENTRY.rstrip("\n") + " Three.\n")
+        a = self.lane(1, self.MAP, "- `ops.py`: One.\n")  # T-5472: rewrites of one span, so both are kept
+        b = self.lane(2, self.MAP, "- `ops.py`: Two.\n")
+        d = self.lane(3, self.MAP, "- `ops.py`: Three.\n")
         r = self.train(a, b, d)
         got = self.followups()
         self.assertEqual(len(got), 1, [x.title for x in got])
@@ -968,8 +992,10 @@ class PrivateTerm(TrainCase):
             return real(*a, **k)
         with mock.patch.object(release.tempfile, "mkdtemp", side_effect=flaky):
             got = train.train(c.find_project(self.repo), self.repo, ids)
-        self.assertEqual(got["merged"], [ids[1]])
-        self.assertEqual([i for i, _ in got["left_out"]], [ids[0]])
+        # T-5465 runs the holds four at a time, so either lane's scan may be the first (3 of 6 runs failed on order)
+        out = [i for i, _ in got["left_out"]]
+        self.assertEqual(len(out), 1, got)
+        self.assertEqual(sorted(got["merged"] + out), sorted(ids))
         self.assertIn("could not run: run it again", got["left_out"][0][1])
         self.assertEqual(self.scan_events()[0]["data"].get("cause"), "OSError")
 
@@ -1506,8 +1532,8 @@ class Covered(AffectedBase):
         put back, so the follow-up of the train still names d (it merged on a's line of the same entry)."""
         self.map_base()
         self.base_file("test_xb.py", self.XDEP.replace("'bad' + '.txt'", "'b' + '.txt'"))  # red with b.txt in the tree
-        a = self.lane(1, self.MAP, self.ENTRY.rstrip("\n") + " One.\n")
-        d = self.lane(2, self.MAP, self.ENTRY.rstrip("\n") + " Two.\n", ac="sh suite.sh test_xb")
+        a = self.lane(1, self.MAP, "- `ops.py`: One.\n")  # T-5472: rewrites of one span, so both are kept
+        d = self.lane(2, self.MAP, "- `ops.py`: Two.\n", ac="sh suite.sh test_xb")
         b = self.lane(3, "b.txt")
         r = self.train(a, d, b)
         self.assertIn(f"left out {b}: its merge turns the gates red", r.stdout)

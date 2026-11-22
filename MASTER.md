@@ -207,6 +207,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmloop` (T-1057: `sampo loop`, an empty queue starts an improvement round… [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmmandate` (T-2557: a goal keeps its raw text's "Done when:" bullets… [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmmap` (`sampo map`, `sampo impact`; `sampo map --cold`: hot files no session… [→ files-lib-3](docs/map/files-lib-3.md)
+- `fmmapmerge` (T-5472: the key-aware three-way merge driver `sampo-map` for MASTER.md and docs/map) [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmmarks`… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmmcp` (`sampo mcp`: read-only MCP tools over stdio) T-2378: `which`… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmmeasure` (T-5005: `sampo measure NAME [--max N|--min N] [--window DAYS]`, a named ledger number held to a bound… [→ files-lib-3](docs/map/files-lib-3.md)

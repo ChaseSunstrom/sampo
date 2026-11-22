@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- MASTER.md and docs/map files merge through a key-aware driver instead of a union: a line a lane still had at its base no longer comes back beside the version trunk changed or moved (23 stale MASTER.md bullets returned that way in one land), two appended clauses land on one line, and only two rewrites of the same words keep both versions for a read (T-5472).
 - Agent sessions run at idle CPU priority, so the user's own programs get the CPU they ask for first while tests and builds take every cycle left: each session start puts its systemd scope at CPUWeight=idle (only a scope holding that Claude Code and its shell) and puts it back when Claude Code ends; sampo cpu idle on|off sets it by hand and sampo cpu shows it (T-4988).
 - The builder contract now tells a FIX builder to record `sampo task prove`, and `sampo lane accept` lists the missing red→green proof the close will still refuse the lane for (T-4209).
 - A train judges its lanes' holds (private scan, guard, self-change gate) four at a time instead of one by one; 55 lanes took about 18 min at about 20 s each (T-5465).
