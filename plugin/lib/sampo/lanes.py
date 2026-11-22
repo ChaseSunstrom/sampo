@@ -3260,6 +3260,66 @@ _BRIEF_SECTIONS = ("Raw request", "Interpretation", "Acceptance criteria", "Non-
 CITED_MAX = 20  # file names looked up on the unlanded branches per brief
 
 
+def _commit_owner(root, sha, subject, own):
+    """(task id, branch) an unlanded commit belongs to: its subject's task id, else the lane branch's name that holds it;
+    None when neither names a task but `own` (the task's own commits never count, a resumed lane)."""
+    refs = c._git(root, "for-each-ref", "--contains", sha, "--format=%(refname:short)", "refs/heads/", timeout=10).split()
+    ids = [t for t in re.findall(r"\bT-\d+\b", subject) or [m for r in refs for m in re.findall(r"\bT-\d+\b", r)]
+           if t != own]
+    return (ids[-1], refs[0] if refs else sha[:9]) if ids else None
+
+
+_TICKED = re.compile(r"`([^`\n]{3,80})`")
+_SYM = re.compile(r"^(?:[A-Za-z_]\w*\.)*([A-Za-z_]\w*)(\(.*\))?$")
+_MAKES = re.compile(r"\b(?:add|adds|create|creates|new|write|writes|introduce|introduces|define|defines|implement|"
+                    r"implements|build|builds|make|makes)\s+(?:(?:a|an|the|new)\s+)*$", re.I)  # the verb right before a name
+SYMBOL_MAX = 12  # helper names looked up per brief
+
+
+def used_symbols(b):
+    """T-5808: the helper names the task says it uses: backticked identifiers in the sections a builder reads, the last
+    part of a dotted one (`c.consent_allow` -> consent_allow), that read as code (an underscore, camelCase, a call or a
+    dotted name, five characters or more) and are not a file name. A name right after a verb that makes it (add, create,
+    new, define...) is one the task means to write, not to call, so it is left out. At most SYMBOL_MAX."""
+    out = []
+    for sec in ("Raw request", "Interpretation", "Acceptance criteria", "Approach (options → choice → why)", "Steps"):
+        for line in b.section(sec).splitlines():
+            for m in _TICKED.finditer(line):
+                g = _SYM.match(m.group(1).strip())
+                name = g.group(1) if g else ""
+                if (not g or len(name) < 5 or _CITED.fullmatch(m.group(1).strip())
+                        or not ("_" in name or g.group(2) or "." in m.group(1) or re.search(r"[a-z][A-Z]", name))
+                        or _MAKES.search(line[:m.start()])):
+                    continue
+                if name not in out:
+                    out.append(name)
+    return out[:SYMBOL_MAX]
+
+
+def symbol_held(p, root, base, b):
+    """T-5808: [(name, task id, branch)] for a helper the task uses that `base` lacks and an open task's unlanded commit
+    defines (T-5794 and T-5795 called code only T-5769's lane had: two builder runs found that out). A name `base` has
+    anywhere (`git grep -w`) or no unlanded commit defines (the task will write it) is not held; a closed owner or the
+    task's own commits never count. A git failure claims nothing."""
+    names = [n for n in used_symbols(b) if _git(root, "grep", "-q", "-w", "-F", "-e", n, base, timeout=20).returncode == 1]
+    held, briefs = [], None
+    for n in names:
+        rx = (rf"(def|class|fn|func|function|const|let|var|type)[[:space:]]+{re.escape(n)}([^[:alnum:]_]|$)"
+              rf"|^[[:space:]]*{re.escape(n)}[[:space:]]*(:=|=[^=]|=$)")
+        log = c._git(root, "log", "--branches", "--not", base, "-G", rx, "--format=%x00%H%x00%s", timeout=15)
+        for rec in re.split(r"\x00(?=[0-9a-f]{40}\x00)", log)[1:]:
+            sha, _, subject = rec.partition("\x00")
+            got = _commit_owner(root, sha, subject.strip(), b.id)
+            if not got:
+                continue
+            briefs = briefs if briefs is not None else {x.id: x for x in c.load_briefs(p)}
+            owner = briefs.get(got[0])
+            if owner and owner.status not in c.CLOSED:
+                held.append((n, *got))
+                break
+    return held
+
+
 def cited_missing(p, root, base, b):
     """T-4928: the repo files the brief names (its scope's plain paths and the path-like words of the sections a builder
     reads) that `base` lacks. Returns (held, create): held = [(name, task id, branch)] for a name an open task's
@@ -3295,12 +3355,8 @@ def cited_missing(p, root, base, b):
     for n in missing:
         owner = None
         for sha, subject in added.get(n, []):  # the commit's subject names its task; else a lane branch's name does
-            refs = c._git(root, "for-each-ref", "--contains", sha, "--format=%(refname:short)", "refs/heads/",
-                          timeout=10).split()
-            ids = [t for t in re.findall(r"\bT-\d+\b", subject) or [m for r in refs for m in re.findall(r"\bT-\d+\b", r)]
-                   if t != b.id]
-            if ids:
-                owner = (n, ids[-1], refs[0] if refs else sha[:9])
+            if got := _commit_owner(root, sha, subject, b.id):
+                owner = (n, *got)
                 break
         if owner and owner[1] in briefs and briefs[owner[1]].status not in c.CLOSED:
             if not any(h[0].rsplit("/", 1)[-1] == n.rsplit("/", 1)[-1] for h in held):  # scope's path and the prose's name
@@ -4317,6 +4373,20 @@ def builder_brief(p, b, args, resume_branch=None, after="", stacked=None):
             + (f"It waits on {tid} (depends_on): brief it once {tid} lands." if tid in deps else
                f"Add the dependency (sampo task set {b.id} depends_on+={tid}) and brief it once {tid} lands, or "
                f"reword the brief if it means another file."))
+    sym = [] if resume_branch else symbol_held(p, main, base, b)  # T-5808: a helper only an unlanded lane defines
+    if sym:
+        deps, tid = list(b.meta.get("depends_on") or []), sym[0][1]
+        names = ", ".join(dict.fromkeys(f"`{s[0]}` ({s[1]})" for s in sym))
+        added = tid not in deps and tid != b.id and not any(
+            x.id == tid and b.id in c._deps(x) for x in c.load_briefs(p))  # never a cycle
+        if added:
+            b.meta["depends_on"] = [*deps, tid]
+            c.save_brief(p, b)
+        raise c.PolicyError(
+            f"{b.id} uses {names}, which its base {base[:9]} lacks: an unlanded lane defines it. "
+            + (f"It now waits on {tid} (depends_on recorded): brief it once {tid} lands, or after its lane returns "
+               f"(then it is built on that lane's tip)." if added or tid in deps else
+               f"{tid} would wait on {b.id} too: reword one of them."))
     if create:
         parts += ["## Files the base lacks", "The brief names these, and your base doesn't have them: create them if "
                   "the task makes them; if one should already exist, stop and report it.",

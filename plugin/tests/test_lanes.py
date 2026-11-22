@@ -1053,6 +1053,55 @@ class Lanes(ForemanTestCase):
         r2 = self.fm("lane", "brief", tid2)
         self.assertNotIn(busy, r2.stdout + r2.stderr)
 
+    def _lane_defining(self, rel, text):  # T-5808: an unlanded lane whose commit adds `rel` with `text`
+        tid = first(self.fm("task", "new", "Consent lane", "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true",
+                            "--step", "s", "--json").stdout)["id"]
+        path = json.loads(self.fm("lane", "new", tid, "--json").stdout)["path"]
+        os.makedirs(os.path.dirname(os.path.join(path, rel)), exist_ok=True)
+        with open(os.path.join(path, rel), "w", encoding="utf-8") as f:
+            f.write(text)
+        self.git("add", rel, cwd=path)
+        self.git("commit", "-qm", f"add {rel} ({tid})", cwd=path)
+        return tid
+
+    def _naming(self, step, title="Gate"):  # T-5808: a planned S task whose step says `step`
+        self.fm("lane", "max", "20")
+        return first(self.fm("task", "new", title, "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true", "--step", step,
+                             "--json").stdout)["id"]
+
+    def test_brief_missing_symbol_waits_for_the_unmerged_lane_that_defines_it(self):  # T-5808: T-5794 called T-5769's helper
+        owner = self._lane_defining("pkg/consent.py", "def consent_allow(x):\n    return bool(x)\n")
+        tid = self._naming("Gate the verb on `c.consent_allow(task)` before it writes")
+        r = self.fm("lane", "brief", tid, check=False)
+        said = r.stderr + r.stdout
+        self.assertNotEqual(r.returncode, 0, said)
+        self.assertIn("consent_allow", said)
+        self.assertIn(owner, said)
+        self.assertIn(tid, said)
+        self.assertEqual(c.find_brief(c.find_project(self.repo), tid).meta.get("depends_on"), [owner],
+                         "the dependency is recorded, not only said")
+        self.assertFalse(os.path.exists(os.path.join(c.find_project(self.repo).dir, "audits", f"{tid}.builder.md")))
+        # the owner's lane has returned its commit: the next try is T-5725's, built on that lane's tip, symbol and all
+        self._returned(owner)
+        text = read_text(json.loads(self.fm("lane", "brief", tid, "--json").stdout)["path"])
+        self.assertIn(f"## Built on {owner}", text)
+
+    def test_brief_symbol_present_on_the_base_or_created_by_the_task_is_briefed_as_before(self):  # T-5808
+        self._commit_files({"pkg/base.py": "def base_helper(x):\n    return x\n"}, "base helper")
+        self._lane_defining("pkg/other.py", "def other_helper(x):\n    return x\n")  # an unlanded lane, not named below
+        have = self._naming("Call `base_helper(x)` and `c.base_helper` from the gate", "Uses base")
+        out = self.fm("lane", "brief", have, "--json")
+        self.assertEqual(c.find_brief(c.find_project(self.repo), have).meta.get("depends_on") or [], [])
+        self.assertTrue(os.path.exists(json.loads(out.stdout)["path"]))
+        new = self._naming("Add `brand_new_helper(x)` to pkg/base.py and call it", "Makes its own")
+        self.assertTrue(os.path.exists(json.loads(self.fm("lane", "brief", new, "--json").stdout)["path"]))
+        self.assertEqual(c.find_brief(c.find_project(self.repo), new).meta.get("depends_on") or [], [])
+
+    def test_brief_symbol_present_a_name_the_task_adds_is_not_a_dependency_even_when_a_lane_has_it(self):  # T-5808
+        self._lane_defining("pkg/consent.py", "def consent_allow(x):\n    return bool(x)\n")
+        tid = self._naming("Add `consent_allow` here as the gate's own copy", "Redo")
+        self.assertTrue(os.path.exists(json.loads(self.fm("lane", "brief", tid, "--json").stdout)["path"]))
+
     def test_lane_brief_refuses_the_one_way_door_focus_refuses_before_a_launch(self):  # T-4821: T-4820's brief, then focus refused
         tid = json.loads(self.fm("task", "new", "Clear the sweep", "--type", "FIX", "--tier", "S", "--raw", "Clear the sweep",
                                  "--ac", "clear :: true", "--step", "delete ./", "--json").stdout)["id"]
