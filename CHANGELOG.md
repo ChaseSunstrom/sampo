@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- `sampo measure NAME [--max N|--min N] [--window DAYS]` prints the windowed median accept-to-live or accept-to-pushed minutes from the ledger's land_train and ship_done events and exits 1 when it misses a bound (T-5005).
 - The model bench can now judge a promotion on the tasks the rules path scored, never scores Jeff or SelfJev on what they trained on, keeps each backend's rows when a night is cut at its deadline, and records every row's timeout (T-5377).
 - A close from the main checkout runs its criteria at test-slot priority, so a land's closes stop queuing behind builder test runs (T-5792).
 - A land's closes now take a post-merge green suite as proof of `run.py` criteria (plain test modules only, never a record green through an excusal or a narrowed cover, on an unmoved trunk), hold the train lock only around their commit, write the owed-commit mark with the done so a crash leaves it swept, and wait for a running post-merge verify before taking the land lock (T-5368).
