@@ -97,7 +97,26 @@ setPalette('default') // T-3701: the Board's from the first draw
 
 /** T-2876: the pane's mark (design/sampo/logo/pane-glyph.txt): the anvil-stone at rest; while work runs, it and the
  * band struck slant in turn, one a frame. One terminal cell (East Asian width N). */
-export const paneMark = (moving: boolean, frame: number) => (moving && frame % 2 ? '⊘' : '⊖')
+export const paneMark = (moving: boolean, frame: number) => (moving && Math.floor(frame) % 2 ? '⊘' : '⊖')
+
+/** T-5546: a text grid as Raster cells, one cell per character, in one colour: what moves as text (the mascot) can then
+ * blit. `blocks` sit side by side bottom-aligned with `gap` columns between; every row is padded to the block's width. */
+export function textBlocks(blocks: readonly { rows: readonly string[]; color: number }[], gap: number): { columns: number; rows: number; cells: string } {
+  const widths = blocks.map(b => Math.max(0, ...b.rows.map(r => [...r].length)))
+  const columns = widths.reduce((s, w) => s + w, 0) + gap * Math.max(0, blocks.length - 1)
+  const rows = Math.max(0, ...blocks.map(b => b.rows.length))
+  const grid: [string, number][] = []
+  for (let r = 0; r < rows; r++)
+    blocks.forEach((b, i) => {
+      if (i) for (let g = 0; g < gap; g++) grid.push([' ', C.dim])
+      const line = [...(b.rows[r - (rows - b.rows.length)] ?? '')] // bottom-aligned
+      for (let x = 0; x < widths[i]!; x++) grid.push([line[x] ?? ' ', b.color])
+    })
+  return { columns, rows, cells: cells(grid) }
+}
+
+/** T-5546: one moving glyph as a one-cell Raster's cells */
+export const glyphCells = (ch: string, fg: number, bg?: number) => cells([bg === undefined ? [ch, fg] : [ch, fg, bg]])
 
 /** T-1717: a saved palette (fm design tokens --to pane --save, carried in fm ui's view) as C's numbers: known keys
  * with #rrggbb values only, so a damaged file can't paint anything odd */
@@ -226,7 +245,7 @@ export function textComet(width: number, frame: number): [string, string, string
 }
 
 // T-0909: the pane's charts. Each builds Raster cells (row-major) from plain numbers; a text twin draws the same for
-// surfaces without Raster. `frame` may be fractional: the pane's 30 fps blit passes time in 120 ms frames.
+// surfaces without Raster. `frame` may be fractional: the pane's 20 fps blit passes time in 120 ms frames.
 
 /** Short stage names, so seven of them fit under a 50-column rail. */
 const STAGE_SHORT: Record<string, string> = {
@@ -419,7 +438,7 @@ export function etaCells(width: number, elapsed: number, usual: number): string 
 
 // Claude Code's own spinner glyphs, breathing out and back: the band and rows match the working line.
 const SPIN = ['·', '✢', '✳', '✶', '✻', '✽', '✻', '✶', '✳', '✢']
-export const spin = (frame: number) => SPIN[frame % SPIN.length]!
+export const spin = (frame: number) => SPIN[Math.floor(frame) % SPIN.length]! // T-5546: a blit's time is fractional
 
 /** What comes next, for a person: fm's next line without the agent's own instructions after it. */
 export const humanNext = (next: string) => next.split(' — ')[0]!.trim()

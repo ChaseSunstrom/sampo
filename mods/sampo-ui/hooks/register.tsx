@@ -65,13 +65,16 @@ import {
 import { cpuPicture, lanesPicture, libraryPicture, mergePicture, modelsPicture, notePicture, sampoPicture, sessionsPicture, statePicture, taskPicture,
   testsPicture } from './canvas'
 import type { CpuIn, Picture } from './canvas'
-import { CHECKPOINT_AT, FRAME_MS, FRESH, IDLE_FRAMES, PANE, QUIET_MS, SHELL_MAX_MS, STOP_MS, TIMELINE_MS, TREE_MS, cfg, feed, laneOf, running, said, starts, ticks, took } from './state'
+import { CHECKPOINT_AT, FADE_MS, FRAME_MS, FRESH, IDLE_FRAMES, MOTION_MS, PANE, QUIET_MS, SHELL_MAX_MS, SLOW_MS, STOP_MS, TIMELINE_MS, TREE_MS, cfg, feed, laneOf, running, said, starts, ticks, took } from './state'
 import type { FeedItem } from './state'
 
 const view = atom({ plugin: 'sampo-ui', key: 'view' } as const, null)
 const PANE_MIN = 26 // T-1679: the narrowest pane the layout fits (24 inside the padding); below it, one line
 const error = atom({ plugin: 'sampo-ui', key: 'error' } as const, null)
-const frame = atom({ plugin: 'sampo-ui', key: 'frame' } as const, 0)
+const frame = atom({ plugin: 'sampo-ui', key: 'frame' } as const, 0) // the 8 fps clock: only the chat's own rows read it
+// T-5546: the pane and the band read this instead: it moves once a second, when a tool call starts or ends, while a glow
+// fades and when work settles. What moves between those draws by blit.
+const slow = atom({ plugin: 'sampo-ui', key: 'slow' } as const, 0)
 const summaries = atom({ plugin: 'sampo-ui', key: 'summaries' } as const, [])
 const files = atom({ plugin: 'sampo-ui', key: 'files' } as const, [])
 const agents = atom({ plugin: 'sampo-ui', key: 'agents' } as const, [])
@@ -82,7 +85,7 @@ const shells = atom({ plugin: 'sampo-ui', key: 'shells' } as const, [])
 const away = atom({ plugin: 'sampo-ui', key: 'away' } as const, []) // tasks done since the person last wrote
 const resumed = atom({ plugin: 'sampo-ui', key: 'resumed' } as const, null) // T-0145: the resume record acted on
 const reviewing = atom({ plugin: 'sampo-ui', key: 'reviewing' } as const, null as string | null) // T-0989: a waiting plan shown in the Task section
-import { LIGHT, TREE_INDENT, agentOut, agentRow, bars, branch, chip, editChanges, editRow, fit as fitText, gapTop, kindChip, crestTree, liveTree, mascotTree, meter, miniRail, ownsResult, panelFoot, panelHead, pill, rail, railBox, sectionHead, shellRow, spark, toolRow, treeOn } from './rows'
+import { LIGHT, TREE_INDENT, agentOut, agentRow, bars, branch, chip, editChanges, editRow, fit as fitText, gapTop, kindChip, crestTree, liveTree, mascotTree, meter, miniRail, moveGlyph, ownsResult, panelFoot, panelHead, pill, rail, railBox, sectionHead, shellRow, spark, toolRow, treeOn } from './rows'
 import type { Motion } from './rows'
 
 // Sampo inside Claude Code. A pure renderer over `fm ui --json` plus what the session's own tool calls show it:
@@ -373,11 +376,12 @@ async function pollOptions($: EngineInterface) {
   const show = (v: unknown) => clean(typeof v === 'string' ? `'${v}'` : JSON.stringify(v) ?? '').slice(0, 40)
   if (kept.length) $.ui.toast(`⚠ Sampo: ${kept.map(k => `${k} ${show(now[k] ?? startOptions[k])} isn't a value it can use; kept ${clean(String(out[k] ?? 'the default'))}`).join('; ')} (fm settings list shows the choices)`)
   if (cfg.motion === 'off') sleep() // T-0912: off means no clocks, even mid-work
-  else if (cfg.motion === 'reduced') { // the 8 fps frame clock only: the 30 fps blit stops now
-    motionClock?.cancel()
-    motionClock = null
+  else if (motionClock) { // the blit's pace follows the setting (full 20 fps, reduced 8) from now
+    motionClock.cancel()
+    motionClock = $.clock.every(MOTION_MS[cfg.motion], () => void repaint($))
   }
   await update($, frame, n => n + 1) // redrawn in the new palette and motion
+  await bumpSlow($)
 }
 
 // Cheap in-process checks every 2 s: the context meter, the options, and the paths fm names (fm runs only when one moved).
@@ -386,7 +390,9 @@ async function tick($: EngineInterface) {
   await pollOptions($).catch(() => undefined) // an engine without $.config: the rest of the poll still runs
   if ((await read($, shells)).length) await noteShells($, list => list) // ages out lost ones; a reload re-arms bgLive
   const running = (await read($, agents)).filter(a => !a.done)
-  if (cfg.mascot !== 'off') await update($, beat, n => n + 1) // the mascot's idle blink, at the poll's pace
+  if (clock && (turns.size || starts.size)) {
+    // T-5546: while a turn or a call is live the slow tick redraws the pane every second: no second redraw from the poll
+  } else if (cfg.mascot !== 'off') await update($, beat, n => n + 1) // the mascot's idle blink, at the poll's pace
   else {
     // T-1437: no blink to repaint on, so a running subagent's time would freeze; repaint when what it shows changes
     const t = await $.clock.now()
@@ -518,10 +524,12 @@ async function openPane($: EngineInterface, focus: boolean) {
   return $.ui.open(focus ? { id: PANE, title: 'Sampo', focus: true, columns: DOCK_COLS, ...bg } : { id: PANE, title: 'Sampo', columns: DOCK_COLS, ...bg })
 }
 
-// T-0909: the pane's moving rasters (the rail's comet, the live lane's glow) repaint by blit at ~30 fps while work is
-// live, without redrawing the pane; the pane registers them as it draws and the 8 fps frame clock keeps the rest.
+// T-0909: the pane's moving rasters (the rail's comet, the live lane's glow) repaint by blit while work is live, without
+// redrawing the pane. T-5546: and so does every glyph that moves (the spinners, the mark, the crest, the mascot), at
+// MOTION_MS (full 20 fps, reduced 8) from one clock; the pane and the band register them as they draw, and redraw only
+// on the slow tick, a tool call's start and end, a fading glow and a settle (the `slow` atom), not 8 times a second.
 const motion: Motion = new Map()
-const MOTION_MS = 33
+const bandMotion = new Map<string, Motion>() // the band's, by the site (each band instance has its own requestId)
 let motionClock: { cancel: () => void } | null = null
 const frameAt = (ms: number) => ms / FRAME_MS // time in frames, fractional: what a comet takes
 // T-1000: the kinds of tool call the Live section's lanes chart, and their colours
@@ -551,9 +559,19 @@ async function repaint($: EngineInterface) {
   painting = true
   try {
     const f = frameAt(await $.clock.now())
-    for (const [key, m] of [...motion]) {
-      const r = await $.ui.blit({ requestId: PANE, key, columns: m.columns, rows: m.rows, cells: m.draw(f) }).catch(() => ({ deny: 'failed' }))
-      if (r && 'deny' in r && r.deny) motion.delete(key) // not mounted (pane closed, redrawn smaller): until it draws again
+    const paint = async (requestId: string, set: Motion) => {
+      for (const [key, m] of [...set]) {
+        const cells = m.draw(f)
+        if (cells === m.last) continue // a glyph holds its frame for 120 ms: nothing to send
+        m.last = cells
+        const r = await $.ui.blit({ requestId, key, columns: m.columns, rows: m.rows, cells }).catch(() => ({ deny: 'failed' }))
+        if (r && 'deny' in r && r.deny) set.delete(key) // not mounted (pane closed, redrawn smaller): until it draws again
+      }
+    }
+    await paint(PANE, motion)
+    for (const [requestId, set] of [...bandMotion]) {
+      await paint(requestId, set)
+      if (!set.size) bandMotion.delete(requestId)
     }
   } finally {
     painting = false
@@ -564,9 +582,34 @@ async function repaint($: EngineInterface) {
 async function wake($: EngineInterface) {
   lastActive = await read($, frame)
   if (cfg.motion === 'off') return // T-0912: a still UI; the 2 s poll still brings every change
-  if (!motionClock && cfg.motion === 'full') motionClock = $.clock.every(MOTION_MS, () => void repaint($))
+  if (!motionClock) motionClock = $.clock.every(MOTION_MS[cfg.motion], () => void repaint($))
   if (clock) return
   clock = $.clock.every(FRAME_MS, () => void advance($))
+  await bumpSlow($) // the pane and the band start drawing the live work
+}
+
+// T-5546: redraw the pane and the band (they read `slow`). `soon` is the least time since the last one, so a burst of
+// tool calls draws a few times a second, not once each; a settle passes 0.
+let slowAt = 0
+async function bumpSlow($: EngineInterface, soon = 0) {
+  const now = await $.clock.now()
+  if (now - slowAt < soon) return
+  slowAt = now
+  await update($, slow, n => n + 1)
+}
+const TOOL_REDRAW_MS = 250
+// A tool's start or end draws at once, a burst a few times a second: one that lands inside the throttle is drawn when it
+// ends (a call under 250 ms still shows), never dropped to the next 1 s tick. Motion off draws on the poll only.
+let slowLater: { cancel: () => void } | null = null
+async function toolRedraw($: EngineInterface) {
+  if (cfg.motion === 'off') return
+  const now = await $.clock.now()
+  const wait = TOOL_REDRAW_MS - (now - slowAt)
+  if (wait <= 0) return bumpSlow($)
+  slowLater ??= $.clock.after(wait, () => {
+    slowLater = null
+    void bumpSlow($).catch(() => undefined)
+  })
 }
 
 async function advance($: EngineInterface) {
@@ -576,17 +619,19 @@ async function advance($: EngineInterface) {
   const quiet = !turns.size && !starts.size && now >= flashUntil // a step's glow is still fading
   if (quiet && !bgLive && f - lastActive > 2) {
     await update($, frame, n => n + 1) // one last redraw, so what faded (a glow, the done card) is drawn settled
+    await bumpSlow($)
     return sleep()
   }
   if (!bgLive && f - lastActive > IDLE_FRAMES) return sleep()
-  if (quiet && bgLive && ++calm % 4) return // only background work: a calmer pace (~2 frames a second)
+  if (quiet && bgLive && ++calm % 4) return void (await bumpSlow($, SLOW_MS)) // only background work: a calmer pace (~2 frames a second)
   await update($, frame, n => n + 1)
+  await bumpSlow($, now < flashUntil ? FADE_MS : SLOW_MS) // a fading glow redraws faster; else once a second
 }
 
 function sleep() {
   clock?.cancel()
   clock = null
-  motionClock?.cancel() // T-0909 review: a lost turn.complete must not leave the 30 fps blit running for good
+  motionClock?.cancel() // T-0909 review: a lost turn.complete must not leave the blit running for good
   motionClock = null
 }
 
@@ -663,7 +708,7 @@ function applyOptions(options: Record<string, unknown>) {
   cfg.freshAt = typeof options.freshAt === 'number' ? options.freshAt : 40
   cfg.freshTokens = typeof options.freshTokens === 'number' ? options.freshTokens : 200000
   cfg.mascot = typeof options.mascot === 'string' && (options.mascot === 'off' || options.mascot === 'sampo' || options.mascot in MASCOT_COLORS) ? options.mascot : 'sampo' // T-3113: the crest is the default
-  // T-0912: full = 30 fps charts by blit; reduced = the 8 fps frame clock only; off = no clocks, a still pane.
+  // T-0912: full = 20 fps blit; reduced = 8 fps blit (T-5546); off = no clocks, a still pane.
   // T-1496: reduced is fm code's word too; the old calm still means it
   cfg.motion = options.motion === 'reduced' || options.motion === 'calm' ? 'reduced' : options.motion === 'off' ? 'off' : 'full'
   cfg.chat = options.chat === 'full' ? 'full' : 'tree' // T-1040
@@ -767,6 +812,7 @@ export const register: Register = (on, options) => {
     turns.delete(e.turnId)
     isDirty = true
     await update($, frame, n => n + 1) // T-0182 live: a reply drawn live redraws settled (●, its resting border)
+    await bumpSlow($) // and the pane and the band with it
     if (e.agentId) await update($, agents, list => list.map(a => (a.id === e.agentId ? { ...a, done: true } : a)))
     else {
       const fresh = await refresh($)
@@ -819,6 +865,7 @@ export const register: Register = (on, options) => {
         if (face.icon === '◆') turn.agents += 1
       }
       await wake($)
+      await toolRedraw($) // the pane's "now" card and the band's tree show the call at once, a burst a few times a second
       const note = e.tool === 'Bash' ? askNote(e.command) : null
       noteTimer = note ? $.clock.after(150, () => $.ui.notice(id, note)) : null // under the dialog, once it is open
       const r = await next(e)
@@ -856,6 +903,7 @@ export const register: Register = (on, options) => {
       agentCalls.delete(id)
       agentOf.delete(id)
       isDirty = true
+      await toolRedraw($).catch(() => undefined)
     }
   })
 
@@ -1258,7 +1306,11 @@ export const register: Register = (on, options) => {
     if (idle && !bgs.length && !doneSince.length && !v.mode?.trust && !treeLive) return next(e)
     const { Box, Button, Text } = $.ui.resolve(e)
     const working = e.props.isWorking
-    const f = working || bgs.length ? await read($, frame) : null
+    await read($, slow) // T-5546: the band redraws on the slow tick; what moves in it blits (bm)
+    const f = working || bgs.length ? frameAt(treeAt) : null // unfloored: a redraw's rasters continue the blit's time, never step back
+    const bm: Motion | undefined = working && e.surface === 'terminal' && cfg.motion !== 'off' ? new Map() : undefined
+    if (bm) bandMotion.set(e.requestId, bm)
+    else bandMotion.delete(e.requestId)
     const subsBg = bgs.length ? (await read($, agents)).filter(x => !x.done).length : 0
     const nowMs = bgs.length ? await $.clock.now() : 0
     const c = await read($, ctx)
@@ -1278,7 +1330,7 @@ export const register: Register = (on, options) => {
     // T-1039 ('sticky so the text doesn't scroll the chat'): one height for the turn, padded, with a blank row under it
     const tree = (rows: number, sticky = true) => {
       treeDrawn = sticky
-      const els = liveTree($.ui.resolve(e), e, { feed, subs: treeSubs, live: working, now: treeAt, frame: f, said, worktrees: v.worktrees ?? [],
+      const els = liveTree($.ui.resolve(e), e, { feed, subs: treeSubs, live: working, now: treeAt, frame: f, motion: bm, said, worktrees: v.worktrees ?? [],
         width: e.props.bodyColumns, rows: sticky ? Math.max(1, rows - 2) : rows, turnMs: turnStartedAt ? treeAt - turnStartedAt : 0,
         task: a ? `${a.id} · step ${Math.min(a.steps.length, done + 1)}/${a.steps.length}${cur ? ` ${cur.text}` : ''}` : 'no task in focus' })
       if (!sticky) return <Box key="fm-band-tree" flexDirection="column">{els}</Box>
@@ -1327,8 +1379,8 @@ export const register: Register = (on, options) => {
         )}
         {a && a.steps.length > 0 && (
           <Box flexDirection="row" gap={1}>
-            {working && <Text color={hex(C.accent)}>{spin(f ?? 0)}</Text>}
-            {meter($.ui.resolve(e), e, 'fm-band-bar', width, done / a.steps.length, C.steel, f)}
+            {working && moveGlyph($.ui.resolve(e), e, 'fm-band-spin', bm, spin, f, C.accent)}
+            {meter($.ui.resolve(e), e, 'fm-band-bar', width, done / a.steps.length, C.steel, f, bm)}
             <Text wrap={cut}>
               {/* T-1154: the current step's own number ('1/3' beside step 2's text read as step 1) */}
               <Text weight="bold">{`step ${Math.min(a.steps.length, done + 1)}/${a.steps.length}`}</Text>{' '}
@@ -1377,11 +1429,11 @@ export const register: Register = (on, options) => {
         </Box>
         {a && (
           <Box flexDirection="row" gap={1}>
-            {working && <Text color={hex(C.accent)}>{spin(f ?? 0)}</Text>}
+            {working && moveGlyph($.ui.resolve(e), e, 'fm-band-spin', bm, spin, f, C.accent)}
             {/* T-0909: a mini stage rail, the pane's in small */}
-            {miniRail($.ui.resolve(e), e, a.stages.length, a.stages.indexOf(a.stage), working ? f : null)}
+            {miniRail($.ui.resolve(e), e, a.stages.length, a.stages.indexOf(a.stage), working ? f : null, bm)}
             <Text color={hex(C.dim)}>{a.stage}</Text>
-            {a.steps.length > 0 && meter($.ui.resolve(e), e, 'fm-band-bar', width, done / a.steps.length, C.steel, f)}
+            {a.steps.length > 0 && meter($.ui.resolve(e), e, 'fm-band-bar', width, done / a.steps.length, C.steel, f, bm)}
             {a.steps.length > 0 && <Text weight="bold">{`step ${Math.min(a.steps.length, done + 1)}/${a.steps.length}`}</Text>}
             {cur && <Text wrap={cut}>{cur.text}</Text>}
             {a.audits.need > 0 && (
@@ -1401,7 +1453,7 @@ export const register: Register = (on, options) => {
     )
 
     return (
-      <Box flexDirection="column" borderStyle="round" borderColor={hex(working ? pulse(C.accent, f) : C.track)} paddingX={1} key="fm-band">
+      <Box flexDirection="column" borderStyle="round" borderColor={hex(working ? pulse(C.accent, 0) : C.track)} paddingX={1} key="fm-band">
         {head}
         {treeLive && treeRows >= 3 ? tree(treeRows) : null}
         {(queued > 0 || inboxN > 0 || inFlight.length > 0) && (
@@ -1424,7 +1476,7 @@ export const register: Register = (on, options) => {
         )}
         {bgs.length > 0 && (
           <Box flexDirection="row" gap={1} key="fm-band-wait">
-            <Text color={hex(C.accent2)}>{spin(f ?? 0)}</Text>
+            {moveGlyph($.ui.resolve(e), e, 'fm-band-wait-spin', bm, spin, f, C.accent2)}
             <Text color={hex(C.accent2)} wrap={cut}>
               ◷ waiting on {bgs.length} background shell{bgs.length === 1 ? '' : 's'}
               {subsBg ? ` and ${subsBg} subagent${subsBg === 1 ? '' : 's'}` : ''}
@@ -1481,7 +1533,7 @@ export const register: Register = (on, options) => {
   // that needs you; then sections, each under a titled divider (a blank row above it on a tall dock): Activity (one plot
   // of the session's tool calls by kind, with what runs now at each lane's end), Up next, Sessions, History (it takes the
   // rows left) and Today (closes per day beside four tank gauges). Few words per row; every number has a picture.
-  // Rasters that move are registered for the 30 fps blit while work is live.
+  // Rasters that move are registered for the blit (20 fps in full motion, 8 fps reduced) while work is live.
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const ui = $.ui.resolve(e)
     const { Box, Button, Input, Raster, Text } = ui
@@ -1500,14 +1552,15 @@ export const register: Register = (on, options) => {
     const live = turns.size > 0 || starts.size > 0
     const clockNow = await $.clock.now()
     const moving = live && cfg.motion !== 'off' // T-0912: motion off draws work still
-    const f = moving || clockNow < flashUntil ? await read($, frame) : null // a fading step glow redraws too
+    await read($, slow) // T-5546: the slow tick redraws the pane; what moves in it blits, off the frame clock
+    const f = moving || clockNow < flashUntil ? Math.floor(frameAt(clockNow)) : null // a fading step glow redraws too
     const beatNow = await read($, beat) // T-1437: read with the mascot off too, so the poll's repaint redraws times
     const idleBeat = live || cfg.mascot === 'off' ? 0 : beatNow
     const term = e.surface === 'terminal'
     if (term) motion.clear() // this drawing registers what moves
-    // the rasters' time: the blit's clock in full motion (so a redraw never jumps), the frame in calm, none when off
-    const ft = !moving ? null : cfg.motion === 'full' ? frameAt(clockNow) : f
-    const blit = term && cfg.motion === 'full' ? motion : undefined
+    // the rasters' time: the blit's clock (so a redraw never jumps), none when off or still
+    const ft = !moving ? null : frameAt(clockNow)
+    const blit = term && cfg.motion !== 'off' ? motion : undefined
     const a = v.active
     const m = v.mode
     const W = Math.max(PANE_MIN - 2, e.props.bodyColumns - 2) // inside the panel's padding
@@ -1517,7 +1570,6 @@ export const register: Register = (on, options) => {
     const muted = hex(C.muted) // T-1026: secondary text that still reads
     const subs = await read($, agents)
     const bgShells = await read($, shells)
-    const fb = bgShells.length ? await read($, frame) : 0
     const isOn = await read($, sound)
     const cx = await read($, ctx)
     const shownPlan = await read($, reviewing)
@@ -1726,7 +1778,13 @@ export const register: Register = (on, options) => {
         <Box key="fm-pane-head" flexDirection="column" height={headRows} overflow="hidden" flexShrink={0}>
           <Box key="head-bar" flexDirection="row" height={1} overflow="hidden" flexShrink={0}>
             <Text color={bracket}>┌ </Text>
-            <Text key="head-mark" weight="bold" color={hex(C.on)} backgroundColor={hex(C.accent)}>{` ${paneMark(moving, f ?? 0)} SAMPO `}</Text>
+            {blit && moving
+              ? [
+                  <Text key="head-mark-l" weight="bold" color={hex(C.on)} backgroundColor={hex(C.accent)}> </Text>,
+                  moveGlyph(ui, e, 'head-mark', blit, t => paneMark(moving, t), f, C.on, { bg: C.accent, bold: true }),
+                  <Text key="head-mark-r" weight="bold" color={hex(C.on)} backgroundColor={hex(C.accent)}> SAMPO </Text>,
+                ]
+              : <Text key="head-mark" weight="bold" color={hex(C.on)} backgroundColor={hex(C.accent)}>{` ${paneMark(moving, f ?? 0)} SAMPO `}</Text>}
             <Text key="head-project" color={muted}>{` ${proj}`}</Text>
             {showMode ? <Text key="head-mode" color={dim}>{`  ${modeLine}`}</Text> : null}
             <Text key="head-rule" color={hex(mix(C.line, C.dim, 0.3))}>{` ${'─'.repeat(rule)} `}</Text>
@@ -2183,7 +2241,7 @@ export const register: Register = (on, options) => {
     const checksWant = checkList.length ? Math.min(3, Math.max(checkCells(checkList, checkW).rows, 1 + Math.min(2, checkList.filter(r => r.exit).length))) : 0 // the cells, or the count and what fails
     // T-3113: the crest takes the pane's top rows; every section is placed in what is left under it
     const mood = live ? 'work' : clockNow < happyUntil ? 'happy' : 'idle'
-    const crestTop = crestTree(ui, e, W, H, mood, live ? (f ?? 0) : idleBeat, subs)
+    const crestTop = crestTree(ui, e, W, H, mood, live ? (f ?? 0) : idleBeat, subs, blit)
     const L = layout(H - crestTop.rows, [ // in the order rows are shared out: the task first, the history last
       { key: 'task', want: taskWant, cap: Math.max(4, Math.round(H * 0.4)), min: Math.min(taskWant, H >= 50 ? 9 : 4), spare: true }, // T-3701: the rail and steps before the instruments
       { key: 'activity', want: toolsIdle ? 0 : 1, fixed: toolsIdle ? 0 : nLanes + axis, grow: toolsIdle ? 0 : KINDS.length - nLanes }, // spare rows: every lane
@@ -2230,15 +2288,28 @@ export const register: Register = (on, options) => {
     const head = (
       <Box key="fm-pane-head" flexDirection="row" height={3} overflow="hidden" flexShrink={0}>
         <Box flexDirection="column" flexGrow={1} flexShrink={1}>
-          <Text key="head-who" wrap="truncate-end">
-            <Text weight="bold" color={hex(C.accent)}>
-              {paneMark(moving, f ?? 0)} Sampo
+          {blit && moving ? (
+            <Box key="head-who-row" flexDirection="row" height={1} overflow="hidden" flexShrink={0}>
+              {moveGlyph(ui, e, 'head-mark', blit, t => paneMark(moving, t), f, C.accent, { bold: true })}
+              <Text key="head-who" wrap="truncate-end">
+                <Text weight="bold" color={hex(C.accent)}> Sampo</Text>
+                <Text color={muted}>{`  ${v.project}`}</Text>
+                {modes.map(([w, c], i) => (
+                  <Text key={`mode-${i}`} color={hex(c)}>{`   ${w}`}</Text>
+                ))}
+              </Text>
+            </Box>
+          ) : (
+            <Text key="head-who" wrap="truncate-end">
+              <Text weight="bold" color={hex(C.accent)}>
+                {paneMark(moving, f ?? 0)} Sampo
+              </Text>
+              <Text color={muted}>{`  ${v.project}`}</Text>
+              {modes.map(([w, c], i) => (
+                <Text key={`mode-${i}`} color={hex(c)}>{`   ${w}`}</Text>
+              ))}
             </Text>
-            <Text color={muted}>{`  ${v.project}`}</Text>
-            {modes.map(([w, c], i) => (
-              <Text key={`mode-${i}`} color={hex(c)}>{`   ${w}`}</Text>
-            ))}
-          </Text>
+          )}
           <Box key="head-work" flexDirection="row" gap={1} height={1} overflow="hidden">
             <Box flexShrink={0}>
               <Text weight="bold" color={hex(C.steel)}>{doneWord}</Text>
@@ -2259,7 +2330,7 @@ export const register: Register = (on, options) => {
           </Box>
           {attention}
         </Box>
-        {mascotTree(ui, e, mood, live ? (f ?? 0) : idleBeat, subs)}
+        {mascotTree(ui, e, mood, live ? (f ?? 0) : idleBeat, subs, live ? blit : undefined)}
       </Box>
     )
 
@@ -2359,10 +2430,20 @@ export const register: Register = (on, options) => {
         ...fit(a.steps, nSteps, at).map(s => {
           const lit = flashed.get(`${a.id}:${s.n}`)
           const k = lit === undefined ? 1 : (clockNow - lit) / FLASH_MS
+          const flashBg = k < 1 ? mix(mix(C.ok, BG, 0.62), BG, k) : undefined
+          if (s.current && moving && blit && term) // the spinner is a blit; the rest of the row stays text
+            return (
+              <Box key={`step-${s.n}`} flexDirection="row" height={1} overflow="hidden" flexShrink={0}>
+                {moveGlyph(ui, e, `step-spin-${s.n}`, blit, spin, f, C.hot, { bg: flashBg })}
+                <Text key="step-text" wrap="truncate-end" color={hex(C.hot)} backgroundColor={flashBg === undefined ? undefined : hex(flashBg)}>
+                  {` ${String(s.n).padStart(2)}  ${s.text}`}
+                </Text>
+              </Box>
+            )
           return (
             <Text key={`step-${s.n}`} wrap="truncate-end"
               color={s.current ? hex(C.hot) : s.done ? hex(k < 1 ? C.steel : C.dim) : undefined}
-              backgroundColor={k < 1 ? hex(mix(mix(C.ok, BG, 0.62), BG, k)) : undefined}>
+              backgroundColor={flashBg === undefined ? undefined : hex(flashBg)}>
               <Text color={hex(s.done ? C.steel : s.current ? C.hot : C.dim)}>{s.done ? '✓' : s.current ? (moving ? spin(f ?? 0) : '▸') : '○'}</Text>
               {` ${String(s.n).padStart(2)}  ${s.text}`}
             </Text>
@@ -2441,7 +2522,11 @@ export const register: Register = (on, options) => {
           </Box>
           <Box flexShrink={0} width={RW + 1} flexDirection="row" gap={1}>
             <Box key="lane-n" flexShrink={0} width={4} flexDirection="row" justifyContent="flex-end">
-              {x ? <Text color={hex(x.color)}>{moving ? spin((f ?? 0) + here.length) : '▸'}</Text> : <Text color={dim}>{n ? String(n) : ''}</Text>}
+              {x
+                ? moving
+                  ? moveGlyph(ui, e, `lane-spin-${k}`, blit, t => spin(t + here.length), f, x.color)
+                  : <Text color={hex(x.color)}>▸</Text>
+                : <Text color={dim}>{n ? String(n) : ''}</Text>}
             </Box>
             {x
               ? [
@@ -2472,6 +2557,7 @@ export const register: Register = (on, options) => {
       const node = isRoot // the root's bar: every call this session made in the window
         ? { ...g, start: clockNow - gSpan, marks: recentTicks.map(t => t.at), status: `${recentTicks.length} calls` }
         : g
+      if (blit && ft !== null && g.live) blit.set(`gantt-${g.key}`, { columns: gw, rows: 1, draw: t => ganttCells(node, clockNow - gSpan, gSpan, gw, clockNow, t) })
       return (
         <Box key={`agent-row-${g.key}`} flexDirection="row" gap={1} height={1} overflow="hidden">
           <Box flexGrow={1} flexShrink={1} flexDirection="row" overflow="hidden">
@@ -2480,8 +2566,10 @@ export const register: Register = (on, options) => {
                 <Text color={hex(g.lineColor)}>{g.prefix}</Text>
               </Box>
             ) : null}
-            <Box flexShrink={0}>
-              <Text color={hex(g.color)}>{`${g.live && moving && !isRoot ? spin((f ?? 0) + g.start) : g.glyph} `}</Text>
+            <Box flexShrink={0} flexDirection="row">
+              {g.live && moving && !isRoot
+                ? [moveGlyph(ui, e, `gantt-spin-${g.key}`, blit, t => spin(t + g.start), f, g.color), <Text key="gantt-gap" color={hex(g.color)}> </Text>]
+                : <Text color={hex(g.color)}>{`${g.glyph} `}</Text>}
             </Box>
             <Text wrap="truncate-end" weight={isRoot ? 'bold' : 'regular'} color={hex(g.stop ? C.warn : isRoot ? 0xd0d5dd : mix(g.color, 0xd0d5dd, g.dim ? 0.45 : 0.6))}>
               {g.stop ? `${g.status}  ${g.name}` : g.name}

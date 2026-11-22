@@ -569,7 +569,7 @@ The footer's controls are key caps too (`p` details, `n` next, `d` drive, `u` au
 - This session sits at the root (its task and step, a comet along its rule) with the last thing Claude said it is doing and its latest calls; then a branch per subagent with its own words streaming in, its worktree if it is a builder, and its latest calls, each spinning while it runs, then ✓ or ✗ with its time.
 - It keeps one height for the whole turn, so the chat above never shifts as calls come and go, and every node has a time bar in one column, as in the pane's Agents graph. When it runs out of room, words go first, then older calls, then the least recent agents fold into a count.
 - It stays two minutes after the last call, then shrinks to one line for the session. With the panel open the band shows only that tree.
-- The charts move at about 30 fps while Claude works and stand still when idle; the `motion` setting picks `full`, `reduced` (8 fps; `calm` is the old word) or `off`. Toasts mark finished steps and tasks, needed yeses (with a soft chime) and Ward refusals.
+- The charts move at about 20 fps while Claude works (repainted in place; the pane itself redraws about once a second) and stand still when idle; the `motion` setting picks `full`, `reduced` (8 fps; `calm` is the old word) or `off`. Toasts mark finished steps and tasks, needed yeses (with a soft chime) and Ward refusals.
 - The mod only renders `sampo ui --json` and runs `sampo` on your presses; rules and gates stay in sampo and the classic hooks.
 
 **The status line.** Under the prompt is one clean true-color layout:

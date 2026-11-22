@@ -1,6 +1,6 @@
 import type { EngineInterface, RenderElement, ResolveInput } from 'claude-code'
 import type { LiveAgent } from '../types'
-import { C, MASCOT_COLORS, cells, crest, isBoard, crestText, TONE_COLOR, activityCells, agentColor, barCells, changedLines, clawd, clean, diffRows, elapsed, ganttCells, hex, spin, miniClawd, mix, outputSummary, progressCells, ruleCells, shortPath, sparkCells, sparkText, stageCells, stageLabels, textBar, textComet, toolFace } from './kit'
+import { C, MASCOT_COLORS, cells, crest, isBoard, crestText, TONE_COLOR, activityCells, agentColor, barCells, changedLines, clawd, clean, diffRows, elapsed, ganttCells, glyphCells, hex, spin, textBlocks, miniClawd, mix, outputSummary, progressCells, ruleCells, shortPath, sparkCells, sparkText, stageCells, stageLabels, textBar, textComet, toolFace } from './kit'
 import type { DiffRow, LabelRun } from './kit'
 import { OUT_LINES, TINY_OUT, TREE_MS, cfg, diffCap, took } from './state'
 import type { FeedItem, Said, ToolUseRender } from './state'
@@ -19,12 +19,14 @@ export function meter(
   fraction: number | null,
   color: number,
   f: number | null,
+  motion?: Motion, // T-5546: given, the blit repaints the bar's shimmer, not a redraw
 ) {
   if (e.surface === 'terminal') {
     const { Raster } = ui
-    const cells =
-      fraction === null ? activityCells(width, color, f ?? 0) : progressCells(width, fraction, mix(color, C.accent2, 0.6), color, f)
-    return <Raster key={key} columns={width} rows={1} cells={cells} />
+    const draw = (t: number | null) =>
+      fraction === null ? activityCells(width, color, t ?? 0) : progressCells(width, fraction, mix(color, C.accent2, 0.6), color, t)
+    if (motion && f !== null) motion.set(key, { columns: width, rows: 1, draw })
+    return <Raster key={key} columns={width} rows={1} cells={draw(f)} />
   }
   const { Box, Text } = ui
   if (fraction === null) {
@@ -226,8 +228,21 @@ export function spark(ui: UI, e: ResolveInput, key: string, values: readonly num
 }
 
 // T-0909: the pane's charts. On the terminal a Raster (and, while `motion` is given, a closure that redraws it for the
-// 30 fps blit); elsewhere their text twins.
-export type Motion = Map<string, { columns: number; rows: number; draw: (f: number) => string }>
+// 20 fps blit); elsewhere their text twins.
+export type Motion = Map<string, { columns: number; rows: number; draw: (f: number) => string; last?: string }>
+
+/** T-5546: a glyph that changes with time (a spinner, the pane's mark). On the terminal, while something blits (`motion`
+ * given and a time `f`), a one-cell Raster the blit clock repaints, so the pane never redraws for it; elsewhere, and
+ * still, a Text of `pick(f)`. `pick` takes the time in frames (fractional). */
+export function moveGlyph(ui: UI, e: ResolveInput, key: string, motion: Motion | undefined, pick: (t: number) => string, f: number | null,
+  fg: number, opts: { bg?: number; bold?: boolean } = {}) {
+  const { Box, Raster, Text } = ui
+  if (e.surface === 'terminal' && motion && f !== null) {
+    motion.set(key, { columns: 1, rows: 1, draw: t => glyphCells(pick(t), fg, opts.bg) })
+    return <Box key={key} flexShrink={0}><Raster key={`${key}-r`} columns={1} rows={1} cells={glyphCells(pick(f), fg, opts.bg)} /></Box>
+  }
+  return <Text key={key} weight={opts.bold ? 'bold' : 'regular'} color={hex(fg)} backgroundColor={opts.bg === undefined ? undefined : hex(opts.bg)}>{pick(f ?? 0)}</Text>
+}
 
 /** The stage rail with each stage's short name under its node. */
 export function rail(ui: UI, e: ResolveInput, stages: readonly string[], current: number, width: number, f: number | null, motion?: Motion) {
@@ -256,9 +271,10 @@ export function rail(ui: UI, e: ResolveInput, stages: readonly string[], current
 }
 
 /** The band's rail in small: a node every other column, no labels; nothing off the terminal (the band names the stage). */
-export function miniRail(ui: UI, e: ResolveInput, n: number, current: number, f: number | null) {
+export function miniRail(ui: UI, e: ResolveInput, n: number, current: number, f: number | null, motion?: Motion) {
   if (e.surface !== 'terminal' || current < 0) return null
   const { Raster } = ui
+  if (motion && f !== null) motion.set('fm-band-rail', { columns: n * 2 - 1, rows: 1, draw: t => stageCells(n, current, n * 2 - 1, t) })
   return <Raster key="fm-band-rail" columns={n * 2 - 1} rows={1} cells={stageCells(n, current, n * 2 - 1, f)} />
 }
 
@@ -273,13 +289,27 @@ export function bars(ui: UI, e: ResolveInput, key: string, values: readonly numb
 }
 
 /** The mascot: Claude Code's own Claude, dancing while work runs, with a mini Claude per running subagent. */
-export function mascotTree(ui: UI, e: ResolveInput, state: 'work' | 'idle' | 'happy', n: number, subs: LiveAgent[]) {
+export function mascotTree(ui: UI, e: ResolveInput, state: 'work' | 'idle' | 'happy', n: number, subs: LiveAgent[], motion?: Motion) {
   if (cfg.mascot === 'off' || cfg.mascot === 'sampo') return null
   const color = MASCOT_COLORS[cfg.mascot] ?? MASCOT_COLORS.blue!
-  const { Box, Text } = ui
+  const { Box, Raster, Text } = ui
   if (e.surface !== 'terminal')
     return <Text color={hex(color)}>{state === 'work' ? (n % 2 ? '(•̀ᴗ•́)و' : '(•̀ᴗ•́)ง') : state === 'happy' ? '\\(^ᴗ^)/' : '(•ᴗ•)'}</Text>
   const running = subs.filter(s => !s.done)
+  if (motion) { // T-5546: while work runs the dance is one Raster the blit repaints (the minis and the Claude), not a redraw
+    const build = (k: number) => textBlocks([
+      ...running.slice(0, 4).map((s, i) => ({ rows: miniClawd(Math.floor(k / 4) + i), color: agentColor(s.id) })),
+      { rows: clawd(state, k), color },
+    ], 1)
+    const g = build(n)
+    motion.set('fm-mascot', { columns: g.columns, rows: g.rows, draw: t => build(Math.floor(t)).cells })
+    return (
+      <Box key="fm-mascot-box" flexDirection="row" alignItems="flex-end" gap={1} flexShrink={0}>
+        {running.length > 4 && <Text color={hex(C.dim)}>+{running.length - 4}</Text>}
+        <Raster key="fm-mascot" columns={g.columns} rows={g.rows} cells={g.cells} />
+      </Box>
+    )
+  }
   return (
     <Box key="fm-mascot" flexDirection="row" alignItems="flex-end" gap={1} flexShrink={0}>
       {running.length > 4 && <Text color={hex(C.dim)}>+{running.length - 4}</Text>}
@@ -305,14 +335,17 @@ export function mascotTree(ui: UI, e: ResolveInput, state: 'work' | 'idle' | 'ha
 
 /** T-3113: the crest across the pane's top (mascot 'sampo'): its rows (0 when not drawn) and the element. A terminal
  * gets the Raster, any other surface one line of text. */
-export function crestTree(ui: UI, e: ResolveInput, width: number, height: number, state: 'work' | 'idle' | 'happy', n: number, subs: LiveAgent[]) {
+export function crestTree(ui: UI, e: ResolveInput, width: number, height: number, state: 'work' | 'idle' | 'happy', n: number, subs: LiveAgent[], motion?: Motion) {
   if (cfg.mascot !== 'sampo' || height < 28) return { rows: 0, el: null } // a short dock keeps every row for the work
   if (isBoard() && height < 80) height = 0 // T-3701: the Board's look has a slim top bar: the compact crest, 3 rows
   const running = subs.filter(s => !s.done)
   const { Raster, Text } = ui
   if (e.surface !== 'terminal')
     return { rows: 1, el: <Text key="fm-crest" color={hex(C.accent)} wrap="truncate-end">{crestText(state, running.length, n)}</Text> }
-  const g = crest(width, state, n, running.map(s => s.id), cfg.motion !== 'full', height)
+  const ids = running.map(s => s.id)
+  const g = crest(width, state, n, ids, cfg.motion !== 'full', height)
+  if (motion && state === 'work' && cfg.motion === 'full') // T-5546: the runes run on the blit clock, the ring and hammers with them
+    motion.set('fm-crest', { columns: g.cols, rows: g.rows, draw: t => cells(crest(width, state, Math.floor(t), ids, false, height).grid) })
   return { rows: g.rows, el: <Raster key="fm-crest" columns={g.cols} rows={g.rows} cells={cells(g.grid)} /> }
 }
 
@@ -671,6 +704,7 @@ export type TreeIn = {
   live: boolean
   now: number
   frame: number | null
+  motion?: Motion // T-5546: given, the bars and the spinners register here and the blit moves them
   width: number
   rows: number // at most this many rows
   turnMs?: number // how long this turn has run, on the root while it is live
@@ -719,18 +753,26 @@ export function liveTree(ui: UI, e: ResolveInput, t: TreeIn): RenderElement[] {
     <Box flexShrink={0} width={RW} flexDirection="row" justifyContent="flex-end"><Text wrap="truncate-end" color={hex(C.muted)}>{text}</Text></Box>
   )
   const { Raster } = ui
-  const bar = (key: string, row: { start: number; end: number | null; marks: readonly number[]; color: number }, live: boolean) =>
-    e.surface === 'terminal'
-      ? <Box flexShrink={0}><Raster key={`tree-bar-${key}`} columns={gw} rows={1} cells={ganttCells(row, t.now - span, span, gw, t.now, live ? t.frame : null)} /></Box>
-      : null
+  const bar = (key: string, row: { start: number; end: number | null; marks: readonly number[]; color: number }, live: boolean) => {
+    if (e.surface !== 'terminal') return null
+    const k = `tree-bar-${key}`
+    if (t.motion && live && t.frame !== null) t.motion.set(k, { columns: gw, rows: 1, draw: fr => ganttCells(row, t.now - span, span, gw, t.now, fr) })
+    return <Box flexShrink={0}><Raster key={k} columns={gw} rows={1} cells={ganttCells(row, t.now - span, span, gw, t.now, live ? t.frame : null)} /></Box>
+  }
+  // a spinner glyph: a blit-moved one-cell Raster while the band registers them, else its Text at the draw's frame
+  const glyph = (key: string, off: number, color: number, bold = false) =>
+    moveGlyph(ui, e, key, t.motion, fr => spin(fr + off), t.frame, color, { bold })
   const call = (x: FeedItem, prefix: string, key: string) => {
     const done = x.end !== undefined
-    const mark = !done ? (t.frame === null ? '▸' : spin(t.frame + x.at)) : x.ok === false ? '✗' : '✓'
     const time = elapsed((x.end ?? t.now) - x.at)
     return (
       <Box key={key} flexDirection="row" gap={1} height={1} overflow="hidden">
         <Box flexShrink={0}><Text color={hex(lines)}>{prefix}</Text></Box>
-        <Box flexShrink={0}><Text color={hex(!done ? x.color : x.ok === false ? C.err : C.steel)}>{mark}</Text></Box>
+        <Box flexShrink={0}>
+          {!done
+            ? t.frame === null ? <Text color={hex(x.color)}>▸</Text> : glyph(`${key}-spin`, x.at, x.color)
+            : <Text color={hex(x.ok === false ? C.err : C.steel)}>{x.ok === false ? '✗' : '✓'}</Text>}
+        </Box>
         <Box flexShrink={0}><Text weight="bold" color={hex(x.color)}>{`${x.icon} ${done ? PAST[x.verb] ?? x.verb : x.verb}`}</Text></Box>
         <Box flexGrow={1} flexShrink={1}><Text wrap="truncate-end" color={hex(0xd0d5dd)}>{clean(x.target)}</Text></Box>
         {bar(key, { start: x.at, end: x.end ?? null, marks: [], color: x.color }, !done)}
@@ -746,7 +788,7 @@ export function liveTree(ui: UI, e: ResolveInput, t: TreeIn): RenderElement[] {
   // the root, as the pane's: the session in bold, its task and step (cut, never dropped), every call it made on its bar
   const head = (
     <Box key="tree-root" flexDirection="row" gap={1} height={1} overflow="hidden">
-      <Box flexShrink={0}><Text weight="bold" color={hex(C.accent)}>{t.live ? (t.frame === null ? '●' : spin(t.frame)) : '●'}</Text></Box>
+      <Box flexShrink={0}>{t.live && t.frame !== null ? glyph('tree-root-spin', 0, C.accent, true) : <Text weight="bold" color={hex(C.accent)}>●</Text>}</Box>
       <Box flexShrink={0}><Text weight="bold" color={hex(C.accent)}>this session</Text></Box>
       <Box flexGrow={1} flexShrink={1}><Text wrap="truncate-end" color={hex(0xd0d5dd)}>{t.task}</Text></Box>
       {bar('root', { start: Math.min(t.now, ...mine.map(x => x.at)), end: null, marks: mine.map(x => x.at), color: C.accent }, t.live)}
@@ -758,7 +800,7 @@ export function liveTree(ui: UI, e: ResolveInput, t: TreeIn): RenderElement[] {
     (k ? saidOf(id).slice(-k) : []).map((w, j) => (
       <Box key={`${key}-said-${w.at}`} flexDirection="row" gap={1} height={1} overflow="hidden">
         <Box flexShrink={0}><Text color={hex(lines)}>{prefix}</Text></Box>
-        <Box flexShrink={0}><Text color={hex(color)}>{w.live && t.frame !== null ? spin(t.frame) : '›'}</Text></Box>
+        <Box flexShrink={0}>{w.live && t.frame !== null ? glyph(`${key}-said-spin-${w.at}`, 0, color) : <Text color={hex(color)}>›</Text>}</Box>
         <Box flexGrow={1} flexShrink={1}><Text wrap="truncate-end" color={hex(j === k - 1 || w.live ? 0xc9d1dc : C.muted)}>{w.text}</Text></Box>
       </Box>
     ))
@@ -780,7 +822,7 @@ export function liveTree(ui: UI, e: ResolveInput, t: TreeIn): RenderElement[] {
     out.push(
       <Box key={`tree-agent-${a.id}`} flexDirection="row" gap={1} height={1} overflow="hidden">
         <Box flexShrink={0}><Text color={hex(lines)}>{prefix}</Text></Box>
-        <Box flexShrink={0}><Text color={hex(color)}>{a.done ? '✓' : t.frame === null ? '◆' : spin(t.frame + a.startedAt)}</Text></Box>
+        <Box flexShrink={0}>{a.done || t.frame === null ? <Text color={hex(color)}>{a.done ? '✓' : '◆'}</Text> : glyph(`tree-agent-${a.id}-spin`, a.startedAt, color)}</Box>
         <Box flexShrink={0}><Text weight="bold" color={hex(color)}>{`◆ ${a.type}`}</Text></Box>
         <Box flexGrow={1} flexShrink={1}>
           <Text wrap="truncate-end">

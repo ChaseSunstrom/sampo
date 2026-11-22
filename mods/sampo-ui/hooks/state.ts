@@ -10,7 +10,12 @@ export const PANE = 'foreman'
 export const OUT_LINES = 12 // a finished command's row: this many output lines (failures first, else the tail)
 export const DIFF_LINES = 8 // a finished edit's row: this many changed lines
 export const FRAME_MS = 120
-export const IDLE_FRAMES = Math.round((15 * 60 * 1000) / FRAME_MS) // a lost turn.complete stops the clock after 15 min
+// T-5546: what moves draws by blit, not by redrawing the pane. The blit clock ticks at MOTION_MS (full 20 fps, reduced the
+// old 8 fps); the pane and band redraw only on a view change, on the slow tick, while a glow fades and when work settles.
+export const MOTION_MS = { full: 50, reduced: 125 } as const
+export const SLOW_MS = 1000
+export const FADE_MS = 360 // while a step's glow fades the pane redraws this often
+export const IDLE_FRAMES =Math.round((15 * 60 * 1000) / FRAME_MS) // a lost turn.complete stops the clock after 15 min
 export const QUIET_MS = 2 * 60 * 1000 // a running subagent with no tool call this long shows how long it has been quiet
 export const STOP_MS = 10 * 60 * 1000 // and from here offers Stop
 export const SHELL_MAX_MS = 2 * 3600 * 1000 // a background command runs at most 2 h; past that its notice was lost

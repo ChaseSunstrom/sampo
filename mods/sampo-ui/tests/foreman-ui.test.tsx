@@ -363,6 +363,7 @@ test('while a turn runs the band animates; when it ends the clock stops', async 
   const ui = await $.ui.mount({ plugin: 'sampo-ui', surface: 'terminal', ...band(true) })
   const first = JSON.stringify(await ui.drawn())
   await clock.advance(360)
+  await clock.advance(1000) // T-5546: the band redraws on the slow tick; its bars and spinners blit between
   const later = JSON.stringify(await ui.drawn())
   expect(later).not.toBe(first)
   expect(await ui.find({ key: 'next' })).toBeUndefined() // no Next while Claude works
@@ -1892,7 +1893,7 @@ test('a palette changed before the first poll applies on it, not only recorded (
 })
 
 // T-2293: these three run on real CPU near the engine's 5 s default cap; a loaded host timed them out
-test('motion turned down mid-work stops the 30 fps blit on the next poll (T-1574 review)', { timeoutMs: 60000 }, async ($, on) => {
+test('motion turned down mid-work slows the blit to 8 fps on the next poll (T-1574 review, T-5546)', { timeoutMs: 60000 }, async ($, on) => {
   const { clock, answer, blits } = world(on, [VIEW])
   const opts: Record<string, string> = { motion: 'full' }
   configRows(on, opts)
@@ -1907,13 +1908,16 @@ test('motion turned down mid-work stops the 30 fps blit on the next poll (T-1574
       await clock.advance(40)
     }
   }
+  const t0 = blits.length
   await run()
-  expect(blits.length).toBeGreaterThan(0)
-  opts.motion = 'reduced' // the 8 fps redraws only: no blit
+  const fullRate = blits.length - t0
+  expect(fullRate).toBeGreaterThan(0)
+  opts.motion = 'reduced' // the blit slows from 50 ms to 125 ms
   await clock.advance(2000) // one poll
   const before = blits.length
   await run()
-  expect(blits.length).toBe(before)
+  expect(blits.length - before).toBeGreaterThan(0)
+  expect(blits.length - before).toBeLessThan(fullRate)
   await clock.advance(10000)
   await ui.unmount()
 })
@@ -2211,7 +2215,7 @@ test('a step that just got done glows, then settles (T-0909)', async ($, on) => 
   await later.unmount()
 })
 
-test('while work runs the rail moves between redraws (30 fps blit), and settles when it ends (T-0909)', async ($, on) => {
+test('while work runs the rail moves between redraws (20 fps blit), and settles when it ends (T-0909)', async ($, on) => {
   const { answer, clock, blits } = world(on, [VIEW])
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
   answer.hold = 2000
@@ -2220,12 +2224,12 @@ test('while work runs the rail moves between redraws (30 fps blit), and settles 
   const ui = await $.ui.mount({ plugin: 'sampo-ui', surface: 'terminal', ...PANE })
   const cells = async () => ((await ui.findAll({ type: 'Raster' })).find(r => r.key === 'stage-rail')?.props as { cells?: string } | undefined)?.cells
   const seen = new Set<string | undefined>()
-  for (let i = 0; i < 8; i++) {
+  for (let i = 0; i < 30; i++) { // 1.2 s: the pane redraws about once a second (T-5546), the blit paints between
     seen.add(await cells())
     await clock.advance(40)
   }
   expect(seen.size).toBeGreaterThan(1) // the comet moved
-  expect(blits.filter(k => k === 'stage-rail').length).toBeGreaterThan(5) // and between redraws: the 30 fps blit
+  expect(blits.filter(k => k === 'stage-rail').length).toBeGreaterThan(10) // and between redraws: the 20 fps blit
   await clock.advance(3000) // the call ended: nothing live
   const a = await cells()
   await clock.advance(400)
@@ -2266,26 +2270,29 @@ const railFrames = async ($: Parameters<Parameters<typeof test>[1]>[0], on: On) 
   await clock.advance(50)
   const ui = await $.ui.mount({ plugin: 'sampo-ui', surface: 'terminal', ...PANE })
   const seen = new Set<string | undefined>()
-  for (let i = 0; i < 8; i++) {
+  for (let i = 0; i < 30; i++) { // 1.2 s: past the pane's one slow redraw
     seen.add(((await ui.findAll({ type: 'Raster' })).find(r => r.key === 'stage-rail')?.props as { cells?: string } | undefined)?.cells)
     await clock.advance(40)
   }
   const spinning = await ui.find({ type: 'Text', text: /^[·✢✳✶✻✽] Sampo$/ })
   await clock.advance(3000)
   await ui.unmount()
-  return { seen: seen.size, spinning: !!spinning, blits: blits.length }
+  return { seen: seen.size, spinning: !!spinning, blits: blits.length, rail: blits.filter(k => k === 'stage-rail').length }
 }
 
-test('motion calm: the rail moves only with the 8 fps redraws, never by blit (T-0912)', { options: { motion: 'calm' } }, async ($, on) => {
-  const { seen, blits } = await railFrames($, on)
+// T-5546: calm still moves, at the old 8 fps, but by blit (the pane redraws about once a second): at most 125 ms apart
+test('motion calm: the rail moves by blit at 8 fps, no faster than full (T-0912, T-5546)', { options: { motion: 'calm' } }, async ($, on) => {
+  const { seen, rail } = await railFrames($, on)
   expect(seen).toBeGreaterThan(1)
-  expect(blits).toBe(0)
+  expect(rail).toBeGreaterThan(0)
+  expect(rail).toBeLessThanOrEqual(18) // the call holds 2 s: 16 ticks at 125 ms; full motion's 50 ms would be 40
 })
 
-test('motion reduced, fm code\'s word for calm: the same 8 fps redraws, never a blit (T-1496)', { options: { motion: 'reduced' } }, async ($, on) => {
-  const { seen, blits } = await railFrames($, on)
+test('motion reduced, fm code\'s word for calm: the same 8 fps blit (T-1496, T-5546)', { options: { motion: 'reduced' } }, async ($, on) => {
+  const { seen, rail } = await railFrames($, on)
   expect(seen).toBeGreaterThan(1)
-  expect(blits).toBe(0)
+  expect(rail).toBeGreaterThan(0)
+  expect(rail).toBeLessThanOrEqual(18)
 })
 
 test('motion off: nothing moves while work runs; the pane is still (T-0912)', { options: { motion: 'off' } }, async ($, on) => {
