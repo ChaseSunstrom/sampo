@@ -11539,8 +11539,9 @@ def _build_parser(only=None):
     s.add_argument("state", nargs="?", choices=["on", "off", "shadow", "status"],
                    help="shadow: record what it would cut (sampo compact-output shows the total), never shorten")
     s = add("models", lazy("sampo.modelup", "cmd_models"), tier=("Project and settings", 831),
-            help="keep models newest and best (models.newest, on): status, newest on|off, pin NAME|off [--codex]")
-    s.add_argument("words", nargs="*", help="status | newest on|off | pin NAME|off")
+            help="keep models newest and best (models.newest, on): status, newest on|off, pin NAME|off [--codex]; "
+                 "local off|on keeps the models served on this machine unused")
+    s.add_argument("words", nargs="*", help="status | newest on|off | pin NAME|off | local off|on")
     s.add_argument("--codex", action="store_true", help="pin the Codex model instead of Claude's")
     s = add("uninstall-user", lazy("sampo.setup", "cmd_uninstall"), tier=("Internal (hooks and installer)", 1340), help="undo install-user from the manifest")
     s.add_argument("--dry-run", action="store_true")

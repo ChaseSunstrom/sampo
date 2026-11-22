@@ -141,14 +141,26 @@ def codex_newest(codex_dir=None):
 
 def cmd_models(args):
     """sampo models [status | newest on|off | pin NAME|off [--codex]]: the setting, and the settings.json it keeps."""
+    from sampo import models
     from sampo import setup
     w = list(args.words or [])
+    if w[:1] == ["local"] and w[1:] in ([], ["on"], ["off"]):  # T-5504: models served on this machine, kept off for good
+        flag = models.local_flag()
+        if w[1:] == ["off"]:
+            os.makedirs(os.path.dirname(flag), exist_ok=True)
+            with open(flag, "w", encoding="utf-8") as f:
+                f.write(f"off since {time.strftime('%Y-%m-%d %H:%M')} (sampo models local on lifts it)\n")
+        elif w[1:] == ["on"] and os.path.exists(flag):
+            os.remove(flag)
+        print(f"local models here: {'off' if os.path.exists(flag) else 'on'} (Ollama, LM Studio and every loopback "
+              "profile; remote own boxes stay)")
+        return
     if w[:1] == ["newest"] and w[1:2] in (["on"], ["off"]):
         set_newest(w[1] == "on")
     elif w[:1] == ["pin"] and len(w) == 2:
         set_pin(None if w[1] == "off" else w[1], codex=args.codex)
     elif w and w != ["status"]:  # T-3612's typo list: 'models list' meant the local profiles; exit 2 as argparse does
-        print(f"sampo models: no {w[0]!r} here (status | newest on|off | pin NAME|off [--codex]); did you mean "
+        print(f"sampo models: no {w[0]!r} here (status | newest on|off | pin NAME|off [--codex] | local off|on); did you mean "
               "code models (the local model profiles)?", file=__import__("sys").stderr)
         raise SystemExit(2)
     if w and w != ["status"]:
@@ -158,7 +170,8 @@ def cmd_models(args):
     s = setup._load(setup.paths()["settings"], None) or {}
     print(f"models.newest: {'on' if newest_on() else 'off'}; pin: {pinned() or 'none'}"
           f"; codex pin: {pinned(codex=True) or 'none'}; settings.json model: {s.get('model', 'unset')}, "
-          f"switchModelsOnFlag: {s.get('switchModelsOnFlag', 'unset')}")
+          f"switchModelsOnFlag: {s.get('switchModelsOnFlag', 'unset')}; local models here: "
+          f"{'off' if os.path.exists(models.local_flag()) else 'on'}")
     for r in downgraded():
         print(f"  session {r['sid']} dropped {r['from']} -> {r['to']}: {r['way_back']}")
 
