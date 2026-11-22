@@ -757,8 +757,16 @@ def declared_non_claude(p):
     pins = meta.get("non_claude_workers") if isinstance(meta, dict) else None
     if not isinstance(pins, dict):
         return {}
-    return {n: {"path": v["path"], "sha256": v["sha256"]} for n, v in pins.items() if isinstance(n, str) and isinstance(v, dict)
-            and isinstance(v.get("path"), str) and isinstance(v.get("sha256"), str)}
+    out = {}
+    for n, v in pins.items():
+        if not (isinstance(n, str) and isinstance(v, dict) and isinstance(v.get("path"), str)
+                and isinstance(v.get("sha256"), str)):
+            continue
+        out[n] = {"path": v["path"], "sha256": v["sha256"]}
+        i = v.get("interp")  # T-5849 round 3: the interpreter a script's #! line ran when the user declared it
+        if isinstance(i, dict) and isinstance(i.get("path"), str) and isinstance(i.get("sha256"), str):
+            out[n]["interp"] = {"path": i["path"], "sha256": i["sha256"]}
+    return out
 
 
 # T-5584: the -p project the gated command named, and the state root it was named under. Scope: claude_gate sets it and

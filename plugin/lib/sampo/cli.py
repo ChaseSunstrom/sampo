@@ -6859,6 +6859,9 @@ def cmd_claude_bench(args):
         if not rm:  # the declaration is trust in one file: the realpath of what the name runs now, and its sha256
             from sampo import smith
             tpl = smith.all_runners().get(name, {}).get("work") or name  # the command worker_argv runs
+            refusal = smith.declaration_refusal(name, tpl)  # T-5849: an interpreter, shell or wrapper pins nothing useful
+            if refusal:
+                raise UsageError(refusal)
             pin = smith.worker_pin(name, tpl)
             if pin is None:
                 raise UsageError(f"claude-bench worker: {name!r} does not resolve to one readable command file here (its "

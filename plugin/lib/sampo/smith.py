@@ -44,6 +44,7 @@ own config and hooks are put back, a commit is undone (its changes stay), and ea
 Write is reverted and reported. The worker's exit code and reply never mark anything done: the harness's verify does.
 """
 import ast
+import contextlib
 import difflib
 import errno
 import glob
@@ -63,6 +64,7 @@ import sys
 import tempfile
 import threading
 import time
+import tomllib
 import urllib.parse
 
 from sampo import core
@@ -427,6 +429,17 @@ WORKER_DROP = re.compile(r"^(GITHUB_|GH_|GITLAB_|BITBUCKET_|AWS_|AZURE_|GCP_|GCL
                          r"PYPI_|TWINE_|DOCKER_|CARGO_REGISTRY_|HF_TOKEN$|SSH_AUTH_SOCK$|DATABASE_URL$)")
 MODEL_KEYS = ("ANTHROPIC_", "CLAUDE_", "OPENAI_", "GEMINI_", "GOOGLE_API_KEY", "GOOGLE_GENAI_", "OPENROUTER_",
               "MISTRAL_", "DEEPSEEK_", "GROQ_", "XAI_", "AIDER_")
+# T-5849: what makes a shell or an interpreter load a file, a function or a library of the caller's before (or in place of) the
+# command it was given: dropped from a worker's environment. WORKER_LOAD_RE adds exported bash functions, every LD_* and DYLD_*.
+# The Python names are fmguard._PY_PATH_VARS (a test keeps them in step), spelled here so smith does not import the guard.
+WORKER_LOADS = frozenset({
+    "BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "CDPATH", "GLOBIGNORE", "NODE_OPTIONS", "NODE_PATH", "PERL5OPT", "PERL5LIB",
+    "PERLLIB", "RUBYOPT", "RUBYLIB", "GCONV_PATH", "ZDOTDIR", "PYTHONPATH", "PYTHONHOME", "PYTHONUSERBASE", "PYTHONPLATLIBDIR",
+    "PYTHONSTARTUP"})
+WORKER_LOAD_RE = re.compile(r"^(BASH_FUNC_|LD_|DYLD_)")
+# T-5849 round 4: the Python names go only from a worker START (every PYTHON* variable, then PYTHONNOUSERSITE=1): a verify or a
+# test run keeps the project's own PYTHONPATH, so a project's tests still import their code
+PY_LOADS = frozenset(k for k in WORKER_LOADS if k.startswith("PYTHON"))
 SECRET_NAME = re.compile(r"(TOKEN|SECRET|PASSW(OR)?D|_PWD|_KEYS?|CREDENTIALS?)$")
 SCHEMA = 1  # T-1283: the --json event stream's version; a reader refuses a newer one it doesn't know
 # T-1283: every --json event (each also has "event", "text" and "ts", seconds since the epoch). The TUI reads only these.
@@ -486,12 +499,21 @@ KEEP_MAX = 4 << 20  # a protected file up to this size is held before a worker t
 KEEP_ASIDE = 1 << 20  # T-1417: the most of a worker's version of a file outside the repo kept when it's put back
 
 
-def worker_env():
+def worker_env(start=False):
     """The environment of a worker and, in a worker run, of all fm code starts (the verify runs the worker's code):
     no forge, cloud or registry credentials, nor any variable named like a secret but a model key. ponytail: a
-    denylist, so a secret under an odd name still passes; an allowlist would break toolchains' own variables."""
-    return {k: v for k, v in os.environ.items() if not WORKER_DROP.match(k) and not (
-        SECRET_NAME.search(k) and not k.startswith(MODEL_KEYS))}
+    denylist, so a secret under an odd name still passes; an allowlist would break toolchains' own variables.
+    T-5849: nor a variable that makes a shell or an interpreter load a file of the caller's before the command it was given
+    (WORKER_LOADS), so a checked worker file starts as itself. start=True (a worker's own start, its test and ping runs):
+    also every PYTHON* variable, and PYTHONNOUSERSITE=1 so a python worker reads no user-site .pth or sitecustomize the
+    agent could have written; a verify or a test run keeps the project's own Python variables (round 4)."""
+    gone = WORKER_LOADS if start else WORKER_LOADS - PY_LOADS
+    env = {k: v for k, v in os.environ.items() if k not in gone and not WORKER_LOAD_RE.match(k)
+           and not (start and k.startswith("PYTHON")) and not WORKER_DROP.match(k)
+           and not (SECRET_NAME.search(k) and not k.startswith(MODEL_KEYS))}
+    if start:
+        env["PYTHONNOUSERSITE"] = "1"
+    return env
 
 TOOLS = [
     {"name": "read", "description": "Read a file's numbered lines, or list a folder, inside the project.",
@@ -4964,7 +4986,7 @@ class Run:
         if name in self.done:
             return
         self.check_cap(name)
-        argv = worker_argv(self.worker, prompt)
+        argv = worker_argv(self.worker, prompt, cwd=self.root)
         if self.max_usd is not None and os.path.basename(argv[0]) == "claude":  # T-1357: claude stops itself there
             argv += ["--max-budget-usd", f"{self.left():.2f}"]
         before = _snapshot(self.root, self.verify_cmd)
@@ -4972,7 +4994,7 @@ class Run:
         try:
             # T-1327: quiet, so only Foreman's guard runs in that nested session; T-1294: its leases are ours
             # T-1417: no self-update mid-turn: it rewrites ~/.local/bin/claude, which the judge holds
-            env = dict(worker_env(), FOREMAN_QUIET="1", FOREMAN_WORKER_OF=f"fm-code-{self.tid or 'plan'}",
+            env = dict(worker_env(start=True), FOREMAN_QUIET="1", FOREMAN_WORKER_OF=f"fm-code-{self.tid or 'plan'}",
                        DISABLE_AUTOUPDATER="1")
             streams = "stream-json" in (all_runners().get(self.worker, {}).get("work") or "")
             self.unlean = None
@@ -4982,11 +5004,14 @@ class Run:
                 self.emit("note", f"  {note}", worker=argv[0])
                 self.log(kind="confine", note=note)
             try:
-                code, out = run_bounded(shlex.join(argv), self.root, self.worker_timeout, env, self.cap, reap=True,
-                                        on_line=self.live_tools(argv[0], "--strict-mcp-config" in argv) if streams
-                                        else None, on_idle=self.live_beat(argv[0]), confine=confine,
-                                        on_spawn=lambda p: setattr(self, "wpid", p.pid))
+                with checked_command(argv) as (cmd, fds):  # T-5849: the file the check hashed is the file that runs
+                    code, out = run_bounded(cmd, self.root, self.worker_timeout, env, self.cap, reap=True,
+                                            on_line=self.live_tools(argv[0], "--strict-mcp-config" in argv) if streams
+                                            else None, on_idle=self.live_beat(argv[0]), confine=confine,
+                                            on_spawn=lambda p: setattr(self, "wpid", p.pid), keep_fds=fds)
             except ConfineError as e:
+                raise Blocked(str(e))
+            except CodeError as e:  # the pinned file changed between the check and the start
                 raise Blocked(str(e))
             hit, self.limit_hit, self.wpid = getattr(self, "limit_hit", None), None, None
             ended = True
@@ -5763,8 +5788,9 @@ def _close_quietly(f):
 
 
 def run_bounded(cmd, cwd, timeout, env=None, cap=CAP, reap=False, on_line=None, on_idle=None, on_spawn=None,
-                confine=None, stdin=None):
+                confine=None, stdin=None, keep_fds=()):
     """(exit code or None on timeout, output cut to head and tail). Memory stays bounded whatever the command prints;
+    keep_fds (T-5849): descriptors the command inherits, by number (checked_command's open worker file);
     its whole process group is killed at the end, and with reap (Linux) whatever it started outside that group too
     (setsid, a double fork): this process is their subreaper, so they come back to it, not to init. on_line and
     on_idle see its output live (fmcore.pump, T-1329); on_spawn(process) as it starts (T-1511: a caller that ends
@@ -5772,10 +5798,10 @@ def run_bounded(cmd, cwd, timeout, env=None, cap=CAP, reap=False, on_line=None, 
     rs, pre = _confining(confine)  # T-1607: built before the subreaper is set, so a refusal leaves nothing behind
     reaping = reap and _subreaper(True)
     try:
-        p = subprocess.Popen(["bash", "-c", cmd], cwd=cwd,
+        p = subprocess.Popen(["bash", "--noprofile", "--norc", "-c", cmd], cwd=cwd,  # T-5849: no startup file of the user's
                              stdin=subprocess.DEVNULL if stdin is None else subprocess.PIPE, stdout=subprocess.PIPE,
                              stderr=subprocess.STDOUT, start_new_session=True, env=env, preexec_fn=pre,
-                             pass_fds=(rs,) if rs is not None else ())
+                             pass_fds=((rs,) if rs is not None else ()) + tuple(keep_fds))
     except BaseException:
         if reaping:
             _subreaper(False)
@@ -6194,25 +6220,35 @@ def route(run):
 
 
 # T-5584: the built-in runners whose CLI is not Claude. Any other worker name is judged as Claude (claude_worker).
-NON_CLAUDE_WORKERS = frozenset(k for k in RUNNERS if k != "claude")
+#   T-5849: only the CLIs this module can check for a Claude model in their own config (codex, gemini, aider); opencode,
+#   goose, amp, cursor-agent and qwen can pick one from a config nothing here reads, so each needs a user declaration.
+NON_CLAUDE_WORKERS = frozenset({"codex", "gemini", "aider"})
 SHELL_WRAPPERS = frozenset({"sh", "bash", "dash", "zsh", "ksh"})
 SHELL_SYNTAX = frozenset("$`\\;|&()<>*?[]~")  # T-5584: a string a shell runs with these can't be judged, so it is Claude
 CLAUDE_FOLDERS = frozenset({"claude", "claude-code"})  # a versioned install's folder, and npm's package folder
+_judging = threading.local()  # T-5849: .memo, the words a script's judgement has resolved already (this thread's)
 
 
 def _claude_word(word):
     """T-5584: True when a command word names the Claude CLI: its basename starts with claude in any case, or, found on
     PATH or as a path, it resolves (symlinks followed) to a file whose name starts with claude, or to one under a
-    claude or claude-code folder (a versioned or npm install keeps its binary there)."""
+    claude or claude-code folder (a versioned or npm install keeps its binary there).
+    T-5849: while a script's words are judged (_script_claude) each distinct word is resolved once, a memo on this thread."""
     if os.path.basename(word).lower().startswith("claude"):
         return True
+    memo = getattr(_judging, "memo", None)
+    if memo is not None and word in memo:
+        return memo[word]
     found = word if "/" in word else shutil.which(word)
     if not found:
-        return False
-    real = os.path.realpath(found)
-    if os.path.basename(real).lower().startswith("claude"):
-        return True
-    return any(p.lower() in CLAUDE_FOLDERS for p in real.split(os.sep))
+        said = False
+    else:
+        real = os.path.realpath(found)
+        said = (os.path.basename(real).lower().startswith("claude")
+                or any(p.lower() in CLAUDE_FOLDERS for p in real.split(os.sep)))
+    if memo is not None:
+        memo[word] = said
+    return said
 
 
 def _claude_string(s, depth):
@@ -6247,53 +6283,676 @@ PIN_MAX = 256 * 1024 * 1024  # T-5812: a command file bigger than this is not pi
 
 def worker_pin(spec, tpl):
     """T-5812: {path, sha256} of the file a --worker spec runs as argv[0]: the realpath of the command word (found on the
-    caller's PATH when it has no slash, else relative to the cwd) and the sha256 of its bytes. None when there is nothing
+    caller's PATH when it has no slash, else relative to the cwd) and the sha256 of its bytes; for a script whose #! line can be
+    followed, also "interp": {path, sha256} of the interpreter that runs it (T-5849 round 3). None when there is nothing
     to pin: the command won't split, argv[0] isn't a readable file, the file is over PIN_MAX, or the spec has whitespace
-    and no {prompt}, so the process runs the raw spec as argv[0] (worker_argv) and that is no command file."""
+    and no {prompt}, so the process runs the raw spec as argv[0] (worker_argv) and that is no command file.
+    T-5849 round 4: also None for a script whose #! line can't be followed (#!/usr/bin/env -S uv run, #!/x/python -u): a
+    declaration never pins a script without the interpreter that runs it."""
+    try:
+        pin, head = _read_pin(spec, tpl)
+        if pin and head.startswith(b"#!"):
+            paths = _shebang_paths(head)
+            return _with_interp(pin, paths) if paths else None
+        return pin
+    except OSError:
+        return None
+
+
+# T-5849: argv[0] a declaration refuses: an interpreter, shell or wrapper loads other files (the script it is given, what
+# that imports or sources) that a pin of this one file never sees, so the pin would promise more than it checks.
+INTERPRETERS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "csh", "tcsh", "fish", "env", "node", "deno", "bun", "perl",
+                          "ruby", "php", "lua", "osascript", "nice", "nohup", "timeout", "xargs", "busybox"})
+PYTHONS = re.compile(r"^(python|pypy)[0-9.]*w?$")
+WORKER_SCRIPT_MAX = 1 << 20  # T-5849: a command file up to this size is read as a script when it is text; a bigger one by its shebang
+SCRIPT_WORDS = 20000  # more distinct words than this in one script: too much to judge, so it is judged as Claude
+
+
+def _first_word(spec, tpl):
+    """T-5849: the word worker_argv makes argv[0] from (the template's first word, else the raw spec), or None when the
+    command won't split or the raw spec has whitespace (no command file answers to it)."""
     try:
         words = shlex.split(tpl) if "{prompt}" in tpl else [spec]
     except ValueError:
         return None
     if not words or not words[0] or ("{prompt}" not in tpl and any(ch.isspace() for ch in spec)):
         return None
-    found = words[0] if "/" in words[0] else shutil.which(words[0])
-    if not found:
-        return None
-    real = os.path.realpath(found)
-    try:
-        if not os.path.isfile(real) or os.path.getsize(real) > PIN_MAX:
-            return None
-        h = hashlib.sha256()
-        with open(real, "rb") as f:
+    return words[0]
+
+
+def _resolve(word):
+    """T-5849: the realpath a command word names (found on the caller's PATH when it has no slash, else relative to the
+    cwd), or None when nothing is there."""
+    found = word if "/" in word else shutil.which(word)
+    return os.path.realpath(found) if found else None
+
+
+def _read_pin(spec, tpl):
+    """T-5849: ({path, sha256} or None, the file's first WORKER_SCRIPT_MAX + 1 bytes) from ONE read of the file argv[0] resolves
+    to, so the hash a run execs against and the text the Claude judgement read are the same bytes. (None, b"") when there is
+    no such file. An OSError (found, not readable, or over PIN_MAX: EFBIG) reaches the caller, which fails closed: a file too
+    big to hash is never judged by its name only."""
+    word = _first_word(spec, tpl)
+    real = _resolve(word) if word else None
+    if not real or not os.path.isfile(real):
+        return None, b""
+    if os.path.getsize(real) > PIN_MAX:
+        raise OSError(errno.EFBIG, f"{real} is over {PIN_MAX} bytes: too big to hash")
+    with open(real, "rb") as f:
+        def make():
+            h, head = hashlib.sha256(), b""
             for chunk in iter(lambda: f.read(1 << 20), b""):
+                if len(head) <= WORKER_SCRIPT_MAX:
+                    head += chunk[:WORKER_SCRIPT_MAX + 1 - len(head)]
                 h.update(chunk)
+            return h.hexdigest(), head
+        sha, head = _cached(("pin",) + _stat_key(real, os.fstat(f.fileno())), make)  # T-5849 round 4: once per file, not per call
+    return {"path": real, "sha256": sha}, head
+
+
+def interpreter_argv0(word):
+    """T-5849: True when a command word is an interpreter, shell or wrapper (INTERPRETERS, any python, any case), as typed or
+    as the file it resolves to (a symlink named for the user's own tool still reaches sh)."""
+    names = {os.path.basename(word).lower()}
+    real = _resolve(word)
+    if real:
+        names.add(os.path.basename(real).lower())
+    return any(n in INTERPRETERS or PYTHONS.match(n) for n in names)
+
+
+def declaration_refusal(spec, tpl):
+    """T-5849: why `sampo claude-bench worker` can't take this spec (an interpreter, shell or wrapper as argv[0], whose
+    other files a pin of its own file never sees), naming the fix; None when it can."""
+    word = _first_word(spec, tpl)
+    if word and interpreter_argv0(word):
+        return (f"claude-bench worker: {spec!r} runs {os.path.basename(word)}, an interpreter, shell or wrapper: the pin "
+                "would hold that one binary, never the script it is given or what that loads, so it would promise more "
+                "than it checks. Make the script itself executable with a shebang (#!/usr/bin/env python3) and declare "
+                "that file as argv[0]: sampo claude-bench worker ./mycli")
+    try:
+        pin, head = _read_pin(spec, tpl)
     except OSError:
-        return None
-    return {"path": real, "sha256": h.hexdigest()}
+        return None  # worker_pin says it can't read it
+    if pin and head.startswith(b"#!") and _shebang_paths(head) is None:  # T-5849 round 4: no pinned interpreter, no declaration
+        return (f"claude-bench worker: {spec!r} is a script whose #! line this can't follow (it names no file, has an option "
+                "or more than one word, or env with more than its one program), so a pin could not hold the interpreter that "
+                "runs it. Give it a shebang of one interpreter and no option (#!/usr/bin/python3, or #!/usr/bin/env python3) "
+                "and declare it again")
+    return None
 
 
-def declared_state(spec, tpl, p=None):
+def declared_state(spec, tpl, p=None, pin=False):
     """T-5812: where a user's declaration (sampo claude-bench worker NAME) stands for a --worker spec in project p (else the
     project this process runs in): None when nobody declared it, True when argv[0] still resolves to the file and hash the
-    user pinned, False when it doesn't (the file changed, or another file now answers to the name)."""
-    pin = m.declared_non_claude(p if p is not None else m.here()).get(spec)
-    if pin is None:
+    user pinned, False when it doesn't (the file changed, or another file now answers to the name).
+    T-5849: pin is the file's pin the caller already read (None: no file), so one read serves the judgement and the run;
+    a declaration of an interpreter, shell or wrapper made before it was refused no longer counts (False)."""
+    declared = m.declared_non_claude(p if p is not None else m.here()).get(spec)
+    if declared is None:
         return None
-    return worker_pin(spec, tpl) == pin
+    word = _first_word(spec, tpl)
+    if word and interpreter_argv0(word):
+        return False
+    return (worker_pin(spec, tpl) if pin is False else pin) == declared
 
 
-def claude_worker(spec, tpl, p=None):
-    """T-5584 round 2: True when a --worker spec runs the Claude CLI, so claude_gate judges it. tpl is the command the spec
-    runs before the prompt goes in: its runner's work template, else the spec itself. The command's words are judged
-    whatever wrapper holds them (env, sh -c, a symlink, any case), so a known runner whose template runs claude is
-    Claude too. Fail closed: a name off the non-Claude list, or a command that won't split, is Claude.
-    T-5812: a declaration (sampo claude-bench worker NAME, typed by the user, in the project's meta: p, else the project
-    this process runs in) is trust in one pinned file, not in a name: it records the realpath of argv[0] and the sha256 of
-    that file, and the spec counts as non-Claude only while argv[0] still resolves to that path with that hash. An edited
-    file, or a PATH shim answering to the name, is Claude again until the user re-declares. Even then the command's words
-    are judged, so a declaration never hides a command that runs claude; the built-in names are judged as before."""
-    if spec not in NON_CLAUDE_WORKERS and declared_state(spec, tpl, p) is not True:
+def _line_words(line):
+    """T-5849: a script line's words, split as a shell would (quotes, and ; & | ( ) < > apart), comments dropped; a line
+    that won't split (an unbalanced quote) is cut at its non-word characters instead, never skipped."""
+    try:
+        lex = shlex.shlex(line.replace("`", " "), posix=True, punctuation_chars=True)
+        lex.whitespace_split, lex.commenters = True, "#"
+        return list(lex)
+    except ValueError:
+        return re.findall(r"[^\s'\"`;|&()<>{}=$]+", line)
+
+
+def _script_claude(head):
+    """T-5849: True when a command file's text runs the Claude CLI: its shebang line, or any command line (not a comment),
+    has words _claude_words judges as Claude. head is the file's first WORKER_SCRIPT_MAX + 1 bytes: a binary (no #! line, a NUL
+    in its first 8 KB) is judged by its name only; a script's NULs read as line breaks; a file over WORKER_SCRIPT_MAX is judged
+    by its shebang line alone; a line that nests too deep to judge, or more than SCRIPT_WORDS distinct words, is Claude (fail
+    closed). Only a detector: _trusted_file, not this, is what makes a name non-Claude."""
+    if b"\0" in head[:8192] and not head.startswith(b"#!"):
+        return False
+    text = head.replace(b"\0", b"\n").decode("utf-8", "replace")
+    if len(head) > WORKER_SCRIPT_MAX:
+        if not text.startswith("#!"):
+            return False
+        text = text.split("\n", 1)[0]
+    _judging.memo = memo = {}
+    try:
+        for i, line in enumerate(text.splitlines()):
+            if i == 0 and line.startswith("#!"):
+                line = line[2:]
+            elif line.lstrip().startswith("#"):
+                continue
+            words = _line_words(line)
+            if words and _claude_words(words):
+                return True
+            if len(memo) > SCRIPT_WORDS:
+                return True
+    except ValueError:
         return True
+    finally:
+        _judging.memo = None
+    return False
+
+
+AIDER_CLAUDE = re.compile(r"claude|anthropic|sonnet|opus|haiku", re.I)  # T-5849: a model name that is Claude's
+AIDER_MODEL_KEYS = frozenset({"model", "weak-model", "editor-model", "alias"})
+AIDER_FLAG_KEYS = frozenset({"sonnet", "opus", "haiku"})  # aider's own shorthands for a Claude model
+AIDER_REDIRECT = frozenset({"env-file", "model-settings-file"})  # a setting that names another file aider reads: not followed, so it is Claude
+# T-5849 round 3: a .env line that picks a model, names a file or a provider's URL is not judged, it is Claude; a provider's key
+# alone is only a key (a declared worker may have one in a repo .env)
+AIDER_PROVIDER_URL = re.compile(r"^(AIDER_)?(ANTHROPIC|OPENROUTER)_\w*(URL|BASE|HOST|ENDPOINT)\w*$", re.I)
+AIDER_ENV_SETS = re.compile(r"^(AIDER_\w*MODEL\w*|AIDER_ENV_FILE)$", re.I)
+# T-5849 round 4: the flags that hand aider a provider's key (--anthropic-api-key K, --api-key anthropic=K, --set-env ANTHROPIC_API_KEY=K)
+AIDER_KEY_FLAGS = frozenset({"anthropic-api-key", "openrouter-api-key", "api-key", "set-env"})
+# every flag name a --flag or an abbreviation of it (argparse takes any unambiguous prefix) can stand for that routes a model
+AIDER_RELEVANT = tuple(sorted(AIDER_MODEL_KEYS | AIDER_FLAG_KEYS | AIDER_REDIRECT | AIDER_KEY_FLAGS | {"config"}))
+AIDER_ROUTE_KEY = re.compile(r"url|base|host|endpoint", re.I)  # a setting whose value says where a call goes
+AIDER_SETTINGS = (".aider.model.settings.yml", ".aider.model.settings.yaml")  # a model-settings file: extra_params can name Claude
+AIDER_CONF_MAX = 256 * 1024
+AIDER_KV = re.compile(r"""["']?([A-Za-z][A-Za-z_-]*)["']?\s*:\s*([^,}\n]*)""")  # a `key: value` anywhere in a line (flow maps too)
+AIDER_KEYS = re.compile(r"^(AIDER_)?(ANTHROPIC|OPENROUTER)_", re.I)  # a provider key in the environment: aider picks that provider's model
+AIDER_PROVIDERS = re.compile(r"anthropic|openrouter", re.I)
+CLI_CLAUDE = re.compile(r"claude|anthropic|sonnet|opus|haiku|openrouter", re.I)  # codex, gemini: a config that points at Claude
+CONFIG_ROUTE_WORDS = frozenset({"model", "models", "provider", "providers", "url", "urls", "uri", "endpoint", "endpoints",
+                                "base", "host", "profile", "profiles"})  # the words of a config key whose value says where a call goes
+
+
+def _aider_pair(key, value):
+    """T-5849: True when one aider setting (a flag, an AIDER_ variable or a config key; case and _ or - alike) picks a
+    Claude model: a model name that names Claude, or one of the --sonnet --opus --haiku shorthands turned on."""
+    key = key.strip().lower().lstrip("-").replace("_", "-")
+    key = key[6:] if key.startswith("aider-") else key
+    value = value.strip().strip("'\"")
+    if key in AIDER_MODEL_KEYS:
+        return bool(AIDER_CLAUDE.search(value))
+    return key in AIDER_FLAG_KEYS and value.lower() not in ("", "false", "no", "0", "off")
+
+
+def _aider_key(key, value):
+    """T-5849 round 4: True when one environment or .env setting hands aider a key for Anthropic or OpenRouter: ANTHROPIC_* or
+    OPENROUTER_* (also with aider's own AIDER_ in front: AIDER_ANTHROPIC_API_KEY), or AIDER_API_KEY / AIDER_SET_ENV with a value
+    that names either (anthropic=K, ANTHROPIC_API_KEY=K). With no model chosen, aider then runs that provider's (Claude)."""
+    key, value = key.strip().upper(), value.strip().strip("'\"")
+    if not value:
+        return False
+    return bool(AIDER_KEYS.match(key)) or (key in ("AIDER_API_KEY", "AIDER_SET_ENV") and bool(AIDER_PROVIDERS.search(value)))
+
+
+def _aider_text(text, env_style):
+    """T-5849: (claude, explicit, keys) from an aider config file (YAML) or a .env file (env_style, KEY=value): claude when
+    it picks a Claude model, explicit when it names a main model that isn't Claude, keys when it holds an ANTHROPIC_* or
+    OPENROUTER_* setting. A `model` key is read wherever it stands: indented, quoted, in a flow mapping ({model: x}); a
+    model line that holds no plain value (a block, an anchor, nothing) can't be judged, so it is Claude."""
+    claude = explicit = keys = False
+    section = ""
+    for raw in text.splitlines():
+        if env_style:
+            key, _, value = raw.strip().removeprefix("export ").partition("=")
+            key = key.strip()
+            if raw.lstrip().startswith("#"):
+                continue
+            keys = keys or _aider_key(key, value)
+            if (AIDER_ENV_SETS.match(key) or AIDER_PROVIDER_URL.match(key)) and value.strip():
+                claude = True  # a .env file that sets a model or a provider's URL: it is not judged, it is Claude unless declared
+            if AIDER_ROUTE_KEY.search(key) and CLI_CLAUDE.search(value):
+                claude = True  # any base URL or host that names Claude or OpenRouter (OPENAI_API_BASE=https://openrouter.ai/...)
+            if key.upper().startswith("AIDER_"):
+                claude = claude or _aider_pair(key, value) or bool(re.search(r"[\\$]|[^\x00-\x7f]", value))
+                if key.upper().replace("_", "-") == "AIDER-MODEL" and value.strip() and not _aider_pair(key, value):
+                    explicit = True
+            continue
+        line = raw.split(" #", 1)[0].split("\t#", 1)[0]
+        line = "" if line.lstrip().startswith("#") else line.rstrip()
+        if not line.strip():
+            continue
+        if "\\" in line:  # a YAML escape (\x61, a) can spell a Claude model or the key itself: not read, so it is Claude
+            claude = True
+        if section and (line.lstrip().startswith("-") or raw[:1].isspace()):  # an item of the alias list
+            claude = claude or bool(AIDER_CLAUDE.search(line))
+            continue
+        section = ""
+        keys = keys or bool(re.search(r"anthropic|openrouter", line, re.I))
+        if AIDER_ROUTE_KEY.search(line) and CLI_CLAUDE.search(line):
+            claude = True  # a base URL or host that names Claude or OpenRouter
+        for km in AIDER_KV.finditer(line):
+            name = km.group(1).lower().replace("_", "-")
+            value = km.group(2).strip().strip("'\"").strip()
+            if name in AIDER_REDIRECT and value:
+                claude = True  # another file's settings (env-file): not followed, so not judged
+            elif name in AIDER_FLAG_KEYS:
+                claude = claude or _aider_pair(name, value)
+            elif name in AIDER_MODEL_KEYS:
+                if name == "alias" and not value:
+                    section = "alias"
+                elif not value or value[0] in "|>&*!" or not value.isascii() or (value[0] in "[{" and name != "alias"):
+                    claude = True  # a model line that can't be parsed (a block, a tag, an anchor, an alias, non-ASCII)
+                elif AIDER_CLAUDE.search(value):
+                    claude = True
+                elif name == "model" and value.lower() not in ("null", "~"):
+                    explicit = True
+    return claude, explicit, keys
+
+
+def _aider_claude(spec, tpl, cwd=None):
+    """T-5849: True when the worker is aider and it would run a Claude model: one is selected where aider reads it
+    (AIDER_*MODEL, AIDER_SONNET (OPUS, HAIKU) or AIDER_ALIAS in the environment, --model, --weak-model, --editor-model,
+    --alias, --sonnet, --opus, --haiku in the template, or the same in ~/.aider.conf.yml, the git root's and cwd's (and a
+    --config or AIDER_CONFIG_FILE file, and .env files of the same places)), or none is chosen and an ANTHROPIC_* or
+    OPENROUTER_* key is set (aider then uses that provider's model). cwd is where the worker runs (the run's folder), never
+    this process's own. A config that exists and can't be read is Claude (fail closed); one that isn't there is nothing.
+    T-5849 round 3: a model-settings file (.aider.model.settings.yml in the home, the git root or cwd, or named by
+    AIDER_MODEL_SETTINGS_FILE / --model-settings-file) is Claude; an abbreviated flag (--son, -c) is read as the flag it stands for.
+    T-5849 round 4: a provider key counts wherever it is given (ANTHROPIC_* or OPENROUTER_*, with or without AIDER_ before it,
+    AIDER_API_KEY / AIDER_SET_ENV naming either, --anthropic-api-key, --openrouter-api-key, --api-key, --set-env, in the
+    environment, the template, a config or a .env file), for a declared aider too: the way out is an explicit non-Claude
+    model (--model, AIDER_MODEL, a config's model), never a declaration. A base URL or host in the environment that names
+    Claude or OpenRouter is Claude, as one in a .env file is."""
+    word = _first_word(spec, tpl)
+    if not word or "aider" not in (spec.lower(), os.path.basename(word).lower(),
+                                   os.path.basename(_resolve(word) or "").lower()):
+        return False
+    try:
+        words = shlex.split(tpl) if "{prompt}" in tpl else []
+    except ValueError:
+        return True
+    env = worker_env(start=True)
+    explicit = keys = False
+    for k, v in env.items():
+        if k.upper() in ("AIDER_ENV_FILE", "AIDER_MODEL_SETTINGS_FILE") and v.strip():
+            return True  # another file's settings: not followed
+        if k.upper().startswith("AIDER_") and (_aider_pair(k, v) or re.search(r"[\\]|[^\x00-\x7f]", v)):
+            return True  # an escape or a non-ASCII byte can spell a name the check doesn't read: Claude unless declared
+        if v.strip() and (AIDER_PROVIDER_URL.match(k) or (AIDER_ROUTE_KEY.search(k) and CLI_CLAUDE.search(v))):
+            return True  # a provider's own base URL, or any base URL or host naming Claude or OpenRouter (OPENAI_API_BASE=...)
+        if k.upper() == "AIDER_MODEL" and v.strip():
+            explicit = True
+        keys = keys or _aider_key(k, v)
+    here = os.path.abspath(cwd or os.getcwd())
+    files = [os.path.join(here, env["AIDER_CONFIG_FILE"])] if env.get("AIDER_CONFIG_FILE") else []
+    for i, w in enumerate(words):
+        if w.startswith("-c") and not w.startswith("--"):  # -c FILE, -cFILE, -c=FILE: aider's short --config
+            value = w[2:].removeprefix("=") if len(w) > 2 else words[i + 1] if i + 1 < len(words) else ""
+            files.append(os.path.join(here, value))
+            continue
+        if not w.startswith("--"):
+            continue
+        key, eq, value = w.partition("=")
+        name = key.lstrip("-").lower()
+        # T-5849 round 3: argparse takes any prefix that is not ambiguous (--son, --ali, --weak-m): a prefix of a flag that routes a
+        # model is read as each of them it could be, so an abbreviation is never a way past the check
+        names = [name] if name in AIDER_RELEVANT else [n for n in AIDER_RELEVANT if name and n.startswith(name)]
+        for n in names:
+            if n in AIDER_FLAG_KEYS:
+                if _aider_pair(n, value if eq else "true"):
+                    return True
+            elif n in AIDER_REDIRECT:
+                return True
+            else:
+                val = value if eq else words[i + 1] if i + 1 < len(words) else ""
+                if n == "config":
+                    files.append(os.path.join(here, val))
+                elif n in AIDER_KEY_FLAGS:  # a provider's key given on the command line
+                    keys = keys or bool(val.strip() and (n.endswith("-api-key") and n != "api-key" or AIDER_PROVIDERS.search(val)))
+                elif _aider_pair(n, val):
+                    return True
+                elif n == name == "model" and val.strip():
+                    explicit = True
+    roots, d = [here], here
+    while True:  # the git root: the nearest folder up that holds .git
+        if os.path.exists(os.path.join(d, ".git")):
+            roots.append(d)
+            break
+        if os.path.dirname(d) == d:
+            break
+        d = os.path.dirname(d)
+    homes = [os.path.expanduser("~"), *roots]
+    if any(os.path.lexists(os.path.join(h, s)) for h in homes for s in AIDER_SETTINGS):
+        return True  # a model-settings file (extra_params can send a model to Claude): not judged, so it is Claude
+    files += [os.path.join(h, ".aider.conf.yml") for h in homes]
+    envs = [os.path.join(h, ".env") for h in homes]
+    for path, env_style in [(f, False) for f in files if f] + [(f, True) for f in envs]:
+        try:
+            if not os.path.exists(path):
+                continue
+            with open(path, "rb") as f:
+                text = f.read(AIDER_CONF_MAX).decode("utf-8", "replace")
+        except OSError:
+            return True
+        claude, expl, key = _aider_text(text, env_style)
+        if claude:
+            return True
+        explicit, keys = explicit or expl, keys or key
+    return keys and not explicit
+
+
+def _cli_config_claude(spec, tpl):
+    """T-5849: True when the worker is codex or gemini and its config or its command line points it at Claude: the config
+    ($CODEX_HOME/config.toml, default ~/.codex/config.toml; ~/.gemini/settings.json) or a model, profile or --config value in
+    the template has a word claude, anthropic, sonnet, opus or haiku, or openrouter (a provider or base_url that routes to
+    it). A config that exists and can't be read is Claude (fail closed); one that isn't there is nothing."""
+    word = _first_word(spec, tpl)
+    names = {spec.lower(), os.path.basename(word or "").lower(), os.path.basename(_resolve(word or "") or "").lower()}
+    home = os.path.expanduser("~")
+    files = []
+    if "codex" in names:
+        files.append(os.path.join(os.environ.get("CODEX_HOME") or os.path.join(home, ".codex"), "config.toml"))
+    if "gemini" in names:
+        files.append(os.path.join(home, ".gemini", "settings.json"))
+    if not files:
+        return False
+    try:
+        words = shlex.split(tpl) if "{prompt}" in tpl else []
+    except ValueError:
+        return True
+    for i, w in enumerate(words):
+        flag, eq, value = w.partition("=")
+        if len(w) > 2 and w[0] == "-" and w[1] in "cmp":  # T-5849 round 4: a short flag with its value attached (-cKEY=V, -c=V, -mVALUE, -pNAME)
+            value = w[2:].removeprefix("=")
+        elif flag in ("-c", "--config", "-m", "--model", "-p", "--profile") and not eq:
+            value = words[i + 1] if i + 1 < len(words) else ""
+        elif not eq or flag not in ("--config", "--model", "--profile"):
+            continue
+        if CLI_CLAUDE.search(value) or re.search(r"[\\]|[^\x00-\x7f]", value):  # codex reads a -c value as TOML: escapes spell words
+            return True
+    for path in files:
+        try:
+            if not os.path.exists(path):
+                continue
+            with open(path, "rb") as f:
+                raw = f.read(AIDER_CONF_MAX + 1)
+        except OSError:
+            return True
+        if len(raw) > AIDER_CONF_MAX or _config_claude(raw, path.endswith(".toml")):
+            return True
+    return False
+
+
+def _config_claude(raw, toml):
+    """T-5849: True when a codex (TOML) or gemini (JSON) config, read as that format, has a key or a string value with a word
+    CLI_CLAUDE finds: judged on the parsed values, so an escape (\\u0061nthropic) is read as the word it spells. A config that
+    does not parse, or nests too deep to walk, is Claude (fail closed)."""
+    try:
+        text = raw.decode("utf-8")
+        if not text.strip():
+            return False
+        data = tomllib.loads(text) if toml else json.loads(text)
+    except (ValueError, RecursionError):  # TOMLDecodeError, JSONDecodeError and UnicodeDecodeError are ValueErrors
+        return True
+    stack, seen = [(data, False)], 0
+    while stack:
+        node, judged = stack.pop()
+        seen += 1
+        if seen > 100000:
+            return True
+        if isinstance(node, dict):
+            for k, v in node.items():
+                route = _route_key(k)
+                if (judged or route) and (CLI_CLAUDE.search(str(k)) or not str(k).isascii()):
+                    return True  # a provider's name as a table or key under a route, or a name that can't be read
+                stack.append((v, judged or route))
+        elif isinstance(node, list):
+            stack.extend((item, judged) for item in node)
+        elif isinstance(node, str) and judged and (CLI_CLAUDE.search(node) or not node.isascii()):
+            return True  # non-ASCII in a model, provider or url value can't be read as the word it looks like
+    return False
+
+
+def _route_key(key):
+    """T-5849 round 3: True when a config key says where a call goes: a word of it (split at _ - . and camelCase) is model,
+    provider, url, uri, endpoint, base, host or profile, or their plural. Only the values under such a key are judged, so a
+    path (a trusted folder named .claude) or a tool's name (claude-notify) elsewhere in the file is no route."""
+    key = str(key)
+    if not re.fullmatch(r"[\w.-]+", key):
+        return False
+    return any(w.lower() in CONFIG_ROUTE_WORDS for w in re.split(r"[_.\-]+|(?<=[a-z0-9])(?=[A-Z])", key) if w)
+
+
+def _writable(path):
+    """T-5849: True when this process could change path: it owns it, a group it is in (or everyone) has the write bit, or the
+    OS lets it write (an ACL). A path that can't be looked at counts as writable."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return True
+    if st.st_uid == os.geteuid() or os.access(path, os.W_OK):
+        return True
+    groups = {os.getegid(), os.getgid(), *os.getgroups()}
+    return bool(st.st_mode & stat.S_IWOTH or (st.st_mode & stat.S_IWGRP and st.st_gid in groups))
+
+
+def _sealed_path(real):
+    """T-5849: True when neither the file nor any folder above it is writable by this uid (it can't be edited, nor replaced
+    by renaming a folder or a name in one)."""
+    d = real
+    while True:
+        if _writable(d):
+            return False
+        if os.path.dirname(d) == d:
+            return True
+        d = os.path.dirname(d)
+
+
+def _shebang(head):
+    """T-5849: (interpreter path, the command it is given through env or None) from a script's #! line; None when the line is
+    one this can't follow or would drop words from: no interpreter, env with an option but -S, or any word besides the
+    interpreter (and env's one target): a line with more is run by the kernel, not by what was checked."""
+    words = head.split(b"\n", 1)[0][2:].decode("utf-8", "replace").split()
+    if not words:
+        return None
+    if os.path.basename(words[0]) != "env":
+        return (words[0], None) if len(words) == 1 else None
+    rest = words[1:]
+    rest = rest[1:] if rest[:1] == ["-S"] else rest
+    if len(rest) != 1 or rest[0].startswith("-") or "=" in rest[0]:
+        return None
+    return words[0], rest[0]
+
+
+def _shebang_paths(head):
+    """T-5849: [(found, real)] for what a script's #! line runs, resolved once on this process's PATH: [interpreter] or
+    [env, target] (the last is what runs the script). found is the path the line names, or the one PATH gives (the name the
+    interpreter is run under, so a venv's python still finds its pyvenv.cfg), real its realpath. None when the line can't be
+    followed or a word names no file."""
+    sb = _shebang(head)
+    if not sb:
+        return None
+    out = []
+    for word in sb if sb[1] else sb[:1]:
+        found = (word if "/" in word else shutil.which(word)) if word else None
+        real = os.path.realpath(found) if found else None
+        if not real or not os.path.isfile(real):
+            return None
+        out.append((os.path.abspath(found), real))
+    return out
+
+
+def _chain_sealed(found):
+    """T-5849 round 3: True when every link from `found` to the file it ends at, and the folders each stands in, are ones this
+    uid can't write (a link in a user's folder that points at /usr/bin/python3 is a shim the agent could re-point), and a
+    pyvenv.cfg beside it or one folder up (what Python reads to find its packages) is sealed too."""
+    path = os.path.abspath(found)
+    for _ in range(40):
+        if not _sealed_path(path):
+            return False
+        if not os.path.islink(path):
+            break
+        path = os.path.join(os.path.dirname(path), os.readlink(path))
+    else:
+        return False
+    for start in {os.path.abspath(found), os.path.realpath(found)}:
+        for d in (os.path.dirname(start), os.path.dirname(os.path.dirname(start))):
+            cfg = os.path.join(d, "pyvenv.cfg")
+            if os.path.lexists(cfg) and not _sealed_path(cfg):
+                return False
+    return True
+
+
+# T-5849: the files a built-in name may be: its own name, or a vendor build of it (codex-x86_64-unknown-linux-musl), or the
+# entry a node package of it runs (@openai/codex's bin/codex.js, @google/gemini-cli's dist/index.js). Any other name, such as
+# a link to /usr/bin/setsid that a script on PATH makes into claude, needs the user's declaration.
+BUILTIN_FILES = {
+    "codex": (re.compile(r"^codex$|^codex-(x86_64|aarch64|arm64)-[a-z0-9_-]+$"),
+              re.compile(r"(^|/)node_modules/@openai/codex/bin/codex\.js$")),
+    "gemini": (re.compile(r"^gemini$"), re.compile(r"(^|/)node_modules/@google/gemini-cli/dist/index\.js$")),
+    "aider": (re.compile(r"^aider$"), None),
+}
+
+
+def _builtin_file(spec, real):
+    """T-5849: True when the file `real` is one a built-in name `spec` may run (BUILTIN_FILES): a file of its own name, or the
+    entry file of its own node package at its exact path (round 3: a cli.js or index.js nested in a dependency under that
+    package's node_modules is another package's file, not the built-in)."""
+    rule = BUILTIN_FILES.get(spec)
+    if not rule:
+        return False
+    if rule[0].match(os.path.basename(real)):
+        return True
+    return bool(rule[1] and rule[1].search(real))
+
+
+def _trusted_file(real, head, depth=0, interp=False, spec=None, paths=None):
+    """T-5849: True when the file a built-in name (codex, aider...) resolves to is one this process can't have written: its
+    realpath and every folder above it are not writable by this uid, it is the built-in itself (_builtin_file: not a link to
+    another tool), it is not an interpreter, shell or wrapper (INTERPRETERS), not named claude, not the file `claude`
+    resolves to; and, when it is a script, its shebang interpreter (and the env target, found on the same PATH: paths, when
+    the caller resolved them, as (found, real) pairs) passes the same, but for an interpreter, which may only be node or python
+    (interp), and every link from the name the line gives to the file is sealed (_chain_sealed). A script
+    over WORKER_SCRIPT_MAX or with a NUL is not trusted. This, not the words of a script, is what makes a built-in name
+    non-Claude; the words only add a detector (_script_claude)."""
+    base = os.path.basename(real).lower()
+    if depth > 3 or base == "claude" or not _sealed_path(real):
+        return False
+    if depth == 0 and spec is not None and not _builtin_file(spec, real):
+        return False
+    is_interp = base in INTERPRETERS or bool(PYTHONS.match(base))
+    if interp and not (base in ("node", "nodejs", "env") or PYTHONS.match(base)):
+        return False
+    if is_interp and not interp:
+        return False
+    found = shutil.which("claude")
+    if found and os.path.realpath(found) == real:
+        return False
+    if not head.startswith(b"#!"):
+        return True
+    if len(head) > WORKER_SCRIPT_MAX or b"\0" in head[:8192]:
+        return False
+    paths = paths if paths is not None else _shebang_paths(head)
+    if not paths:
+        return False
+    for found, path in paths:
+        try:
+            with open(path, "rb") as f:
+                sub = f.read(WORKER_SCRIPT_MAX + 1)
+        except OSError:
+            return False
+        if not _chain_sealed(found) or not _trusted_file(path, sub, depth + 1, interp=True):
+            return False
+    return True
+
+
+class Pin(dict):
+    """T-5849: a {path, sha256} pin of the worker's file that also says how a script of it is run: .interp the realpath of the
+    interpreter the check resolved from its #! line (None: no script, or a line that can't be followed), .interp_argv0 the
+    path the line gives it (the name it runs under: a venv's python finds its pyvenv.cfg by it), .interp_sha256 the hash of
+    it the user's declaration pinned (None for a built-in trusted because every link of it is sealed)."""
+    interp = interp_argv0 = interp_sha256 = None
+
+
+_HASHES = {}  # T-5849 round 4: (path, dev, inode, size, mtime_ns, ctime_ns) -> sha256 (or (sha256, head)): the last few files hashed
+HASHES_MAX = 8
+
+
+def _stat_key(path, st):
+    """What a cached hash is good for: the file at `path` with this inode, size and both times (ctime moves on any write
+    or rename, and a process can't set it, so a forged mtime gives no stale hash)."""
+    return (path, st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+
+
+def _cached(key, make):
+    """The value make() gives for key, kept for the next call of the same file (at most HASHES_MAX files). The check at a
+    start's last moment (checked_command, from the descriptor it execs) never goes through here."""
+    if key in _HASHES:
+        return _HASHES[key]
+    value = _HASHES[key] = make()
+    while len(_HASHES) > HASHES_MAX:
+        _HASHES.pop(next(iter(_HASHES)))
+    return value
+
+
+def _hash_file(path):
+    """sha256 of a file; an OSError when it can't be read or is over PIN_MAX. Cached by stat (_stat_key), so one start's
+    reads of argv[0] and its interpreter hash each once."""
+    if os.path.getsize(path) > PIN_MAX:
+        raise OSError(errno.EFBIG, f"{path} is over {PIN_MAX} bytes: too big to hash")
+    with open(path, "rb") as f:
+        def make():
+            h = hashlib.sha256()
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+            return h.hexdigest()
+        return _cached(("hash",) + _stat_key(path, os.fstat(f.fileno())), make)
+
+
+def _with_interp(pin, paths):
+    """T-5849 round 3: pin with the interpreter that runs the script ({path: its realpath, sha256}) as "interp", so a
+    declaration holds the interpreter too and a shim of it found first on PATH later is no longer what the user declared.
+    pin as it is when there is no script or its #! line can't be followed (paths None)."""
+    if not pin or not paths:
+        return pin
+    real = paths[-1][1]
+    return {**pin, "interp": {"path": real, "sha256": _hash_file(real)}}
+
+
+def worker_check(spec, tpl, p=None, cwd=None):
+    """T-5849: (claude, pin): claude_worker's verdict, and the pin ({path, sha256}; a Pin) of the one file argv[0] resolves to,
+    read once, that worker_argv runs; None when no file answers, or when the spec is neither a built-in name nor a declaration
+    that still holds (an undeclared worker keeps its name) or runs an interpreter (a system binary, not a command file).
+    A built-in name (codex, gemini, aider) is non-Claude only when a file answers to it and that file is the built-in and
+    one the agent could not have written (_trusted_file) or the user declared it (sampo claude-bench worker NAME), and
+    neither the file's words (_script_claude), the CLI's config (_cli_config_claude) nor the model aider is given
+    (_aider_claude, from cwd: where the worker runs) is Claude. A file that can't be read, or is too big to hash, or no file
+    at all, is Claude (fail closed). A trusted script's pin carries the interpreter that was judged (Pin.interp)."""
+    try:
+        pin, head = _read_pin(spec, tpl)
+        paths = _shebang_paths(head) if pin and head.startswith(b"#!") else None
+        # a declaration holds the file and the interpreter that runs it (T-5849 round 3): both are compared to what it pinned
+        ext = _with_interp(pin, paths) if m.declared_non_claude(p if p is not None else m.here()).get(spec) is not None else pin
+        if pin and head.startswith(b"#!") and paths is None:
+            ext = None  # round 4: a declared script whose #! line can't be followed has no pinned interpreter: not declared
+    except OSError:
+        return True, None
+    builtin = spec in NON_CLAUDE_WORKERS
+    trusted = bool(builtin and pin and _trusted_file(pin["path"], head, spec=spec, paths=paths))
+    state = declared_state(spec, tpl, p, pin=ext)
+    if state is not True and not trusted:
+        return True, None
+    if pin:
+        pin = Pin(pin)
+        if paths:
+            found, pin.interp = paths[-1]
+            # round 4: the interpreter runs under the name the line gives only when every link of it is sealed; a shim in a
+            # folder the agent can write (found) never names the process, the pinned realpath does
+            pin.interp_argv0 = found if _chain_sealed(found) else pin.interp
+            if state is True and isinstance(ext, dict) and isinstance(ext.get("interp"), dict):
+                pin.interp_sha256 = ext["interp"]["sha256"]
+    word = _first_word(spec, tpl)
+    if builtin and (_script_claude(head) or _aider_claude(spec, tpl, cwd)
+                    or _cli_config_claude(spec, tpl)):
+        return True, pin
+    claude = _words_claude(spec, tpl)
+    if word and interpreter_argv0(word):
+        pin = None
+    return claude, pin
+
+
+def _words_claude(spec, tpl):
+    """True when the words of the command a spec runs (the template's, and the raw spec when it is argv[0]) run claude, or
+    don't split (fail closed)."""
     try:
         if "{prompt}" not in tpl and _claude_words([spec]):  # the process runs the raw spec as argv[0] (worker_argv)
             return True
@@ -6302,8 +6961,191 @@ def claude_worker(spec, tpl, p=None):
         return True
 
 
-def worker_argv(spec, prompt, which=True):
-    """A --worker spec as argv: the user's own template ("{prompt}" in it), a runner's name, else [spec, prompt]."""
+def claude_worker(spec, tpl, p=None, cwd=None):
+    """T-5584 round 2: True when a --worker spec runs the Claude CLI, so claude_gate judges it. tpl is the command the spec
+    runs before the prompt goes in: its runner's work template, else the spec itself. The command's words are judged
+    whatever wrapper holds them (env, sh -c, a symlink, any case), so a known runner whose template runs claude is
+    Claude too. Fail closed: a name off the non-Claude list, or a command that won't split, is Claude.
+    T-5812: a declaration (sampo claude-bench worker NAME, typed by the user, in the project's meta: p, else the project
+    this process runs in) is trust in one pinned file, not in a name: it records the realpath of argv[0] and the sha256 of
+    that file, and the spec counts as non-Claude only while argv[0] still resolves to that path with that hash. An edited
+    file, or a PATH shim answering to the name, is Claude again until the user re-declares. Even then the command's words
+    are judged, so a declaration never hides a command that runs claude.
+    T-5849: a built-in name is judged by the file it resolves to (worker_check): non-Claude only when no agent could have
+    written that file (or the user declared it); a PATH shim named codex, an aider whose model names a Claude model, a file
+    that can't be read, are Claude. A declaration of an interpreter, shell or wrapper no longer holds. cwd is where the worker
+    runs (aider's config is searched there)."""
+    return worker_check(spec, tpl, p, cwd)[0]
+
+
+FD_EXEC = sys.platform.startswith("linux") and os.path.isdir("/proc/self/fd")  # T-5849: a hashed file can be run from its fd
+
+
+class CheckedArgv(list):
+    """T-5849: worker_argv's argv for a worker whose argv[0] is a file the check hashed: .pin is its {path, sha256}
+    (checked_command runs that file and no other). A plain list has no .pin."""
+    pin = None
+
+
+def _hash_fd(fd):
+    h = hashlib.sha256()
+    os.lseek(fd, 0, os.SEEK_SET)
+    while True:
+        chunk = os.read(fd, 1 << 20)
+        if not chunk:
+            return h.hexdigest()
+        h.update(chunk)
+
+
+@contextlib.contextmanager
+def checked_command(argv, after_open=None):
+    """T-5849: (command, fds) for run_bounded(command, ..., keep_fds=fds): the shell command that runs argv. An argv with a
+    pin (CheckedArgv) runs the file the pin hashed: the file is opened once, its sha256 read from that descriptor and held
+    to the pin (a file changed since the check is a CodeError), and the process execs /proc/self/fd/N, the very file it
+    hashed, so a swap of the path after the hash runs nothing new. Without /proc (FD_EXEC off) the file is hashed again
+    and the realpath runs: a swap in the gap before the start remains. The descriptor closes when the block ends.
+    after_open() runs between the hash and the command's return (a test's swap).
+    A script of a trusted built-in runs through the interpreter the check judged (pin.interp, a realpath): `INTERP
+    /proc/self/fd/N args`, so a node or python shim put on PATH after the check is never what runs it. A file the user can
+    write is run from a sealed copy of its hashed bytes (_sealed_copy, whose hash is read again once sealed); where no copy
+    can be made it is run from the held descriptor (/proc/self/fd/N of the file hashed). Only off Linux, with no /proc,
+    it is hashed again at the last moment and run by its path."""
+    pin = getattr(argv, "pin", None)
+    if not pin:
+        yield shlex.join(argv), ()
+        return
+    interp = getattr(pin, "interp", None)
+    argv0 = getattr(pin, "interp_argv0", None) or interp
+    isha = getattr(pin, "interp_sha256", None) if interp else None
+    changed = CodeError(f"the worker file {pin['path']} changed since it was checked: run it again (a declared worker "
+                        "is pinned by the user's sampo claude-bench worker NAME; a changed file is Claude until re-declared)")
+    with contextlib.ExitStack() as stack:
+        run_fd = _hold_file(stack, pin["path"], pin["sha256"], changed, copy=True)
+        irun = _hold_file(stack, interp, isha, changed, copy=False) if isha else None
+        if after_open:
+            after_open()
+        if FD_EXEC:  # the sealed copy, or the held descriptor of the file hashed (a binary the user can write, no memfd)
+            fds = [run_fd]
+            os.set_inheritable(run_fd, True)
+            if interp and irun is not None:  # a declared interpreter: the file whose hash was held to the pin
+                os.set_inheritable(irun, True)
+                fds.append(irun)
+                head = f"-a {shlex.quote(argv0)} /proc/self/fd/{irun} /proc/self/fd/{run_fd}"
+            elif interp:  # a built-in's interpreter: every link of it is sealed, so it runs by its realpath
+                head = f"-a {shlex.quote(argv0)} {shlex.quote(interp)} /proc/self/fd/{run_fd}"
+            else:
+                head = f"-a {shlex.quote(argv[0])} /proc/self/fd/{run_fd}"
+            yield f"exec {head} {shlex.join(argv[1:])}", tuple(fds)
+        else:  # no /proc: hash the paths again as late as possible, then run them by name
+            for path, sha in ((pin["path"], pin["sha256"]), (interp, isha)):
+                if path and sha:
+                    with open(path, "rb") as again:
+                        if _hash_fd(again.fileno()) != sha:
+                            raise changed
+            if interp:
+                yield f"exec -a {shlex.quote(argv0)} {shlex.quote(interp)} {shlex.join(argv)}", ()
+            else:
+                yield shlex.join(argv), ()
+
+
+def _in_package(path):
+    """T-5849 round 4: True when a folder above `path` holds a package.json (a node package's file finds it by its path)."""
+    d = os.path.dirname(path)
+    while True:
+        if os.path.isfile(os.path.join(d, "package.json")):
+            return True
+        if os.path.dirname(d) == d:
+            return False
+        d = os.path.dirname(d)
+
+
+def _hold_file(stack, path, sha, changed, copy):
+    """T-5849: the descriptor checked_command runs `path` from, held open until `stack` closes: opened without following a
+    link, a regular file, its sha256 read from the descriptor and held to `sha` (else `changed`). copy: a file this user can
+    write is run from a sealed copy of the bytes hashed (_sealed_copy, hashed again once sealed). Round 4: where no copy can
+    be made, or the file is a node package's file (its package.json is found by its path, which a copy has none), or copy is
+    off (an interpreter, which runs from its own inode), a file this user can write is refused: nothing runs from a descriptor
+    of a file the agent can still write. A file nobody here can write runs from the held descriptor of the real file (its
+    path is /proc/self/fd/N's link, so a package finds its files). Off Linux (no /proc) nothing is copied and the caller
+    hashes again."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0))
+    except OSError:
+        raise changed
+    stack.callback(os.close, fd)
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        raise changed
+    if FD_EXEC and not _sealed_path(path):
+        if not copy:  # round 4: a file this user can write, run from the very inode it can write: a swap after the hash
+            raise CodeError(f"the interpreter {path} is a file this user can write, and it must run from the descriptor it was "
+                            "hashed from (a copy would lose the files it finds beside itself), so it could change between the "
+                            "check and the run: install the interpreter where only root can write (a system package, "
+                            "/usr/bin/python3), or declare a script whose #! line names one")
+        if path.endswith((".js", ".mjs", ".cjs")) and _in_package(path):  # round 4: node finds package.json by the file's path
+            raise CodeError(f"the worker file {path} is a node file of a package this user can write: a sealed copy of it "
+                            "(/proc/self/fd/N, no folder) can't find its package.json or the modules beside it, and the real "
+                            "file could be changed after the check. Install the package where only root can write "
+                            "(npm install -g with a root-owned prefix), so it runs from its real path")
+        mem = _sealed_copy(fd)
+        if mem is None:  # round 4: not even a binary runs from a descriptor of a file this user can write
+            raise CodeError(f"the worker file {path} is a file this user can write, and no sealed copy of it can be made here "
+                            "(no memfd_create, or vm.memfd_noexec is 2), so it could change between the check and the run: "
+                            "put it in a folder only root can write")
+        stack.callback(os.close, mem[0])  # a file this user can write: run a sealed copy of the bytes that were hashed
+        if mem[1] != sha:
+            raise changed
+        return mem[0]
+    if _hash_fd(fd) != sha:
+        raise changed
+    return fd
+
+
+def _memfd_noexec():
+    """T-5849 round 3: vm.memfd_noexec as the kernel gives it ("0" the default, "1" a memfd is no-exec unless made with
+    MFD_EXEC, "2" none can be run), "" when this kernel has no such setting."""
+    try:
+        with open("/proc/sys/vm/memfd_noexec", encoding="ascii") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def _sealed_copy(fd):
+    """T-5849: (a memfd holding a copy of the file open at fd, sha256 of the bytes copied), sealed against any write, grow or
+    shrink, so no later write to the original touches what runs; None when this system can't (no memfd_create, or the kernel
+    refuses to exec from one: vm.memfd_noexec). The hash is read from the copy once it is sealed, never from the stream that
+    filled it."""
+    create = getattr(os, "memfd_create", None)
+    if create is None or not hasattr(os, "MFD_ALLOW_SEALING"):
+        return None
+    noexec = _memfd_noexec()
+    if noexec not in ("", "0", "1"):  # 2: the kernel refuses to exec any memfd
+        return None
+    import fcntl
+    try:  # 1: a memfd is no-exec unless asked for with MFD_EXEC (0x10)
+        mem = create("sampo-worker", os.MFD_ALLOW_SEALING | (0x10 if noexec == "1" else 0))  # no MFD_CLOEXEC: the shell execs it
+    except OSError:
+        return None
+    try:
+        os.lseek(fd, 0, os.SEEK_SET)
+        while True:
+            chunk = os.read(fd, 1 << 20)
+            if not chunk:
+                break
+            view = memoryview(chunk)
+            while view:
+                view = view[os.write(mem, view):]
+        os.fchmod(mem, 0o500)
+        fcntl.fcntl(mem, getattr(fcntl, "F_ADD_SEALS", 1033), 1 | 2 | 4 | 8)  # SEAL | SHRINK | GROW | WRITE
+        return mem, _hash_fd(mem)  # the hash is of the sealed bytes: until the seals the copy was writable by this uid
+    except OSError:
+        os.close(mem)
+        return None
+
+
+def worker_argv(spec, prompt, which=True, cwd=None):
+    """A --worker spec as argv: the user's own template ("{prompt}" in it), a runner's name, else [spec, prompt].
+    cwd is the folder the worker will run in (T-5849: aider's config is searched there)."""
     r = all_runners().get(spec, {})
     tpl = r.get("work") or spec
     risky = not r.get("work") and dangerous_flags(tpl)  # T-1418: a runner's template was linted in all_runners; this one wasn't
@@ -6311,12 +7153,20 @@ def worker_argv(spec, prompt, which=True):
         raise CodeError(f"--worker {spec!r} has {', '.join(risky)}, which turns off the CLI's own approvals, and fm code "
                         "would run it with nobody asking. If you mean it, make it a runner in code.toml "
                         "([runners.NAME] work = \"...\"), add the [ack] line fm code then prints, and give --worker NAME")
-    if claude_worker(spec, tpl):  # T-5584: every worker start passes here, so a Claude CLI waits on the user's switch
+    claude, pin = worker_check(spec, tpl, cwd=cwd)  # T-5849: one read of argv[0]'s file serves the judgement, the pin, the run
+    if claude and which and spec in NON_CLAUDE_WORKERS and not shutil.which(_first_word(spec, tpl) or spec):
+        raise CodeError(f"the worker {spec} isn't on PATH: install it, or give --worker 'CMD {{prompt}}'", "fm code runners")
+    if claude:  # T-5584: every worker start passes here, so a Claude CLI waits on the user's switch
         from sampo import cli
+        pin = None
         redo = f"the user declares it with: ! sampo claude-bench worker {shlex.quote(spec)}"
-        why = "" if spec in NON_CLAUDE_WORKERS else (
-            " (a declared worker whose command file changed since the user pinned it, so it is judged as Claude; if it is "
-            f"still not Claude, {redo.replace('declares', 're-declares')})" if declared_state(spec, tpl) is False else
+        why = (" (the file it runs is one the agent could have written or that runs an interpreter, or its model or config is "
+               f"Claude's, so it is judged as Claude; if it is not Claude, declare it: ! sampo claude-bench worker "
+               f"{shlex.quote(spec)})") if spec in NON_CLAUDE_WORKERS else (
+            " (a declared worker whose command file changed since the user pinned it, or that runs an interpreter, so it "
+            f"is judged as Claude; if it is still not Claude, {redo.replace('declares', 're-declares')}; an interpreter "
+            "as argv[0] can't be declared: make the script executable with a shebang and declare that file)"
+            if declared_state(spec, tpl) is False else
             f" (not a known runner, so it is judged as Claude; if it is not Claude, {redo})")
         try:
             m.gate_here(f"--worker {spec}{why}")
@@ -6332,6 +7182,9 @@ def worker_argv(spec, prompt, which=True):
     if which and not shutil.which(argv[0]):
         raise CodeError(f"the worker {argv[0]} isn't on PATH: install it, or give --worker 'CMD {{prompt}}'",
                         "fm code runners")
+    if pin:  # T-5849: a non-Claude worker runs the file the check resolved and hashed, not whatever answers to the name
+        argv = CheckedArgv([pin["path"]] + argv[1:])
+        argv.pin = pin
     return argv
 
 
@@ -6350,9 +7203,12 @@ def test_runner(name, timeout=RUNNER_TEST_SECONDS, cwd=None, on_spawn=None):
                         f"{', '.join(n for n, r in rs.items() if r.get('work'))} (or define [runners.NAME] work = "
                         "\"CMD {prompt}\" in code.toml)")
     try:
-        argv = worker_argv(name, "")
-        code, out = run_bounded(shlex.join([argv[0], "--version"]), cwd or os.getcwd(), timeout, env=worker_env(),
-                                cap=4096, on_spawn=on_spawn)
+        argv = worker_argv(name, "", cwd=cwd)
+        ask = CheckedArgv([argv[0], "--version"])  # T-5849: the checked file answers, not whatever answers to the name
+        ask.pin = getattr(argv, "pin", None)
+        with checked_command(ask) as (cmd, fds):
+            code, out = run_bounded(cmd, cwd or os.getcwd(), timeout, env=worker_env(start=True), cap=4096, on_spawn=on_spawn,
+                                    keep_fds=fds)
     except (CodeError, OSError) as e:  # not on PATH, a folder gone
         return {"name": name, "ok": False, "said": str(e)}
     first = (out.splitlines() or [""])[0][:120]
@@ -6397,7 +7253,7 @@ def ping_runner(name, timeout=PING_SECONDS, on_spawn=None):
     argv = [w.replace("{prompt}", PING_PROMPT) for w in shlex.split(r["plan"])] + lean_args(r, "plan")
     with tempfile.TemporaryDirectory(prefix="fm-ping-") as d:
         t0 = time.monotonic()
-        code, out = run_bounded(shlex.join(argv), d, timeout, env=worker_env(), cap=4096, on_spawn=on_spawn)
+        code, out = run_bounded(shlex.join(argv), d, timeout, env=worker_env(start=True), cap=4096, on_spawn=on_spawn)
         ms = int((time.monotonic() - t0) * 1000)
     res = next(filter(None, map(m.stream_result, reversed(out.splitlines()))), None)
     said = res["result"] if res and isinstance(res.get("result"), str) else out
@@ -9071,7 +9927,7 @@ def cli_planner(run, name):
             "on_line": run.live_tools(name, "--strict-mcp-config" in lean),
             "heartbeat": lambda: run.live_beat(name),  # a fresh clock for each call
             "cwd": run.root, "context": 200000, "timeout": run.worker_timeout or WORKER_TIMEOUT,
-            "env": dict(worker_env(), FOREMAN_QUIET="1", FOREMAN_WORKER_OF="fm-code-plan", DISABLE_AUTOUPDATER="1")}
+            "env": dict(worker_env(start=True), FOREMAN_QUIET="1", FOREMAN_WORKER_OF="fm-code-plan", DISABLE_AUTOUPDATER="1")}
 
 
 def named_planner(run, p):
