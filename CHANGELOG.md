@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- The graph build no longer turns the hooks' touched events for builders' .claude/worktrees/ copies into nodes and edges, so pack, blast and split stop seeing them (T-5834).
 - sampo card grow now names the proposals it dropped (near-duplicate, too short, bad shape) with counts and up to three sample texts, instead of a bare 'proposed 0' (T-5833).
 - `fm task split` no longer makes a lane's worktree copy under .claude/worktrees/ one of a task's parts, so a split reads only the repo's own files (T-5830).
 - Card grow's local proposer now gets the fit rules (one file kind, deterministic, no cross-file judgement) and two admitted examples, so it files fewer requests the writer turns down as unfit (T-5829).
