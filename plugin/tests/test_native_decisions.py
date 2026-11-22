@@ -2,6 +2,7 @@
 native milliseconds it rests on; a row missing a number, or one whose verdict the numbers contradict, fails here."""
 import copy
 import json
+import math
 import os
 import re
 import unittest
@@ -30,11 +31,12 @@ def problems(doc):
                 out.append(f"{name}: missing {key}")
         for key in ("python_ms", "native_ms"):
             v = row.get(key)
-            if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float)) or not v > 0):
-                out.append(f"{name}: {key} must be a number above 0, got {v!r}")
-        if name in seen:
+            if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or not v > 0):
+                out.append(f"{name}: {key} must be a finite number above 0, got {v!r}")
+        ident = " ".join(name.split()).casefold()
+        if ident in seen:
             out.append(f"{name}: listed twice")
-        seen.add(name)
+        seen.add(ident)
         if row.get("decision") not in DECISIONS and row.get("decision") not in (None, ""):
             out.append(f"{name}: decision {row['decision']!r} is not one of {DECISIONS}")
         if row.get("unit") not in UNITS and row.get("unit") not in (None, ""):
@@ -49,8 +51,8 @@ def problems(doc):
                 out.append(f"{name}: {dec} but native {nat} ms is not under python {py} ms")
             if dec == "rejected" and not nat >= py:
                 out.append(f"{name}: rejected but native {nat} ms beats python {py} ms")
-        if dec == "keep" and row.get("basis") == "estimate":
-            out.append(f"{name}: a kept path needs a measured number, not an estimate")
+        if dec in ("keep", "rejected") and row.get("basis") == "estimate":
+            out.append(f"{name}: a {dec} path needs a measured number, not an estimate")
     return out
 
 
@@ -104,6 +106,24 @@ class Ledger(unittest.TestCase):
         doc = copy.deepcopy(self.doc)
         doc["decisions"].append(copy.deepcopy(doc["decisions"][0]))
         self.assertTrue(problems(doc))
+
+    def test_a_hot_path_listed_twice_in_other_case_or_spacing_fails(self):
+        doc = copy.deepcopy(self.doc)
+        twin = copy.deepcopy(doc["decisions"][0])
+        twin["hot_path"] = "  " + twin["hot_path"].upper().replace(" ", "   ") + "  "
+        doc["decisions"].append(twin)
+        self.assertTrue(problems(doc), "a case and spacing variant passed as a new hot path")
+
+    def test_an_infinite_number_fails(self):
+        for dec, key in (("keep", "python_ms"), ("rejected", "native_ms")):
+            doc = copy.deepcopy(self.doc)
+            next(r for r in doc["decisions"] if r["decision"] == dec)[key] = float("inf")
+            self.assertTrue(problems(doc), f"{dec} with {key}=Infinity passed")
+
+    def test_a_rejection_that_rests_on_an_estimate_fails(self):
+        doc = copy.deepcopy(self.doc)
+        next(r for r in doc["decisions"] if r["decision"] == "rejected")["basis"] = "estimate"
+        self.assertTrue(problems(doc), "rejected on an estimate passed")
 
     def test_every_kept_path_has_a_binary_to_keep(self):
         # a "keep" row for a crate that is gone would be a number with nothing behind it
