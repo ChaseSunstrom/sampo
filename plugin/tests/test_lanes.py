@@ -5126,6 +5126,46 @@ class LaneStart(_LaneRepo):
         self.assertEqual((d["id"], d["brief"], d["focused"]), ("T-0001", brief, True))
         self.assertEqual(d["steps"], ["1. [ ] s"])
 
+    def test_start_takes_the_scope_leases(self):  # T-5594: a builder takes none of its scope by hand
+        from sampo import bus as sbus
+        path, _ = self.lane_with_brief()
+        self.fm("task", "set", "T-0001", "scope=plugin/a.py,lib/*.py,../outside.py,/etc/x.py")  # a glob, or a path out of the
+        # worktree, is no file of this lane: no lease for it
+        r = self.fm("lane", "start", "T-0001", cwd=path)
+        mine = sorted(v["file"] for v in sbus._leases().values() if v["task"] == "T-0001")
+        self.assertEqual(mine, ["plugin/a.py"], r.stdout)
+        self.assertIn("Leases: took plugin/a.py", r.stdout)
+        d = json.loads(self.fm("lane", "start", "T-0001", "--json", cwd=path).stdout)
+        self.assertEqual(d["leases"], ["plugin/a.py"], "a second start re-takes the same lease: no duplicate")
+
+    def test_start_takes_the_scope_leases_but_not_one_another_session_holds(self):  # T-5594
+        from sampo import bus as sbus
+        path, _ = self.lane_with_brief()
+        self.fm("task", "set", "T-0001", "scope=plugin/a.py,plugin/b.py")
+        self.fm("lease", "take", "plugin/a.py", env={"CLAUDE_CODE_SESSION_ID": "sess-a"})
+        r = self.fm("lane", "start", "T-0001", cwd=path)  # a held file is a note, never a refusal of the focus
+        self.assertEqual(self.active(path), "T-0001")
+        self.assertIn("plugin/a.py", r.stdout)
+        self.assertIn("held by another session", r.stdout)
+        mine = sorted(v["file"] for v in sbus._leases().values() if v["task"] == "T-0001")
+        self.assertEqual(mine, ["plugin/b.py"], "the other session's lease on a.py is not taken from it")
+        self.assertEqual([v["session"] for v in sbus._leases().values() if v["file"] == "plugin/a.py"], ["sess-a"])
+
+    def test_a_lock_timeout_in_the_lease_take_does_not_fail_the_start(self):  # T-5594: the focus stands, the note says why
+        from sampo import bus as sbus
+        path, _ = self.lane_with_brief()
+        self.fm("task", "set", "T-0001", "scope=plugin/a.py")
+        held = c.lock_hold(os.path.join(sbus._dir(), ".lock"))  # another process's project lock: the take times out
+        self.assertIsNotNone(held)
+        try:
+            r = self.fm("lane", "start", "T-0001", cwd=path)
+        finally:
+            held.close()
+        self.assertEqual(self.active(path), "T-0001")
+        self.assertIn("leases not taken: ", r.stdout)
+        d = json.loads(self.fm("lane", "start", "T-0001", "--json", cwd=path).stdout)
+        self.assertEqual(d["leases"], ["plugin/a.py"], "the next start, with the lock free, takes it")
+
     def test_the_builder_contract_names_lane_start(self):
         from sampo import lanes as slanes
         flat = " ".join(slanes.contract("T-9", "abc123", "/main").split())

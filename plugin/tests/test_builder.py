@@ -176,6 +176,24 @@ class Brief(_Tasks):
         self.fm("lane", "brief", three)
 
 
+    def test_the_launch_prompt_opens_with_read_and_lane_start(self):  # T-5594: no preamble calls before the work
+        tid = self.task("Parse dates")
+        res = json.loads(self.fm("lane", "brief", tid, "--json").stdout)
+        self.assertIn(f'prompt: "Read {res["path"]} and run sampo lane start {tid} in your first message', res["agent"])
+        self.assertIn("both calls in one turn, then work the task", res["agent"])
+
+    def test_the_contract_leaves_leases_to_lane_start(self):  # T-5594: lane start takes the scope, SubagentStop drops it
+        from sampo import lanes as slanes
+        flat = " ".join(read_text(os.path.join(PLUGIN, "agents", "fm-builder.md")).split())
+        self.assertNotIn("read it first", flat, "the brief is read in the same first message as lane start")
+        self.assertNotIn("Before editing, claim what you plan to change", flat)
+        self.assertIn("lane start took the leases on your scope files", flat)
+        self.assertIn("sampo lease take FILE[::SYMBOL]", flat, "a file outside the scope is still taken by hand")
+        copy = " ".join(slanes.contract("T-9", "abc123", "/main").split())
+        self.assertNotIn("Before editing, claim what you plan to change", copy)
+        self.assertIn("lane start took the leases on your scope files", copy)
+
+
 class Flow(_Tasks):
     def test_focus_in_a_worktree_binds_and_main_takes_it_back_after_the_merge(self):
         tid = self.task("Add greet")

@@ -769,7 +769,8 @@ BUILT_ON = re.compile(rf"^- {BUILT_ON_MARK} (T-\d+) \(unlanded lane\)", re.M)
 
 def start(p, args):
     """T-3958: a builder's opening in one call, run inside its lane: the base its brief names against this worktree's
-    HEAD, then `sampo focus ID`, then the brief's path and the task's steps. A base HEAD lacks is not focused: the
+    HEAD, then `sampo focus ID`, then the task's scope leases (T-5594), then the brief's path and the task's steps.
+    A base HEAD lacks is not focused: the
     answer is the command that fetches it (a behind lane) or the two commits (a diverged one), as the contract says. A
     lane that is ahead of the base builds on HEAD (T-3142). A brief with no base (none written, or an older one) skips
     the check and says so; the focus is the same one `sampo focus ID` runs."""
@@ -831,11 +832,25 @@ def start(p, args):
     seen = io.StringIO()
     with contextlib.redirect_stdout(seen):  # the focus's own words, kept apart so --json stays one document
         cli.cmd_focus(argparse.Namespace(id=b.id, project=getattr(args, "project", None), json=False))
+    from sampo import bus  # T-5594: the scope's concrete files are this task's leases, taken here, not by hand
+    lease_err = None
+    try:
+        taken, leases_held = bus.take_scope(p, b.id, bus.scope_targets(p, b))
+    except (c.LockTimeout, OSError) as e:  # the focus stands: a busy lock or an unwritable folder is a note, not a failure
+        taken, leases_held, lease_err = [], [], str(e) or type(e).__name__
+    if lease_err:
+        leases = f"Leases: leases not taken: {lease_err}\n"
+    else:
+        bits = ([f"took {', '.join(taken)}"] if taken else []) + [
+            f"{f} is held by another session ({w}), not taken" for f, w in leases_held]
+        leases = f"Leases: {'; '.join(bits) if bits else 'none (the scope names no file)'}\n"
     steps = [f"{s.n}. [{'x' if s.done else ' '}] {s.text}" for s in cli.need_brief(p, b.id).steps()]
     shown = path if os.path.isfile(path) else None
     text = (seen.getvalue().rstrip() + "\n" if seen.getvalue().strip() else "") + (
-        f"Brief: {shown}\n" if shown else "") + "".join(f"{n}\n" for n in notes) + "Steps:\n" + "\n".join(steps)
+        f"Brief: {shown}\n" if shown else "") + "".join(f"{n}\n" for n in notes) + leases + "Steps:\n" + "\n".join(steps)
     return cli.out(args, {"id": b.id, "focused": True, "brief": shown, "base": base, "notes": notes, "steps": steps,
+                          "leases": taken, "leases_held": [{"file": f, "holder": w} for f, w in leases_held],
+                          "leases_error": lease_err,
                           "focus": seen.getvalue()}, text)
 
 
@@ -1231,7 +1246,11 @@ RECOVERIES_MAX = 2  # T-2354: a lane that stops a third time is blocked for a pe
 
 
 def agent_prompt(path):
-    return f'prompt: "Read {path} and work the task it describes."'
+    """T-5594: the launch prompt names the brief and the one call that opens the builder. `sampo lane start ID` focuses
+    the task and takes its scope leases, so the builder needs no preamble calls: both go in its first message."""
+    tid = os.path.basename(path).split(".")[0]  # audits/T-0001.builder.md
+    return (f'prompt: "Read {path} and run sampo lane start {tid} in your first message, both calls in one turn, '
+            f'then work the task it describes."')
 
 
 # T-2354: why a lane's builder came back without its work merged → the one recovery for that cause. {id} is the task,
@@ -2018,7 +2037,7 @@ def race(p, b, main, args):
     paths = {t: os.path.join(p.dir, "audits", f"{t}.builder.md") for t in racers}
     return cli.out(args, {"id": b.id, "race": nids[0], "sides": racers, "briefs": paths},
                      f"{b.id} {'design race, spikes' if design else 'races'} {', '.join(nids)}:\n" + "\n".join(
-        f"  launch: {agent}, prompt: \"Read {path} and work the task it describes.\"" for path in paths.values())
+        f"  launch: {agent}, {agent_prompt(path)}" for path in paths.values())
         + f"\n  then: fm lane race {b.id} --score, and fm lane pick <the winner>"
         + (f" (a spike's code is never merged; {b.id} stays here)" if design else ""))
 
@@ -4529,8 +4548,7 @@ def builder_brief(p, b, args, resume_branch=None, after="", stacked=None):
             parts += ["Its last refused merge said:", "```", drop["check"].strip(), "```", ""]
     from sampo import bus  # T-1068: claim the concrete scope files up front, under the task id
     racing = b.meta.get("race") or b.meta.get("race_of")  # review: both sides edit the same files by design
-    skipped = [] if racing else bus.preclaim(p, b.id, [s for s in b.meta.get("scope") or []
-                                                           if not re.search(r"[*?\[]", s)])
+    skipped = bus.preclaim(p, b.id, sorted({f for f, _ in bus.scope_targets(p, b)}))  # the same targets lane start takes
     if skipped:
         parts += ["## Claims", "Not pre-claimed, already held live (ask the holder with `fm bus send`): "
                   + "; ".join(f"{f} by {w}" for f, w in skipped), ""]

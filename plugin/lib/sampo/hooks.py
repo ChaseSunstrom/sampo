@@ -7962,7 +7962,8 @@ def _mark_builder(pl, returned):
             return
         # T-3535: scanned unlocked (each builder start and stop held the lock across every brief, mostly to match
         # none); only a match locks, for one read and save. T-3609: a mark already in place takes no lock at all
-        todo = [b.id for b in c.load_briefs(p) if mine(b) and bool(b.meta.get("builder_returned")) != returned]
+        briefs = c.load_briefs(p)
+        todo = [b.id for b in briefs if mine(b) and bool(b.meta.get("builder_returned")) != returned]
         from sampo import cli
         for tid in todo:
             busy = 0
@@ -7975,6 +7976,11 @@ def _mark_builder(pl, returned):
             if busy:  # expected contention: one counted line, not a traceback
                 log_error("builder mark", f"{tid}: project lock busy {busy}x, "
                                           + ("mark lost" if busy == 3 else "marked on a retry"))
+        if returned:  # T-5594: a returned builder's task leases end with it; its lane's pre-claim waits for the merge
+            from sampo import bus
+            for b in briefs:
+                if mine(b):
+                    bus.release(p, b.id, preclaim=False, by="scope")
     except Exception:  # bookkeeping: never the subagent's own event
         log_error("builder mark", _tb())
 

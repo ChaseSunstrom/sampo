@@ -534,13 +534,18 @@ def claim_overlaps(p, rel, sym, me, act=None, data=None):
             and not (act and v["session"] == f"lane-{act.id}") and (v["symbol"] == sym or "*" in (sym, v["symbol"]))]
 
 
-def _claim(data, p, me, task, rel, sym, seconds, advisory=False):
+def _claim(data, p, me, task, rel, sym, seconds, advisory=False, by=None):
     """A claim is keyed per session and task (T-1588: lanes share a session), so claims on one file and symbol coexist
     instead of displacing each other. An advisory one (fm lease take --warn over an overlap) is listed but denies
-    nobody's edit."""
-    data[f"{p.slug}:{rel}::{sym}@{me}" + (f"#{task}" if task else "")] = {
+    nobody's edit. T-5594: `by` tags who took it ("scope": lane start), and the tag is sticky: an edit that re-claims
+    the same key keeps it, so the return still drops it."""
+    key = f"{p.slug}:{rel}::{sym}@{me}" + (f"#{task}" if task else "")
+    by = by or (data.get(key) or {}).get("by")
+    data[key] = {
         "session": me, "task": task, "project": p.slug, "file": rel, "symbol": sym, "until": time.time() + seconds,
         "advisory": advisory, "boot": _boot()}  # T-3928: a lease of an older boot is dropped by sampo recover
+    if by:
+        data[key]["by"] = by
 
 
 def _boot():
@@ -564,15 +569,61 @@ def preclaim(p, task_id, files, seconds=LEASE_S):
     return skipped
 
 
-def release(p, task_id, preclaim=True):
+def scope_targets(p, b):
+    """T-5594: the (file, symbol) pairs a task's scope names outright, the one place a brief's scope becomes leases (lane
+    start's take and the brief's pre-claim both use it). A glob, a path outside the worktree and a directory name no
+    file; a racing task names none (both sides edit the same files by design). A `./` is dropped, and `file::symbol`
+    splits on the `::` (the symbol "*", the default, is the whole file)."""
+    if b.meta.get("race") or b.meta.get("race_of"):
+        return []
+    out = []
+    for s in b.meta.get("scope") or []:
+        f, _, sym = str(s).strip().partition("::")
+        f, sym = os.path.normpath(f.strip().rstrip("/") or "."), sym.strip() or "*"
+        if f in (".", "..") or f.startswith("../") or os.path.isabs(f) or re.search(r"[*?\[]", f) \
+                or (sym != "*" and re.search(r"[*?\[]", sym)) or os.path.isdir(os.path.join(p.root, f)) \
+                or (f, sym) in out:
+            continue
+        out.append((f, sym))
+    return out
+
+
+def take_scope(p, task_id, targets, seconds=LEASE_S):
+    """T-5594: a builder's `sampo lane start` takes the task's concrete scope files (scope_targets' pairs) as its session's
+    leases under the task id, so it never takes them by hand, and tags them "scope" so the return drops them alone. A
+    target another live session holds (on an overlapping symbol, or the whole file, or a session's lease under another
+    task) isn't taken: those come back as (name, holder) pairs, as preclaim's do. The lane's own pre-claim is not a
+    holder. One lock, one write; a second start re-takes the same keys."""
+    from sampo import cli
+    me, taken, held = _sid(cli.session()) or "user", [], []
+    with c.lock(_dir()):
+        data = _leases()
+        for f, sym in targets:
+            name = f if sym == "*" else f"{f}::{sym}"
+            busy = [v for v in data.values() if v["project"] == p.slug and v["file"] == f
+                    and v["session"] != f"lane-{task_id}" and (v["symbol"] == sym or "*" in (sym, v["symbol"]))
+                    and (v["session"] != me or (v.get("task") and v["task"] != task_id))]
+            if busy:
+                held.append((name, _who(busy[0])))
+            else:
+                _claim(data, p, me, task_id, f, sym, seconds, by="scope")
+                taken.append(name)
+        if taken:
+            _write_leases(data)
+    return taken, held
+
+
+def release(p, task_id, preclaim=True, by=None):
     """T-1068: drop a lane's pre-claims (its lane is merged, removed or being resumed), and (T-1588) the leases its
     builder's edits and takes made under the task. T-3398: only this project's (task ids repeat across projects);
-    preclaim=False keeps the lane pre-claim (a blocked lane resumes)."""
+    preclaim=False keeps the lane pre-claim (a blocked lane resumes). T-5594: `by` narrows the task's leases to those
+    taken by that tag (a returned builder drops its "scope" leases, and its session's other leases stay)."""
     with c.lock(_dir()):
         data = _leases()
         lane = lambda v: v["session"] == f"lane-{task_id}"  # its pre-claim is tagged with the task too
         keep = {k: v for k, v in data.items() if v.get("project") != p.slug
-                or (lane(v) and not preclaim) or (not lane(v) and v.get("task") != task_id)}
+                or (lane(v) and not preclaim) or (not lane(v) and (v.get("task") != task_id
+                                                                   or (by and v.get("by") != by)))}
         gone = [v for k, v in data.items() if k not in keep]
         if gone:
             _write_leases(keep)

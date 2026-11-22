@@ -93,6 +93,35 @@ class BuilderMark(ForemanTestCase):
         hooks._mark_builder(fixer, False)
         self.assertFalse(self.returned())
 
+    def test_a_returned_builder_drops_its_leases_but_only_its_scope_ones(self):  # T-5594: its scope leases end with it
+        from sampo import bus
+        with c.lock(bus._dir()):
+            data = bus._leases()
+            bus._claim(data, self.p, "builder-session", "T-0001", "scope.py", "*", 600, by="scope")  # taken by lane start
+            bus._claim(data, self.p, "builder-session", "T-0001", "edited.py", "*", 600)  # taken by an edit: not the scope
+            bus._claim(data, self.p, "lane-T-0001", "T-0001", "pre.py", "*", 600)  # the brief's pre-claim
+            bus._claim(data, self.p, "builder-session", "T-0002", "other.py", "*", 600, by="scope")  # another task's
+            bus._write_leases(data)
+        hooks._mark_builder(self.pl, True)
+        self.assertTrue(self.returned())
+        left = sorted((v["session"], v["file"]) for v in bus._leases().values())
+        self.assertEqual(left, [("builder-session", "edited.py"), ("builder-session", "other.py"),
+                                ("lane-T-0001", "pre.py")])
+        self.assertNotIn("Traceback", self.log())
+
+    def test_the_main_sessions_lease_on_the_task_survives_a_return(self):  # T-5594: a mid-edit lease is not the builder's
+        from sampo import bus
+        with c.lock(bus._dir()):
+            data = bus._leases()
+            bus._claim(data, self.p, "builder-session", "T-0001", "scope.py", "*", 600, by="scope")
+            bus._claim(data, self.p, "main-sess", "T-0001", "mid_edit.py", "*", 600)  # the main session, same task
+            bus._write_leases(data)
+        hooks._mark_builder(self.pl, True)
+        self.assertTrue(self.returned())
+        left = sorted((v["session"], v["file"]) for v in bus._leases().values())
+        self.assertEqual(left, [("main-sess", "mid_edit.py")])
+        self.assertNotIn("Traceback", self.log())
+
     def locked(self):
         import fcntl
         fd = os.open(os.path.join(self.p.dir, ".lock"), os.O_RDWR)

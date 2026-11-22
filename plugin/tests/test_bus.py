@@ -502,6 +502,43 @@ class Lease(Base):
                       out)  # T-1837: builders read the bare count as unfinished work
 
 
+    def test_a_scope_entry_is_normalised_and_split_on_its_symbol_and_a_directory_names_no_file(self):  # T-5594 review
+        from types import SimpleNamespace
+        from unittest import mock
+        from sampo import bus as sbus, cli
+        p = self.project()
+        os.makedirs(os.path.join(p.root, "pkg"), exist_ok=True)
+        b = SimpleNamespace(meta={"scope": ["./plugin/a.py", "plugin/b.py::func", "pkg", "pkg/", "plugin/a.py"]})
+        self.assertEqual(sbus.scope_targets(p, b), [("plugin/a.py", "*"), ("plugin/b.py", "func")])
+        with mock.patch.object(cli, "session", return_value="sess-b"):
+            taken, held = sbus.take_scope(p, "T-0001", sbus.scope_targets(p, b))
+        self.assertEqual((taken, held), (["plugin/a.py", "plugin/b.py::func"], []))
+        mine = sorted((v["file"], v["symbol"]) for v in sbus._leases().values() if v["task"] == "T-0001")
+        self.assertEqual(mine, [("plugin/a.py", "*"), ("plugin/b.py", "func")])
+
+    def test_a_symbol_lease_is_held_only_by_an_overlapping_symbol_or_the_whole_file(self):  # T-5594 review
+        from unittest import mock
+        from sampo import bus as sbus, cli
+        p = self.project()
+        with c.lock(sbus._dir()):
+            data = sbus._leases()
+            sbus._claim(data, p, "sess-a", None, "mod.py", "other", 600)
+            sbus._claim(data, p, "sess-a", None, "wide.py", "*", 600)
+            sbus._write_leases(data)
+        with mock.patch.object(cli, "session", return_value="sess-b"):
+            taken, held = sbus.take_scope(p, "T-0001", [("mod.py", "func"), ("wide.py", "func")])
+        self.assertEqual(taken, ["mod.py::func"], "another symbol of the file is no overlap")
+        self.assertEqual([h[0] for h in held], ["wide.py::func"], "a file-wide lease of another session overlaps any symbol")
+
+    def test_a_racing_task_names_no_scope_lease(self):  # T-5594 review: both sides edit the same files by design
+        from types import SimpleNamespace
+        from sampo import bus as sbus
+        p = self.project()
+        scope = ["plugin/a.py"]
+        self.assertEqual(sbus.scope_targets(p, SimpleNamespace(meta={"scope": scope, "race": "T-0002"})), [])
+        self.assertEqual(sbus.scope_targets(p, SimpleNamespace(meta={"scope": scope, "race_of": "T-0001"})), [])
+        self.assertEqual(sbus.scope_targets(p, SimpleNamespace(meta={"scope": scope})), [("plugin/a.py", "*")])
+
     def test_a_fm_code_workers_edits_lease_as_the_run_so_the_run_and_its_next_worker_edit_on(self):
         """T-1294: each worker turn is its own Claude session; leasing under it made fm code's judge put the
         worker's fix back, and the next turn's session was refused the same function."""
