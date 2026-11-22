@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- A closed task's follow-ups are drained in one pass: each is filed as before, and up to six small ones (trivial or small by the paths they name) become one batch host for a haiku builder, from the land settle and from sampo task follow ID --drain (T-5717).
 - The lead's context is kept down: an idle lead over 60% at a task boundary is typed /compact and a one-line focus from sampo resume (tmux, once per 30 minutes, never over typed text or a dialog), or shown the line by the Stop hook without tmux; sampo cost --lead measures cache-read tokens per turn (T-5769).
 - test_bench_hooks.HotPathImports no longer fails in cached batch runs, where run.py's recording venv python (runcover.pth imports contextlib) sat first on PATH under the hook; the test now runs the hook under the real interpreter and has a planted-venv witness (T-5762).
 - Calling cards may carry kinds, the yardstick task kinds they serve (suite:kind), cardgap.carded_kinds reads them over the plugin and admitted cards and names a card whose entry is bad, and the six code cards name exam:bug (T-5133).
