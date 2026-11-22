@@ -23,6 +23,7 @@ KINDS = ("tests", "claude", "models", "hooks", "other")
 HOT_S = 600  # a leased file written in the last ten minutes is hot
 TICK_S = 10  # the CPU ring reads /proc at most this often
 DAY_S = 86400
+CLOSE_WRITE_S = 10  # T-5820: an empty close mark this fresh is a close writing its pid; older, a crash left it
 PARKED = {"conflict", "refused"}  # lane_stop kinds that park a lane until someone acts
 GROWS = {"cards_grow": "cards", "moons_grow": "moons"}
 MODELS = re.compile(r"ollama|llama-server|llama_server|\bvllm\b|\bjeff\b", re.I)  # local model servers and their runners
@@ -99,6 +100,37 @@ def part_lanes(p):
     return out
 
 
+def _train_runs(p):
+    """T-5820: a train runs while it holds the train lock (lanes.train_lock). A run inside a lane land has no 'lane train'
+    process, so the lock is the fact. A hand close holds the same lock under its mark (lanes.CLOSE_MARK, its pid): that
+    hold is no train, but a mark whose close is gone (a crash frees the lock, not the mark) does not hide one."""
+    from sampo import lanes
+    if not c.lock_held(os.path.join(p.dir, "train", ".lock")):
+        return False
+    mark = os.path.join(p.dir, "train", lanes.CLOSE_MARK)
+    try:
+        with open(mark) as f:
+            pid = int(f.read(32).strip() or 0)  # a pid, never more: the mark is read at most this far
+        if pid <= 0:
+            raise ValueError("no pid")
+    except FileNotFoundError:
+        return True
+    except (OSError, ValueError):
+        # empty or unreadable: a close writing its pid this instant (fresh), or a crash's empty mark (stale)
+        try:
+            fresh = time.time() - os.stat(mark).st_mtime < CLOSE_WRITE_S
+        except OSError:
+            return True  # the close ended meanwhile: the lock is a train's
+        return not fresh
+    try:
+        os.kill(pid, 0)
+    except PermissionError:
+        return False  # alive, another user's process
+    except (OSError, OverflowError):
+        return True  # the close is gone (or the mark names no pid): stale
+    return False
+
+
 def part_train(p):
     """The last day's merges: the lanes landed (newest LANDED_MAX), how many trains carried them, the minutes from a
     builder's launch to its merge, the lanes a red train left out, and whether a train runs now."""
@@ -120,7 +152,7 @@ def part_train(p):
                 waits.append(t - built.pop(task))
     return {"landed": landed[-LANDED_MAX:], "landed_24h": len(landed), "trains_24h": len(trains),
             "minutes_per_lane": round(sum(waits) / len(waits) / 60) if waits else None, "left_out": left,
-            "running": any(re.search(r"\b(?:fm|sampo) lane train\b", cmd) for _, cmd in _procs())}
+            "running": _train_runs(p) or any(re.search(r"\b(?:fm|sampo) lane train\b", cmd) for _, cmd in _procs())}
 
 
 def part_loop(p):

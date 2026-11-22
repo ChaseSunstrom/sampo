@@ -15,6 +15,7 @@ from helpers import SampoTestCase, read_text
 
 from sampo import board
 from sampo import core as c
+from sampo import lanes
 from sampo import live
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -232,6 +233,32 @@ class Collect(SampoTestCase):
                 "--depends", a.id)
         live._CACHE.clear()
         self.assertIn([a.id], [d[1:] for d in board.part_deps(self.p)])
+
+    def test_train_running_follows_the_train_lock_not_a_hand_close(self):
+        # T-5820: a train runs inside a lane land, so no 'lane train' process shows it: the train lock does
+        with lanes.train_lock(self.p):
+            self.assertTrue(board.part_train(self.p)["running"])
+        self.assertFalse(board.part_train(self.p)["running"])  # a free lock is no train
+        with lanes.train_lock_closing(self.p):  # a hand close holds the same lock, with its live mark
+            self.assertFalse(board.part_train(self.p)["running"])
+        dead = subprocess.Popen(["true"])
+        dead.wait()
+        with lanes.train_lock(self.p):  # a mark left by a close that died does not hide a train
+            with open(os.path.join(self.p.dir, "train", lanes.CLOSE_MARK), "w") as f:
+                f.write(str(dead.pid))
+            self.assertTrue(board.part_train(self.p)["running"])
+        with lanes.train_lock(self.p):  # a mark naming no pid at all is stale too, and never raises
+            with open(os.path.join(self.p.dir, "train", lanes.CLOSE_MARK), "w") as f:
+                f.write("9" * 30)
+            self.assertTrue(board.part_train(self.p)["running"])
+        mark = os.path.join(self.p.dir, "train", lanes.CLOSE_MARK)
+        with lanes.train_lock(self.p):  # an empty mark just written is a close still writing its pid
+            open(mark, "w").close()
+            self.assertFalse(board.part_train(self.p)["running"])
+            os.utime(mark, (time.time() - 3600,) * 2)  # an empty mark a crash left is stale: a train runs
+            self.assertTrue(board.part_train(self.p)["running"])
+        with mock.patch.object(board, "_procs", return_value=[(1, "python3 /x/sampo lane train")]):
+            self.assertTrue(board.part_train(self.p)["running"])  # the old process match still counts
 
     # ---------------------------------------------------------------- T-3731: the five new pictures' parts
 
