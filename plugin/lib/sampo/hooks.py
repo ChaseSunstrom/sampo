@@ -3363,6 +3363,38 @@ def _stamp_pause(pl):
             log_error("PreToolUse", _tb())  # no stamp reads as the user's pause: the strict side
 
 
+def _workflow_stages(pl):
+    """T-5680: a Workflow whose agent() stage names no sampo:fm-* agentType and no haiku or sonnet model would run on the
+    session's Opus with no turn cap, so the call is denied and the stages named. A check that breaks denies the call
+    (fail closed), as the Read guard does."""
+    try:
+        from sampo import budget as sbudget
+        found = sbudget.workflow_problems(pl.get("tool_input"), pl.get("cwd"))
+    except Exception:
+        log_error("PreToolUse", _tb())
+        why = ("Sampo: the Workflow stage check failed (sampo doctor shows the error), so this workflow is refused "
+               "until that check works again.")
+    else:
+        if not found:
+            return 0
+        # a stage problem carries the stage fix; any other problem (an unreadable or oversize script, a lexing failure)
+        # carries its own fix, and is named as the script that cannot be checked
+        stages = [label for label, fix in found if fix == sbudget.WORKFLOW_FIX]
+        others = list(dict.fromkeys(fix for _, fix in found if fix != sbudget.WORKFLOW_FIX))
+        why = []
+        if stages:
+            names = ", ".join(stages[:20]) + (f" and {len(stages) - 20} more" if len(stages) > 20 else "")
+            why.append(f"Sampo: agent() stage(s) {names} name no sampo:fm-* agentType and no haiku or sonnet model, so "
+                       f"they would run on the session's Opus with no turn cap. Fix: {sbudget.WORKFLOW_FIX}.")
+        if others:
+            why.append("Sampo: the Workflow's script cannot be checked, so the call is refused. Fix: "
+                       + "; ".join(others) + ".")
+        why = " ".join(why)
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                             "permissionDecisionReason": why}}))
+    return 0
+
+
 def _pre_tool_use(raw):
     try:
         pl = json.loads(raw)
@@ -3442,7 +3474,7 @@ def _pre_tool_use(raw):
                                                          "permissionDecisionReason": why}}))
             return 0
         if tool not in GUARDED:
-            return 0
+            return _workflow_stages(pl) if tool == "Workflow" else 0  # T-5680: a Workflow's stages name a type or model
         try:
             import fmguard as guard
             ctx, p, act, found, block = _guard_decision(pl, guard)

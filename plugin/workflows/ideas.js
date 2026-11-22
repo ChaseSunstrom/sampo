@@ -79,7 +79,7 @@ const add = (list, lens) => {
 
 phase('Ideas')
 const first = await parallel(lenses.map(lens => () =>
-  agent(ask(lens), { label: `lens:${lens.split(':')[0]}`, phase: 'Ideas', schema: IDEAS, agentType: 'Explore' })))
+  agent(ask(lens), { label: `lens:${lens.split(':')[0]}`, phase: 'Ideas', schema: IDEAS, agentType: 'sampo:fm-recon' })))
 first.forEach((r, i) => add((r && r.ideas) || [], lenses[i].split(':')[0]))
 log(`${catalogue.length} distinct ideas from ${lenses.length} lenses`)
 
@@ -87,13 +87,13 @@ for (let round = 1; round <= 2; round++) {
   phase('Critic')
   const gaps = await agent(
     `A brainstorm for ${JSON.stringify(request)} produced these ideas:\n${catalogue.map(i => `- ${i.title}`).join('\n')}\n\nWhich angles that matter for this request does no idea cover (a user, a failure mode, a workflow, a scale, a competitor's strength)? At most 4, each a short lens description; an empty list if the set is complete.`,
-    { label: `critic:${round}`, phase: 'Critic', schema: GAPS, effort: 'medium' },
+    { label: `critic:${round}`, phase: 'Critic', schema: GAPS, model: 'sonnet', effort: 'medium' },
   )
   const missing = ((gaps && gaps.missing) || []).slice(0, 4)
   if (!missing.length) break
   const before = catalogue.length
   const more = await parallel(missing.map(lens => () =>
-    agent(ask(lens), { label: `gap:${lens.slice(0, 30)}`, phase: 'Critic', schema: IDEAS, agentType: 'Explore' })))
+    agent(ask(lens), { label: `gap:${lens.slice(0, 30)}`, phase: 'Critic', schema: IDEAS, agentType: 'sampo:fm-recon' })))
   more.forEach((r, i) => add((r && r.ideas) || [], `gap: ${missing[i]}`))
   log(`round ${round}: ${missing.length} gap lens(es), ${catalogue.length - before} new idea(s)`)
   if (catalogue.length === before) break

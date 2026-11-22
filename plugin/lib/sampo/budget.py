@@ -5,6 +5,7 @@ cost in one global ledger (state/spend.jsonl: USD from claude's JSON result, tok
 usage (or 90% of the 5-hour window, the statusline's snapshot) every cap halves, like economy mode. Raising a cap isn't
 blocked: it is recorded as a costly decision, which the user reviews (fm decide --review). Subagents have no token cap
 (T-0320): they wait only while usage runs ahead of the week's pace or the 5-hour window is nearly spent."""
+import bisect
 import contextlib
 import datetime
 import glob
@@ -468,6 +469,327 @@ def check_subagent():
     why = subagent_pause()
     if why:
         raise BudgetError(f"budget: subagents wait while usage is ahead of pace ({why}); do it in the main thread")
+
+
+# T-5680: a Workflow script's agent() stage names a sampo:fm-* agentType (each has a maxTurns in its frontmatter: the
+# Workflow agent() takes none) or a haiku or sonnet model. A stage with neither inherits the session's Opus, uncapped.
+WORKFLOW_MAX = 512 * 1024  # bytes read of one script file: a larger one is refused, not read whole
+WORKFLOWS = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "workflows"))
+FM_AGENT_TYPE = re.compile(r"(?:sampo|foreman):fm-[\w-]+")  # foreman: the plugin's name before T-2879 (review.js falls back to it)
+WORKFLOW_FIX = ("name agentType sampo:fm-scout (a lookup), sampo:fm-recon (research), sampo:fm-reviewer (a review) or "
+                "sampo:fm-builder (a build), or model 'haiku' or 'sonnet', in the options of the agent() stage")
+_WF_CALL = re.compile(r"\bagent\s*\(")
+_WF_NAME = re.compile(r"[\w-]{1,64}")
+_WF_MODEL = re.compile(r"(?i)haiku|sonnet")  # a model name holding either: claude-sonnet-4-5, Haiku
+_WF_FM_LITERAL = re.compile(r"""(['"`])(?:sampo|foreman):fm-[\w-]+\1""")  # a quoted fm type in a dynamic agentType
+_WF_OPERATORS = frozenset("(,=:[!&|?{};+-*%<>~^")  # a / after one of these opens a regex literal, after a value it divides
+_WF_KEYWORDS = frozenset(("return", "typeof", "case", "do", "else", "in", "of", "new", "delete", "void", "throw",
+                          "yield", "await", "instanceof"))
+WORKFLOW_LEX_FIX = ("close the string, template, comment or regex literal that the script leaves open, so that its "
+                    "agent() stages can be read")
+WORKFLOW_ESCAPE_FIX = "write the identifiers in the script without \\u escapes, so that each agent() call can be read by name"
+WORKFLOW_BIG_FIX = f"the script is over {WORKFLOW_MAX // 1024} KB, too large to check: split it"
+WORKFLOW_UNREADABLE_FIX = "give a script file that exists and can be read, or pass the script text inline"
+
+
+def _wf_blank(s):
+    return "".join("\n" if c == "\n" else " " for c in s)
+
+
+def _wf_code(src):
+    """(code, ok): src with comments blanked, and the text of strings, templates and regex literals blanked to spaces,
+    quote marks and each ${ } expression kept as code. The same length, so an index is the same place in both: a call
+    in a comment is no call. ok is False when a string, template, comment or regex is still open at its line's end or
+    at the script's end: the script cannot be read reliably, so the caller refuses it. A / opens a regex literal after
+    an operator, an opening bracket or a keyword such as return, and divides after a value."""
+    out, i, n, ok = [], 0, len(src), True
+    stack = []  # "T" in a template's text, else an int: the open braces of a ${ } expression
+    last = ""  # the last code token: "" at the start, a punctuation character, a word, or "V" for the end of a value
+    while i < n:
+        top = stack[-1] if stack else None
+        ch = src[i]
+        if top == "T":
+            if ch == "\\":
+                out.append(_wf_blank(src[i:i + 2]))
+                i += 2
+                continue
+            if ch == "`":
+                stack.pop()
+                out.append("`")
+                last = "V"
+            elif src.startswith("${", i):
+                stack.append(0)
+                out.append("${")
+                last = "{"
+                i += 2
+                continue
+            else:
+                out.append(_wf_blank(ch))
+            i += 1
+            continue
+        if ch.isspace():
+            out.append(ch)
+            i += 1
+        elif src.startswith("//", i):
+            j = src.find("\n", i)
+            j = n if j < 0 else j
+            out.append(_wf_blank(src[i:j]))
+            i = j
+        elif src.startswith("/*", i):
+            j = src.find("*/", i + 2)
+            if j < 0:
+                ok = False
+                j = n
+            else:
+                j += 2
+            out.append(_wf_blank(src[i:j]))
+            i = j
+        elif ch == "/" and (last == "" or last in _WF_OPERATORS or last in _WF_KEYWORDS):
+            j, in_class = i + 1, False  # a regex body ends at a / outside a [ ] class, and never at a line's end
+            while j < n and src[j] != "\n" and not (src[j] == "/" and not in_class):
+                if src[j] == "\\":
+                    j += 1
+                elif src[j] == "[":
+                    in_class = True
+                elif src[j] == "]":
+                    in_class = False
+                j += 1
+            if j >= n or src[j] != "/":
+                ok = False
+                j = min(j, n)
+                out.append("/" + _wf_blank(src[i + 1:j]))
+                i = j
+            else:
+                k = j + 1
+                while k < n and (src[k].isalnum() or src[k] == "_"):  # the flags
+                    k += 1
+                out.append("/" + _wf_blank(src[i + 1:j]) + "/" + src[j + 1:k])
+                last = "V"
+                i = k
+        elif ch in "'\"":
+            j = i + 1
+            while j < n and src[j] != ch and src[j] != "\n":
+                j += 2 if src[j] == "\\" else 1
+            end = min(j, n)
+            closed = end < n and src[end] == ch  # a string ends at its line: one left open is refused
+            if not closed:
+                ok = False
+            out.append(ch + _wf_blank(src[i + 1:end]) + (ch if closed else ""))
+            i = end + 1 if closed else end
+            last = "V"
+        elif ch == "`":
+            stack.append("T")
+            out.append(ch)
+            i += 1
+        elif ch.isalnum() or ch in "_$":
+            j = i + 1
+            while j < n and (src[j].isalnum() or src[j] in "_$"):
+                j += 1
+            out.append(src[i:j])
+            last = src[i:j]
+            i = j
+        else:
+            if top is not None and ch == "{":
+                stack[-1] += 1
+            elif top is not None and ch == "}":
+                if top == 0:
+                    stack.pop()
+                else:
+                    stack[-1] -= 1
+            out.append(ch)
+            last = ch
+            i += 1
+    return "".join(out), ok and not stack
+
+
+def _wf_pairs(code):
+    """{open index: close index} for the brackets of code (one pass)."""
+    pairs, stack = {}, []
+    for i, ch in enumerate(code):
+        if ch in "([{":
+            stack.append(i)
+        elif ch in ")]}" and stack:
+            pairs[stack.pop()] = i
+    return pairs
+
+
+def _wf_parts(code, lo, hi):
+    """(start, end) of each comma-separated part of code[lo:hi] at bracket depth 0, empty parts left out."""
+    spans, depth, start = [], 0, lo
+    for i in range(lo, hi):
+        ch = code[i]
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            spans.append((start, i))
+            start = i + 1
+    spans.append((start, hi))
+    return [(a, b) for a, b in spans if code[a:b].strip()]
+
+
+def _wf_props(src, code, pairs, lo, hi):
+    """{key: (is_literal, value)} of the object literal code[lo:hi] (lo is its '{'), last key winning as in JS. A
+    literal's value is its text; any other value (an expression, a shorthand name) is is_literal False. A spread of an
+    object literal is read through. Any other spread, and a key that is not a plain name or a string, is stored under
+    None: its keys are not known here, so the stage is not typed (see _wf_typed)."""
+    props = {}
+    for a, b in _wf_parts(code, lo + 1, hi):
+        s = a + len(code[a:b]) - len(code[a:b].lstrip())
+        if code[s:s + 3] == "...":
+            r = s + 3 + len(code[s + 3:b]) - len(code[s + 3:b].lstrip())
+            close = pairs.get(r) if code[r:r + 1] == "{" else None
+            if close is not None and close < b and not code[close + 1:b].strip():
+                props.update(_wf_props(src, code, pairs, r, close))
+            else:
+                props[None] = (False, src[s:b])
+            continue
+        if code[s] in "'\"":
+            e = code.find(code[s], s + 1, b)
+            if e < 0:
+                props[None] = (False, src[s:b])
+                continue
+            key, k = src[s + 1:e], e + 1
+        else:
+            m = re.match(r"[\w$]+", code[s:b])
+            if not m:  # a computed key or a method: the name it sets is not known
+                props[None] = (False, src[s:b])
+                continue
+            key, k = m.group(), s + len(m.group())
+        colon = code.find(":", k, b)
+        if colon < 0 or code[k:colon].strip():  # shorthand `agentType`: a variable's value, not known
+            props[key] = (False, key)
+            continue
+        v = colon + 1 + len(code[colon + 1:b]) - len(code[colon + 1:b].lstrip())
+        vend = v + len(code[v:b].rstrip())
+        if vend - v >= 2 and code[v] in "'\"`" and code.find(code[v], v + 1, vend) == vend - 1 \
+                and (code[v] != "`" or "$" not in code[v:vend]):
+            props[key] = (True, src[v + 1:vend - 1])
+        else:
+            props[key] = (False, src[v:vend])
+    return props
+
+
+def _wf_typed(props):
+    """True when the stage names a model with haiku or sonnet in it, or an agentType that is an fm type: a literal one,
+    or a dynamic expression with a quoted fm type in it (a variable's value is not known, so it is refused without one).
+    A stage with a spread of unknown options, or a key not known here, is not typed."""
+    if None in props:
+        return False
+    agent, model = props.get("agentType"), props.get("model")
+    if model is not None and model[0] and _WF_MODEL.search(model[1]):
+        return True
+    if agent is None:
+        return False
+    if agent[0]:
+        return FM_AGENT_TYPE.fullmatch(agent[1]) is not None
+    return _WF_FM_LITERAL.search(agent[1]) is not None
+
+
+def _wf_label(text):
+    """A label as a denial echoes it: printable ASCII, blanks collapsed, at most 60 characters."""
+    text = "".join(c if " " <= c <= "~" else " " for c in text)
+    return " ".join(text.split())[:60]
+
+
+def _wf_stages(src):
+    """[(label or 'line N', fix)] for the agent() stages of one script that name neither (see _wf_typed). A script whose
+    strings, templates, comments or regex literals do not close is one problem: its stages cannot be read."""
+    code, ok = _wf_code(src)
+    if not ok:
+        return [("script", WORKFLOW_LEX_FIX)]
+    if "\\" in code:  # strings, comments and regex literals are blanked, so this is an identifier escape: agent
+        return [("script", WORKFLOW_ESCAPE_FIX)]
+    pairs = _wf_pairs(code)
+    newlines = [k for k, c in enumerate(src) if c == "\n"]  # a stage's line: bisect, not a rescan per stage
+    found = []
+    for m in _WF_CALL.finditer(code):
+        open_at = m.end() - 1
+        parts = _wf_parts(code, open_at + 1, pairs.get(open_at, len(code)))
+        props = None
+        if len(parts) >= 2:
+            a, b = parts[1]
+            s = a + len(code[a:b]) - len(code[a:b].lstrip())
+            if code[s:s + 1] == "{":
+                props = _wf_props(src, code, pairs, s, pairs.get(s, b))
+        if props is not None and _wf_typed(props):
+            continue
+        label = props.get("label") if props else None
+        name = _wf_label(label[1]) if label and label[0] else ""
+        if not name:
+            name = f"line {bisect.bisect_left(newlines, m.start()) + 1}"
+        found.append((name, WORKFLOW_FIX))
+    return found
+
+
+def _wf_file(path):
+    """The problems of the script file at path, an absolute path. A path that is not a readable regular file, or a file
+    over WORKFLOW_MAX, is a problem, not a pass: its stages cannot be checked."""
+    if not os.path.isfile(path):  # a FIFO, a device or a directory is not a script
+        return [("script", WORKFLOW_UNREADABLE_FIX)]
+    try:
+        with open(path, "rb") as f:
+            data = f.read(WORKFLOW_MAX + 1)
+    except OSError:
+        return [("script", WORKFLOW_UNREADABLE_FIX)]
+    if len(data) > WORKFLOW_MAX:
+        return [("script", WORKFLOW_BIG_FIX)]
+    return _wf_stages(data.decode("utf-8", "replace"))
+
+
+def _wf_read(path, cwd):
+    """The problems of the script file named by scriptPath: ~ is the home directory, and a relative path is taken from the
+    payload's cwd (a relative path with no cwd is a problem)."""
+    p = os.path.expanduser(path)
+    if not os.path.isabs(p):
+        if not cwd:
+            return [("script", WORKFLOW_UNREADABLE_FIX)]
+        p = os.path.join(cwd, p)
+    return _wf_file(p)
+
+
+def _wf_named(name, cwd):
+    """The problems of every workflow called name: the shipped ones, then the project's and the home's saved ones
+    (.claude/workflows). A name with no such file is a problem: nothing is read outside those folders."""
+    if not _WF_NAME.fullmatch(name):
+        return [("script", f"the workflow name {name[:60]!r} is not a plain name: pass the script inline")]
+    dirs = [WORKFLOWS, os.path.join(os.path.expanduser("~"), ".claude", "workflows")]
+    if cwd:
+        dirs.insert(1, os.path.join(cwd, ".claude", "workflows"))
+    present = [p for p in (os.path.join(d, name + ".js") for d in dirs) if os.path.isfile(p)]
+    if not present:
+        return [("script", f"no workflow named {name} is saved in plugin/workflows, the project's .claude/workflows or "
+                           "~/.claude/workflows: pass the script inline")]
+    found = []
+    for p in present:
+        found += _wf_file(p)
+    return found
+
+
+def workflow_problems(ti, cwd=None):
+    """[(label, fix)] for each agent() stage of a Workflow call's script that names no sampo:fm-* agentType and no haiku
+    or sonnet model (T-5680). The script is tool_input's script text, its scriptPath file, or its name (a shipped or
+    saved workflow). cwd is the payload's working directory, for a relative scriptPath and the project's workflows.
+    Best effort, with known holes: an alias (const a = agent; a(...)), a dynamic property (this[name]), a regex after a
+    ")" read as division, and a ternary whose other branch is a builtin type."""
+    if not isinstance(ti, dict):
+        return []
+    cwd = cwd if isinstance(cwd, str) and os.path.isabs(cwd) else None
+    found = []
+    script = ti.get("script")
+    if isinstance(script, str) and script.strip():
+        if len(script.encode("utf-8", "replace")) > WORKFLOW_MAX:
+            found.append(("script", WORKFLOW_BIG_FIX))
+        else:
+            found += _wf_stages(script)
+    path = ti.get("scriptPath")
+    if isinstance(path, str) and path.strip():
+        found += _wf_read(path, cwd)
+    name = ti.get("name")
+    if isinstance(name, str) and name.strip():
+        found += _wf_named(name, cwd)
+    return found
 
 
 def result(stdout):

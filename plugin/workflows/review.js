@@ -65,7 +65,7 @@ const scope = await agent(
 - a task id like T-0123: the commits whose subject ends in "(T-0123)" (git log --format=%H --grep="(T-0123)"), diffed from the oldest one's parent to the newest; plus any uncommitted change if the task is the active one (fm next names it).
 - a range containing "..": git diff <range>. Anything else: a branch, git diff HEAD...<branch>.
 Run d=$(mktemp -d) and write the diff to $d/review.diff (git diff --no-color). Return its absolute path, the changed files (git diff --name-only for the same target), what you diffed, and the task id if there is one. Do not change any file in the repository.`,
-  { label: 'scope', phase: 'Scope', schema: SCOPE, agentType: 'general-purpose', effort: 'low' },
+  { label: 'scope', phase: 'Scope', schema: SCOPE, model: 'haiku', effort: 'low' },  // T-5680: a model, no type: it needs Bash, and sampo:fm-scout has none
 )
 if (!scope || !scope.files.length) {
   return { target, confirmed: [], note: 'nothing to review: the target has no changes' }
@@ -73,14 +73,15 @@ if (!scope || !scope.files.length) {
 log(`Reviewing ${scope.described}: ${scope.files.length} file(s)`)
 
 // T-2879: the reviewer agent is sampo:fm-reviewer; a session started before the plugin moved has it under the old
-// name until it restarts, and agent() matches a type exactly, so the old name is the fallback
-const REVIEWERS = ['sampo', 'foreman'].map(n => `${n}:fm-reviewer`)
+// name until it restarts, and agent() matches a type exactly, so the old name is the fallback. T-5680: each call names
+// its type as a literal, and takes its options by name (no spread), so the Workflow guard can read them.
 const reviewer = async (prompt, opts) => {
+  const { label, phase, schema, model, effort } = opts
   try {
-    return await agent(prompt, { ...opts, agentType: REVIEWERS[0] })
+    return await agent(prompt, { label, phase, schema, model, effort, agentType: 'sampo:fm-reviewer' })
   } catch (e) {
     if (!/not found/.test(String(e && e.message || e))) throw e
-    return agent(prompt, { ...opts, agentType: REVIEWERS[1] })
+    return agent(prompt, { label, phase, schema, model, effort, agentType: 'foreman:fm-reviewer' })
   }
 }
 
@@ -99,7 +100,7 @@ const reviewed = await pipeline(
 Finding (${lens} lens, ${f.severity}): ${f.file}:${f.line || '?'}: ${f.summary}
 Scenario: ${f.scenario}
 Refuted means: the scenario cannot happen in this code, the code already handles it, or it is not a defect. Say refuted=false only if you confirmed it can happen. Skeptic ${n}: argue from a different angle than the obvious one.`,
-          { label: `verify:${lens}:${f.file}`, phase: 'Verify', schema: VERDICT, effort: 'medium' },
+          { label: `verify:${lens}:${f.file}`, phase: 'Verify', schema: VERDICT, model: 'sonnet', effort: 'medium' },
         )))
       const live = votes.filter(Boolean)
       const refuted = live.length > 0 && live.every(v => v.refuted)

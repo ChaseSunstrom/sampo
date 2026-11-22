@@ -5,6 +5,9 @@ tools: Read, Grep, Glob, Edit, Write, Bash
 model: sonnet
 effort: high
 autoCompactWindow: 150000
+# T-5680: builder turns in the automation data (~/.cache/claude-ops/automation-builders.md) run p90 161, max 315, so the
+# cap is 320; at 150 a real build stopped short. A Workflow stage has no turn cap of its own, so this one is the cap.
+maxTurns: 320
 color: green
 omitClaudeMd: true
 ---
