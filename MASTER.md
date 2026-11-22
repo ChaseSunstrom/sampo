@@ -222,6 +222,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmmission` (`sampo mission`: the mission, surfaces, lenses and pack for an… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmmodels` (T-2485, the user's gen-2 model layer… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmmoonscale` (`sampo moons grow [--target N | --keep N] [--batch K] [--max-calls M]`… [→ files-lib-3](docs/map/files-lib-3.md)
+- `fmmoonground` (T-5179, `sampo/moonground.py`: every kept moon graded new, partial or built… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmmoonshot` (`sampo moons [status|rate|order|check]`, T-2626, MOONSHOT.md part… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmmotion` (`sampo motion check [PATH]`, T-1624: the Motion Score… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmmutate` (T-1066: mutation tests for the guard, one ast mutant per rule site… [→ files-lib-3](docs/map/files-lib-3.md)

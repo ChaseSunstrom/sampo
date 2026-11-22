@@ -308,11 +308,13 @@ def recall(p, query, skip=None, n=HITS, cover=0.0):
     return hits
 
 
-def nearest_done(p, titles):
+def nearest_done(p, titles, briefs=None):
     """T-0208: {title: (id, title)} of the finished brief that shares at least half a title's words (2 or more), from
-    one pass over the briefs for many titles at once (fm ideas marks ideas that may already be built)."""
+    one pass over the briefs for many titles at once (fm ideas marks ideas that may already be built). T-5179: `briefs`,
+    the caller's own load (archive included), spares a second read of every brief."""
     done = [(set(_tokens(b.title)), set(_tokens(" ".join([b.title, b.section("Raw request"), b.section("Interpretation")]))),
-             b.id, b.title) for b in c.load_briefs(p, include_archive=True) if b.status == "done"]
+             b.id, b.title)
+            for b in (c.load_briefs(p, include_archive=True) if briefs is None else briefs) if b.status == "done"]
     seen = collections.Counter(w for _, words, _, _ in done for w in words)
     common = {w for w, n in seen.items() if n >= max(3, len(done) / 5)}  # T-1303: in a fifth of them, 3 at least
     out = {}
@@ -389,11 +391,12 @@ def near_tasks(p, title, scope=(), type_=None, skip=()):
     return tuple(best[k][1:] if k in best else None for k in ("same", "other", "done"))
 
 
-def covered(text):
+def covered(text, docs=None):
     """T-0256: [(command, help)] for the fm commands whose help the request mostly restates (≥ 3 shared words and
-    ≥ 60% of the help's): the best two, so a request for what exists is noticed before it is built."""
+    ≥ 60% of the help's): the best two, so a request for what exists is noticed before it is built. T-5179: `docs`,
+    the caller's one verb_docs(), spares a cache read per text."""
     q, hits = set(_tokens(text)), []
-    for name, (help_, _) in verb_docs().items():  # T-1912: subcommands too ("task prove")
+    for name, (help_, _) in (verb_docs() if docs is None else docs).items():  # T-1912: subcommands too ("task prove")
         h = set(_tokens(help_))
         shared = len(q & h)
         if shared >= 3 and shared >= 0.6 * len(h) and shared >= 0.25 * len(q):  # review: a long paste isn't a match
