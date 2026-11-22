@@ -16,7 +16,7 @@ from sampo import setup as sampo_setup
 REPO = os.path.dirname(PLUGIN)
 README = os.path.join(REPO, "README.md")
 CARDS = os.path.join(PLUGIN, "skills", "library", "cards")
-MOD = os.path.join(REPO, "mods", "foreman-ui", "hooks", "register.tsx")
+MOD = os.path.join(REPO, "mods", "sampo-ui", "hooks", "register.tsx")  # T-5552: foreman-ui is a symlink to this
 
 _ONES = ("zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen "
          "seventeen eighteen nineteen").split()
@@ -46,8 +46,9 @@ def live_looks():
 
 
 def live_panels():
+    """The built-in Board panels: the names in the mod's BUILT list (ORDER is derived from it)."""
     with open(MOD, encoding="utf-8") as f:
-        m = re.search(r"const ORDER = \[([^\]]+)\] as const", f.read())
+        m = re.search(r"const BUILT = \[([^\]]+)\] as const", f.read())
     return len(re.findall(r"'[^']+'", m.group(1))) if m else 0
 
 

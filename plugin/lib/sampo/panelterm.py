@@ -6,7 +6,9 @@ braille (2x4 dots a cell), and every word is set as real text, never drawn. 79 c
 none (NO_COLOR), where the shapes still draw as ▀ ▄ █ and braille.
 
 The rasterizer reads the svg subset the kit writes (svg, g, rect, circle, ellipse, path M L H V C Q Z, line, polyline,
-polygon, text, tspan; translate; hex colours) and fails loudly, naming it, on anything else."""
+polygon, text, tspan; translate; hex colours) and fails loudly, naming it, on anything else. SMIL animation (animate,
+animateTransform, animateMotion, animateColor, set) is drawn as its static frame: the terminal holds still, so the
+element keeps its own attributes, which are the frame at time 0 (T-5552; a full player is T-5148)."""
 import math
 import re
 import shutil
@@ -21,6 +23,7 @@ _PATH_TOK = re.compile(rf"[A-Za-z]|{_NUM}")
 _TRANSLATE = re.compile(rf"\s*translate\(\s*({_NUM})(?:[\s,]+({_NUM}))?\s*\)\s*$")
 _HEX = re.compile(r"#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
 SKIP = {"title", "desc", "metadata"}
+SMIL = {"animate", "animateTransform", "animateMotion", "animateColor", "set"}  # T-5552: drawn at rest, never moved
 SHAPES = {"rect", "circle", "ellipse", "path", "line", "polyline", "polygon"}
 REFUSE = {"style", "clip-path", "mask", "filter", "marker-start", "marker-mid", "marker-end", "href"}
 BITS = {(0, 0): 1, (0, 1): 2, (0, 2): 4, (1, 0): 8, (1, 1): 0x10, (1, 2): 0x20, (0, 3): 0x40, (1, 3): 0x80}
@@ -127,8 +130,52 @@ def _ctx(el, up):
     return ctx
 
 
+def _arc(p0, rx, ry, phi, large, sweep, p1, s):
+    """The points of an svg elliptical arc from p0 to p1 (endpoint form, SVG F.6.5), p1 last; a zero radius is a line.
+    T-5552: the kit writes arcs (cylinder ends, clouds, pins), so the terminal flattens them like its curves."""
+    if not all(math.isfinite(v) for v in (rx, ry, phi, p1[0], p1[1])):
+        raise ValueError("an arc's numbers must be finite")
+    (x1, y1), (x2, y2) = p0, p1
+    if (x1, y1) == (x2, y2):
+        return []
+    rx, ry = abs(rx), abs(ry)
+    if min(rx, ry) < 1e-9 or max(rx, ry) > 1e9:  # too small to see, or far off the sheet: the chord
+        return [p1]
+    cp, sp = math.cos(math.radians(phi)), math.sin(math.radians(phi))
+    dx, dy = (x1 - x2) / 2, (y1 - y2) / 2
+    x1p, y1p = cp * dx + sp * dy, -sp * dx + cp * dy
+    lam = x1p * x1p / (rx * rx) + y1p * y1p / (ry * ry)
+    if lam > 1:  # radii too small for the chord: grown until the arc reaches
+        rx, ry = rx * math.sqrt(lam), ry * math.sqrt(lam)
+    num = rx * rx * ry * ry - rx * rx * y1p * y1p - ry * ry * x1p * x1p
+    den = rx * rx * y1p * y1p + ry * ry * x1p * x1p
+    coef = math.sqrt(max(0.0, num / den)) if den else 0.0
+    if bool(large) == bool(sweep):
+        coef = -coef
+    cxp, cyp = coef * rx * y1p / ry, -coef * ry * x1p / rx
+    cx, cy = cp * cxp - sp * cyp + (x1 + x2) / 2, sp * cxp + cp * cyp + (y1 + y2) / 2
+    ux, uy = (x1p - cxp) / rx, (y1p - cyp) / ry
+    vx, vy = (-x1p - cxp) / rx, (-y1p - cyp) / ry
+    t1 = math.atan2(uy, ux)
+    dt = math.atan2(ux * vy - uy * vx, ux * vx + uy * vy)
+    if not sweep and dt > 0:
+        dt -= 2 * math.pi
+    elif sweep and dt < 0:
+        dt += 2 * math.pi
+    if not all(math.isfinite(v) for v in (cx, cy, dt, rx, ry)):  # radii so large the centre overflows: a line
+        return [p1]
+    n = max(2, min(48, math.ceil(abs(dt) * max(rx, ry) * s)))
+    out = []
+    for k in range(1, n + 1):
+        a = t1 + dt * k / n
+        ca, sa = math.cos(a), math.sin(a)
+        out.append((cx + rx * ca * cp - ry * sa * sp, cy + rx * ca * sp + ry * sa * cp))
+    out[-1] = p1
+    return out
+
+
 def _path(d, s):
-    """[(points, closed)] in user units; curves flattened finely enough for the scale s."""
+    """[(points, closed)] in user units; curves and arcs flattened finely enough for the scale s."""
     toks, subs, i = _PATH_TOK.findall(d), [], 0
     x = y = sx = sy = 0.0
     cur, cmd = None, None
@@ -154,8 +201,8 @@ def _path(d, s):
     while i < len(toks):
         t = toks[i]
         if t.isalpha():
-            if t not in "MmLlHhVvCcQqZz":
-                raise ValueError(f"the path command {t} can't be drawn in a terminal: M L H V C Q Z only")
+            if t not in "MmLlHhVvCcQqAaZz":
+                raise ValueError(f"the path command {t} can't be drawn in a terminal: M L H V C Q A Z only")
             cmd, i = t, i + 1
             if t in "Zz":
                 if cur is not None:
@@ -199,6 +246,14 @@ def _path(d, s):
                 t_, u = k / n, 1 - k / n
                 add(tuple(u * u * a + 2 * u * t_ * b + t_ * t_ * c for a, b, c in zip(p0, p1, p2)))
             x, y = p2
+        elif C == "A":
+            rx, ry, phi, large, sweep = num(), num(), num(), num(), num()
+            if large not in (0.0, 1.0) or sweep not in (0.0, 1.0):
+                raise ValueError(f"the arc flags in {d[:40]!r} must be 0 or 1")
+            p = (num() + ox, num() + oy)
+            for q in _arc((x, y), rx, ry, phi, large, sweep, p, s):
+                add(q)
+            x, y = p
     return [(pts, closed) for pts, closed in subs]
 
 
@@ -448,7 +503,7 @@ def raster(svg_text, cols, depth, bg):
 def _children(el, ctx, cv, s):
     for ch in el:
         tag = _tag(ch)
-        if tag in SKIP:
+        if tag in SKIP or tag in SMIL:
             continue
         if tag == "g":
             _children(ch, _ctx(ch, ctx), cv, s)

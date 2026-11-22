@@ -112,11 +112,38 @@ class Raster(unittest.TestCase):
 
     def test_what_it_cant_draw_fails_loudly_naming_it(self):
         for body, name in (('<image width="9" height="9"/>', "image"), ('<g transform="rotate(4)"><rect/></g>', "rotate"),
-                           ('<path d="M0 0A5 5 0 0 1 9 9" stroke="#fff"/>', "A"),
+                           ('<path d="M0 0S5 5 9 9" stroke="#fff"/>', "S"),
                            ('<rect width="9" height="9" fill="url(#g)"/>', "url"), ('<foreignObject/>', "foreignObject"),
                            ('<rect width="9" height="9" fill="red"/>', "red")):
             with self.assertRaisesRegex(ValueError, re.escape(name), msg=body):
                 panelterm.raster(svg(body), 40, 24, "#000000")
+
+    def test_degenerate_arcs_draw_as_lines_or_refuse_by_name(self):
+        # T-5552: a zero radius is a line, equal ends draw nothing, radii too small for the chord grow, a flag but 0 or 1 refuses
+        for d in ("M0 0A0 5 0 0 1 9 9", "M4 4A5 5 0 0 1 4 4", "M0 0A1e300 1e300 0 1 0 9 9", "M0 0A9e-300 9e-300 0 0 1 9 9"):
+            with self.subTest(d=d):
+                lines = panelterm.raster(svg(f'<path d="{d}" stroke="#ffffff"/>'), 40, 24, "#000000")
+                self.assertEqual({len(plain(x)) for x in lines}, {40})
+        with self.assertRaisesRegex(ValueError, "flags"):
+            panelterm.raster(svg('<path d="M0 0A5 5 0 0 2 9 9" stroke="#ffffff"/>'), 40, 24, "#000000")
+
+    def test_an_svg_animation_draws_as_its_static_frame_and_twice_the_same(self):
+        # T-5552: the kit's panels carry SMIL (animateTransform, animateMotion, set, animate); the terminal shows the frame at rest
+        still = ('<g transform="translate(4 6)"><rect x="0" y="0" width="60" height="30" rx="6" fill="#336699"/>'
+                 '<text x="10" y="20" font-size="11" fill="#ffffff">moving</text></g>')
+        moving = ('<g transform="translate(4 6)"><rect x="0" y="0" width="60" height="30" rx="6" fill="#336699">'
+                  '<animate attributeName="opacity" values="0.8;0" dur="2s" repeatCount="indefinite"/></rect>'
+                  '<animateTransform attributeName="transform" type="translate" values="0 0;30 0;0 0" keyTimes="0;.5;1" '
+                  'dur="3s" repeatCount="indefinite"/>'
+                  '<animateTransform attributeName="transform" type="rotate" from="0 30 15" to="360 30 15" dur="4s" '
+                  'repeatCount="indefinite"/>'
+                  '<animateMotion path="M0 0L9 0" dur="2s" repeatCount="indefinite"/>'
+                  '<set attributeName="visibility" to="hidden" begin="1s"/>'
+                  '<text x="10" y="20" font-size="11" fill="#ffffff">moving</text></g>')
+        drawn = panelterm.raster(svg(moving), 60, 24, "#101010")
+        self.assertEqual(drawn, panelterm.raster(svg(still), 60, 24, "#101010"), "the frame at time 0 is the static one")
+        self.assertEqual(drawn, panelterm.raster(svg(moving), 60, 24, "#101010"), "a second run is identical")
+        self.assertIn("moving", plain("\n".join(drawn)))
 
     def test_spec_text_never_reaches_the_terminal_as_a_control_or_a_wrong_width(self):
         for esc in ("\x1b", "&#27;"):  # XML itself refuses an ESC, so none can reach the cells

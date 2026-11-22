@@ -4,6 +4,7 @@ the scores select already holds (no exam is re-run)."""
 # map-links: plugin/lib/sampo/kalevala.py plugin/lib/sampo/big.py
 import json
 import os
+from unittest import mock
 
 from helpers import CLEAN_READER, ForemanTestCase, read_text
 from sampo import core as c
@@ -126,10 +127,12 @@ class Landed(ForemanTestCase):
         self.assertRegex(self.select_md(1), r"First: no delta \(no earlier gen to compare\)")
 
     def test_a_gen_with_no_giant_task_says_so_and_still_selects(self):
-        from sampo import kalevala
+        # T-5552: gen always creates its GIANT now (T-5014), so the no-GIANT case is a gen whose creation failed
+        from sampo import kalevala, kalevala_giant
         p = self.project()
         self.grade("memory", "r1", ["a"])
-        kalevala.gen(p)
+        with mock.patch.object(kalevala_giant, "giant_task", side_effect=RuntimeError("no disk")):
+            kalevala.gen(p)
         r = kalevala.select(p, 1)
         self.assertEqual(r["verdict"], "baseline")
         self.assertIn("Landed: no GIANT task recorded for gen 1", self.select_md(1))
