@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- A builder's sampo lane start takes its task's scope leases and SubagentStop drops them, so a builder opens with its one call and takes no lease by hand (T-5594).
 - The lane pilot starts one detached headless resolver for a lane the land parked for a conflict, or a headless builder for one stopped before its merge, at most twice per lane and then reports it; SAMPO_LANE_PILOT=off starts nothing (T-5766).
 - A lane that changes the lane pipeline's own modules is express and trains first, a parked one leads sampo next, the verify pass and the watch follow take new code at their next unit, and sampo status shows the median filed-to-in-use time of pipeline fixes, flagged above an hour (T-5735).
 - Lane brief and task plan print every plan gap at once with a PLANS.json skeleton, lane brief starts the cold rival read itself, and --why works for every reason verb (T-5728).
