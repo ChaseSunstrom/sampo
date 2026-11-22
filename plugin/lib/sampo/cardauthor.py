@@ -84,6 +84,7 @@ FIT_EXAMPLES = ("list the classes and functions of a Python file, with their lin
                 "(admitted as py-none-guard)")  # two requests that were admitted: each one file kind, deterministic
 IDEA_WORDS = 3  # a proposal shorter than this says too little to write a card from
 COVER_FLOOR = 0.5  # rank score at which an authored card plainly covers a request (a near-duplicate scored 0.52-0.68)
+DROP_SAMPLES = 3  # dropped proposals a run keeps to read, so a person can judge NEAR
 NEAR = 0.8  # token-set overlap at which a proposal is one filed already
 
 
@@ -475,7 +476,12 @@ def propose(p, n=10, ask=None, root=None, model=None):
         f"The worktree's file kinds, most files first: {kinds}",
         "Filed already (data):\n" + (c.joinmore([f"- {c.fit(q['text'], 90)}" for q in filed], 40, "\n") or "(none)"),
         "Turned down, with why (data):\n" + ("\n".join(down) or "(none)")])
-    r = {"added": [], "calls": 0, "error": ""}
+    r = {"added": [], "calls": 0, "error": "", "dropped": {}, "samples": []}
+
+    def drop(why, text, reason):  # a proposal left out: counted by reason, its first DROP_SAMPLES kept to read
+        r["dropped"][why] = r["dropped"].get(why, 0) + 1
+        if len(r["samples"]) < DROP_SAMPLES:
+            r["samples"].append({"text": c.fit(str(text), 120), "reason": reason})
     try:
         text, _ = ask(PROPOSE_SYSTEM, prompt, "local", 0)
     except budget.BudgetError:
@@ -488,18 +494,27 @@ def propose(p, n=10, ask=None, root=None, model=None):
     if not isinstance(obj, dict):
         r["error"] = f"propose: {obj}"
         return r
-    seen = [_tokens(q["text"]) for q in filed] + [_tokens(x["text"]) for x in done.values()] \
-        + [_tokens(cd.get("purpose") or "") for cd in cc.cards(root)[0].values()]
+    seen = [(_tokens(q["text"]), "filed request") for q in filed] \
+        + [(_tokens(x["text"]), "finished request") for x in done.values()] \
+        + [(_tokens(cd.get("purpose") or ""), "catalogue card") for cd in cc.cards(root)[0].values()]
     rows = []
+    if not isinstance(obj.get("requests"), list):
+        drop("shape", json.dumps(obj)[:120], "the reply has no list of requests")
     for x in obj.get("requests") if isinstance(obj.get("requests"), list) else []:
         if not isinstance(x, dict) or not isinstance(x.get("request"), str):
+            drop("shape", x if isinstance(x, str) else json.dumps(x, default=str), "not an object with a request text")
             continue
         text = c.fit(" ".join(x["request"].split()).rstrip(".!"), 300)
         why = c.fit(" ".join(str(x.get("why") or "").split()), 300)
         t = _tokens(text)
-        if len(t) < IDEA_WORDS or any(s and len(t & s) / len(t | s) >= NEAR for s in seen):
+        if len(t) < IDEA_WORDS:
+            drop("short", text, f"under {IDEA_WORDS} words")
             continue
-        seen.append(t)
+        near = next((w for s, w in seen if s and len(t & s) / len(t | s) >= NEAR), "")
+        if near:
+            drop("near", text, f"near a {near}" if near != "proposal" else "near an earlier proposal")
+            continue
+        seen.append((t, "proposal"))
         rows.append({"at": c.now(), "source": "propose", "title": text, "why": why, "count": 1,
                      "key": f"propose:{request_id(text)}"})
         r["added"].append(text)
@@ -539,7 +554,7 @@ def grow(p, batch=10, max_calls=None, writer=None, ask=None, root=None, retry=Fa
         raise ValueError("--batch takes 1 or more")
     if max_calls is not None and max_calls < 1:
         raise ValueError("--max-calls takes 1 or more")
-    r = {"mined": 0, "proposed": 0, "admitted": [], "rejected": 0, "errors": 0, "reasons": collections.Counter(),
+    r = {"mined": 0, "proposed": 0, "dropped": {}, "dropped_samples": [], "admitted": [], "rejected": 0, "errors": 0, "reasons": collections.Counter(),
          "calls": 0, "stopped": "", "error": ""}
     in_row = 0  # requests in a row no writer answered
     if mine:
@@ -556,6 +571,7 @@ def grow(p, batch=10, max_calls=None, writer=None, ask=None, root=None, retry=Fa
         except budget.BudgetError as e:
             got = {"added": [], "calls": 0, "error": c.fit(f"propose: {e}", 300)}
         r["proposed"], r["calls"] = len(got["added"]), got["calls"]
+        r["dropped"], r["dropped_samples"] = got.get("dropped", {}), got.get("samples", [])
         r["error"] = "; ".join(x for x in (r["error"], got["error"]) if x)
     todo = collections.deque(pending(root, retry)[:batch])
     n, tries = _workers(p, workers, ask, model), len(_writers(writer))
@@ -611,7 +627,11 @@ def grow(p, batch=10, max_calls=None, writer=None, ask=None, root=None, retry=Fa
 
 
 def grow_line(r):
-    return (f"mined {r.get('mined', 0)} new request(s), proposed {r.get('proposed', 0)}; admitted {len(r['admitted'])}" + (f" ({c.joinmore(r['admitted'], 8)})" if r["admitted"] else "")
+    return (f"mined {r.get('mined', 0)} new request(s), proposed {r.get('proposed', 0)}"
+            + (f" (dropped: {', '.join(f'{k} {v}' for k, v in r['dropped'].items())}; e.g. "
+               + "; ".join(f"\"{x['text']}\" {x['reason']}" for x in r.get('dropped_samples', [])) + ")"
+               if r.get("dropped") else "")
+            + f"; admitted {len(r['admitted'])}" + (f" ({c.joinmore(r['admitted'], 8)})" if r["admitted"] else "")
             + f", rejected {r['rejected']}" + (f" ({', '.join(f'{k} {v}' for k, v in r['reasons'].items())})"
                                                if r["reasons"] else "")
             + (f", unanswered {r['errors']} (still pending)" if r.get("errors") else "")

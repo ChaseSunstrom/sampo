@@ -334,6 +334,34 @@ class Propose(Base):
         for card in ("py-outline", "py-none-guard"):  # the examples name cards that still ship
             self.assertTrue(os.path.isdir(os.path.join(c.PLUGIN_ROOT, "cards", card)))
 
+    def test_propose_drops_are_counted_by_reason_and_sampled(self):
+        self.request("count the words in a text file")
+        w = Writer(json.dumps({"requests": [
+            {"request": "Count the words in a text file.", "why": "docs"},  # near a filed one
+            {"request": "x", "why": ""},  # short
+            "not an object",  # shape
+            {"request": 5},  # shape
+            {"request": "list the imports of a Python file", "why": "dep tasks"}]}))
+        r = cardauthor.propose(self.p, n=5, ask=w, root=self.repo)
+        self.assertEqual(r["added"], ["list the imports of a Python file"])
+        self.assertEqual(r["dropped"], {"near": 1, "short": 1, "shape": 2})
+        self.assertEqual(len(r["samples"]), 3)
+        self.assertEqual(r["samples"][0]["reason"], "near a filed request")
+        self.assertIn("Count the words", r["samples"][0]["text"])
+        gone = cardauthor.propose(self.p, n=5, ask=Writer(json.dumps({"requests": "none"})), root=self.repo)
+        self.assertEqual(gone["dropped"], {"shape": 1})  # a reply with no list of requests
+
+    def test_propose_drops_reach_the_grow_line(self):
+        self.request("count the words in a text file")
+        w = Writer(json.dumps({"requests": [{"request": "count the words in a text file", "why": ""}, {"request": "y"}]}), "no json")
+        r = cardauthor.grow(self.p, batch=3, max_calls=2, ask=w, root=self.repo, mine=False)
+        self.assertEqual(r["proposed"], 0)
+        self.assertEqual(r["dropped"], {"near": 1, "short": 1})
+        line = cardauthor.grow_line(r)
+        self.assertIn("proposed 0 (dropped: near 1, short 1; e.g. ", line)
+        self.assertIn("near a filed request", line)
+        self.assertEqual(r["dropped_samples"][0]["reason"], "near a filed request")
+
     def test_propose_survives_a_writer_that_gives_nothing(self):
         r = cardauthor.propose(self.p, n=3, ask=Writer("no json here"), root=self.repo)
         self.assertEqual(r["added"], [])
