@@ -1870,6 +1870,54 @@ class Lanes(ForemanTestCase):
         self.assertIn(f"git merge foreman/{tid}", brief)
         self.assertNotIn(f"fm lane recover {tid}", self.fm("next").stdout, "its new process is recorded")
 
+    def fixes_lane(self, agent="abc12345", findings=True):
+        """T-5477: a briefed lane whose folder is a harness builder worktree (agent-<id>), with two reported findings."""
+        tid, path = self.stopped_builder()
+        p = c.find_project(self.repo)
+        b = c.find_brief(p, tid)
+        b.meta["lane"] = os.path.join(os.path.dirname(path), f"agent-{agent}")
+        c.save_brief(p, b)
+        for sev, file, text in ((("HIGH", "a.py:3", "the cap is never read"), ("LOW", "b.py:9", "a name says two things"))
+                                if findings else ()):
+            c.log_event(p, "finding", task=tid, data={"lens": "adversary", "severity": sev, "file": file, "text": text,
+                                                      "verdict": "reported"})
+        return tid, p
+
+    def test_lane_fixes_names_builder(self):
+        # T-5477: a builder still running gets the review's findings by message, not a cold builder
+        tid, _ = self.fixes_lane()
+        out = self.fm("lane", "fixes", tid).stdout
+        self.assertIn("SendMessage to abc12345:", out)
+        self.assertIn("the cap is never read", out)
+        self.assertIn("a.py:3", out)
+        self.assertNotIn("fm lane resume", out, "a live builder is messaged, never replaced")
+        got = json.loads(self.fm("lane", "fixes", tid, "--json").stdout)
+        self.assertEqual((got["agent"], got["ended"], len(got["findings"])), ("abc12345", False, 2))
+
+    def test_lane_fixes_ended_builder(self):
+        # T-5477: a builder that returned leaves its transcript on record: the resume line names it
+        tid, p = self.fixes_lane()
+        c.log_event(p, "subagent", task=tid, data={"agent_type": "sampo:fm-builder", "agent_id": "abc12345",
+                                                    "transcript": "/tmp/x/agent-abc12345.jsonl"})
+        c.log_event(p, "finding", task=tid, data={"lens": "edge", "severity": "MED", "file": "c.py:1",
+                                                    "text": "found after the builder returned", "verdict": "reported"})
+        out = self.fm("lane", "fixes", tid).stdout
+        self.assertIn("/tmp/x/agent-abc12345.jsonl", out)
+        self.assertIn(f"fm lane resume {tid}", out)
+        self.assertIn("found after the builder returned", out)
+        self.assertNotIn("the cap is never read", out, "only the round after the builder's return is sent")
+        self.assertNotIn("SendMessage to abc12345:", out)
+
+    def test_lane_fixes_without_a_builder_or_findings_says_so(self):
+        tid, _ = self.stopped_builder()
+        r = self.fm("lane", "fixes", tid, check=False)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("no builder agent", r.stdout + r.stderr)
+        tid, p = self.fixes_lane("zzz99999", findings=False)  # an agent id, no reported finding: nothing to send
+        r = self.fm("lane", "fixes", tid, check=False)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("no review findings", r.stdout + r.stderr)
+
     def commit_in(self, path, name, subject):
         """T-5684: one more commit in a lane, adding one file."""
         with open(os.path.join(path, name), "w") as f:
