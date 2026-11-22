@@ -140,7 +140,8 @@ def codex_newest(codex_dir=None):
 # ---------------------------------------------------------------- the verb
 
 def cmd_models(args):
-    """sampo models [status | newest on|off | pin NAME|off [--codex]]: the setting, and the settings.json it keeps."""
+    """sampo models [status | newest on|off | pin NAME|off [--codex] | local off|on]: the setting, and the
+    settings.json it keeps; local off keeps every model served on this machine unused (T-5504)."""
     from sampo import models
     from sampo import setup
     w = list(args.words or [])

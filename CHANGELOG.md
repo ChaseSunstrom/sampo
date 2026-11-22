@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- install-user now rewrites an outdated Sampo block in the user CLAUDE.md to the current text, the old '# Foreman' block included, and leaves every other byte of the file alone (T-3506).
 - The miss, toolproof, grants, incident and rollback modules now write to hooks.log through the shared logger, so each error is written once, repeats collapse and the log rotates; they still fail open if the logger cannot be imported (T-3431).
 - sampo check affected now refuses a template without {tests} or {names} (--literal overrides), and a lane can no longer change the project's gates or templates (T-3416).
 - sampo headroom finds the bounded lists the project's work outgrew (steers, asks and failures that fit no member, raised or named caps), asks a local model what a complete version lacks (cached per set, never paid, a failing set marked and retried later), and files each proposal once through find.capture; a night job runs it at idle priority (T-3328).
