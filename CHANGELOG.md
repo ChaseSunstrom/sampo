@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- The PreToolUse hook keeps under the harness's 5 s kill with one 3.5 s deadline from process start: the guard's verdict is computed first and never cut, the snapshot (every git step checked and inside the budget) and note builders give way, a blocked builder is interrupted with the alarm handed back, and each skipped part is named in the hook log and hook_ms row (T-5076).
 - The guard's script read undoes its open mark by length inside its try, so a budget timer that fires as the mark is set no longer leaves every later script read counted as nested: unclocked, uncached and never refused (T-5074).
 - CI on main: the guard's script read can no longer be left marked open by the budget signal (Python 3.12), the writer-index and shared-temp tests no longer race a finished build or kill their own process group (crowded runners, macOS), and the fast build's equivalence probe reruns a first-call difference once and names what differs when it refuses (T-5064).
 - A land whose last ship finds a running ship already carrying every commit no longer spends the publish grant: the running ship pushes them and spends it, instead of being refused at its push after its tests (T-5058).
