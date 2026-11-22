@@ -109,9 +109,18 @@
     "readme",
     "docs page",
     "documentation page",
-    "docs site",
+    "docs site"
+  ],
+  "panel_words": [
+    "diagram",
     "architecture diagram",
-    "flow diagram"
+    "flow diagram",
+    "dashboard",
+    "panel",
+    "architecture map",
+    "architecture overview",
+    "board panel",
+    "panels"
   ],
   "builtin_skills": {
     "SECURITY": [

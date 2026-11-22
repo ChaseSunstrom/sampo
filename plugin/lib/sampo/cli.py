@@ -8959,12 +8959,13 @@ def _build_parser(only=None):
     s = add("panels", lazy("sampo.panels", "cmd_panels"), tier=("Every task", 169), help="picture panels (T-3662): "
             "render SPEC.json (a typed spec of panels, 29 kinds of mechanism from a cluster graph to architecture boxes with "
             "packets, a state machine to a circuit board, as dark and light SVG in the board, blueprint or paper style, in the repo's own colours when it has "
-            "them); sheet SPEC.json (all in one SVG); sample (a spec of every kind); kinds")
-    s.add_argument("action", choices=["render", "sheet", "sample", "kinds"])
-    s.add_argument("target", nargs="?", metavar="SPEC.json")
+            "them); sheet SPEC.json (all in one SVG); plan [ROOT] (T-3733: a spec of the repo's real parts, one kind of "
+            "panel per kind of part, each part citing its file); sample (a spec of every kind); kinds")
+    s.add_argument("action", choices=["render", "sheet", "sample", "kinds", "plan"])
+    s.add_argument("target", nargs="?", metavar="SPEC.json|ROOT")
     s.add_argument("--root", metavar="DIR", help="the repo (default: the git checkout around the working folder)")
     s.add_argument("--style", choices=["board", "blueprint", "paper"], help="the look (default: the spec's, else board)")
-    s.add_argument("--out", metavar="DIR|STEM", help="render: docs/assets/panels/; sheet: the file stem")
+    s.add_argument("--out", metavar="DIR|STEM", help="render: docs/assets/panels/; sheet: the file stem; plan: the spec file")
     s.add_argument("--html", action="store_true", help="render: one self-contained animated page (packets run, clusters "
                    "drift, the globe turns; 30 fps at most, still under reduced motion), --out FILE.html or DIR (T-3734)")
     s.add_argument("--term", action="store_true", help="render: draw the panels in this terminal (half blocks, braille, "

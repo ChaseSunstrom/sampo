@@ -2664,7 +2664,7 @@ def user_prompt_submit(pl):
     # doesn't fit waits rather than cutting the Next line. A UI request's note first: it isn't asked for again.
     room = lambda extra: len("Sampo: " + ". ".join(parts) + ".") + extra <= PROMPT_BUDGET
     ui = c.ui_request(text)
-    ui_note = f"{ {'design': 'Design', 'readme': 'README'}.get(ui, 'UI')} request: {c.SKILL_FOR[ui]}" if ui else ""
+    ui_note = f"{ {'design': 'Design', 'readme': 'README', 'panels': 'Panels'}.get(ui, 'UI')} request: {c.SKILL_FOR[ui]}" if ui else ""
     if ui_note and room(len(ui_note) + 2) and _skill_once(sid, c.SKILL_FOR[ui]):
         parts.append(ui_note)
     think = c.think_request(text)  # T-3855: the category skills, on the prompt's words; after the UI note, whole or not at all

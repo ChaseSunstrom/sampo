@@ -244,6 +244,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmpanels` (T-3662: `sampo panels render SPEC.json [--style board|blueprint|paper] [--out DIR]`, `sheet`, `sample`… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmpanelhtml` (T-3734: `sampo panels render SPEC --html [--feed URL]`, the panels as one self-contained animated… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmpanelterm` (T-3734: `sampo panels render SPEC --term [--width N]`, the panels drawn in the terminal: each… [→ files-lib-3](docs/map/files-lib-3.md)
+- `fmpanels` (T-3662: `sampo panels render|sheet|sample|kinds SPEC.json`, `plan ROOT` (T-3733: a spec of any repo's real parts, with the board-panels skill), a typed JSON spec of panels drawn as static SVG mechanisms in the board, blueprint or paper style, dark and light; 13 kinds, each also a `panel-KIND` calling card) [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmreadme` (T-3703: `sampo readme plan|shots|diagram|check`, a README's figures for any proj… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmrecall` (T-2546's MASTER-clause matcher and `sampo recall --backtest-built`… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmrecipe` (T-3292, `sampo/recipe.py`): `sampo lane brief` cites the nearest closed task of the same type… [→ files-lib-3](docs/map/files-lib-3.md)

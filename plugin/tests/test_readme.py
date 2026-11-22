@@ -401,6 +401,18 @@ class Routing(SampoTestCase):
         for prompt in ("redesign the landing page", "fix the login", "read me the error"):
             self.assertNotEqual(c.ui_request(prompt), "readme", prompt)
 
+    def test_a_diagram_prompt_names_the_board_panels_skill_once_a_session(self):
+        # T-3733
+        self.fm("init")
+        first = ctx_of(self.hook("UserPromptSubmit", {"prompt": "draw a diagram of the services", "session_id": "s-p"}))
+        self.assertIn("Panels request: load: Skill sampo:board-panels", first)
+        again = ctx_of(self.hook("UserPromptSubmit", {"prompt": "now a dashboard of the jobs", "session_id": "s-p"}))
+        self.assertNotIn("board-panels", again, "once a session")
+        readme_first = ctx_of(self.hook("UserPromptSubmit", {"prompt": "the README needs an architecture diagram",
+                                                             "session_id": "s-q"}))
+        self.assertIn("README request", readme_first)
+        self.assertNotIn("board-panels", readme_first)
+
     def test_a_prompt_and_a_first_readme_edit_name_the_skill(self):
         self.fm("init")
         ups = self.hook("UserPromptSubmit", {"prompt": "rework the README for this tool", "session_id": "s-r"})

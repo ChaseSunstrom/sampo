@@ -697,6 +697,288 @@ class Cards(SampoTestCase):
         self.assertFalse(os.path.exists(os.path.join(self.repo, "img", "bad-dark.svg")))
 
 
+def pyapi(root):
+    """A Python web API: FastAPI routes, Celery tasks and their callers, SQL models, compose, CI, pytest."""
+    write(root, "requirements.txt", "fastapi\nuvicorn\npsycopg2-binary\nredis\ncelery\n")
+    write(root, "app/main.py", 'from fastapi import FastAPI\nfrom app.tasks import process_order, send_email\n\napp = FastAPI()\n\n\n'
+                               '@app.get("/orders")\ndef list_orders():\n    return []\n\n\n@app.post("/orders")\n'
+                               'def add_order(body: dict):\n    process_order.delay(body["id"])\n    send_email.delay(body["to"])\n'
+                               '    return {"ok": True}\n\n\n@app.get("/api/health")\ndef health():\n    return {"ok": True}\n')
+    write(root, "app/tasks.py", 'from celery import Celery\n\ncelery_app = Celery("shop", broker="redis://redis:6379/0")\n\n\n'
+                                '@celery_app.task\ndef process_order(order_id):\n    return order_id\n\n\n@celery_app.task\n'
+                                'def send_email(address):\n    return address\n\n\n@celery_app.task\ndef nightly_report():\n'
+                                '    return 1\n')
+    write(root, "app/models.py", 'from sqlalchemy import Column, Integer, String\nfrom sqlalchemy.orm import declarative_base\n\n'
+                                 'Base = declarative_base()\n\n\nclass Order(Base):\n    __tablename__ = "orders"\n'
+                                 '    id = Column(Integer, primary_key=True)\n    status = Column(String)\n')
+    write(root, "migrations/0001_init.sql", "CREATE TABLE orders (id integer primary key, status text);\n")
+    write(root, "docker-compose.yml", "services:\n  api:\n    build: .\n    ports:\n      - \"8000:8000\"\n    depends_on:\n"
+                                      "      - db\n      - redis\n  db:\n    image: postgres:16\n    environment:\n"
+                                      "      POSTGRES_DB: shop\n  redis:\n    image: redis:7\n  worker:\n    build: .\n"
+                                      "    command: celery -A app.tasks worker\n")
+    write(root, "Dockerfile", "FROM python:3.12\nCOPY . /srv\nCMD [\"uvicorn\", \"app.main:app\"]\n")
+    write(root, ".github/workflows/ci.yml", "name: ci\non: [push]\njobs:\n  lint:\n    runs-on: ubuntu-latest\n    steps:\n"
+                                            "      - uses: actions/checkout@v4\n  test:\n    runs-on: ubuntu-latest\n"
+                                            "    needs: lint\n    steps:\n      - run: pytest\n  build:\n"
+                                            "    runs-on: ubuntu-latest\n    steps:\n      - run: docker build .\n"
+                                            "  deploy:\n    runs-on: ubuntu-latest\n    steps:\n      - run: ./ship.sh\n")
+    write(root, "tests/test_api.py", "def test_list():\n    assert 1\n\n\ndef test_add():\n    assert 1\n\n\n"
+                                     "def test_health():\n    assert 1\n")
+    write(root, "tests/test_tasks.py", "def test_process():\n    assert 1\n\n\nasync def test_send():\n    assert 1\n")
+
+
+def nodeq(root):
+    """A Node worker queue: BullMQ queue, producers, a worker, cron jobs, compose with redis and mongo, node --test."""
+    write(root, "package.json", json.dumps({"name": "mailer", "version": "1.0.0", "main": "src/worker.js",
+                                            "scripts": {"start": "node src/worker.js", "test": "node --test"},
+                                            "dependencies": {"bullmq": "^5", "redis": "^4", "mongodb": "^6",
+                                                             "node-cron": "^3"}}))
+    write(root, "src/queue.js", "const { Queue } = require('bullmq');\nconst connection = { host: 'redis', port: 6379 };\n"
+                                "const emails = new Queue('emails', { connection });\nmodule.exports = { emails };\n")
+    write(root, "src/producer.js", "const { emails } = require('./queue');\n\nasync function signup(user) {\n"
+                                   "  await emails.add('welcome', { id: user.id });\n  await emails.add('digest', { id: user.id });\n}\n\n"
+                                   "async function resend(user) {\n  await emails.add('welcome', { id: user.id });\n}\n"
+                                   "module.exports = { signup, resend };\n")
+    write(root, "src/worker.js", "const { Worker } = require('bullmq');\nconst connection = { host: 'redis', port: 6379 };\n\n"
+                                 "new Worker('emails', async (job) => {\n  console.log(job.name);\n}, { connection });\n")
+    write(root, "src/cron.js", "const cron = require('node-cron');\n\ncron.schedule('0 * * * *', cleanup);\n"
+                               "cron.schedule('0 9 * * 1', weeklyDigest);\n")
+    write(root, "docker-compose.yml", "services:\n  redis:\n    image: redis:7\n  mongo:\n    image: mongo:7\n    volumes:\n"
+                                      "      - data:/data/db\n  worker:\n    build: .\n    command: node src/worker.js\n")
+    write(root, "Dockerfile", "FROM node:20\nCOPY . /srv\nCMD [\"node\", \"src/worker.js\"]\n")
+    write(root, "test/worker.test.js", "const test = require('node:test');\n\ntest('sends a welcome', () => {});\n"
+                                       "test('batches a digest', () => {});\nit('retries', () => {});\n")
+
+
+def gocli(root):
+    """A Go CLI: cobra commands, an internal store package, a release workflow, go test, a one-stage Dockerfile."""
+    write(root, "go.mod", "module example.com/greet\n\ngo 1.22\n\nrequire (\n\tgithub.com/spf13/cobra v1.8.0\n"
+                          "\tmodernc.org/sqlite v1.29.0\n)\n")
+    write(root, "main.go", "package main\n\nimport \"example.com/greet/cmd\"\n\nfunc main() {\n\tcmd.Execute()\n}\n")
+    write(root, "cmd/root.go", "package cmd\n\nimport \"github.com/spf13/cobra\"\n\nvar rootCmd = &cobra.Command{\n"
+                               "\tUse:   \"greet\",\n\tShort: \"say hello\",\n}\n\nfunc Execute() { rootCmd.Execute() }\n")
+    write(root, "cmd/serve.go", "package cmd\n\nimport \"github.com/spf13/cobra\"\n\nvar serveCmd = &cobra.Command{\n"
+                                "\tUse:   \"serve [addr]\",\n\tShort: \"serve over http\",\n}\n")
+    write(root, "cmd/build.go", "package cmd\n\nimport \"github.com/spf13/cobra\"\n\nvar buildCmd = &cobra.Command{\n"
+                                "\tUse:   \"build\",\n\tShort: \"build the site\",\n}\n")
+    write(root, "internal/store/store.go", "package store\n\nimport \"database/sql\"\n\ntype Store struct {\n\tdb *sql.DB\n}\n\n"
+                                           "func Open(path string) (*Store, error) {\n\treturn &Store{}, nil\n}\n")
+    write(root, "main_test.go", "package main\n\nimport \"testing\"\n\nfunc TestMain(t *testing.T) {}\n")
+    write(root, "cmd/serve_test.go", "package cmd\n\nimport \"testing\"\n\nfunc TestServe(t *testing.T) {}\n\n"
+                                     "func TestServeAddr(t *testing.T) {}\n")
+    write(root, ".github/workflows/release.yml", "name: release\non: [push]\njobs:\n  test:\n    runs-on: ubuntu-latest\n"
+                                                 "    steps:\n      - run: go test ./...\n  build:\n    runs-on: ubuntu-latest\n"
+                                                 "    steps:\n      - run: go build\n  release:\n    runs-on: ubuntu-latest\n"
+                                                 "    steps:\n      - run: gh release create\n")
+    write(root, "Dockerfile", "FROM golang:1.22\nCOPY . /src\nRUN go build -o /greet\n")
+
+
+FIXTURES = {"pyapi": pyapi, "nodeq": nodeq, "gocli": gocli}
+
+
+class PlanRepos(SampoTestCase):
+    """T-3733: sampo panels plan reads a repo into a spec of its real parts, one kind per kind of part."""
+
+    def repo_of(self, name):
+        root = os.path.join(self.tmp, name)
+        os.makedirs(root)
+        FIXTURES[name](root)
+        return root
+
+    def kinds(self, got):
+        return [p["kind"] for p in got["spec"]["panels"]]
+
+    def parts(self, got, kind):
+        return [x for x in got["parts"] if x["kind"] == kind]
+
+    def test_a_python_web_api_is_read_into_arch_funnel_lanes_filetree_terminal_and_tanks(self):
+        got = panels.plan(self.repo_of("pyapi"))
+        self.assertEqual(got["reason"], "")
+        self.assertEqual(sorted(set(self.kinds(got))), ["arch", "filetree", "funnel", "lanes", "tanks", "terminal"])
+        spec = {p["kind"]: p for p in got["spec"]["panels"]}
+        arch = {n["id"]: n for n in spec["arch"]["data"]["nodes"]}
+        self.assertIn("redis", [n["label"].lower() for n in arch.values()], "a service is a box")
+        self.assertIn("/orders", " ".join(n.get("sub", "") for n in arch.values()), "the routes are a box")
+        funnel = spec["funnel"]["data"]
+        self.assertEqual({s["label"]: s["value"] for s in funnel["sources"]}, {"process_order": 1, "send_email": 1},
+                         "each enqueued job, counted by its call sites")
+        self.assertEqual(funnel["result"]["label"], "tasks.py", "the file that runs them")
+        lanes = [p["data"] for p in got["spec"]["panels"] if p["kind"] == "lanes"]
+        self.assertIn(["lint", "test", "build", "deploy"], [x["stages"] for x in lanes], "CI jobs in file order")
+        self.assertEqual(spec["filetree"]["data"]["files"], ["app/models.py", "migrations/0001_init.sql"])
+        self.assertEqual(spec["filetree"]["data"]["doc"]["title"], "models.py")
+        self.assertIn("class Order(Base):", spec["filetree"]["data"]["doc"]["lines"])
+        self.assertEqual(spec["terminal"]["data"]["command"], "pytest")
+        self.assertEqual(spec["terminal"]["data"]["rows"], [["test_api.py", "3"], ["test_tasks.py", "2"]])
+        tanks = {t["label"]: t["value"] for t in spec["tanks"]["data"]["tanks"]}
+        self.assertEqual(sorted(tanks), ["api", "db", "redis", "worker"])
+        self.assertEqual(max(tanks.values()), 100)
+
+    def test_a_node_worker_queue_is_read_into_its_queue_worker_cron_jobs_and_services(self):
+        got = panels.plan(self.repo_of("nodeq"))
+        self.assertEqual(got["reason"], "")
+        self.assertEqual(sorted(set(self.kinds(got))), ["arch", "funnel", "lanes", "tanks", "terminal"],
+                         "no store was found, so no tree is invented")
+        spec = {p["kind"]: p for p in got["spec"]["panels"]}
+        funnel = spec["funnel"]["data"]
+        self.assertEqual({s["label"]: s["value"] for s in funnel["sources"]}, {"welcome": 2, "digest": 1})
+        self.assertEqual(funnel["gate"], "emails", "the queue's own name")
+        self.assertEqual(funnel["result"]["label"], "worker.js")
+        self.assertEqual(spec["lanes"]["data"]["stages"], ["cleanup", "weeklyDig…"], "the cron jobs, clipped to fit")
+        self.assertEqual(spec["terminal"]["data"]["command"], "node --test")
+        self.assertEqual(spec["terminal"]["data"]["rows"], [["worker.test.js", "3"]])
+        labels = [n["label"].lower() for n in spec["arch"]["data"]["nodes"]]
+        for want in ("emails", "worker.js", "redis", "mongodb"):
+            self.assertIn(want, labels)
+        self.assertEqual(sorted(t["label"] for t in spec["tanks"]["data"]["tanks"]), ["mongo", "redis", "worker"])
+
+    def test_a_go_cli_is_read_into_arch_lanes_filetree_and_terminal_and_names_what_it_left_out(self):
+        got = panels.plan(self.repo_of("gocli"))
+        self.assertEqual(sorted(set(self.kinds(got))), ["arch", "filetree", "lanes", "terminal"])
+        spec = {p["kind"]: p for p in got["spec"]["panels"]}
+        nodes = " ".join(f"{n['label']} {n.get('sub', '')}" for n in spec["arch"]["data"]["nodes"])
+        for want in ("main.go", "serve", "build", "sqlite"):
+            self.assertIn(want, nodes)
+        self.assertEqual(spec["lanes"]["data"]["stages"], ["test", "build", "release"])
+        self.assertEqual(spec["lanes"]["data"]["lanes"], [{"label": "release.yml", "at": 2}])
+        self.assertEqual(spec["filetree"]["data"]["files"], ["internal/store/store.go"])
+        self.assertEqual(spec["terminal"]["data"]["command"], "go test ./...")
+        self.assertEqual(spec["terminal"]["data"]["rows"], [["main_test.go", "1"], ["serve_test.go", "2"]])
+        left = {x["part"]: x["why"] for x in got["skipped"]}
+        self.assertIn("Dockerfile", left, "one stage is no tanks: said, not drawn")
+        self.assertIn("tanks", left["Dockerfile"])
+
+    def test_every_plan_passes_the_kits_check_renders_to_pairs_and_cites_real_files(self):
+        for name in FIXTURES:
+            with self.subTest(repo=name):
+                root = self.repo_of(name)
+                got = panels.plan(root)
+                self.assertEqual(kit.check_spec(got["spec"]), [])
+                self.assertTrue(got["parts"])
+                for part in got["parts"]:
+                    self.assertTrue(os.path.isfile(os.path.join(root, part["file"])), part)
+                    self.assertIn(part["kind"], KINDS)
+                for part in got["skipped"]:
+                    self.assertTrue(os.path.isfile(os.path.join(root, part["file"])), part)
+                path = os.path.join(root, "spec.json")
+                write(root, "spec.json", json.dumps(got["spec"]))
+                res = panels.render(root, path, os.path.join(root, "out"))
+                self.assertEqual(res["failed"], [])
+                self.assertEqual(len(res["files"]), 2 * len(got["spec"]["panels"]))
+                self.assertEqual(sorted(os.listdir(os.path.join(root, "out"))), sorted(os.path.basename(f) for f in res["files"]))
+                self.assertEqual(panels.plan(root), got, "a second run reads the same")
+
+    def test_an_empty_repo_or_one_with_a_single_part_is_an_empty_spec_with_a_reason_never_invented_parts(self):
+        empty = os.path.join(self.tmp, "empty")
+        write(empty, "README.md", "# nothing here\n")
+        got = panels.plan(empty)
+        self.assertEqual(got["spec"]["panels"], [])
+        self.assertEqual(got["parts"], [])
+        self.assertIn("no", got["reason"])
+        lone = os.path.join(self.tmp, "lone")
+        write(lone, "main.py", "print('hi')\n")
+        got = panels.plan(lone)
+        self.assertEqual(got["spec"]["panels"], [], "one entry file has nothing to connect to")
+        self.assertIn("main.py", got["reason"])
+        self.assertEqual(panels.plan(os.path.join(self.tmp, "missing"))["spec"]["panels"], [])
+
+    def test_a_secret_in_a_store_file_is_never_copied_into_the_spec(self):
+        root = self.repo_of("pyapi")
+        write(root, "app/models.py", 'DB_PASSWORD = "hunter2hunter2"\nowner = "alice@jarvis.home.example.test"\n'
+                                     'class Order(Base):\n    __tablename__ = "orders"\n')
+        got = panels.plan(root)
+        text = json.dumps(got)
+        for leak in ("hunter2", "alice@", "PASSWORD"):
+            self.assertNotIn(leak, text)
+        self.assertEqual(kit.check_spec(got["spec"]), [])
+
+    def test_a_private_value_on_a_line_the_structure_reads_or_in_a_part_name_never_reaches_the_plan(self):
+        # T-3733: the secret rides ON a struct line (the _structure filter) and in a store file's own name (the net in plan)
+        token = "sk-ant-" + "a1b2" * 6
+        root = self.repo_of("pyapi")
+        write(root, "app/models.py", f'class Order(Base):  # key {token}\n    __tablename__ = "/home/alice/orders"\n'
+                                     '    id = Column(Integer)\n')
+        write(root, f"app/{token}.py", 'class Vault(Base):\n    __tablename__ = "vault"\n')
+        found = readme.scan(root, parts=True)
+        mine = json.dumps([s["lines"] for s in found["stores"] if s["file"] == "app/models.py"])
+        self.assertNotIn(token, mine)
+        self.assertNotIn("alice", mine)
+        text = json.dumps(panels.plan(root))
+        for leak in (token, "a1b2a1b2", "/home/alice"):
+            self.assertNotIn(leak, text)
+
+    def test_counts_are_the_totals_not_the_capped_lists(self):
+        # T-3733: 30 test files and 9 store files: panels say so, not 12 and 6
+        root = os.path.join(self.tmp, "big")
+        for i in range(30):
+            write(root, f"tests/test_t{i:02d}.py", "def test_a():\n    pass\n\n\ndef test_b():\n    pass\n")
+        for i in range(9):
+            write(root, f"app/m{i}.py", f'class M{i}(Base):\n    __tablename__ = "m{i}"\n    id = Column(Integer)\n')
+        write(root, "app/main.py", 'from fastapi import FastAPI\napp = FastAPI()\n\n\n@app.get("/x")\ndef x():\n    return 1\n')
+        got = panels.plan(root)
+        spec = {p["kind"]: p for p in got["spec"]["panels"]}
+        self.assertEqual(spec["terminal"]["stat"], "60 tests")
+        self.assertIn("30 test files", spec["terminal"]["foot"])
+        self.assertEqual(spec["filetree"]["stat"], "9 files")
+        arch = " ".join(n.get("sub", "") for n in spec["arch"]["data"]["nodes"])
+        self.assertIn("9 store files", arch)
+
+    def test_the_empty_plan_keeps_its_reason_beside_the_spec_and_render_says_why_it_cannot_draw_it(self):
+        empty = os.path.join(self.tmp, "empty2")
+        write(empty, "README.md", "# nothing here\n")
+        got = panels.plan(empty)
+        self.assertNotIn("reason", got["spec"], "the kit's spec has no reason field")
+        self.assertEqual([e for e in kit.check_spec(got["spec"]) if "reason" in e], [])
+        self.assertTrue(got["reason"])
+        write(empty, "spec.json", json.dumps(got["spec"]))
+        with self.assertRaisesRegex(ValueError, "no panels"):
+            panels.render(empty, os.path.join(empty, "spec.json"))
+        res = self.fm("panels", "plan", empty, "--json")
+        self.assertIn(got["reason"], res.stdout + res.stderr)
+
+    def test_readme_scan_reads_the_parts_only_when_asked(self):
+        root = self.repo_of("pyapi")
+        self.assertNotIn("stores", readme.scan(root))
+        self.assertNotIn("tests", readme.plan(root), "readme plan is what it was")
+        self.assertTrue({"queues", "stores", "tests"} <= set(readme.scan(root, parts=True)))
+
+    def test_the_store_document_opens_model_lines_not_every_class_in_the_file(self):
+        root = self.repo_of("pyapi")
+        write(root, "app/models.py", 'import logging\n\n\nclass _Mask(logging.Filter):\n    pass\n\n\n'
+                                     'class Order(Base):\n    __tablename__ = "orders"\n    id = Column(Integer)\n')
+        got = panels.plan(root)
+        spec = {p["kind"]: p for p in got["spec"]["panels"]}
+        lines = spec["filetree"]["data"]["doc"]["lines"]
+        self.assertIn("class Order(Base):", lines)
+        self.assertNotIn("class _Mask(logging.Filter):", lines)
+
+    def test_the_verb_prints_a_spec_render_takes_and_json_adds_the_parts(self):
+        root = self.repo_of("gocli")
+        out = self.fm("panels", "plan", root).stdout
+        spec = json.loads(out)
+        self.assertEqual(kit.check_spec(spec), [])
+        write(root, "spec.json", out)
+        self.assertEqual(self.fm("panels", "render", os.path.join(root, "spec.json"), "--root", root, "--out", os.path.join(root, "o")).returncode, 0)
+        full = json.loads(self.fm("panels", "plan", root, "--json").stdout)
+        self.assertEqual(full["spec"], spec)
+        self.assertTrue(full["parts"] and "skipped" in full)
+        self.fm("panels", "plan", root, "--out", os.path.join(root, "written.json"))
+        with open(os.path.join(root, "written.json")) as f:
+            self.assertEqual(json.load(f), spec)
+
+    def test_readme_plan_is_unchanged(self):
+        root = self.repo_of("pyapi")
+        got = readme.plan(root)
+        self.assertEqual(got["pages"], ["/orders"])
+        self.assertEqual(got["api"], ["/api/health"])
+        self.assertEqual(got["cli"], [])
+        self.assertEqual(got["services"], ["psycopg2", "redis", "celery", "api", "db", "worker"])
+        old = {"pages", "api", "cli", "entry", "services", "surfaces", "start", "name", "figures", "next"}
+        self.assertTrue(old <= set(got))
+        self.assertEqual(set(got), old, "no new keys: the parts are read only for sampo panels plan")
+        self.assertNotIn("queues", readme.plan_text(got), "the figures text says what it said")
+
+
 class Seam(SampoTestCase):
     def test_the_readme_diagram_chrome_comes_from_the_kit(self):
         spec = {"title": "t", "groups": [{"id": "g", "label": "Browser", "sub": "the page"}],

@@ -66,3 +66,43 @@ class SkillRoute(ForemanTestCase):
                                     "ts": c.now()}) + "\n")
         out = self.start("CLEAN")
         self.assertLess(out.index("/pony:pony-debt"), out.index("/pony:pony-audit"))
+
+
+class PanelRouting(ForemanTestCase):
+    """T-3733: routing.json's panel_words send a diagram or dashboard to the board-panels skill, once a session."""
+
+    def test_routing_json_has_the_panel_words_and_the_hint_names_a_skill_that_exists(self):
+        with open(os.path.join(c.PLUGIN_ROOT, "skills", "routing.json"), encoding="utf-8") as f:
+            routing = json.load(f)
+        self.assertTrue({"diagram", "dashboard", "panels"} <= set(routing["panel_words"]))
+        self.assertIsNone(c.routing_problem(routing))
+        self.assertIn("Skill sampo:board-panels", c.SKILL_FOR["panels"])
+        self.assertTrue(os.path.isfile(os.path.join(c.PLUGIN_ROOT, "skills", "board-panels", "SKILL.md")))
+        bad = dict(routing, panel_words="dashboard")
+        self.assertIn("panel_words", c.routing_problem(bad), "a word list, not a string")
+
+    def test_diagram_and_dashboard_words_route_to_panels(self):
+        for prompt in ("draw a diagram of how the services connect", "build a dashboard of the queue depth",
+                       "Add an architecture overview to the docs", "make panels of the pipeline stages",
+                       "sketch the architecture map of this repo", "DASHBOARD for the jobs",
+                       "draw the diagrams of the repo", "build dashboards for each team", "add a panel for the queue",
+                       "an architecture diagram of the repo", "sketch a flow diagram of the pipeline"):
+            self.assertEqual(c.ui_request(prompt), "panels", prompt)
+
+    def test_a_change_to_an_existing_dashboard_goes_to_ui_not_panels(self):
+        for prompt in ("animate the dashboard", "dark mode the dashboard", "fix the dashboard bug", "rename the dashboards table"):
+            self.assertNotEqual(c.ui_request(prompt), "panels", prompt)
+        self.assertEqual(c.ui_request("animate the dashboard"), "ui")
+        self.assertEqual(c.ui_request("dark mode the dashboard"), "ui")
+
+    def test_bare_architecture_or_board_words_do_not_route(self):
+        for prompt in ("explain the architecture of the cache", "the board meeting notes"):
+            self.assertNotEqual(c.ui_request(prompt), "panels", prompt)
+
+    def test_other_requests_and_the_older_routes_are_untouched(self):
+        for prompt in ("fix the login bug", "a diagrammatic style", "undashboard it",
+                       "the panelist list", "", None):
+            self.assertNotEqual(c.ui_request(prompt), "panels", prompt)
+        self.assertEqual(c.ui_request("add an architecture diagram to the README"), "readme", "a README wins")
+        self.assertEqual(c.ui_request("redesign the dashboard page"), "design", "a new look wins")
+        self.assertEqual(c.ui_request("animate the frontend"), "ui")

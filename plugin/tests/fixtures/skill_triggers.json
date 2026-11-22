@@ -114,5 +114,10 @@
     "Plan the task and map the whole space: all of it, every case",
     "I asked for all of it, every edge, a ton of ideas: map the whole space first",
     "Plan a task that covers every case, the whole space, all of it"
+  ],
+  "board-panels": [
+    "Draw a diagram of how the parts of this repo connect",
+    "Show a dashboard of this repo's real parts: services, queues, jobs",
+    "Draw an architecture overview of the real parts as panels"
   ]
 }

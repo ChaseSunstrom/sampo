@@ -142,7 +142,7 @@ def _files(root):
         return out[:50_000]
     found = []
     for d, dirs, names in os.walk(root):
-        dirs[:] = sorted(x for x in dirs if not x.startswith(".") and x != "node_modules")
+        dirs[:] = sorted(x for x in dirs if (not x.startswith(".") or x == ".github") and x != "node_modules")
         found += [os.path.relpath(os.path.join(d, n), root) for n in sorted(names)]
         if len(found) > 50_000:
             break
@@ -163,13 +163,16 @@ def _add(seen, out, item):
         out.append(item)
 
 
-def scan(root):
-    """{pages, api, cli, entry, services, surfaces, start}: what a README's figures can show, read from the source."""
+def scan(root, parts=False):
+    """{pages, api, cli, entry, services, surfaces, start} what a README's figures can show, read from the source, and
+    with parts=True (T-3733, only sampo panels plan: it reads up to PART_FILES more files) {queues, jobs, stores,
+    pipelines, tests, test_cmd, deploy, commands, deps, route_file, totals}."""
     from sampo import map as smap
     from sampo import mission
     files = _files(root)
     pages, api, cli_cmds, seen = [], [], [], set()
     services, apps = [], []
+    route_file, cmd_files = "", {}  # T-3733: where the first route and each command were read, for sampo panels plan
     for rel in files:
         low = rel.lower()
         if not low.endswith(_CODE_EXT) or _SKIP_DIR.search(low) or c.TESTISH.search(rel) or ".min." in low:
@@ -183,6 +186,7 @@ def scan(root):
         if not text:
             continue
         py = low.endswith(".py")
+        found_before = len(pages) + len(api)
         pre = _PREFIX.search(text) if py else None
         prefix = (pre.group(1) or pre.group(2)) if pre else ""
         for owner, method, path, rest in _PY_ROUTE.findall(text) if py else ():
@@ -199,7 +203,10 @@ def scan(root):
             _sort(path if path.startswith("/") else "/" + path, True, pages, api, seen)
         for path in _HASH.findall(text):
             _add(seen, pages, path)
+        if not route_file and len(pages) + len(api) > found_before:
+            route_file = rel
         for name in _ARGPARSE.findall(text) + _CLICK.findall(text):
+            cmd_files.setdefault(name, rel)
             _add(seen, cli_cmds, name)
         if py:
             for rx, kind in ((_FASTAPI, "fastapi"), (_FLASK, "flask")):
@@ -234,11 +241,12 @@ def scan(root):
             _add(seen, services, name)
     # the start page first, then paths before hash routes, top-level sections before deep ones, a search page last
     pages.sort(key=lambda r: (r != "/", r.startswith("#"), r.count("/"), "search" in r))
-    return {"pages": pages[:200], "api": api[:500], "cli": cli_cmds[:200],  # ponytail: caps against a runaway scan
-            "entry": [f for f in files if smap._ENTRY.search(f) and c.CODE.search(f) and not f.endswith(".html")
-                      and not _SKIP_DIR.search(f.lower())][:8],
-            "services": services[:12], "surfaces": mission.surfaces(root),
-            "start": _start(root, files, manifests, apps)}
+    found = {"pages": pages[:200], "api": api[:500], "cli": cli_cmds[:200],  # ponytail: caps against a runaway scan
+             "entry": [f for f in files if smap._ENTRY.search(f) and c.CODE.search(f) and not f.endswith(".html")
+                       and not _SKIP_DIR.search(f.lower())][:8],
+             "services": services[:12], "surfaces": mission.surfaces(root),
+             "start": _start(root, files, manifests, apps)}
+    return dict(found, **_parts(root, files, manifests, found, route_file, cmd_files)) if parts else found
 
 
 def _page_file(rel):
@@ -288,6 +296,219 @@ def _start(root, files, manifests, apps):
     if "index.html" in files:
         return "python3 -m http.server 8000 --bind 127.0.0.1"
     return None
+
+
+# T-3733: the parts a panel can picture besides routes and services: queues, scheduled jobs, stores, pipelines, tests,
+# deploy files and commands. Each item names the file it was read from, so a panel never shows a part it can't cite.
+_VENDOR = c.lazy(r"(^|/)(node_modules|vendor|third_party|site-packages|dist|build|\.next)/")
+_PART_EXT = (".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".go", ".rs", ".sql", ".prisma")
+_CELERY_TASK = c.lazy(r"(?m)^@[\w.]*(?:shared_task|task)\b[^\n]*\n(?:@[^\n]*\n)*(?:async )?def (\w+)")
+_CELERY_APP = c.lazy(r"\bCelery\(\s*['\"]([^'\"]+)")
+_DELAY = c.lazy(r"\b(\w+)\.(?:delay|apply_async)\(")
+_BULL_QUEUE = c.lazy(r"(?:(\w+)\s*=\s*)?new\s+Queue\(\s*['\"`]([^'\"`]+)['\"`]")
+_BULL_WORKER = c.lazy(r"new\s+Worker\(\s*['\"`]([^'\"`]+)['\"`]")
+_BULL_ADD = c.lazy(r"\b(\w+)\.add\(\s*['\"`]([^'\"`]+)['\"`]")
+_CRON = c.lazy(r"\b(?:cron\.schedule|schedule\.scheduleJob|\w+\.add_job)\(\s*(?:['\"`][^'\"`]*['\"`]\s*,\s*)?(\w+)")
+_SCHEDULED = c.lazy(r"(?m)^@\w+\.scheduled_job\([^\n]*\n(?:@[^\n]*\n)*(?:async )?def (\w+)")
+_STORE = c.lazy(r"(?im)create\s+table|__tablename__|declarative_base|\b(?:db|models)\.Model\b|mongoose\.(?:model|Schema)|"
+                r"new\s+Schema\(|sql\.Open\(|\*sql\.DB|gorm\.Model|^model\s+\w+\s*\{")
+_STRUCT = c.lazy(r"(?i)^\s*(?:class\s+\w+\([\w., ]*(?:base|model|schema|document|table)\w*|create\s+table\b|__tablename__|type\s+\w+\s+struct|model\s+\w+\s*\{|"
+                 r"(?:const|let|var)\s+\w+\s*=\s*(?:new\s+)?(?:mongoose|Schema)|\w+\s*=\s*(?:db\.)?(?:Column|models\.\w+Field)\()")
+_COBRA = c.lazy(r"(?s)\b(\w+)\s*=\s*&cobra\.Command\{[^}]*?\bUse:\s*\"([\w-]+)")
+_TEST_COUNT = {".py": c.lazy(r"(?m)^\s*(?:async\s+)?def\s+test\w*\("), ".go": c.lazy(r"(?m)^func\s+Test\w+\("),
+               ".rs": c.lazy(r"(?m)^\s*#\[test\]"),
+               "js": c.lazy(r"(?m)^\s*(?:test|it)(?:\.\w+)*\(\s*['\"`]")}
+_CI_NOT_A_NAME = ("async", "function", "lambda", "def")
+_DEP_NAME = {"psycopg": "postgres", "psycopg2": "postgres", "postgresql": "postgres", "mongo": "mongodb", "sqlite3": "sqlite"}
+PART_FILES, PART_READ = 2000, 100_000  # ponytail: a repo's worth of files at most, and a slice of each
+
+
+def _dep(name):
+    n = name.lower()
+    return _DEP_NAME.get(n, n)
+
+
+def _compose(text):
+    """[{name, image, lines}]: each service of a compose file, with the lines of config it takes."""
+    m = _COMPOSE.search(text + "\n")
+    out, cur = [], None
+    for line in (m.group(1) if m else "").splitlines():
+        head = re.match(r"^  ([\w.-]+):\s*$", line)
+        if head:
+            cur = {"name": head.group(1), "image": "", "lines": 0}
+            out.append(cur)
+        elif cur is not None and line.strip():
+            cur["lines"] += 1
+            image = re.match(r"\s+image:\s*['\"]?([^\s'\"#]+)", line)
+            if image:
+                cur["image"] = image.group(1)
+    return out[:20]
+
+
+def _stages(text):
+    """[{name, lines}]: a Dockerfile's build stages (FROM ... AS name), each with its instruction lines."""
+    out = []
+    for line in text.splitlines():
+        head = re.match(r"(?i)FROM\s+\S+(?:\s+AS\s+(\S+))?", line)
+        if head:
+            out.append({"name": head.group(1) or f"stage {len(out) + 1}", "lines": 0})
+        elif out and line.strip() and not line.lstrip().startswith("#"):
+            out[-1]["lines"] += 1
+    return out[:10]
+
+
+def _pipeline(rel, text):
+    """The stages of a CI file: a GitHub workflow's jobs in file order, a GitLab file's stages list."""
+    if rel.endswith(".gitlab-ci.yml"):
+        m = re.search(r"(?m)^stages:\s*\n((?:[ \t]*-[^\n]*\n)+)", text + "\n")
+        return [x.strip(" '\"") for x in re.findall(r"(?m)^\s*-\s*(.+)$", m.group(1))] if m else []
+    m = re.search(r"(?m)^jobs:\s*\n((?:[ \t]+.*\n|[ \t]*\n)*)", text + "\n")
+    return re.findall(r"(?m)^  ([\w.-]+):\s*$", m.group(1)) if m else []
+
+
+def _test_cmd(root, tests, manifests):
+    """The command that runs the repo's tests, from what the tests are written in."""
+    exts = [os.path.splitext(t["file"])[1] for t in tests]
+    top = max(set(exts), key=exts.count) if exts else ""
+    if top == ".go":
+        return "go test ./..."
+    if top == ".rs":
+        return "cargo test"
+    if top == ".py":
+        unit = any("import unittest" in _read(root, t["file"], 4000) for t in tests[:3] if t["file"].endswith(".py"))
+        return "python3 -m unittest" if unit else "pytest"
+    try:
+        script = json.loads(_read(root, manifests.get("package.json", ""))).get("scripts", {}).get("test")
+    except (ValueError, AttributeError):
+        script = None
+    return script if isinstance(script, str) and 0 < len(script) <= 40 and "no test specified" not in script else "npm test"
+
+
+def _parts(root, files, manifests, found, route_file, cmd_files):
+    """{queues, jobs, stores, pipelines, tests, test_cmd, deploy, commands, deps, route_file}: the parts besides routes."""
+    tasks, app, queues_js, workers, adds, delays = [], "", [], {}, [], {}
+    jobs, stores, pipelines, tests, commands = [], [], [], [], []
+    for rel in files:
+        base = os.path.basename(rel)
+        if (rel.startswith(".github/workflows/") and base.lower().endswith((".yml", ".yaml"))) or base == ".gitlab-ci.yml":
+            stages = _pipeline(rel, _read(root, rel, PART_READ))
+            if stages:
+                pipelines.append({"file": rel, "name": base, "stages": stages[:12]})
+    seen = 0
+    for rel in files:
+        low = rel.lower()
+        ext = os.path.splitext(low)[1]
+        if ext not in _PART_EXT or _VENDOR.search(low) or ".min." in low:
+            continue
+        seen += 1
+        if seen > PART_FILES:
+            break
+        text = _read(root, rel, PART_READ)
+        if not text:
+            continue
+        if c.TESTISH.search(rel):
+            rx = _TEST_COUNT.get(ext) or (_TEST_COUNT["js"] if ext in (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs") else None)
+            n = len(rx.findall(text)) if rx else 0
+            if n:
+                tests.append({"file": rel, "count": n})
+            continue
+        if _SKIP_DIR.search(low):
+            continue
+        if ext == ".py":
+            tasks += [(n, rel) for n in _CELERY_TASK.findall(text)]
+            app = app or (_CELERY_APP.search(text).group(1) if _CELERY_APP.search(text) else "")
+            for name in _DELAY.findall(text):
+                delays[name] = delays.get(name, 0) + 1
+            jobs += [{"name": n, "file": rel} for n in _SCHEDULED.findall(text)]
+        if ext in (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".py"):
+            jobs += [{"name": n, "file": rel} for n in _CRON.findall(text) if n not in _CI_NOT_A_NAME]
+        if ext in (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"):
+            queues_js += [(v, q, rel) for v, q in _BULL_QUEUE.findall(text)]
+            for q in _BULL_WORKER.findall(text):
+                workers.setdefault(q, rel)
+            adds += [(v, j, rel) for v, j in _BULL_ADD.findall(text)]
+        if ext == ".go":
+            for var, use in _COBRA.findall(text):
+                if var.lower() not in ("rootcmd", "root"):
+                    commands.append({"name": use, "file": rel})
+        if _STORE.search(text):
+            stores.append({"file": rel, "lines": _structure(text)})
+    queues = _queues(tasks, app, delays, queues_js, workers, adds)
+    return {"queues": queues[:6], "jobs": jobs[:12],
+            "stores": stores[:6], "pipelines": pipelines[:4],
+            # what the lists above were cut from: a panel says "30 test files", not the 12 kept
+            "totals": {"queues": len(queues), "jobs": len({j["name"] for j in jobs}), "stores": len(stores),
+                       "tests": len(tests), "test_count": sum(t["count"] for t in tests)},
+            "tests": sorted(tests, key=lambda t: (os.path.basename(t["file"]), t["file"]))[:12],
+            "test_cmd": _test_cmd(root, tests, manifests) if tests else "",
+            "deploy": _deploy(root, files, manifests),
+            "commands": (commands + [{"name": n, "file": cmd_files.get(n) or manifests.get("package.json")
+                                      or manifests.get("pyproject.toml") or ""} for n in found["cli"]])[:12],
+            "deps": _deps(root, manifests), "route_file": route_file}
+
+
+def _structure(text):
+    """The lines that say what a store holds (a class, a table, a struct), never a value: a line with private text is out."""
+    return [x.rstrip() for x in text.splitlines() if _STRUCT.search(x) and not private_hits(x)][:12]
+
+
+def _queues(tasks, app, delays, queues_js, workers, adds):
+    """[{kind, name, file, worker, jobs: [{name, calls, file}]}]: a Celery app's tasks and each BullMQ queue's jobs, with
+    how many places enqueue each (the call sites: a count, never a rate)."""
+    out, seen = [], set()
+    if tasks:
+        where = max(sorted({f for _, f in tasks}), key=lambda f: sum(1 for _, g in tasks if g == f))
+        out.append({"kind": "celery", "name": app or "celery", "file": where, "worker": where,
+                    "jobs": [{"name": n, "calls": delays.get(n, 0), "file": f} for n, f in tasks][:20]})
+    for var, qname, rel in queues_js:
+        if qname in seen:
+            continue
+        seen.add(qname)
+        counts, first = {}, {}
+        for v, job, f in adds:
+            if var and v == var:
+                counts[job] = counts.get(job, 0) + 1
+                first.setdefault(job, f)
+        out.append({"kind": "bullmq", "name": qname, "file": rel, "worker": workers.get(qname, ""),
+                    "jobs": [{"name": j, "calls": n, "file": first[j]} for j, n in counts.items()][:20]})
+    return out
+
+
+_COMPOSE_FILES = ("docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml")
+
+
+def _deploy(root, files, manifests):
+    """[{kind: compose, file, services} and {kind: dockerfile, file, stages}]: how the repo is run in containers."""
+    out = []
+    for base in _COMPOSE_FILES:
+        services = _compose(_read(root, manifests[base], PART_READ)) if base in manifests else []
+        if services:
+            out.append({"kind": "compose", "file": manifests[base], "services": services})
+            break
+    if "Dockerfile" in manifests:
+        out.append({"kind": "dockerfile", "file": manifests["Dockerfile"],
+                    "stages": _stages(_read(root, manifests["Dockerfile"], PART_READ))})
+    return out
+
+
+def _deps(root, manifests):
+    """[{name, file}]: the datastores, brokers and APIs the manifests and compose images name, one name each."""
+    out, seen = [], set()
+
+    def add(name, rel):
+        n = _dep(name)
+        if n not in seen:
+            seen.add(n)
+            out.append({"name": n, "file": rel})
+    for base in ("package.json", "pyproject.toml", "requirements.txt", "Cargo.toml", "go.mod"):
+        for m in _SERVICE.finditer(_read(root, manifests[base]) if base in manifests else ""):
+            add(m.group(1), manifests[base])
+    for base in _COMPOSE_FILES:
+        for svc in _compose(_read(root, manifests[base], PART_READ)) if base in manifests else ():
+            m = _SERVICE.search(svc["image"])
+            if m:
+                add(m.group(1), manifests[base])
+    return out[:12]
 
 
 def figures(found, name):

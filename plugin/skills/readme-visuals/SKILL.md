@@ -26,6 +26,7 @@ parts, a chart of a measured number. The prose itself follows `../write-docs/SKI
    `{"title": "How it works", "groups": [{"id": "srv", "label": "Server", "sub": "FastAPI"}], "nodes": [{"id": "ui",
    "label": "index.html"}, {"id": "api", "label": "app.py", "sub": "/api", "group": "srv"}], "edges": [{"from": "ui",
    "to": "api", "label": "fetch"}]}`. A chart of measured numbers follows `../playbooks/references/ui/data-viz.md`.
+   Mechanism panels of the repo's parts (a funnel, lanes, tanks, a file tree) are planned by `../board-panels/SKILL.md`.
 4. **Ship each figure dark and light** in a `<picture>` (the verbs print the snippet): the dark file in a
    `<source media="(prefers-color-scheme: dark)">`, the light one in the `<img>`, which is also the fallback. Alt text
    says what the figure shows ("The watch page: a video grid with download progress"), never "screenshot".

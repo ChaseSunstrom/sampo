@@ -14,7 +14,7 @@ A page a person reads to get something done. No brief yet → `/sampo:intake` fi
    docs/. The rules and limits for any prose (README, report, research note, CHANGELOG, close) are in
    `../playbooks/references/context/write-plainly.md`; `sampo readme check` names each wall of text by line: fix
    every one before the close.
-3. **Show it.** A README, docs or landing page gets real figures (app screenshots, architecture and flow diagrams, dark and light): load: Skill sampo:readme-visuals (`sampo readme plan`).
+3. **Show it.** A README, docs or landing page gets real figures (app screenshots, architecture and flow diagrams, dark and light): load: Skill sampo:readme-visuals (`sampo readme plan`); a diagram or dashboard of the repo's parts: `../board-panels/SKILL.md`.
 4. **Run every example.** Copy each command and code block out and run it; paste what really printed. A block you can't run is marked as such.
 5. **Keep the repo's doc set fresh** (README, CHANGELOG, guides, MASTER): `../playbooks/references/context/living-docs.md`. A project instruction file (CLAUDE.md, rules) → `../playbooks/references/context/instruction-files.md`.
 6. **Check links, names and shape:** grep the repo for each renamed command or path, open each relative link, and

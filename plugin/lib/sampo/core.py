@@ -5631,22 +5631,29 @@ _UI = lazy(r"(?i)(?<![\w-])(?<!fm )(?<!sampo )(ui|ux)(?![\w-]| tests?\b| --)|\b(
                  r"three\.?js|r3f)\b|(?<!fm )(?<!sampo )\bmotion\b")  # T-1700: animation, motion and 3D reach the ui-design skill
 
 
-_README_RX = []  # T-3703: routing.json's readme_words as one pattern, built on first use
+_WORD_RX = {}  # T-3703: routing.json's readme_words (T-3733: panel_words) as one pattern each, built on first use
 
 
-def _readme_rx():
-    if not _README_RX:
-        words = [w for w in routing().get("readme_words") or [] if w.strip()]
-        _README_RX.append(re.compile(r"(?i)(?<![\w-])(?:" + "|".join(map(re.escape, words)) + r")(?![\w-])")
-                          if words else None)
-    return _README_RX[0]
+def _words_rx(key):
+    if key not in _WORD_RX:
+        words = [w for w in routing().get(key) or [] if w.strip()]
+        _WORD_RX[key] = (re.compile(r"(?i)(?<![\w-])(?:" + "|".join(map(re.escape, words)) + r")s?(?![\w-])")
+                         if words else None)  # s?: a plural fires too ("dashboards", "diagrams")
+    return _WORD_RX[key]
+
+
+# T-3733: a change to a diagram or dashboard that exists, or a bug in one, is not a request to draw a new one
+_PANEL_NOT = lazy(r"(?i)\b(fix|bug|broken|crash\w*|rename|delete|remove|refactor|typo|error|regression)\b")
 
 
 def ui_request(text):
     """T-1697: "design" for a request for a new look, "ui" for a smaller change to a screen, else "" (SKILL_FOR keys).
-    T-3703: "readme" first, for a README or docs page (routing.json's readme_words): its figures."""
-    t, rx = text or "", _readme_rx()
-    return "readme" if rx and rx.search(t) else "design" if _DESIGN.search(t) else "ui" if _UI.search(t) else ""
+    T-3703: "readme" first, for a README or docs page (routing.json's readme_words): its figures.
+    T-3733: "panels" after a new look and before a small screen change, for a diagram or dashboard to draw
+    (panel_words): the board-panels skill plans it from the repo."""
+    t, rx, px = text or "", _words_rx("readme_words"), _words_rx("panel_words")
+    return ("readme" if rx and rx.search(t) else "design" if _DESIGN.search(t) else
+            "ui" if _UI.search(t) else "panels" if px and px.search(t) and not _PANEL_NOT.search(t) else "")
 
 
 def is_broad(text):
@@ -5817,6 +5824,7 @@ SKILL_FOR = {
     "design": "load: Skill sampo:ui-design",  # T-1700: it routes to the directions skill and the ui playbooks
     "ui": "load: Skill sampo:ui-design, or for a small change sampo playbooks show ui/INDEX",
     "readme": "load: Skill sampo:readme-visuals (screenshots and diagrams, dark and light: sampo readme plan)",  # T-3703
+    "panels": "load: Skill sampo:board-panels (a diagram or dashboard from the repo's real parts: sampo panels plan)",  # T-3733
 }
 
 
@@ -6651,7 +6659,7 @@ def routing_problem(r):
             return f"{key} must map stage names to lists of strings"
     if any(not re.fullmatch(r"[\w:.-]+", x) for k in ("builtin_skills", "lens_builtin") for x in sum((r.get(k) or {}).values(), [])):
         return "builtin_skills must be plain skill names"
-    for key in ("ui_words", "readme_words"):
+    for key in ("ui_words", "readme_words", "panel_words"):
         if not strs(r.get(key, [])):
             return f"{key} must be a list of strings"
     groups = r.get("review_groups", [])

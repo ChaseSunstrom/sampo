@@ -12,7 +12,7 @@ from sampo import core as c
 
 SKILLS = ["intake", "next", "resume", "status", "capture", "tidy", "doctor", "reflect", "improve", "playbooks", "brainstorm",
           "directions", "design-extract", "ui-design", "genesis", "initiative", "readme-visuals",
-          "skill-writing", "problem-solving", "coverage"]  # T-3855: the category skills, loaded by prompt words, plan stage, failures
+          "skill-writing", "problem-solving", "coverage", "board-panels"]  # T-3855: the category skills, loaded by prompt words, plan stage, failures; T-3733: board-panels
 CATEGORY_SKILLS = ("skill-writing", "problem-solving", "coverage")
 # everything else Claude may start itself when the user asks in plain words; design-extract: the 2,000-character
 # listing has no room for it, so Claude reaches its verbs through the directions skill and the UI playbooks (T-1507)
@@ -197,6 +197,7 @@ class Skills(unittest.TestCase):
         self.assertLessEqual(total, 2600, "Foreman's part of the skill listing")  # T-1700/T-1701/T-2072: the job skills
         # T-3703: readme-visuals (+110): a README gets its figures unasked
         # T-3855: skill-writing, problem-solving, coverage (+303): each a 100-character router line
+        # T-3733: board-panels (+101): a diagram or dashboard is planned from the repo's parts unasked
 
     def test_the_category_skills_keep_their_core_first_and_stay_short(self):
         # T-3855: a hook may load only the head of a skill, so the core sits in the first 3,000 characters and the
@@ -230,13 +231,25 @@ class Skills(unittest.TestCase):
                 with self.subTest(skill=name, ref=ref):
                     self.assertTrue(os.path.exists(os.path.join(PLUGIN, "skills", name, ref)))
 
+    def test_board_panels_is_linked_from_the_doc_skills_and_names_the_plan_render_check_and_shoot_steps(self):
+        # T-3733: write-docs and readme-visuals send a diagram or dashboard to it; it walks plan, render, check, shoot
+        for name in ("write-docs", "readme-visuals"):
+            with self.subTest(skill=name):
+                self.assertIn("../board-panels/SKILL.md", read_text(os.path.join(PLUGIN, "skills", name, "SKILL.md")))
+        body = read_text(os.path.join(PLUGIN, "skills", "board-panels", "SKILL.md"))
+        for step in ("`sampo panels plan", "`sampo panels render", "`sampo readme check`", "`sampo readme shots",
+                     "`../readme-visuals/SKILL.md`", "`../write-docs/SKILL.md`"):
+            with self.subTest(step=step):
+                self.assertIn(step, body)
+        self.assertEqual(sampo_mention_problems(body), [])
+
     def test_the_job_skills_are_short_and_name_only_real_playbooks_and_verbs(self):
         # T-1701: debug-test, release and research wrap playbooks and fm verbs that exist, and fire on task words
         from sampo import doctor
         self.assertEqual(fm_mention_problems("`fm nosuch` `fm lane nosuch ID` `fm lane brief ID` `fm task hypo ID add`"),
                          ["fm nosuch", "fm lane nosuch"], "the checker itself")
         jobs = ("debug-test", "release", "research", "refactor", "performance", "security-audit", "write-docs",
-                "readme-visuals")
+                "readme-visuals", "board-panels")
         for name in jobs:
             with self.subTest(skill=name):
                 meta, body = frontmatter(os.path.join(PLUGIN, "skills", name, "SKILL.md"))
