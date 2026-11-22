@@ -50,6 +50,13 @@ RULES = (
     ("blocked", r"^blocked\b", MODEL,
      "the model could not go on and blocked the task",
      "route: a bigger local model for that step"),
+    ("keep-check-red", r"^(?:stopped: )?the keep check `[^`]*`(?: \([^)]*\))? is still red after "
+     r"(?:\d+ tries to mend it|the work):", MODEL,
+     "the keep check stayed red after the model's edits, through its mend tries or the last round",
+     "route: a bigger local model for that step"),
+    ("spend-cap", r"^stopped: the run spent \$\S+ of its \$\S+ cap \(--max-usd\)", MODEL,
+     "the model spent more than the --max-usd cap before the step was done",
+     "route: a cheaper model for that step, or --resume with the higher --max-usd the stop names"),
     ("empty", r"^(?:the model's reply was empty|empty reply)\b", LOOP,
      "the model's reply held no action and the run ended",
      "Sampo fix (not built yet): re-ask once with the offered actions, and force a tool call on the next turn"),
@@ -146,7 +153,10 @@ def _epoch(v):
         except ValueError:
             n = None
     else:
-        n = float(v)
+        try:
+            n = float(v)
+        except (OverflowError, ValueError):  # an int too big for a float is no time
+            return None
     if n is not None:
         if n != n or n in (float("inf"), float("-inf")):
             return None
@@ -280,6 +290,8 @@ def render(s):
                    "or no stop was recorded:")
         for u in s["unclassified"][:20]:
             out.append(f"  {u['arm']} / {u['task']}: {u['stop'] or '(no stop recorded)'}")
+        if len(s["unclassified"]) > 20:
+            out.append(f"  ... and {len(s['unclassified']) - 20} more")
     out.append("Result: " + (f"✓ an arm finished {s['bar']} or more of the measured tasks." if s["ok"]
                              else f"✗ no arm finished {s['bar']} of the measured tasks yet."))
     return "\n".join(out)

@@ -16,6 +16,11 @@ TIME = "stopped: out of time (--deadline 600 s) before step 1 was done; fm code 
 FORCED = "time limit forced stop"
 BLOCKED = "blocked: the test needs a fact the model could not find"
 EMPTY = "the model's reply was empty"
+KEEP = ("stopped: the keep check `pytest -q` (the project's own tests, green before the work) is still red after 3 tries "
+        "to mend it: FAILED test_a - AssertionError")
+KEEP_END = "fm code: the keep check `pytest -q` is still red after the work: FAILED test_a"  # smith.py's Blocked
+SPEND = ("stopped: the run spent $0.42 of its $0.5 cap (--max-usd) before step 2 was done; "
+         "fm code --resume T-1 --max-usd 1")
 
 
 def row(arm, task, passed=False, stop="", **kw):
@@ -87,10 +92,11 @@ class Score(Rows):
         self.assertEqual(localruns._epoch(1793000000000), 1793000000.0)  # milliseconds
         self.assertEqual(localruns._epoch("1793000000000"), 1793000000.0)
         for bad in ("2026", "202610", 2026, 5, 1700, "nan", float("nan"), "inf", float("inf"), 1e12 * 100, "-5",
-                    "soon", "", True, None, [], 20261001):
+                    "soon", "", True, None, [], 20261001, 10 ** 400):  # an int too big for a float: no time
             self.assertIsNone(localruns._epoch(bad), repr(bad))
         rows = [row("a", "old", True, at=1700000000), row("a", "ms", True, at=1793000000000),
-                row("a", "nan", True, at=float("nan")), row("a", "new", True, at="20261101")]
+                row("a", "nan", True, at=float("nan")), row("a", "new", True, at="20261101"),
+                row("a", "huge", True, at=10 ** 400)]
         self.assertEqual(localruns.score(rows, since="20261001")["tasks"], ["ms", "new"])
         for bad in ("2026", "nan", "inf", "20261301", "1"):
             with self.assertRaises(ValueError, msg=bad):
@@ -115,7 +121,8 @@ class Stops(Rows):
     def test_each_reason_has_kind_and_fix(self):
         want = {TURNS: ("turns-used", localruns.LOOP), TIME: ("out-of-time", localruns.MODEL),
                 FORCED: ("time-limit-forced", localruns.LOOP), BLOCKED: ("blocked", localruns.MODEL),
-                EMPTY: ("empty", localruns.LOOP)}
+                EMPTY: ("empty", localruns.LOOP), KEEP: ("keep-check-red", localruns.MODEL),
+                KEEP_END: ("keep-check-red", localruns.MODEL), SPEND: ("spend-cap", localruns.MODEL)}
         for text, (key, kind) in want.items():
             v = localruns.classify_stop(text)
             self.assertEqual((v["key"], v["kind"]), (key, kind), text)
@@ -124,7 +131,9 @@ class Stops(Rows):
         self.assertIn("Sampo fix", localruns.classify_stop(TURNS)["fix"])
         self.assertIn("Sampo fix", localruns.classify_stop(FORCED)["fix"])
         self.assertIn("bigger local model", localruns.classify_stop(BLOCKED)["fix"])
+        self.assertIn("bigger local model", localruns.classify_stop(KEEP)["fix"])
         self.assertIn("Haiku", localruns.classify_stop(TIME)["fix"])
+        self.assertIn("cheaper model", localruns.classify_stop(SPEND)["fix"])
 
     def test_smiths_own_prefix_is_stripped_before_the_stopped_branch(self):
         # T-5017 review: Smith prints every stop as "fm code: [model: ]stopped: ..."
@@ -133,8 +142,8 @@ class Stops(Rows):
             self.assertEqual((v["key"], v["kind"]), ("out-of-time", localruns.MODEL), pre)
             v = localruns.classify_stop(pre + TURNS)
             self.assertEqual((v["key"], v["kind"]), ("turns-used", localruns.LOOP), pre)
-        v = localruns.classify_stop("fm code: stopped: the keep check `pytest` (x) is still red after 3 tries: out of time")
-        self.assertEqual(v["kind"], localruns.UNCLASSIFIED)
+        v = localruns.classify_stop("fm code: " + KEEP)
+        self.assertEqual((v["key"], v["kind"]), ("keep-check-red", localruns.MODEL))
 
     def test_blank_stop_is_unclassified_not_a_guess(self):
         for text in ("", "   ", None):
@@ -162,7 +171,7 @@ class Stops(Rows):
         head = "stopped: the keep check `pytest` (x) is still red after 3 tries to mend it: "
         for tail in ("AssertionError: list is empty", "connection blocked", "no answer", "out of time"):
             v = localruns.classify_stop(head + tail)
-            self.assertEqual(v["kind"], localruns.UNCLASSIFIED, tail)
+            self.assertEqual(v["key"], "keep-check-red", tail)  # the tail names no other class
         v = localruns.classify_stop("fm code: the edge audit gave no answer the gate can take")
         self.assertEqual(v["kind"], localruns.UNCLASSIFIED)
         v = localruns.classify_stop("sampo code: the edge audit gave no answer the gate can take")
@@ -178,6 +187,12 @@ class Stops(Rows):
         self.assertEqual(keys["out-of-time"]["kind"], localruns.MODEL)
         self.assertEqual(s["unclassified"], [{"arm": "b", "task": "t2", "stop": "the disk caught fire"}])
         self.assertNotIn(localruns.UNCLASSIFIED, keys)
+
+    def test_unclassified_list_says_how_many_it_left_out(self):
+        text = localruns.render(localruns.score([row("a", f"t{i}", False, f"odd {i}") for i in range(23)]))
+        self.assertIn("  a / t19: odd 19", text)
+        self.assertNotIn("odd 20", text)
+        self.assertIn("... and 3 more", text)
 
 
 class Verb(Rows):
@@ -220,6 +235,14 @@ class Verb(Rows):
     def test_since_epoch_seconds_on_the_cli(self):
         path = self.write([row("a", "old", True, at=1700000000), row("a", "new", True, at=1793000000)])
         p = self.fm("localruns", path, "--since", "1790000000", "--json", check=False)
+        self.assertEqual(json.loads(p.stdout)["tasks"], ["new"], p.stdout + p.stderr)
+
+    def test_since_huge_integer_is_left_out_not_a_traceback(self):
+        # T-5017 review: a 400-digit integer `at` raised OverflowError in float() and the verb crashed
+        path = self.write([row("a", "old", True, at=1700000000), row("a", "huge", True, at=10 ** 400),
+                           row("a", "new", True, at=1793000000)])
+        p = self.fm("localruns", path, "--since", "1790000000", "--json", check=False)
+        self.assertNotIn("Traceback", p.stderr)
         self.assertEqual(json.loads(p.stdout)["tasks"], ["new"], p.stdout + p.stderr)
 
     def test_control_characters_never_reach_the_text_table(self):
