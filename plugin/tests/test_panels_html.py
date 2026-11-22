@@ -68,6 +68,28 @@ class Page(unittest.TestCase):
         self.assertIn("cancelAnimationFrame", js)
         self.assertIn("visibilitychange", js, "a hidden tab draws nothing")
 
+    def test_smil_animation_rests_with_the_rest_of_the_motion(self):
+        """T-3734 review: conveyor, chord, flame, radar, hourglass and bloom animate in SMIL, which the rAF loop
+        never reached: the page pauses and rewinds every panel svg when motion shouldn't run, and lets it run again."""
+        js = script(page())
+        self.assertIn(".pauseAnimations()", js, "SMIL animations are paused when motion shouldn't run")
+        self.assertIn(".setCurrentTime(0)", js, "and rewound to the static drawing")
+        self.assertIn(".unpauseAnimations()", js, "and let go when motion may run again")
+        play = re.search(r"function play\(\) \{(.*?)\n  \}", js, re.S)[1]
+        for call in ("pauseAnimations", "setCurrentTime(0)", "unpauseAnimations"):
+            self.assertIn(call, play, f"{call} sits where the rAF loop starts and stops")
+        self.assertIn("still.matches", play, "reduced motion decides it")
+        self.assertIn('document.visibilityState !== "hidden"', play, "so does a hidden tab")
+        self.assertRegex(js, r'still\.addEventListener\("change", play\)')
+        self.assertRegex(js, r'document\.addEventListener\("visibilitychange", play\)')
+
+    def test_the_feed_is_not_polled_in_a_hidden_tab(self):
+        js = script(page("http://feed.example/n.json"))
+        poll = re.search(r"function poll\(\) \{(.*?)\n  \}", js, re.S)[1]
+        before = poll.split("fetch(")[0]
+        self.assertRegex(before, r"document\.hidden", "the check comes before the request")
+        self.assertIn("setTimeout(poll", before, "a skipped poll is tried again later")
+
     def test_what_moves_is_marked_in_the_svg(self):
         text = page()
         packets = re.findall(r'<rect data-p="([^"]+)" data-t="([^"]+)"', text)
@@ -206,14 +228,14 @@ class Browser(unittest.TestCase):
     def tearDownClass(cls):
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
-    def look(self, media=(), at=(1.5, 4.0), feed=None):
+    def look(self, media=(), at=(1.5, 4.0), feed=None, probe=PROBE):
         browser = headless_chrome()
         if not browser:
             self.skipTest("no headless Chromium (FOREMAN_CHROME, chrome-headless-shell or Playwright's download)")
         path = os.path.join(self.tmp, f"p{len(os.listdir(self.tmp))}.html")
         write(self.tmp, path, page(feed))
         try:
-            return devtools(browser, "file://" + path, tempfile.mkdtemp(dir=self.tmp), "", media, list(at), PROBE)
+            return devtools(browser, "file://" + path, tempfile.mkdtemp(dir=self.tmp), "", media, list(at), probe)
         except (EOFError, BrokenPipeError, FileNotFoundError, PermissionError) as e:
             self.skipTest(f"{browser} didn't take DevTools over a pipe: {e!r}")
 
@@ -232,6 +254,17 @@ class Browser(unittest.TestCase):
         self.assertEqual((a["frames"], b["frames"]), (0, 0))
         self.assertEqual(a["x"], b["x"])
         self.assertEqual(b["motion"], "still")
+
+    SMIL = """(() => { const v = [...document.querySelectorAll('svg')];
+      return { n: v.length, paused: v.filter(x => x.animationsPaused()).length, at: v.map(x => x.getCurrentTime()) }; })()"""
+
+    def test_smil_animation_is_paused_and_rewound_under_reduced_motion_and_runs_otherwise(self):
+        still = self.look([("prefers-reduced-motion", "reduce")], (1.5,), probe=self.SMIL)[0]
+        self.assertEqual(still["paused"], still["n"], still)
+        self.assertEqual(set(still["at"]), {0}, "the static drawing: every svg rewound to 0")
+        moving = self.look((), (1.5,), probe=self.SMIL)[0]
+        self.assertEqual(moving["paused"], 0, moving)
+        self.assertGreater(max(moving["at"]), 0, "the SMIL clock runs")
 
     def feed(self, path, at=(2.5,)):
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Feed)

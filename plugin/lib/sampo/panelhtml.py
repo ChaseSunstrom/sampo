@@ -90,10 +90,15 @@ SCRIPT = r"""(() => {
     draw(shown / 1000);
     root.dataset.frames = String(++frames);
   }
+  const svgs = [...document.querySelectorAll("svg")];
   function play() {
     const go = !still.matches && document.visibilityState !== "hidden";
     if (go && !id) { t0 = null; last = 0; id = requestAnimationFrame(tick); }
     if (!go && id) { cancelAnimationFrame(id); id = 0; }
+    for (const v of svgs) {  // the kit's SMIL marks (conveyor, chord, flame, radar, hourglass, bloom) rest and rewind with the rAF ones
+      if (go) v.unpauseAnimations();
+      else { v.pauseAnimations(); v.setCurrentTime(0); }
+    }
     root.dataset.motion = go ? "moving" : still.matches ? "still" : "paused";
     status();
   }
@@ -110,7 +115,8 @@ SCRIPT = r"""(() => {
       f.querySelector("[data-live]").textContent = s;
     });
   }
-  function poll() {  // every 5 s; each failure doubles the wait, to a minute
+  function poll() {  // every 5 s; each failure doubles the wait, to a minute; a hidden tab skips the request
+    if (document.hidden) { setTimeout(poll, wait); return; }
     fetch(FEED, { cache: "no-store", credentials: "omit", redirect: "error" })
       .then(r => r.ok ? r.text() : Promise.reject(new Error("HTTP " + r.status)))
       .then(b => {
