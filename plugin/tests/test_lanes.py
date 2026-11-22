@@ -3528,7 +3528,7 @@ class PostMergeVerify(ForemanTestCase):
         open(os.path.join(d, "plugin", "tests", "run.py"), "w").close()
         self.assertEqual(slanes.pm_cmd(d), "SAMPO_CACHE_FULL=1 python3 plugin/tests/run.py")
 
-    def test_an_uncached_verify_is_due_first_then_every_sixth_or_four_hours(self):  # T-3638 review
+    def test_an_uncached_verify_is_due_first_then_every_twentieth_or_a_day(self):  # T-3638 review, T-5482
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
         os.makedirs(os.path.join(d, "plugin", "tests"))
@@ -3536,8 +3536,11 @@ class PostMergeVerify(ForemanTestCase):
         os.environ.pop("FM_POSTMERGE_CMD")
         self.assertEqual(slanes.pm_cmd(d, uncached=True), "python3 plugin/tests/run.py")
         due = lambda: slanes._pm_uncached_due(self.p)  # noqa: E731
-        self.assertEqual([due() for _ in range(13)], [True] + [False] * 5 + [True] + [False] * 5 + [True])
+        # T-5482: every 6th run or 4 hours made 4 of a day's 7 whole-suite verifies uncached (13,000 tests, 2-4 h each)
+        self.assertEqual([due() for _ in range(41)], [True] + [False] * 19 + [True] + [False] * 19 + [True])
         with mock.patch("time.time", return_value=time.time() + 4 * 3600 + 1):
+            self.assertFalse(due(), "4 hours is no longer enough")
+        with mock.patch("time.time", return_value=time.time() + 24 * 3600 + 1):
             self.assertTrue(due())
         self.assertFalse(due())
 

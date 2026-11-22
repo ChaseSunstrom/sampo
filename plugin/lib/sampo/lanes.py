@@ -3609,7 +3609,9 @@ def cargo_brief(p):
     return ["## Build output (Rust)", f"{kept[:1].upper()}{kept[1:]}. Leave it as it is: Sampo sets no target folder.", ""] if kept else []
 
 
-UNCACHED_EVERY, UNCACHED_S = 6, 4 * 3600
+# T-5482: 6 runs or 4 hours made every other whole-suite verify uncached (a run takes 2-4 h): 4 of a day's 7 ran
+# all 13,000 tests; the 10 percent resample still reruns each cached class now and then
+UNCACHED_EVERY, UNCACHED_S = 20, 24 * 3600
 
 
 def _pm_uncached_due(p):
