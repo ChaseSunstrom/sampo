@@ -1009,7 +1009,9 @@ class Lanes(ForemanTestCase):
         mk = lambda t: first(self.fm("task", "new", t, "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true",  # noqa: E731
                                      "--step", "s", "--json").stdout)["id"]
         self.fm("lane", "max", "3")
-        a, b = mk("Overlap a"), mk("Overlap b")
+        a = mk("Overlap a")
+        b = first(self.fm("task", "new", "Overlap b", "--type", "FIX", "--tier", "S", "--ac", "ok :: true",  # T-5478: the
+                          "--step", "s", "--json").stdout)["id"]  # same type and file would be batched, not held back
         self.fm("task", "set", a, "scope=plugin/lib/sampo/lanes.py")
         self.fm("task", "set", b, "scope=plugin/lib/sampo/lanes.py,plugin/tests/test_lanes.py")
         out = json.loads(self.fm("lane", "brief", "--ready", "--json").stdout)

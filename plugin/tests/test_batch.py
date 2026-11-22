@@ -112,6 +112,141 @@ class Batch(ForemanTestCase):
         self.assertIn(f"sampo batch {' '.join(self.ids)}", self.fm("next").stdout)
 
 
+class BriefReadyBatches(ForemanTestCase):
+    """T-5478: `lane brief --ready` hands related small tasks (the same files) to one builder as one batch."""
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        self.fm("lane", "max", "5")
+
+    def mk(self, title, scope, type_="FEATURE", tier="S"):
+        tid = json.loads(self.fm("task", "new", title, "--type", type_, "--tier", tier, "--ac", "ok :: true",
+                                 "--step", "s", "--json").stdout)["id"]
+        self.fm("task", "set", tid, f"scope={scope}")
+        return tid
+
+    def ready(self):
+        return json.loads(self.fm("lane", "brief", "--ready", "--json").stdout)
+
+    def test_brief_ready_batches_related_s(self):
+        import os
+        from sampo import core as c
+        ids = [self.mk(f"Alpha {w}", "plugin/lib/sampo/lanes.py") for w in ("one", "two", "three")]
+        out = self.ready()
+        self.assertEqual(len(out["briefed"]), 1, out)
+        host = out["briefed"][0]["id"]
+        self.assertNotIn(host, ids)
+        self.assertEqual(out["batched"], [{"host": host, "members": ids}])
+        self.assertEqual(out["skipped"], [], "the members are not listed as skipped: the host replaced them")
+        audits = os.path.join(c.find_project(self.repo).dir, "audits")
+        self.assertTrue(os.path.exists(os.path.join(audits, f"{host}.builder.md")))
+        for tid in ids:
+            self.assertFalse(os.path.exists(os.path.join(audits, f"{tid}.builder.md")), "no per-member brief")
+
+    def test_brief_ready_text_says_what_it_batched(self):
+        ids = [self.mk(f"Beta {w}", "docs/x.md") for w in ("one", "two")]
+        text = self.fm("lane", "brief", "--ready").stdout
+        host = next(w for w in text.split() if w.startswith("T-") and w.rstrip(":") not in ids).rstrip(":")
+        self.assertIn(f"batched 2 into {host} ({', '.join(ids)})", text)
+
+    def test_brief_ready_leaves_unrelated(self):
+        ids = [self.mk(f"Gamma {i}", f"plugin/lib/sampo/mod{i}.py") for i in range(3)]
+        out = self.ready()
+        self.assertEqual({x["id"] for x in out["briefed"]}, set(ids))
+        self.assertEqual(out["batched"], [])
+
+    def test_brief_ready_batch_is_capped_at_four(self):
+        ids = [self.mk(f"Delta {i}", "plugin/a.py") for i in range(5)]
+        out = self.ready()
+        self.assertEqual(len(out["batched"]), 1, out)
+        self.assertEqual(len(out["batched"][0]["members"]), 4)
+        host = out["batched"][0]["host"]
+        self.assertEqual([x["id"] for x in out["briefed"]], [host])
+        self.assertEqual({x["id"]: x["reason"] for x in out["skipped"]}, {ids[4]: f"scope overlaps {host}"})
+
+    def test_brief_ready_batch_of_tasks_with_no_verify_is_not_made(self):
+        a = json.loads(self.fm("task", "new", "Eps a", "--type", "FEATURE", "--tier", "S", "--ac", "ok",
+                               "--step", "s", "--json").stdout)["id"]
+        b = json.loads(self.fm("task", "new", "Eps b", "--type", "FEATURE", "--tier", "S", "--ac", "ok",
+                               "--step", "s", "--json").stdout)["id"]
+        for t in (a, b):
+            self.fm("task", "set", t, "scope=plugin/e.py")
+        out = self.ready()
+        self.assertEqual(out["batched"], [])
+        self.assertNotIn("batched_in", json.loads(self.fm("task", "show", a, "--json").stdout)["meta"])
+
+
+    def ready_in_process(self, patches):
+        import argparse
+        import contextlib
+        import io
+        import unittest.mock
+        from sampo import cli, core as c, lanes as slanes
+        buf, stack = io.StringIO(), contextlib.ExitStack()
+        for (mod, name), fn in patches.items():
+            stack.enter_context(unittest.mock.patch.object({"cli": cli, "c": c, "lanes": slanes}[mod], name, side_effect=fn))
+        with stack, contextlib.redirect_stdout(buf):
+            slanes.brief_ready(c.find_project(self.repo), argparse.Namespace(limit=None, json=True))
+        return json.loads(buf.getvalue())
+
+    def test_brief_ready_batch_does_not_take_a_file_from_an_urgent_task(self):  # T-5478 review: a host sits at its members' rank
+        a, b = self.mk("Zeta a", "plugin/z.py"), self.mk("Zeta b", "plugin/z.py")
+        urgent = self.mk("Zeta urgent", "plugin/z.py", type_="FIX")
+        self.fm("task", "set", urgent, "priority=urgent")
+        out = self.ready()
+        self.assertEqual([x["id"] for x in out["briefed"]], [urgent], out)
+        self.assertEqual(out["batched"], [], "the host that lost the file is not reported as batched")
+        self.assertEqual({x["id"] for x in out["skipped"]} & {a, b}, set(), "its members are under the host")
+        self.assertTrue([x for x in out["skipped"] if x["reason"] == f"scope overlaps {urgent}"], out)
+
+    def test_brief_ready_no_batch_holds_the_second_task_back_as_before(self):
+        a, b = self.mk("Eta a", "plugin/h.py"), self.mk("Eta b", "plugin/h.py")
+        out = json.loads(self.fm("lane", "brief", "--ready", "--no-batch", "--json").stdout)
+        self.assertEqual([x["id"] for x in out["briefed"]], [a])
+        self.assertEqual(out["batched"], [])
+        self.assertEqual({x["id"]: x["reason"] for x in out["skipped"]}, {b: f"scope overlaps {a}"})
+
+    def test_brief_ready_a_host_the_plan_gate_refuses_is_never_made_and_burns_no_id(self):
+        from sampo import core as c
+        a, b = self.mk("Theta a", "plugin/t.py"), self.mk("Theta b", "plugin/t.py")
+        p = c.find_project(self.repo)
+        real, before = c.plan_gaps, c.read_meta(p)["next_id"]
+        out = self.ready_in_process({("c", "plan_gaps"): lambda t, *a, **k: ["a gap"] if t.id == "T-0000" else real(t, *a, **k)})
+        self.assertEqual(out["batched"], [])
+        self.assertEqual([x["id"] for x in out["briefed"]], [a], "the tasks stay tasks of their own")
+        self.assertEqual(c.read_meta(p)["next_id"], before, "no task id was taken for the refused host")
+        self.assertEqual(len(c.load_briefs(p)), 2)
+        self.assertNotIn("batched_in", c.find_brief(p, b).meta)
+
+    def test_brief_ready_a_group_make_batch_refuses_or_crashes_leaves_the_other_groups(self):
+        from sampo import cli
+        a = [self.mk(f"Iota {i}", "plugin/i.py") for i in range(2)]
+        b = [self.mk(f"Kappa {i}", "plugin/k.py") for i in range(2)]
+        real, calls = cli._make_batch, []
+
+        def flaky(*args, **kw):
+            calls.append(args[1])
+            if len(calls) == 1:
+                raise RuntimeError("lock timeout")  # a LockTimeout or any crash: this group is skipped, not the run
+            return real(*args, **kw)
+        out = self.ready_in_process({("cli", "_make_batch"): flaky})
+        self.assertEqual([x["members"] for x in out["batched"]], [b])
+        self.assertEqual({x["id"] for x in out["briefed"]} & set(a), {a[0]}, "the failed group is briefed one by one")
+
+    def test_brief_ready_a_host_builder_brief_refuses_is_not_reported_as_batched(self):
+        from sampo import core as c, lanes as slanes
+        a, b = self.mk("Lambda a", "plugin/l.py"), self.mk("Lambda b", "plugin/l.py")
+        real = slanes.builder_brief
+
+        def refuse(p, t, args, *rest, **kw):
+            if t.meta.get("batch"):
+                raise c.PolicyError("no")
+            return real(p, t, args, *rest, **kw)
+        out = self.ready_in_process({("lanes", "builder_brief"): refuse})
+        self.assertEqual((out["batched"], out["briefed"]), ([], []))
+        self.assertEqual([x["reason"] for x in out["skipped"]], ["no"])
+
+
 class Related(ForemanTestCase):
     """T-0670: related items of any size are offered as one batch; the brief says how to verify it cheaply."""
     def setUp(self):

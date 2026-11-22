@@ -4663,7 +4663,11 @@ def cmd_batch(args):
         f"{h.id}; each member closes done in {h.id})")
 
 
-def _make_batch(p, ids, title):
+def _make_batch(p, ids, title, tier=None, gate=None):
+    """`tier` (T-5478): `lane brief --ready` batches small tasks and keeps the host small, so it needs no M plan. An S
+    host of up to 4 members owes the S audits (self, and the adversary one on sensitive files) on the combined diff: a
+    deliberate trade for one cold start, not one per member. `gate(stand_in)` returns a refusal text or None; it runs on
+    an in-memory copy of the host before the host takes an id (a UsageError, nothing written)."""
     ids = list(dict.fromkeys(x.upper() for x in ids))
     if len(ids) < 2:
         raise UsageError("a batch is two or more items")
@@ -4681,29 +4685,38 @@ def _make_batch(p, ids, title):
         types = [b.type for b in members]
         type_ = max(sorted(set(types)), key=types.count)
         tiers = {b.tier for b in members}
-        tier = "L" if "L" in tiers else "M" if "M" in tiers or len(members) > 2 else "S"
+        tier = tier or ("L" if "L" in tiers else "M" if "M" in tiers or len(members) > 2 else "S")
         title = title or "Batch: " + "; ".join(c.fit(b.title, 40) for b in members)
         raw = "\n".join(f"{b.id}: " + re.sub(r"(?m)^> ?", "", b.section("Raw request")).strip() for b in members)
         source = "user" if any(b.meta.get("source") == "user" for b in members) else members[0].meta.get("source", "user")
-        h = _create(p, c.fit(title, 120), type_, tier, "planned", raw=raw, source=source,
-                    priority="urgent" if any(b.priority == "urgent" for b in members) else "normal",
-                    scope=sorted({s for b in members for s in b.meta.get("scope") or []}),
-                    depends=sorted({d for b in members for d in b.meta.get("depends_on") or []} - set(ids)))
-        h.set_section("Interpretation", f"Reading 1: do {', '.join(ids)} as one batch: one plan read, one gate run, one "
-                                        f"review and one commit; each keeps its own criteria and is closed done in {h.id}. "
-                                        "Write the failing tests for every member first, together. Per step, run only that "
-                                        "step's own new tests (fast, -k); the full gates, replays and the review run "
-                                        "once, at close (T-0670). Reading 2: each one alone; ruled out because one plan "
-                                        "read and one gate run serve them all cheaper.")  # T-2335: the plan gate wants 2 readings
-        for b in members:
-            crit = [(c._VERIFY_OF.sub("", a.text).strip(), c.verify_of(a.text)) for a in b.acceptance()] or \
-                [(t.strip(), v) for t, v in map(c.split_verify, _DONE_WHEN.findall(  # T-1976
-                    b.section("Raw request")))] or [(f"{b.title} works", None)]
-            for text, verify in crit:
-                h.add_ac(f"{b.id}: {text}", verify)
-            for s in b.steps() or [None]:  # a planned member's own steps, else one step for it
-                h.add_step(f"{b.id}: {s.text if s else b.title}")
-        h.meta["batch"] = ids
+        kw = dict(raw=raw, source=source, priority="urgent" if any(b.priority == "urgent" for b in members) else "normal",
+                  scope=sorted({s for b in members for s in b.meta.get("scope") or []}),
+                  depends=sorted({d for b in members for d in b.meta.get("depends_on") or []} - set(ids)))
+
+        def fill(h):
+            h.set_section("Interpretation", f"Reading 1: do {', '.join(ids)} as one batch: one plan read, one gate run, one "
+                                            f"review and one commit; each keeps its own criteria and is closed done in {h.id}. "
+                                            "Write the failing tests for every member first, together. Per step, run only that "
+                                            "step's own new tests (fast, -k); the full gates, replays and the review run "
+                                            "once, at close (T-0670). Reading 2: each one alone; ruled out because one plan "
+                                            "read and one gate run serve them all cheaper.")  # T-2335: the plan gate wants 2 readings
+            for b in members:
+                crit = [(c._VERIFY_OF.sub("", a.text).strip(), c.verify_of(a.text)) for a in b.acceptance()] or \
+                    [(t.strip(), v) for t, v in map(c.split_verify, _DONE_WHEN.findall(  # T-1976
+                        b.section("Raw request")))] or [(f"{b.title} works", None)]
+                for text, verify in crit:
+                    h.add_ac(f"{b.id}: {text}", verify)
+                for s in b.steps() or [None]:  # a planned member's own steps, else one step for it
+                    h.add_step(f"{b.id}: {s.text if s else b.title}")
+            h.meta["batch"] = ids
+        if gate:  # T-5478: the host is judged as a stand-in before it takes an id, so a refused host leaves nothing behind
+            stand = c.Brief.new("T-0000", c.fit(title, 120), type_, tier, raw=raw, scope=_scope_paths(kw["scope"]),
+                                depends=kw["depends"], source=source, priority=kw["priority"], status="planned")
+            fill(stand)
+            if why := gate(stand):
+                raise UsageError(why)
+        h = _create(p, c.fit(title, 120), type_, tier, "planned", **kw)
+        fill(h)
         c.save_brief(p, h)
         for b in members:
             b.meta["batched_in"] = h.id
@@ -12022,6 +12035,8 @@ def _build_parser(only=None):
                                                         "slots; prints one block of launch lines and lists the skipped (T-3293)")
     s.add_argument("--limit", type=int, metavar="N", help="brief --ready: at most N briefs, never more than the free builder "
                                                           "slots (T-3293)")
+    s.add_argument("--no-batch", action="store_true", help="brief --ready: do not batch related S tasks (the same files, "
+                                                           "at most 4, same type) into one host builder (T-5478)")
     s.add_argument("--why", metavar="REASON", help="rm: drop the builder's work (its branch is kept, a locked worktree "
                                                    "goes); the next sampo lane brief starts from this (T-1823); brief: start "
                                                    "this builder although more than two trains of finished lanes wait to "

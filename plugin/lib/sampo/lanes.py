@@ -3201,6 +3201,40 @@ def _merged_in_head(root, tid, rev="HEAD"):
 SKIPS_SHOWN = 15  # T-3293: a batch that skips more lists this many and says how many more (--json has all)
 
 
+BATCH_CAP = 4  # T-5478: `brief --ready` puts at most this many related S tasks into one host
+
+
+def _batch_ready(p, cands, concrete, overlap, autonomy):
+    """T-5478: group the ready S tasks that name the same file (or one inside the other's folder), same type, at most
+    BATCH_CAP each, and make each group of two or more one batch host (cli._make_batch, kept S). A host that would
+    not pass the plan gate is never made (the gate runs on a stand-in before it takes an id), so a member never sits
+    hidden under a host no builder can start. Returns [(host id, [member ids])]."""
+    from sampo import cli
+    groups = []  # [members, type, {path: owner}]
+    for b in cands:
+        paths = concrete(b)
+        for g in groups:
+            if len(g[0]) < BATCH_CAP and g[1] == b.type and overlap(paths, g[2]):
+                g[0].append(b)
+                g[2].update({s: b.id for s in paths})
+                break
+        else:
+            groups.append([[b], b.type, {s: b.id for s in paths}])
+    made = []
+    for members, _type, _paths in groups:
+        if len(members) < 2:
+            continue
+        def gate(stand):  # the plan gate on the host before it exists: a refused host burns no id
+            gaps = c.plan_gaps(stand, autonomy)
+            return "the batch host isn't planned enough: " + ", ".join(gaps) if gaps else None
+        try:
+            host, ids = cli._make_batch(p, [m.id for m in members], None, tier="S", gate=gate)
+        except Exception:  # a refusal, a lock timeout, a crash: this group stays tasks of their own, the rest go on
+            continue
+        made.append((host.id, ids))
+    return made
+
+
 def _batch_refusal(err):
     """T-3293: a refusal that holds for every task in a `brief --ready` batch (the cap, unmerged lanes, host strain, the
     budget): the batch stops at it instead of trying the rest."""
@@ -3296,7 +3330,9 @@ def brief_ready(p, args):
     already names is skipped, and so is one whose scope names a file a builder already out (working) holds (T-5479:
     "scope overlaps T-N"); a racing task is exempt, both its sides edit the same files by design. A refusal for the whole batch (the slots, the cap, host strain, the budget) stops the batch:
     the rest are "not tried" with that reason. Prints one block of launch lines and each skipped task with its reason;
-    --json returns the briefs as a list the lead turns into parallel Agent calls."""
+    --json returns the briefs as a list the lead turns into parallel Agent calls. T-5478: ready S tasks of one type that
+    name the same file go first into one batch host (at most 4, kept S; --no-batch turns it off), so one builder takes
+    them; the output says "batched N into HOST" and --json lists them under "batched"."""
     import argparse
     import contextlib
     import io
@@ -3337,9 +3373,11 @@ def brief_ready(p, args):
             return f"isn't planned enough: missing {', '.join(gaps)}"
         return None
 
-    queue = c.order_queue(briefs)[0]  # dependency order, as sampo next
-    ids = {x.id for x in queue}
-    todo = [x for x in queue if x.status == "planned"] + [x for x in briefs if x.status == "planned" and x.id not in ids]
+    def planned_todo():
+        queue = c.order_queue(briefs)[0]  # dependency order, as sampo next
+        ids = {x.id for x in queue}
+        return [x for x in queue if x.status == "planned"] + [x for x in briefs if x.status == "planned" and x.id not in ids]
+    todo = planned_todo()
     def concrete(b):  # T-3293: the scope files a brief names outright (a glob names no one file)
         return [s.rstrip("/") for s in b.meta.get("scope") or [] if s.rstrip("/") and not re.search(r"[*?\[]", s)]
 
@@ -3355,8 +3393,38 @@ def brief_ready(p, args):
         if x.id in working:
             for path in concrete(x):
                 claimed.setdefault(path, x.id)
+    memo = {}  # a task's not_ready answer, asked once (the batch pass and the loop below share it)
+
+    def nr(b):
+        if b.id not in memo:
+            memo[b.id] = not_ready(b)
+        return memo[b.id]
+    made = []  # T-5478: related ready S tasks (the same files) become one batch host: one cold builder, not one each
+    if limit > 0 and not getattr(args, "no_batch", False):
+        def batchable(b):
+            return (b.tier == "S" and b.status == "planned" and nr(b) is None and concrete(b)
+                    and not (b.meta.get("race") or b.meta.get("race_of")) and not overlap(concrete(b), claimed)
+                    and b.acceptance() and all(c.verify_of(a.text) for a in b.acceptance())
+                    and all(d in by_id and by_id[d].status in c.CLOSED for d in c._deps(b)))
+        made = _batch_ready(p, [b for b in todo if batchable(b)], concrete, overlap, autonomy)
+        if made:
+            briefs = c.load_briefs(p)
+            by_id = {x.id: x for x in briefs}
+            host_of = {m: h for h, ms in made for m in ms}  # the host replaces them: no "batched into" skip line each
+            now = {x.id: x for x in planned_todo()}
+            order, placed = [], set()
+            for x in todo:  # a host sits where its earliest member sat, so an urgent or older task keeps its file
+                h = host_of.get(x.id)
+                if h is None:
+                    order.append(now.get(x.id, x))
+                elif h not in placed and h in now:
+                    placed.add(h)
+                    order.append(now[h])
+                if h is not None:
+                    memo.pop(x.id, None)
+            todo = order
     for b in todo:
-        why = not_ready(b)  # the task's own reason first: an L task is an L task, whatever the batch says
+        why = nr(b)  # the task's own reason first: an L task is an L task, whatever the batch says
         racing = bool(b.meta.get("race") or b.meta.get("race_of"))  # both sides edit the same files by design
         if why is None and stop:
             why = f"not tried: {stop}"
@@ -3390,6 +3458,9 @@ def brief_ready(p, args):
         lines += [f"  {x['id']}: {x['launch']}" for x in briefed]
         lines += [f"  note: {w}" for x in briefed for w in x["warnings"]]
         lines.append("Unlaunched briefs keep their slot until fm lane rm ID.")
+    out_ids = {x["id"] for x in briefed}
+    made = [(h, ms) for h, ms in made if h in out_ids]  # a host builder_brief refused is a skip line, not a batch
+    lines += [f"batched {len(ms)} into {h} ({', '.join(ms)}): one builder, one verify run" for h, ms in made]
     if skipped:
         lines.append(f"Skipped ({len(skipped)}):")
         lines += [f"  {x['id']}: {x['reason']}" for x in skipped[:SKIPS_SHOWN]]
@@ -3397,7 +3468,8 @@ def brief_ready(p, args):
             lines.append(f"  and {len(skipped) - SKIPS_SHOWN} more (--json lists them all)")
     if not lines:
         lines.append("No planned S/M task to brief (fm lane list shows the open lanes).")
-    return cli.out(args, {"briefed": briefed, "skipped": skipped, "free": free, "limit": limit}, "\n".join(lines))
+    return cli.out(args, {"briefed": briefed, "skipped": skipped, "free": free, "limit": limit,
+                          "batched": [{"host": h, "members": ms} for h, ms in made]}, "\n".join(lines))
 
 
 CODE_MAX = 6000  # T-5498: the brief's "Code to start from" section, bytes (a builder reads it before its first edit)
