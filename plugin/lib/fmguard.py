@@ -1844,7 +1844,9 @@ def _tokens_read(cmd):
     # each word whose own quotes balance read as bash does ('cat' is cat), an odd one kept (the debris rule, T-0982):
     # it never joins words across a space, so nothing hides inside a string a quote scan misplaced. Then shlex again,
     # each " inside a $( ) or `…` within "…" masked and an odd quote run to the end, so X='a b' cat stays cat's prefix
-    words = [_bash_word(w) for piece in cmd.split() for w in _pieces(piece)]
+    hid = _hide_sq_angles(cmd)
+    words = [_decode_word(_bash_word(w)) if hid is not cmd else _bash_word(w) for piece in hid.split()
+             for w in _pieces(piece)]
     try:
         nested = _shlex_words(_mask_nested_dq(text), close=True, encoded=True)
     except ValueError:
@@ -1908,6 +1910,73 @@ def _mask_nested_dq(text):
                 dq -= st[-1][1] == '"'
         i += 1
     return "".join(out)
+
+
+def _decode_word(w):
+    """T-5882: _decode for a word the quote-blind split read (_Quoted again when it is only operator characters)."""
+    if _ESC not in w:
+        return w
+    d = _decode(w)
+    return _Quoted(d) if _op_word(d) else d
+
+
+def _hide_sq_angles(text):
+    """T-5882: text with each < and > inside a single-quoted span encoded (as _hide_quoted_ops does), so the quote-blind
+    split in _tokens_read keeps awk '{if ($2>m)m=$2}' from a redirect into m. Everything else splits as before (the
+    | in an awk program stays a pipe there: T-1575). Only a span _sq_spans proves closed single-quoted is touched: an
+    apostrophe in double quotes, after a backslash, in a comment or never closed hides nothing (the text comes back
+    unchanged), so a real redirect after it stays one. Because the hidden text differs from the original only inside
+    those spans, every > outside them is read exactly as the unhidden quote-blind reading reads it. A text already
+    holding the escape character is left as it is."""
+    if "'" not in text or _ESC in text or not re.search(r"'[^']*[<>]", text):
+        return text  # (the same object: the caller decodes only when it was changed)
+    out, p = [], 0
+    for a, b in _sq_spans(text):
+        out += [text[p:a], text[a:b].replace("<", _ESC + str(_ENCODED.index("<"))).replace(">", _ESC + str(_ENCODED.index(">")))]
+        p = b
+    out.append(text[p:])
+    hid = "".join(out)
+    return text if hid == text else hid
+
+
+def _scan_sq(text, dq):
+    """The closed single-quoted spans (start, end) of text read as bash reads it, starting inside double quotes when dq;
+    None when it ends inside a quote. A backslash skips the next character outside single quotes, a ' inside double
+    quotes is a letter, and a # that starts a word (after space, ; & | ( ) or the start) runs a comment to the newline."""
+    spans, sq, i, n = [], None, 0, len(text)
+    while i < n:
+        ch = text[i]
+        if sq is not None:
+            if ch == "'":
+                spans.append((sq, i + 1))
+                sq = None
+        elif ch == "\\":
+            i += 1
+        elif ch == '"':
+            dq = not dq
+        elif dq:
+            pass
+        elif ch == "'":
+            sq = i
+        elif ch == "#" and (i == 0 or text[i - 1] in " \t\n;&|()"):
+            j = text.find("\n", i)
+            i = n if j == -1 else j
+        i += 1
+    return None if sq is not None or dq else spans
+
+
+def _sq_spans(text):
+    """T-5882: the single-quoted spans (start, end) every well-formed reading of text agrees on. A tail cut from a
+    longer line begins in an unknown context (it may start at the quote that closed its outer string), so text is
+    read from outside quotes and from inside double quotes; a reading that ends inside a quote is dropped, and a span
+    counts only when each remaining reading closes it. No span when none reads cleanly, or text holds the escape
+    character or $'…' quoting (where \\' is a quote inside the span: the scan can't follow)."""
+    if "'" not in text or _ESC in text or "$'" in text:
+        return []
+    reads = [r for r in (_scan_sq(text, False), _scan_sq(text, True)) if r is not None]
+    if not reads:
+        return []
+    return sorted(set(reads[0]).intersection(*map(set, reads[1:])))
 
 
 def _pieces(piece):
@@ -3276,8 +3345,12 @@ def _subst_bodies(text, tails=True, clean=False):
             tail = [len(ends) - 1]  # T-1924: which tails a clean close may drop
             last = text.rfind(")")  # T-0669: and, when it ends inside a quote, up to the last ): an outer `)"`
             if last > i + 2 and _quote_at(text[i + 2:]) is not None:  # left it open (whole code stays whole)
-                ends.append(text[i + 2:last])
-                tail.append(len(ends) - 1)  # T-4811: a clean body drops this one too: it is the same body and the rest
+                spans = _sq_spans(text[i + 2:])  # T-5882: never cut inside a closed '…' (awk's own ) is no end)
+                while last > i + 2 and any(a <= last - i - 2 < b for a, b in spans):
+                    last = text.rfind(")", 0, last)
+                if last > i + 2:
+                    ends.append(text[i + 2:last])
+                    tail.append(len(ends) - 1)  # T-4811: a clean body drops this one too: it is the same body and the rest
             if text[i + 2:i + 3] != "(":
                 ctx.append([None, i + 2, 0, tail])
             i += 2

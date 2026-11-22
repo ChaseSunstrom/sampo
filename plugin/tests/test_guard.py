@@ -2193,6 +2193,76 @@ class AwkAndSystemWrites(GuardCase):
         ], lambda cmd: g.check("Bash", {"command": cmd.replace("{home}", self.home)}, self.ctx()))  # awk's own braces
 
 
+class QuotedRedirect(GuardCase):
+    """T-5882: a > inside a quoted argument is text, not a redirect into the folder the cwd names."""
+    def test_a_quoted_greater_than_is_no_redirect_and_a_real_one_still_is(self):
+        def run(cmd, cwd=None):  # awk's own braces: no str.format
+            return g.check("Bash", {"command": cmd.replace("FHOME", self.fhome)}, self.ctx(cwd=cwd))
+        awk = "L=state/logs/hooks.log; grep -h x $L | awk '{s+=$2; n++; if($2>m)m=$2} END {print s, n, m}'"
+        # a $( ) before the awk: its tail is read quote-blind, cut at the last ) (inside awk's program)
+        subst = "L=state/logs/hooks.log; grep \"$(date +%F)\" $L | awk '{if ($2>m)m=$2} END {print m}'"
+        for cwd in (self.repo, self.fhome, os.path.join(self.fhome, "state")):
+            with self.subTest(cwd=cwd):
+                self.assertIsNone(run(subst, cwd))
+                self.assertIsNone(run(subst.replace("'{", "'\n{"), cwd))
+                self.assertIsNone(run(awk, cwd))
+                self.assertIsNone(run("awk '{if ($2>m)m=$2}' f", cwd))
+                self.assertIsNone(run("awk \"{if (\\$2>m)m=\\$2}\" f", cwd))
+        self.assertBlocked(run("echo x > FHOME/state/m"), "state-direct")
+        self.assertBlocked(run("echo x > state/m", self.fhome), "state-direct")
+        self.assertBlocked(run("awk '{if ($2>m)m=$2}' f > FHOME/state/m"), "state-direct")
+        self.assertBlocked(run(subst + " > out", os.path.join(self.fhome, "state")), "state-direct")
+        self.assertBlocked(run(subst + " > FHOME/state/out"), "state-direct")
+        self.assertBlocked(run("echo \"$(date)\" \"it's\" > FHOME/state/out"), "state-direct")
+
+    def test_a_stray_apostrophe_hides_no_real_redirect(self):
+        """Security review of T-5882: an apostrophe in double quotes, after a backslash, in a comment, or never
+        closed opens no single-quoted span: the redirect after it is still a write into state."""
+        def run(cmd, cwd=None):
+            return g.check("Bash", {"command": cmd.replace("FHOME", self.fhome)}, self.ctx(cwd=cwd))
+        # `; echo "$(echo 'a"b')"` makes the whole text fail shlex, so the quote-blind fallback reads it too
+        force = ' ; echo "$(echo \'a"b\')"'
+        # (text, whether the suffix may follow it: a lone ' would pair with the suffix's own quotes)
+        attacks = [('x=$(date +%F); echo "it\'s" > T', True),
+                   ("x=$(date +%F); echo it\\'s > T", True),
+                   ("x=$(date +%F); # it's\necho hi > T", True),
+                   ("x=$(date +%F); echo it's > T", False),
+                   ("x=$(date +%F); echo 'oops > T", False),
+                   ('x=$(date +%F); echo "it\\"s\'" > T', True)]
+        # from the repo the target is the state folder's path; from the state folder a relative one is state too
+        for cwd, target in ((self.repo, "FHOME/state/x"), (os.path.join(self.fhome, "state"), "state/x")):
+            for cmd, may_force in attacks:
+                for text in (cmd, cmd + force if may_force else cmd):
+                    with self.subTest(cwd=cwd, cmd=text):
+                        self.assertBlocked(run(text.replace("> T", "> " + target), cwd), "state-direct")
+
+    def test_hiding_follows_bash_quoting(self):
+        """_hide_sq_angles hides < and > only inside a single-quoted span bash would close; _sq_spans says which."""
+        hide = g._hide_sq_angles
+        for text in ['echo "it\'s" > state/x', "echo it\\'s > state/x", "# it's\necho hi > state/x",
+                     "echo 'oops > state/x", "echo a'b > state/x", 'echo "a\\"\'" > state/x', "echo $'a\\'b' > state/x"]:
+            with self.subTest(text=text):
+                self.assertIs(hide(text), text)
+        self.assertIsNot(hide("awk '{if ($2>m)m=$2}' f"), "awk '{if ($2>m)m=$2}' f")
+        self.assertNotIn(">", hide("awk '{if ($2>m)m=$2}' f"))
+        # a real redirect after a closed span stays; a quoted one in a comment-free line hides
+        kept = hide("awk '{if ($2>m)m=$2}' f > state/m")
+        self.assertEqual(kept.count(">"), 1)
+        self.assertTrue(kept.endswith("> state/m"))
+        # an apostrophe inside double quotes does not open a span, so the real span after it still closes
+        both = hide("""echo "it's" 'a>b' > state/x""")
+        self.assertEqual(both.count(">"), 1)
+        self.assertTrue(both.endswith("> state/x"))
+
+    def test_the_fallback_keeps_a_redirect_the_hiding_would_have_swallowed(self):
+        """The tokens of a text the fallback reads still hold the real > after a stray apostrophe."""
+        for text in ['echo $(date) "it\'s" > state/x ; echo "$(echo \'a"b\')"',
+                     "echo $(date) it\\'s > state/x ; echo \"$(echo 'a\"b')\"",
+                     "echo $(date) # it's\n echo hi > state/x ; echo \"$(echo 'a\"b')\""]:
+            with self.subTest(text=text):
+                self.assertIn(">", g._tokens(text))
+
+
 class BriefChangelog(GuardCase):
     def test_a_changelog_edit_with_no_task_says_where_the_line_goes(self):
         # T-1452: three CHANGELOG.md edits after a close got only the generic "start a task" text
