@@ -15,6 +15,7 @@ MAX_STEPS = 3
 NAME = re.compile(r"^[a-z][a-z0-9-]{0,39}$")
 START_MAX = 300  # T-3923: the start line's cap (one line, 300 characters or fewer)
 ABOUT_MAX = 60  # each routine's about, cut in the start line and the tool's menu
+START_ABOUT = 40  # T-5819: the about cut in the start line alone; every session start pays for that line (1000-byte cap)
 TAIL = 32  # room the start line keeps for its "+N more" tail
 VERB = re.compile(r"[a-z][a-z0-9-]{0,30}")  # a sampo verb word: no flag, no path, no id
 ENV = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
@@ -64,11 +65,11 @@ def load(d=None):
     return routines, problems
 
 
-def _listed(routines, limit):
+def _listed(routines, limit, about_max=ABOUT_MAX):
     """(text, shown): the routines' names with their about lines, whole ones only, joined by "; " within limit."""
     parts = []
     for n in sorted(routines):
-        about = c.fit(" ".join(c.plain(routines[n]["about"]).split()), ABOUT_MAX)
+        about = c.fit(" ".join(c.plain(routines[n]["about"]).split()), about_max)
         part = f"{n} ({about})"
         if len("; ".join(parts + [part])) > limit:
             break
@@ -83,8 +84,8 @@ def start_line(routines=None):
         routines, _ = load()
     if not routines:
         return ""
-    head = "Sampo one-call routines (sampo do NAME runs one): "
-    text, shown = _listed(routines, START_MAX - len(head) - TAIL)
+    head = "Sampo routines (sampo do NAME): "  # T-5819: shorter than T-3923's head, which a session paid for on every start
+    text, shown = _listed(routines, START_MAX - len(head) - TAIL, START_ABOUT)
     more = len(routines) - shown
     tail = ((("; " if text else "") + f"+{more} more (sampo do --list)") if more else "")
     return c.fit(head + text + tail, START_MAX)
