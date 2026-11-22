@@ -11040,9 +11040,11 @@ def _build_parser(only=None):
     s = add("measure", lazy("sampo.measure", "cmd_measure"), tier=("Reports", 1036),
             help="a named number from the ledger held to a bound, the median in minutes over the window; exit 1 when it misses "
                  "--max or --min. accept-to-live: accept to the train's merge; accept-to-pushed: accept to the end of the "
-                 "first good ship after the merge (the number sampo status shows) (T-5005)")
+                 "first good ship after the merge (the number sampo status shows); review-cost: per day the lanes reviewed, "
+                 "lenses run, review tokens and dollars, and the saving against five lenses, no bound (T-5005, T-5843)")
     s.add_argument("name", nargs="?", help="accept-to-live (accept to the train's merge) | accept-to-pushed (accept to the end of the first good "
-                                      "ship after the merge: the number sampo status shows)")
+                                      "ship after the merge: the number sampo status shows) | review-cost (per day: lanes, lenses, "
+                                      "tokens, dollars, the saving against five lenses; takes no --max or --min)")
     s.add_argument("--max", type=float, metavar="MIN", help="the median may not exceed this many minutes")
     s.add_argument("--min", type=float, metavar="MIN", help="the median may not fall below this many minutes")
     s.add_argument("--window", type=float, default=1.0, metavar="DAYS", help="landings in the last DAYS days (default 1)")

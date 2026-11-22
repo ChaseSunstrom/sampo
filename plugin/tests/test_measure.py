@@ -1,6 +1,7 @@
 """sampo measure (T-5005): accept-to-live and accept-to-pushed read from raw land_train and ship_done ledger events, held
 to --max / --min. A scratch project and hand-written ledger events; no real ledger, path or name."""
 import json
+import os
 import time
 
 from helpers import ForemanTestCase
@@ -188,3 +189,124 @@ class Measure(ForemanTestCase):
         train._ship_end(self.p, "T-0001", "a" * 40, 0, "", time.time() + 1, time.time() + 60)
         self.assertEqual(len(measure.values(self.p, "accept-to-live", 1)), 1)
         self.assertEqual(len(measure.values(self.p, "accept-to-pushed", 1)), 1)
+
+
+class ReviewCost(ForemanTestCase):
+    """T-5843: review-cost sums the review_cost events (one per audit run, T-5842) per UTC day, with the saving against
+    the five-lens default. Hand-written ledger lines with chosen timestamps; no real ledger."""
+
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        self.p = c.find_project(self.repo)
+        self.now = time.time()
+        self.today = self.now // measure.DAY * measure.DAY
+
+    def day(self, k):
+        return time.strftime("%Y-%m-%d", time.gmtime(self.today - k * measure.DAY))
+
+    def review(self, k, task, lenses, usd=0.1, tokens=(100, 50, 0, 0), at=12 * 3600, **over):
+        """One review_cost event, k days ago at `at` seconds into the UTC day; tokens is (input, output, cache_read,
+        cache_creation). A `lenses` of None leaves the field out, as an event written before it carried a count."""
+        data = {"model": "sonnet", "usd": usd, **dict(zip(("input", "output", "cache_read", "cache_creation"), tokens))}
+        if lenses is not None:
+            data["lenses"] = lenses
+        data.update(over)
+        with open(os.path.join(self.p.dir, "ledger.jsonl"), "a", encoding="utf-8") as f:
+            f.write(json.dumps({"ts": c.iso(self.today - k * measure.DAY + at), "event": "review_cost", "task": task,
+                                "data": data}) + "\n")
+
+    def run_measure(self, *args, check=True):
+        return self.fm("measure", "review-cost", *args, check=check)
+
+    def rows(self, *args):
+        return json.loads(self.run_measure("--json", *args).stdout)
+
+    def two_days(self):
+        """Yesterday: T-1 with 2 lenses (150 tokens, $0.2) and T-2 with 5 (300 tokens, $0.5). Two days back: T-1 with 3."""
+        self.review(1, "T-0001", ["intent", "edge"], usd=0.2, tokens=(100, 50, 0, 0))
+        self.review(1, "T-0002", ["intent", "adversary", "edge", "operator", "maintainer"], usd=0.5, tokens=(200, 50, 40, 10))
+        self.review(2, "T-0001", ["intent", "edge", "operator"], usd=0.3, tokens=(300, 0, 0, 0))
+
+    def test_review_cost_sums_lanes_lenses_tokens_and_dollars_per_day(self):
+        self.two_days()
+        got = self.rows("--window", "5")
+        self.assertEqual(got["name"], "review-cost")
+        days = {r["day"]: r for r in got["days"]}
+        self.assertEqual(sorted(days), [self.day(2), self.day(1)])
+        y = days[self.day(1)]
+        self.assertEqual((y["lanes"], y["runs"], y["lenses"], y["tokens"], y["usd"]), (2, 2, 7, 450, 0.7))
+        d2 = days[self.day(2)]
+        self.assertEqual((d2["lanes"], d2["lenses"], d2["tokens"], d2["usd"]), (1, 3, 300, 0.3))
+        self.assertEqual((got["total"]["lanes"], got["total"]["tokens"]), (2, 750))
+
+    def test_review_cost_the_text_names_each_day_and_exits_0_with_no_bound(self):
+        self.two_days()
+        got = self.run_measure("--window", "5")
+        self.assertEqual(got.returncode, 0)
+        self.assertIn(self.day(1), got.stdout)
+        self.assertIn(self.day(2), got.stdout)
+        self.assertIn("$0.70", got.stdout)
+
+    def test_review_cost_window_leaves_older_days_out(self):
+        self.two_days()
+        got = self.rows("--window", "1.5")
+        self.assertEqual([r["day"] for r in got["days"]], [self.day(1)])
+
+    def test_review_cost_an_empty_window_says_so_and_prints_no_saving(self):
+        self.review(9, "T-0001", ["intent"])
+        got = self.run_measure("--window", "2")
+        self.assertEqual((got.returncode, got.stdout.strip()), (0, "no reviews in window"))
+        data = self.rows("--window", "2")
+        self.assertEqual((data["days"], data["total"]["saving_tokens"]), ([], None))
+
+    def test_review_cost_takes_no_bound(self):
+        for flag in ("--max", "--min"):
+            got = self.run_measure(flag, "5", check=False)
+            self.assertEqual(got.returncode, 1, flag)
+            self.assertIn("review-cost", got.stderr)
+
+    def test_review_cost_saving_is_the_lenses_not_run_times_the_mean_tokens_per_lens(self):
+        self.two_days()
+        days = {r["day"]: r for r in self.rows("--window", "5")["days"]}
+        y = days[self.day(1)]  # 7 lenses over 2 runs: (5-2)+(5-5)=3 not run, 450 tokens / 7 lenses
+        self.assertEqual(y["saving_tokens"], round(3 * 450 / 7))
+        self.assertEqual(y["saving_usd"], round(3 * 0.7 / 7, 4))
+        self.assertEqual(days[self.day(2)]["saving_tokens"], 200)  # 2 lenses not run at 100 tokens each
+        self.assertIn("saving", self.run_measure("--window", "5").stdout)
+
+    def test_review_cost_saving_a_five_lens_day_saves_zero_and_a_day_with_no_lens_prints_none(self):
+        self.review(1, "T-0001", ["intent", "adversary", "edge", "operator", "maintainer"])
+        self.review(2, "T-0002", [], tokens=(0, 0, 0, 0), usd=0.0)  # a run that ran no lens: no mean to price a lens by
+        days = {r["day"]: r for r in self.rows("--window", "5")["days"]}
+        self.assertEqual(days[self.day(1)]["saving_tokens"], 0)
+        self.assertIsNone(days[self.day(2)]["saving_tokens"])
+        self.assertIsNone(days[self.day(2)]["saving_usd"])
+        text = self.run_measure("--window", "5").stdout
+        line = next(x for x in text.splitlines() if self.day(2) in x)
+        self.assertIn("no saving", line)
+
+    def test_review_cost_an_old_event_without_a_lens_count_is_unknown_not_zero(self):
+        self.review(1, "T-0001", None)
+        self.review(2, "T-0002", ["intent"], tokens=(100, 0, 0, 0))
+        days = {r["day"]: r for r in self.rows("--window", "5")["days"]}
+        self.assertIsNone(days[self.day(1)]["lenses"])
+        self.assertIsNone(days[self.day(1)]["saving_tokens"])
+        self.assertEqual(days[self.day(1)]["runs"], 1)
+        self.assertEqual(days[self.day(2)]["lenses"], 1)
+        self.assertIn("unknown", self.run_measure("--window", "5").stdout)
+
+    def test_review_cost_junk_fields_are_skipped_not_fatal(self):
+        self.review(1, "T-0001", ["intent"], tokens=("x", None, True, -5), usd="free")
+        self.review(1, "T-0002", "all of them", tokens=(10, 0, 0, 0))
+        got = self.rows("--window", "5")
+        self.assertEqual(got["days"][0]["tokens"], 10)
+        self.assertEqual(self.run_measure("--window", "5").returncode, 0)
+
+    def test_review_cost_reads_what_the_audit_writer_writes(self):
+        with c.lock(self.p.dir):
+            c.log_event(self.p, "review_cost", task="T-0001", data={
+                "model": "sonnet", "lenses": ["intent", "edge"], "usd": 0.25, "input": 10, "output": 5,
+                "cache_read": 3, "cache_creation": 2})
+        d = self.rows()["days"]
+        self.assertEqual((len(d), d[0]["lenses"], d[0]["tokens"], d[0]["usd"]), (1, 2, 20, 0.25))
