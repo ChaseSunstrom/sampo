@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- A step `sampo code` reworded for the plan gate after a one-way refusal is now watched while it runs: an untracked file it deletes or changes stops the run blocked with the file named, and a copy taken before the step is put back (T-4301).
 - Three avoidable steers of one root or concern in 7 days now file one FIX asking why the mechanism that should have caught it did not act, naming it and its last ledger firings, once per group per week, from `sampo steers --tick` (T-4191).
 - `sampo misses --why` now scores itself on a hand-answered golden set of real asks with held-out rows, re-fits its cosine gate on train rows only, matches "used" asks to the usage verb, and gives the judge a second look on a recovery or measuring theme (T-3959).
 - `sampo lane start ID` runs a builder's opening in one call (base check, focus, brief path and steps) and `sampo check --evidence ID --all-steps` records one gate run on every step that has no evidence, collapsing the two most repeated routines (T-3958).
