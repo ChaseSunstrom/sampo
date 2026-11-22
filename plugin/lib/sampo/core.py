@@ -2001,6 +2001,25 @@ def nice_argv(argv, level=NICE_LANE):
     return [nice, "-n", str(level), *argv] if nice else list(argv)
 
 
+LAND_NICE = 10  # T-5527: the nice value a land or train lowers itself to
+LAND_NICE_ENV = "FOREMAN_LAND_NICE"  # the operator's level for it (0 to 19; anything else is ignored)
+
+
+def lower_nice(level=None):
+    """T-5527: lower this process's own priority to nice `level` (default LAND_NICE, or FOREMAN_LAND_NICE), so every child
+    it starts inherits it. Never raises the priority: a process already at or above the level keeps its own. Returns the
+    nice value the process ends at, or None when this host can't tell."""
+    if level is None:
+        raw = os.environ.get(LAND_NICE_ENV, "")
+        level = LAND_NICE if not (raw.isascii() and raw.isdecimal()) else int(raw)
+    level = min(19, max(0, level))
+    try:
+        now = os.getpriority(os.PRIO_PROCESS, 0)
+        return os.nice(level - now) if now < level else now
+    except (OSError, AttributeError):
+        return None
+
+
 CARGO_VAR = "CARGO_TARGET_DIR"
 CARGO_KEPT = (CARGO_VAR, "CARGO_BUILD_TARGET_DIR")  # the two names cargo reads for the same setting
 CARGO_CONFIG_MAX = 1 << 20  # bytes of a cargo config read: a larger file is not one

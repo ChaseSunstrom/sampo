@@ -776,6 +776,7 @@ def cmd_lane(args):
         if p.lane:
             raise c.PolicyError(f"sampo lane {args.action} runs from the main checkout, not from inside a lane")
         from sampo import train
+        c.lower_nice()  # T-5527: background work: its closes and every child run niced, so the load gate never counts them
         return (train.cmd if args.action == "train" else train.cmd_land)(p, args, main)
     if args.action == "stats":  # T-2368: does a long brief land worse than a short one
         rows, ref = stats(p), refusals(p)
