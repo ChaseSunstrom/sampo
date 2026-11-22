@@ -29,7 +29,21 @@ print(json.dumps({"type": "result", "is_error": False, "total_cost_usd": 0.3, "n
 '''
 
 
+GATE = "! sampo claude-bench on"  # T-5584: what a refusal names; the fixture project turns the switch on, never the real state
+
+
 class Stranger(ForemanTestCase):
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        self.fm("claude-bench", "on")  # T-5856: bench stranger calls a Claude model; this fixture project's meta only
+
+    def test_the_gate_off_refuses_naming_the_user_command(self):
+        self.fm("claude-bench", "off")
+        p = self.fm("bench", "stranger", "--json", check=False)
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn(GATE, p.stdout + p.stderr)
+
     def test_a_newcomers_stumbles_become_self_items(self):
         bindir = os.path.join(self.tmp, "bin")
         os.makedirs(bindir)
@@ -38,7 +52,6 @@ class Stranger(ForemanTestCase):
         os.chmod(os.path.join(bindir, "claude"), 0o755)
         log = os.path.join(self.tmp, "log")
         env = {"PATH": bindir + os.pathsep + os.environ["PATH"], "STUB_LOG": log}
-        self.fm("init")
         res = json.loads(self.fm("bench", "stranger", "--json", env=env).stdout)
         call = json.loads(read_text(log).splitlines()[0])
         self.assertIn("README", " ".join(call["args"]))  # the README is all it gets
@@ -566,6 +579,7 @@ class NightLong(ForemanTestCase):  # T-5038: the long-horizon exam runs weekly a
     def setUp(self):
         super().setUp()
         self.fm("init")
+        self.fm("claude-bench", "on")  # T-5856: exam long cycle and the night's long exam jobs need the switch; this fixture only
         from sampo import long, rune
         self.long, self.rune, self.p = long, rune, c.find_project(self.repo)
 
@@ -583,6 +597,16 @@ class NightLong(ForemanTestCase):  # T-5038: the long-horizon exam runs weekly a
     def jobs(self):
         from sampo import night
         return {n: (argv, usd) for n, argv, usd in night.jobs(self.p) if n.startswith("long exam")}
+
+    def test_the_gate_off_refuses_a_cycle_naming_the_user_command_and_lists_no_long_job(self):
+        from sampo import cli
+        self.make_run()
+        self.fm("claude-bench", "off")
+        with mock.patch.object(self.long, "run") as run, self.assertRaises(cli.UsageError) as e:
+            self.long.cmd(self.p, self._args())
+        self.assertIn(GATE, str(e.exception))
+        run.assert_not_called()
+        self.assertEqual(self.jobs(), {}, "the night skips the paid long exam while the gate is closed")
 
     def test_due_is_no_graded_long_line_in_seven_days(self):
         self.assertTrue(self.long.due(self.p, "foreman"), "never graded")
@@ -845,6 +869,11 @@ class NightLand(ForemanTestCase):  # T-4278: a heavy job (evolve, bench) waits w
 
 
 class StrangerGuards(ForemanTestCase):
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        self.fm("claude-bench", "on")  # T-5856: bench stranger calls a Claude model; this fixture project's meta only
+
     def test_captures_wait_for_the_user_and_quote_the_replay(self):
         bindir = os.path.join(self.tmp, "bin")
         os.makedirs(bindir)
@@ -852,7 +881,6 @@ class StrangerGuards(ForemanTestCase):
             f.write(STUB)
         os.chmod(os.path.join(bindir, "claude"), 0o755)
         env = {"PATH": bindir + os.pathsep + os.environ["PATH"], "STUB_LOG": os.path.join(self.tmp, "log")}
-        self.fm("init")
         res = json.loads(self.fm("bench", "stranger", "--json", env=env).stdout)
         selfp = c.find_project(c.foreman_home())
         b = c.find_brief(selfp, res["captured"][0])
