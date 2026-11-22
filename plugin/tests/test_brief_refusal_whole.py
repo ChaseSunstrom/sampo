@@ -46,8 +46,9 @@ class WholeRefusal(ForemanTestCase):
         self.assertIn("verify command on criterion 1", gaps)
         self.assertIn("step", gaps)
         out = self.refusal(tid)
-        for piece in ("2+ readings", "3+ options", "fails if", "likely outcome", "use what exists", "do less",
-                      "Choice N (NN%)", "rival read", "verify command on criterion 1", "step"):
+        # T-5728: the gap is one short line (_GAP_SHORT); `lane brief` starts the cold rival read itself, so it is not a gap here
+        for piece in ("2+ readings", "3+ options", "fails if", "likely outcome", "use-what-exists", "do-less",
+                      "Choice N (NN%)", "verify command on criterion 1", "step"):
             self.assertIn(piece, out)
 
     def test_a_zero_option_approach_still_names_use_what_exists_and_do_less(self):

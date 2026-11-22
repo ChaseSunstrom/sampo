@@ -6830,7 +6830,8 @@ def plan_gaps(b, autonomy="standard", root=None):
 # (an approval, an assumption, a door) are "* " lines the file cannot fix.
 TODO_MARK = "<TODO:"
 _GAP_SHORT = (("Interpretation:", "Interpretation: 2+ readings (or the one reading and the one you ruled out, with why)"),
-              ("Approach (options", "Approach: 3+ options with outcomes, a use-what-exists, a do-less, 'Choice N (NN%): why'"))
+              ("Approach (options", "Approach: 3+ options, each 'fails if: …' or 'likely outcome: …'; use-what-exists; "
+                                    "do-less; 'Choice N (NN%): why'"))
 
 
 def gap_line(g, width=116):
