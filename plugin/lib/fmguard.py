@@ -4,7 +4,25 @@ Pure functions, no state writes. The PreToolUse hook calls check(); a Block is d
 active brief's `allow:` lists its category. `state-direct` is never authorizable. Callers treat any
 exception as a block (fail closed). This is a speed bump with good coverage, not a sandbox: shell
 text can always be obfuscated; deny rules and git are the other layers.
+
+State guard (T-5547 round 6, revised), state_env_run(): two rules. Rule A asks when a Sampo state name (FOREMAN_STATE,
+FOREMAN_HOME, SAMPO_HOME) is assigned in an assignment shape anywhere in the raw text, or in a script the command runs.
+Rule B asks when a generic name (HOME, TMPDIR, TMP, TEMP, XDG_*) is set by a simple command that visibly runs Sampo:
+the same command's own words after its wrappers, or its nested bodies (a shell's -c text, a heredoc, eval). A set in one
+command and a Sampo run in another, as in TMPDIR=/t make; sampo status, passes. A script over 1 MB is judged on its first
+1 MB (its tail is never read) and never on its size. A mention without an assignment passes, and so does a generic name with no visible run.
+
+Accepted residuals (each passes the guard, by design or by limit; tests in test_guard_sampo.StateEnvAsk):
+- a program the wrapper table and the runner list do not name: taskset, chrt, fakeroot, setpriv, prlimit,
+  dbus-run-session, xvfb-run, valgrind, perf stat, gdb, and any unknown runner (someunknownrunner sampo status);
+- git's and pytest's own arguments: git rebase -x, git submodule foreach, git -c alias, python3 -m pytest -k sampo;
+- a program or code held in a variable or a computed word: $S, $P, eval "$CMD", python3 -c "$CODE", FOREMAN_${X}=;
+- a program on stdin or from a glob: echo sampo | xargs, sam?o; a shell or interpreter argument naming a script that is
+  not read here (bash none.sh plugin/bin/sampo);
+- a script that another command in the same line writes at run time (cp src s.sh; bash s.sh): the guard reads it as it is;
+- a script file missing or unreadable when the guard runs; a python environ or setdefault assignment.
 """
+import ast
 import collections
 import functools
 import json
@@ -1974,7 +1992,14 @@ _KEYWORDS = {"do", "then", "else", "elif", "if", "while", "until", "{", "!", "co
 #   own     stripped by its own branch in _strip_wrappers (env, xargs, rustup run), never a runner word to the scan
 #   runner  not stripped (ssh h rm runs on h, a container's paths aren't this machine's); only the installer scan skips
 #           past it to the word that runs: ssh h bash, firejail bash …
-_SUDO_VALUED = ("-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-U")
+_SUDO_VALUED = ("-u", "--user", "-g", "--group", "-C", "-D", "-h", "-p", "-r", "-t", "-U", "-T",
+                "--close-from", "--chdir", "--host", "--prompt", "--role", "--type", "--other-user", "--command-timeout")
+_SUDO_BOOL = frozenset("AbEeHiKklnPSsVvL")  # sudo's and doas's flags that take no value, by letter
+_SUDO_LONG = frozenset(("--askpass", "--background", "--preserve-env", "--edit", "--login", "--shell", "--reset-timestamp",
+                        "--remove-timestamp", "--list", "--non-interactive", "--stdin", "--validate", "--version", "--help",
+                        "--preserve-groups", "--set-home"))
+_RUN_VALUED = ("-u", "--user", "-g", "--group", "-G", "--supp-group", "-s", "--shell", "-c", "--command", "-w",
+               "--whitelist-environment")  # runuser's and su's options that take a value (T-5547 round 7)
 _WRAPPER_SPEC = {
     "sudo": ("strip", _SUDO_VALUED), "doas": ("strip", _SUDO_VALUED),
     "nohup": ("strip", ()), "command": ("strip", ()), "builtin": ("strip", ()), "noglob": ("strip", ()),
@@ -2005,6 +2030,93 @@ def _skips_to_runner(name):
 _CDS = ("cd", "pushd", "popd")  # T-1923: the builtins that move the shell
 
 
+def _opt_takes_next(w, valued):
+    """Whether option word w takes the next word as its value: a long option named in valued, or a cluster whose valued
+    letter is its last (sudo -iu USER: -u takes USER; sudo -uroot: the value is inside the word, getopt's rule)."""
+    if w.startswith("--"):
+        return w in valued
+    for k, ch in enumerate(w[1:], 1):
+        if "-" + ch in valued:
+            return k == len(w) - 1
+    return False
+
+
+def _sudo_unknown(argv):
+    """Whether an option before sudo's or doas's command is one the guard does not know (T-5547 round 7: fail closed, the
+    words after it count as a possible Sampo run). argv starts at sudo; a bare -- ends the options."""
+    i = 1
+    while i < len(argv) and argv[i].startswith("-") and argv[i] != "-":
+        w = argv[i]
+        if w == "--":
+            return False
+        if w.startswith("--"):
+            key = w.split("=", 1)[0]
+            if key not in _SUDO_VALUED and key not in _SUDO_LONG:
+                return i + 1 < len(argv)
+        else:
+            for ch in w[1:]:
+                if "-" + ch in _SUDO_VALUED:
+                    break
+                if ch not in _SUDO_BOOL:
+                    return i + 1 < len(argv)
+        i += 2 if _opt_takes_next(w, _SUDO_VALUED) else 1
+    return False
+
+
+# T-5547 round 8: su, runuser and script options by name: (short options that take a value, short flags, long options
+# that take a value, long flags). An option outside these asks (fail closed): the words after it may be a Sampo run.
+_RUNNER_OPTS = {
+    "su": (("-c", "-g", "-G", "-s", "-w"), ("-l", "-m", "-p", "-P", "-f", "-h", "-V"),
+           ("--command", "--group", "--supp-group", "--shell", "--whitelist-environment", "--session-command"),
+           ("--login", "--preserve-environment", "--pty", "--fast", "--help", "--version")),
+    "runuser": (("-c", "-g", "-G", "-s", "-u", "-w"), ("-l", "-m", "-p", "-P", "-f", "-h", "-V"),
+                ("--command", "--group", "--supp-group", "--shell", "--user", "--whitelist-environment"),
+                ("--login", "--preserve-environment", "--pty", "--fast", "--help", "--version")),
+    "script": (("-c", "-E", "-I", "-O", "-B", "-T", "-o", "-t", "-m"), ("-a", "-e", "-f", "-q", "-r", "-L", "-V", "-h"),
+               ("--command", "--log-io", "--log-in", "--log-out", "--log-timing", "--output-limit", "--logging-format"),
+               ("--append", "--echo", "--flush", "--quiet", "--return", "--timing", "--help", "--version")),
+}
+
+
+def _runner_unknown(name, args):
+    """Whether an option before the command of su, runuser or script is one the guard does not know (T-5547 round 8):
+    the words after it may be the command that runs, so the caller treats the command as a Sampo run. Options end at the
+    first word that is not one (a bare -- ends them too)."""
+    short_v, short_p, long_v, long_p = _RUNNER_OPTS[name]
+    i = 0
+    while i < len(args) and args[i].startswith("-") and args[i] != "-":
+        w = args[i]
+        if w == "--":
+            return False
+        if w.startswith("--"):
+            key, eq, _ = w.partition("=")
+            if key in long_v:
+                i += 1 if eq else 2
+                continue
+            if key not in long_p:
+                return True
+            i += 1
+            continue
+        for ch in w[1:]:
+            if "-" + ch in short_v:
+                break
+            if "-" + ch not in short_p:
+                return True
+        i += 2 if _opt_takes_next(w, short_v) else 1
+    return False
+
+
+def _after_opts(args, valued):
+    """Index of the first word after a command's options and their values: where a runner (runuser, su, script) runs the
+    command its words name (T-5547 round 7)."""
+    i = 0
+    while i < len(args) and args[i].startswith("-") and args[i] != "-":
+        if args[i] == "--":
+            return i + 1
+        i += 2 if _opt_takes_next(args[i], valued) else 1
+    return i
+
+
 def _strip_wrappers(argv, dropped=None):
     """Drop env assignments and exec wrappers (sudo, env, timeout, xargs, npx…). Returns (argv, via_xargs). A list given
     as `dropped` gets the words dropped, as read (an env -S string split into its words: T-4686)."""
@@ -2022,7 +2134,7 @@ def _strip_wrappers(argv, dropped=None):
             kind, valued = _WRAPPER_SPEC[base]
             i += 1
             while i < len(argv) and argv[i].startswith("-"):
-                i += 2 if argv[i] in valued else 1
+                i += 2 if _opt_takes_next(argv[i], valued) else 1
             i += kind == "strip1"  # flock's lock file, timeout's duration: the command comes after
         elif base == "env":
             i += 1
@@ -6460,171 +6572,437 @@ def lone_fm_call(cmd):
     return calls[0] if len(calls) == 1 else None
 
 
-# The variables that move core.state_dir: the three Sampo names, and HOME (expanduser), XDG_STATE_HOME and the temp
-# folders (the fallback marker under tmp), the last four as the whole word. T-5379 review.
-_STATE_VARS = r"(?:FOREMAN|SAMPO)_(?:STATE|HOME)|XDG_STATE_HOME|HOME|TMPDIR|TMP|TEMP"
+# T-5547 round 6 (revised): two rules. Rule A: a Sampo state name (FOREMAN_STATE, FOREMAN_HOME, SAMPO_HOME) in an
+# assignment shape anywhere in the command text, or in the text of a script the command runs, asks: each names where
+# Sampo keeps its trust files. Rule B: a generic name (HOME, TMPDIR, TMP, TEMP, XDG_*) that the command sets asks only
+# when the same command visibly runs Sampo. The accepted residuals are listed in the module docstring.
+_STATE_SCRIPT_MAX = 1 << 20  # a script is read up to this many bytes; a bigger one is judged on those bytes alone (never on size)
+_STATE_SLICE_MAX = 1 << 14  # T-5547 round 9: a <( or >( slice longer than this is read flat, not walked (bounds each walk)
+_STATE_HINTS = ("FOREMAN_", "SAMPO_", "HOME", "TMP", "TEMP", "XDG_", "export", "readonly", "declare", "typeset", "local",
+                "read", "mapfile", "readarray", "for", "printf")  # the names and setter words a state set is written with
+
+
+def _may_set(text):
+    """T-5547 round 9: a cheap substring test before the tokenise-and-walk of a script's text. A text with no = and no
+    state or generic name, no setter word, sets no name (the walk would find none), so its walk is skipped. Quotes and
+    backslashes are dropped first, so H"OME" still shows its name."""
+    if "=" in text:
+        return True
+    if any(c in text for c in "\"'\\"):
+        text = re.sub(r"[\"'\\]", "", text)
+    return any(h in text for h in _STATE_HINTS)
+_SAMPO_PROGS = ("sampo", "fm")
+_SAMPO_NAMES = "FOREMAN_STATE|FOREMAN_HOME|SAMPO_HOME"
+_SAMPO_LIST = tuple(_SAMPO_NAMES.split("|"))
+_GEN_NAMES = r"HOME|TMPDIR|TMP|TEMP|XDG_\w+"
 _STATE_UNQUOTE = lazy(r"\\\n|[\"'\\]")  # the shell joins FOREMAN_"STATE" and FOREMAN_\STATE into one word
-# A name the shell builds from an expansion, a command substitution or a brace list ($n=, `x`=, {a,b}=, $(x)=) is a set of a
-# name nobody can read here: round 3 of the review. The marker chars are never inside the stretch after the last one, so
-# a scan is linear (a name of 100 000 dollar signs is no quadratic search).
-_STATE_PRE = lazy(rf"(?:FOREMAN|SAMPO)_(?:STATE|HOME|\$)|(?<!\w)(?:XDG_STATE_HOME|HOME|TMPDIR|TMP|TEMP)\+?=|"
-                  r"environ\W+(?:HOME|TMPDIR|TMP|TEMP|XDG_STATE_HOME)\W|[$`{)][^\s=;&|$`{)]*=|"
-                  r"putenv|environ\.(?:update|setdefault)|\benv\s*=\s*(?:dict\(|\{)")
-_STATE_ENV_SET = lazy(rf"^({_STATE_VARS})\+?=|^((?:FOREMAN|SAMPO)_)\$")  # an expansion after FOREMAN_ may build either name
-_STATE_WORD_SET = lazy(rf"(?:^|[\s;&|(]|\\[nt])(?:({_STATE_VARS})\+?=|((?:FOREMAN|SAMPO)_)\$|"
-                       r"([^\s=;&|()\\]*[$`{][^\s=;&|()$`{]*=))")  # no backslash in the first stretch: \n\n\n… stays linear
-_STATE_COMPUTED = "a name built at run time (maybe FOREMAN_STATE)"  # what a set of an unnamed name is called
-_STATE_SETTERS = ("export", "readonly", "declare", "typeset", "local")
+_STATE_COMPUTED = "a name built at run time"  # the name of a set whose name nobody can read before the shell runs it
+_STATE_FLAT = lazy(rf"(?<!\w)(?:{_SAMPO_NAMES})\+?=|\$ENV\{{\s*['\"]?(?:{_SAMPO_NAMES})\b|"
+                   rf"environ\W{{0,3}}(?:{_SAMPO_NAMES})\b|"
+                   rf"\b(?:export|setenv|putenv|declare|typeset|readonly|local)\s+(?:-\w+\s+)*['\"]?(?:{_SAMPO_NAMES})\b|"
+                   rf"\bprintf\s+-v\s*['\"]?(?:{_SAMPO_NAMES})\b")  # the quote-blind scan: only a bounded fallback reads it
+_STATE_CODE_A = lazy(rf"\$ENV\{{\s*['\"]?(?:{_SAMPO_NAMES})\b|environ\W{{0,3}}(?:{_SAMPO_NAMES})\b|"
+                     rf"\b(?:putenv|setenv)\W{{0,3}}(?:{_SAMPO_NAMES})\b")  # code's own setters: os.environ, $ENV{}, putenv
+_STATE_SET_WORD = lazy(rf"^({_SAMPO_NAMES})\+?=")  # a word that assigns a state name: a prefix assignment or a setter's operand
+_STATE_BARE_WORD = lazy(rf"^({_SAMPO_NAMES})$")  # a bare state name: export or printf -v names it
+_GEN_SET = lazy(rf"({_GEN_NAMES})(?:\+?=|$)")  # a word that sets a generic name: NAME=…, or a bare NAME (export, printf -v)
+_GEN_CODE = lazy(rf"(?<!\w)(?:{_GEN_NAMES})\+?=|environ\W{{0,3}}(?:{_GEN_NAMES})\b|['\"](?:{_GEN_NAMES})['\"]\s*:|"
+                 rf"\b(?:putenv|setenv)\W{{0,3}}(?:{_GEN_NAMES})\b")  # os.environ['HOME'] = …, env={'HOME': …}
+_SAMPO_CODE = lazy(r"(?:(?<![\w./-])|(?<=\\[nt]))(?:sampo|fm)(?![\w-])")  # a word that runs Sampo, in code or in shell text
+_STATE_SETTERS = ("export", "readonly", "declare", "typeset", "local", "for")
+_STATE_READERS = ("read", "mapfile", "readarray")  # T-5547 round 9: read NAME and mapfile NAME set the names they are given
 _STATE_INTERP = lazy(rf"^(?:{_INTERP_NAMES})$")
 _STATE_DOT = ("source", ".")  # runs a file in the shell
-_STATE_PLUGIN = lazy(r"(?:^|[/=:])plugin/\w")
-_STATE_PLUGIN_DIR = lazy(r"(?:^|[/=:])plugin/(?:bin|lib|hooks)\b")  # a lead word (PYTHONPATH=plugin/lib) that points at the code
-# code that runs Sampo: an import of it (import os, sampo.core; import_module('sampo.core')), a path of its folders, or
-# the program as a word or a quoted string. \n written out in a printf is a line break to the script it writes.
-_STATE_CODE = lazy(r"(?:\b|(?<=\\[nt]))(?:import|from)\b[^;\n]{0,80}?\b(?:sampo|fm\w*)\b|"
-                   r"\b(?:import_module|__import__|run_module)\W{1,3}(?:sampo|fm\w*)\b|\bplugin/(?:bin|lib|hooks)\b|"
-                   r"(?:^|[\s;&|(\"'/]|\\[nt])(?:sampo|fm)(?:-\w+)?(?=[\s\"';&|)]|\\[nt]|$)")
-# python (or a script of any kind) that WRITES one of the names: os.putenv('HOME', …), os.environ.update(HOME=…),
-# env={'HOME': …} / env=dict(TMPDIR=…) for a child, os.environ['HOME'] = …
-_STATE_WRITE_SRC = (rf"(?:putenv\(|environ\.(?:update|setdefault)\(|\benv\s*=\s*(?:dict\(|\{{))[^)}}\n]{{0,100}}?\b"
-                    rf"(?:{_STATE_VARS})\b|environ\W+(?:{_STATE_VARS})\W{{1,3}}\s*=[^=]")
-_STATE_WRITE = lazy(_STATE_WRITE_SRC)
-# code given inline (python -c, a heredoc) is read for any mention of a name that moves the state, writes and all
-_STATE_CODE_SET = lazy(r"\b(?:FOREMAN|SAMPO)_(?:STATE|HOME)\b|\bXDG_STATE_HOME\b|environ\W+(?:HOME|TMPDIR|TMP|TEMP)\W|"
-                       + _STATE_WRITE_SRC)
-
-
-def _state_env_facts(cmd, facts, depth):
-    """T-5379: fills facts["sets"] (a simple command of cmd moves FOREMAN_STATE, FOREMAN_HOME or SAMPO_HOME: a lead
-    assignment, env's, or the arguments of export, declare, typeset, readonly, local) and facts["runs"] (it runs sampo,
-    fm or plugin code: the program, a path under plugin/, an interpreter given such a script, -m sampo or code that
-    imports it), reading the body of sh -c, eval, a heredoc fed to a shell and a $( ) too. ponytail: read, printf -v
-    and a name computed at run time aren't seen."""
-    facts["seen"] += 1
-    if facts["seen"] > 64 or depth > 4:  # past the bound the rest is read as words, never let through unread
-        _state_words(cmd, facts)
-        return
-    text, bodies = _heredocs(cmd)
-    shell_fed = interp_fed = False
-    for x in _split(_tokens(_lines(text))):
-        dropped = []
-        argv, _ = _strip_wrappers(x.argv, dropped)
-        for w in dropped + argv:  # a lead assignment; in any word only the FOREMAN_$X form (it may be export's)
-            m = _STATE_ENV_SET.match(w) if "=" in w or "$" in w else None
-            if m and (m.group(2) or w in dropped):
-                facts["sets"].add(m.group(1) or m.group(2) + "$")
-            elif (w in dropped or w is argv[0]) and _state_computed(w):  # env $n=x, env {FOREMAN,x}_STATE=x, sudo $n=x
-                facts["sets"].add(_STATE_COMPUTED)
-        if x.argv and x.argv[0].startswith("="):  # $(echo NAME)=x: the parser ends the command at the $(
-            facts["sets"].add(_STATE_COMPUTED)
-        if not argv:
-            continue
-        name, args = os.path.basename(argv[0]), argv[1:]
-        if name in _STATE_SETTERS:
-            for a in args:
-                m = _STATE_ENV_SET.match(a)
-                if m:
-                    facts["sets"].add(m.group(1) or m.group(2) + "$")
-                elif _state_computed(a):  # export $n=x, declare -x `echo A`=x, export a{b,c}=x
-                    facts["sets"].add(_STATE_COMPUTED)
-        if name in ("cd", "pushd", "popd") or any(w in ("-C", "--chdir", "-D") or w.startswith("--chdir=") for w in dropped):
-            facts["moved"] = True  # a relative path after this is no longer read from the cwd the hook was given
-        if _plugin_runner(argv, facts["cwd"], facts["moved"]):  # the test runner gives each class its own home
-            continue
-        # the program in the lead, or one a carrier (find, make, su, watch) runs; a lead word that points at the code
-        # (PYTHONPATH=plugin/lib python3 shim.py)
-        if any(_state_word_runs(w) for w in argv) or any(_STATE_PLUGIN_DIR.search(w) for w in dropped if "=" in w):
-            facts["runs"] = True
-        feeds = [(f[0], f[1]) for f in x.feeds]
-        here = [t for op, t in feeds if op == "<<<"]
-        heredoc = any(op != "<<<" for op, _ in feeds)
-        if name == "eval":
-            _state_env_facts(" ".join(args), facts, depth + 1)
-        elif name == "env" or name == "su":  # env -S 'VAR=x cmd' and su -c 'cmd' split a string into a command
-            for i, a in enumerate(args):
-                if a in ("-S", "--split-string", "-c", "--command") and i + 1 < len(args):
-                    _state_env_facts(args[i + 1], facts, depth + 1)
-        elif _C_SHELLS.match(name) or name in _STATE_DOT:
-            shell_fed = shell_fed or heredoc
-            for t in here:  # bash <<< 'sampo status'
-                _state_env_facts(t, facts, depth + 1)
-            for i, a in enumerate(args):
-                if a.startswith("-") and not a.startswith("--") and "c" in a and i + 1 < len(args):
-                    _state_env_facts(args[i + 1], facts, depth + 1)
-            _state_script(args, facts, "cs")
-        elif _STATE_INTERP.match(name):
-            interp_fed = interp_fed or heredoc
-            for t in here:
-                _state_code(t, facts)
-            for i, a in enumerate(args):
-                if re.match(r"-[A-Za-z]*m(?:sampo|fm\w*)(?:\.|$)", a) or (
-                        i and re.match(r"-[A-Za-z]*m$", args[i - 1]) and re.match(r"(?:sampo|fm\w*)(?:\.|$)", a)):
-                    facts["runs"] = True  # -m sampo, -msampo, -Im sampo.core
-                elif i and re.match(r"-[A-Za-z]*[ceE]$", args[i - 1]):  # python -c, -Ic; node, perl, ruby -e
-                    _state_code(a, facts)
-            _state_script(args, facts)
-    if bodies and shell_fed:  # bash <<EOF … EOF: the body is the script
-        _state_env_facts(bodies, facts, depth + 1)
-    if bodies and interp_fed:  # python3 <<EOF … EOF: its imports and the names it sets
-        _state_code(bodies, facts)
-    if "$(" in text or "`" in text:
-        for b in _subst_bodies(text, tails=False):
-            _state_env_facts(b, facts, depth + 1)
-
-
-def _state_code(code, facts):
-    """An interpreter's own code: an import of Sampo or its program runs it, and a name of the state in it (os.environ[…])
-    is a set (the review: python -c "os.environ['FOREMAN_STATE']=…; import sampo.core" has no shell assignment)."""
-    if _STATE_CODE.search(code):
-        facts["runs"] = True
-    for m in _STATE_CODE_SET.finditer(code):
-        facts["sets"].add(_state_name(m))
-
-
-def _state_name(m):
-    """The variable a code match names (the last name of the match: the value after it can't be one)."""
-    return (re.findall(_STATE_VARS, m.group(0)) or [_STATE_COMPUTED])[-1]
 
 
 def _state_computed(w):
-    """A word NAME=value whose NAME holds an expansion, a command substitution, a $'…' string or a brace list: a name
-    nobody can read before the shell runs it (a plain scan of a word, never a backtracking pattern)."""
+    """A word NAME=value whose NAME holds an expansion, a command substitution or a brace list: a name nobody can read
+    here (a plain scan of one word, never a backtracking pattern)."""
     i = w.find("=")
     return i > 0 and re.search(r"[$`{]", w[:i]) is not None
 
 
-def _state_sets(text, facts, bare=False):
-    """The names text sets as a shell assignment or a write in code, read on the text as written (a printf's \\n is
-    a line break to the script it makes) and with its quotes taken out. bare: a mention of a name counts too (code
-    given inline, a text no parse reads)."""
+def _add_set(facts, name):
+    """A generic name set by the text: in the current simple command's frame, and in the whole text's list (allsets),
+    which a substitution's body is judged against (its command is not known)."""
+    facts["sets"].add(name)
+    facts["allsets"].add(name)
+
+
+def _state_word(facts, w):
+    """A word that may set a name: NAME=… (a prefix assignment, a setter's operand), a bare generic NAME that export or
+    printf -v names, or a computed name. A Sampo state name assigned by such a word is Rule A (T-5547 final round)."""
+    m = _STATE_SET_WORD.match(w)
+    if m:
+        facts["a"].add(m.group(1))
+    m = _GEN_SET.match(w)
+    if m:
+        _add_set(facts, m.group(1))
+    elif _state_computed(w):
+        _add_set(facts, _STATE_COMPUTED)
+
+
+def _state_setter_word(facts, w):
+    """An operand of export, declare, readonly, typeset, local or printf -v: a word NAME=… or a bare NAME names a set."""
+    _state_word(facts, w)
+    if _STATE_BARE_WORD.match(w):
+        facts["a"].add(w)
+
+
+def _is_sampo(argv):
+    """The command runs Sampo: its program is sampo or fm (by name or by path), or a shell or an interpreter runs such a
+    file, or runs it as a module (python3 -m sampo)."""
+    name, args = os.path.basename(argv[0]), argv[1:]
+    if name in _SAMPO_PROGS:
+        return True
+    if _C_SHELLS.match(name):
+        args = [a for a in args if not a.startswith("+")]
+    if _STATE_INTERP.match(name) and "-m" in args:
+        i = args.index("-m")
+        if i + 1 >= len(args):
+            return False
+        return args[i + 1] in _SAMPO_PROGS or args[i + 1].split(".")[0] in ("sampo", "fmguard")  # -m sampo.cli too
+    if _C_SHELLS.match(name) or _STATE_INTERP.match(name) or name in _STATE_DOT:
+        return os.path.basename(_script_path(args) or "") in _SAMPO_PROGS
+    return False
+
+
+# T-5547 round 7: code that imports Sampo (or the guard) is a Sampo run; `from sampo import x` too
+_IMPORTS_SAMPO = re.compile(r"(?:^|[\s;&|(])(?:import|from)\s+(?:sampo|fmguard)(?!\w)"
+                            r"|(?:__import__|import_module)\(\s*['\"](?:sampo|fmguard)(?!\w)")
+_SAMPO_MODULES = ("sampo", "fmguard")
+
+
+def _imports_sampo(code):
+    """Python code that imports sampo or fmguard, read by ast: every alias of an import, a from-import's module, and
+    __import__('sampo') or importlib.import_module('sampo.x'). Code that does not parse falls back to the word scan."""
+    try:
+        tree = ast.parse(code)
+    except Exception:  # not Python (or too deep to parse): the word scan reads it
+        return _IMPORTS_SAMPO.search(code) is not None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import) and any(a.name.split(".")[0] in _SAMPO_MODULES for a in node.names):
+            return True
+        if isinstance(node, ast.ImportFrom) and node.module and node.module.split(".")[0] in _SAMPO_MODULES:
+            return True
+        if isinstance(node, ast.Call) and node.args and isinstance(node.args[0], ast.Constant):
+            fn = node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", "")
+            value = node.args[0].value
+            if fn in ("__import__", "import_module") and isinstance(value, str) and value.split(".")[0] in _SAMPO_MODULES:
+                return True
+    return False
+
+
+def _code_imports(code, facts):
+    """An interpreter's code that imports sampo or fmguard: a visible Sampo run, so a generic name it sets asks."""
+    if _imports_sampo(code.replace("\\ ", " ")):
+        facts["sampo"] = True
+
+
+def _state_code(code, facts):
+    """Text that may be code (an interpreter's -c or -e string, a heredoc fed to one, or text no parse reads): a generic
+    name set in it AND a Sampo word in it. Both or neither: a set alone, or a word alone, is no run. The code's own state
+    setters (os.environ, $ENV{}, putenv) are Rule A."""
+    _state_a(code, facts)
+    m = _GEN_CODE.search(code)
+    if m and _SAMPO_CODE.search(code):
+        _add_set(facts, (re.findall(_GEN_NAMES, m.group(0)) or [_STATE_COMPUTED])[-1])
+        facts["sampo"] = True
+
+
+def _state_a(text, facts, rx=_STATE_CODE_A):
+    """Rule A in code: a Sampo state name in one of the code's own setter shapes (os.environ, $ENV{}, putenv), read as
+    written and with its quotes taken out. Shell words are read by the walk, not here: a quoted mention is no set."""
     flat = _STATE_UNQUOTE.sub("", text)
     for t in (text,) if flat == text else (text, flat):
-        for m in _STATE_WORD_SET.finditer(t):
-            facts["sets"].add(m.group(1) or (m.group(2) + "$" if m.group(2) else _STATE_COMPUTED))
-        for m in (_STATE_CODE_SET if bare else _STATE_WRITE).finditer(t):
-            facts["sets"].add(_state_name(m))
+        for m in rx.finditer(t):
+            facts["a"].update(re.findall(_SAMPO_NAMES, m.group(0)))
 
 
-def _state_words(text, facts):
-    """Text no parse reads (past the bounds, or the parser failed): a set or a run as a quote-blind scan sees them, so
-    the answer errs toward asking."""
-    _state_sets(text, facts, True)
-    flat = _STATE_UNQUOTE.sub("", text)
-    if _STATE_CODE.search(flat) or _STATE_CODE.search(text) or _STATE_PLUGIN.search(flat):
-        facts["runs"] = True
+_QUOTED_SPAN = re.compile(r"'[^']*'|\"(?:\\.|[^\"\\])*\"", re.S)  # a quoted span, read as text: no word of the shell's
+_STATE_UNQ = lazy(rf"(?<![\w$.-])({_SAMPO_NAMES})\+?=\S")  # a state name assigned with a value, in a word no quote holds
 
 
-def _state_word_runs(w):
-    """A word that is Sampo's program (sampo, fm, sampo-fast; as a path too) or a path into the plugin, alone or inside
-    a word that holds a command (su -c 'sampo status'). A word too long to split is searched as it is: the same
-    patterns, linear, never waved through whole."""
-    if len(w) >= 4096:
-        return bool(_STATE_CODE.search(w) or _STATE_PLUGIN.search(w))
-    for part in re.split(r"[\s;&|()<>]+", w):
-        base = os.path.basename(part)
-        if base in FM_PROGRAMS or base.startswith("sampo-") or _STATE_PLUGIN.search(part):
-            return True
-    return False
+def _state_unquoted(text, facts):
+    """Rule A for the words no quote holds (T-5547 final round): NAME=value anywhere in the text outside quotes, as an
+    argument of a program this guard does not read (an unknown wrapper may take it as a setting). A quoted span is a
+    mention (git commit -m 'FOREMAN_STATE=x sampo' passes), and a name with no value (grep SAMPO_HOME= plugin) names no
+    place. A quoted span is blanked to one letter, so FOREMAN_HOME="/x" still counts as a value."""
+    if not any(n in text for n in _SAMPO_LIST):  # the cheap test first: no state name, nothing to read
+        return
+    for m in _STATE_UNQ.finditer(_QUOTED_SPAN.sub("x", text)):
+        facts["a"].add(m.group(1))
+
+
+def _state_flat(text, facts):
+    """The bounded fallback (a text too big to walk, one that no parse reads, a command that fails to walk): the quote-blind
+    scan of every assignment shape, so a set anywhere in the text is seen, quoted or not, and the code's own setters."""
+    _state_a(text, facts, _STATE_FLAT)
+    _state_code(text, facts)
+
+
+def _state_read(path, facts, depth, shell=True):
+    """A script a command runs (a shell's or source's file, a path program, an interpreter's file): its text is read for
+    Rule A and read as code for Rule B; a shell's file is also walked as shell (an interpreter's is not: a Python file
+    walked as shell reads its dict literals as computed names). A file past _STATE_SCRIPT_MAX is read up to that size
+    (its tail is never read; a file is never asked for its size alone). A binary is no script. A path not on disk is the command's own text (the command may write the file: printf >
+    s.sh; ./s.sh). An unreadable file passes: a residual."""
+    p = path if os.path.isabs(path) else os.path.join(facts["cwd"], path)
+    try:
+        if not os.path.exists(p):
+            _state_flat(facts["raw"], facts)
+            return
+        if not os.path.isfile(p):
+            return
+        with open(p, "rb") as f:
+            head = f.read(8192)
+        if b"\0" in head.split(b"\n", 1)[0]:  # T-5547 round 9: a binary is told by its first line (a NUL later is text's)
+            return
+        with open(p, encoding="utf-8", errors="replace") as f:
+            body = f.read(_STATE_SCRIPT_MAX)  # T-5547 final round: the first 1 MB is read; a bigger file asks only for a name in it
+    except (OSError, ValueError):
+        return
+    if not _may_set(body):  # T-5547 round 9: no = and no state or generic name: the script sets nothing, so it is not walked
+        return
+    _state_unquoted(body, facts)  # a name with a value in a word no quote holds
+    _state_code(body, facts)  # the code's own setters, and a Sampo word with a generic set (a shell reads its words below)
+    if shell:
+        _state_walk(body, facts, depth + 1)
+
+
+def _state_walk(cmd, facts, depth):
+    """Walks one command text: the simple commands it runs (their prefix assignments, the generic names their arguments
+    set, whether a Sampo program is among them), the scripts they run, and the bodies a shell or a substitution runs
+    (heredocs, $( ), backticks, <( ), trap's text, eval, sh -c). Past the bounds the text is read flat (_state_code), so
+    a command too big to walk still asks when it sets a name and runs Sampo."""
+    facts["seen"] += 1
+    if facts["seen"] > 64 or depth > 4:
+        _state_flat(cmd, facts)
+        return
+    text, bodies = _heredocs(cmd)
+    cmds = _split(_tokens(_lines(text)))
+    outer = None  # T-5547 round 8: a top-level simple command's sets and Sampo word are its own; a nested body (a shell's
+    for x in cmds:  # -c text, a script, a heredoc) is one unit with the command that holds it, so it keeps its frame
+        if depth == 0:
+            if outer is not None:
+                _state_close(facts, outer)
+            outer = (facts["sets"], facts["sampo"])
+            facts["sets"], facts["sampo"], facts["persistent"] = set(), False, False
+        if x.argv and x.argv[0].startswith("="):  # $(echo NAME)=x: the parser ends the command there, no program runs
+            _add_set(facts, _STATE_COMPUTED)
+            facts["other"] = True
+            continue
+        a_before = set(facts["a"])  # the names this command's words name are struck again if it is the test runner alone
+        dropped = []
+        argv, _ = _strip_wrappers(x.argv, dropped)
+        for w in dropped:  # a prefix assignment: HOME=/x sampo status, env HOME=/x sampo status
+            _state_word(facts, w)
+        for k, w in enumerate(x.argv):  # T-5547 round 8: every sudo or doas word, not only the head
+            if "=" not in w and os.path.basename(w) in ("sudo", "doas"):
+                _sudo_run(x.argv[k:], facts)
+        if not argv:
+            facts["other"] = True
+            if depth == 0:  # a bare NAME=value stays set in the shell after this command
+                facts["persistent"] = True
+            continue
+        name, args = os.path.basename(argv[0]), argv[1:]
+        if _C_SHELLS.match(name):  # bash +x FILE turns an option off: the file is still the script
+            args = [a for a in args if not a.startswith("+")]
+        if name in _STATE_SETTERS or name in _STATE_READERS or (name == "printf" and "-v" in args):
+            if depth == 0:  # export, declare, printf -v, read: the name outlives this command (_state_close)
+                facts["persistent"] = True
+            targets = args
+            if name == "printf":  # printf -v NAME: only the word after -v is named; the format and its values are text
+                i = args.index("-v")
+                targets = args[i + 1:i + 2]
+            elif name == "for":  # for NAME in …: the loop variable is the first word (the list is text)
+                targets = args[:1]
+            for a in targets:
+                _state_setter_word(facts, a)
+        if name in ("cd", "pushd", "popd") or any(w in ("-C", "--chdir", "-D") or w.startswith("--chdir=") for w in dropped):
+            facts["moved"] = True  # a relative path after this is no longer read from the cwd the hook was given
+        if _plugin_runner(argv, facts["cwd"], facts["moved"]):  # the test runner gives each class its own home
+            facts["runner"] = True
+            facts["a"].intersection_update(a_before)  # its own words are no Rule A set (the runner alone passes it)
+            continue
+        facts["other"] = True
+        if _is_sampo(argv):
+            facts["sampo"] = True
+        if argv[0] == "-c" and len(argv) > 1 and any(os.path.basename(w) == "flock" for w in dropped):
+            _state_walk(argv[1], facts, depth + 1)  # flock FILE -c 'CMD': the string after -c is the command
+        feeds = [(f[0], f[1]) for f in x.feeds]
+        here = [t for op, t in feeds if op == "<<<"]
+        heredoc = any(op != "<<<" for op, _ in feeds)
+        if "/" in argv[0] and not (_C_SHELLS.match(name) or _STATE_INTERP.match(name) or name in _STATE_DOT):
+            _state_read(argv[0], facts, depth)  # a program named by its path: its script may set a name
+        if name == "trap" and args:  # trap 'sampo state' EXIT: the text runs later, once the set is in place
+            facts["later"].append(args[0])  # walked after the loop: the names it sees are the whole text's
+        elif name == "eval":
+            _state_walk(" ".join(args), facts, depth + 1)
+        elif name in ("env", "su", "runuser", "script"):  # env -S 'VAR=x cmd' and su -c 'cmd' split a string into a command
+            for i in range(len(args)):
+                code = _runner_code(name, args, i)  # script -qc 'cmd', su -c'cmd', su --command=cmd (T-5547 round 8)
+                if code is not None:
+                    _state_walk(code, facts, depth + 1)
+            if name != "env" and _runner_unknown(name, args):  # T-5547 round 8: an option this guard does not know asks
+                facts["sampo"] = True
+            if name != "env":  # runuser -u u -- nice sampo status: the words after the options are the command it runs
+                j = _after_opts(args, _RUN_VALUED)
+                rest = _strip_wrappers(args[j:])[0] if j < len(args) else []
+                if rest and _is_sampo(rest):
+                    facts["sampo"] = True
+        elif _C_SHELLS.match(name) or name in _STATE_DOT:
+            if heredoc and bodies:  # bash <<EOF … EOF: the body is the script, run by this command's frame
+                _state_walk(bodies, facts, depth + 1)
+            for t in here:  # bash <<< 'sampo status'
+                _state_walk(t, facts, depth + 1)
+            c_at = [i for i, a in enumerate(args) if a.startswith("-") and not a.startswith("--") and "c" in a
+                    and i + 1 < len(args)]
+            for i in c_at:
+                _state_walk(args[i + 1], facts, depth + 1)
+            path = _script_path(args, "c")
+            if path is not None:
+                _state_read(path, facts, depth)
+            elif name not in _STATE_DOT and not c_at and not here and not heredoc:  # the program comes on stdin
+                _state_flat(facts["raw"], facts)
+        elif _STATE_INTERP.match(name):
+            if heredoc and bodies:  # python3 <<EOF … EOF: its code, in this command's frame
+                _state_code(bodies, facts)
+            for t in here:
+                _state_code(t, facts)
+            coded = False
+            for i, a in enumerate(args):
+                if i and re.match(r"-[A-Za-z]*[ceE]$", args[i - 1]):  # python -c, -Ic; node, perl, ruby -e
+                    _state_code(a, facts)
+                    _code_imports(a, facts)
+                    coded = True
+                m = re.match(r"-[A-Za-z]*?[ceE](.+)$", a)  # python -cCODE, -Ic'code': the code glued to its flag
+                if m:
+                    _state_code(m.group(1), facts)
+                    _code_imports(m.group(1), facts)
+                    coded = True
+            if "-m" in args:  # python -m timeit 'import sampo.core': the statement a module runs is code too
+                for a in args:
+                    _code_imports(a, facts)
+            path = _script_path(args)
+            if path is not None:
+                _state_read(path, facts, depth, shell=False)
+            elif not coded and not here and not heredoc and "-m" not in args:  # the program comes on stdin
+                _state_flat(facts["raw"], facts)
+    if outer is not None:
+        _state_close(facts, outer)
+    # a substitution's command is not known from the text (its words are not positioned): its run asks with every name
+    # the whole text sets. $( ) and backticks, and <( ): the process substitution's text is a program
+    subs = list(_subst_bodies(text, tails=False)) if "$(" in text or "`" in text else []
+    # T-5547 round 9: the rest of the text after each <( or >( is one slice: at most 8 are walked (the rest, past them, is
+    # read flat once, which is linear), and a slice longer than _STATE_SLICE_MAX is read flat too (no O(M·n) walks)
+    opens = list(re.finditer(r"[<>]\(", text))
+    for m in opens[:8]:
+        rest = text[m.end():]
+        if len(rest) > _STATE_SLICE_MAX:
+            _state_flat(rest, facts)
+        else:
+            subs.append(rest)
+    if len(opens) > 8:
+        _state_flat(text[opens[8].end():], facts)
+    _whole_walk(subs + facts["later"], facts, depth)
+
+
+def _whole_walk(texts, facts, depth):
+    """Text whose command is not positioned in the line (a substitution, a trap that runs later): its Sampo run asks with
+    every name the whole text sets, since no one command's frame holds both."""
+    saved = facts["sampo"]
+    facts["sampo"] = False
+    for t in texts:
+        _state_walk(t, facts, depth + 1)
+    if facts["sampo"]:
+        facts["sets"] |= facts["allsets"]
+    facts["sampo"] = saved or facts["sampo"]
+
+
+def _state_close(facts, outer):
+    """Ends one simple command's frame: its sets join the enclosing list only when the same command runs Sampo (its
+    nested bodies too, their Sampo word is the command's)."""
+    outer_sets, outer_sampo = outer
+    if facts["persistent"]:  # export, printf -v or a bare NAME=value: the shell keeps it, so any later Sampo run asks
+        facts["persist"] |= facts["sets"]
+    elif facts["sets"] and facts["sampo"]:
+        outer_sets |= facts["sets"]
+    elif _STATE_COMPUTED in facts["sets"]:  # a computed name may be any name: it asks with a Sampo run anywhere
+        outer_sets.add(_STATE_COMPUTED)
+    facts["sets"] = outer_sets
+    facts["sampo"] = outer_sampo or facts["sampo"]
+
+
+def _sudo_run(words, facts):
+    """sudo or doas and its words (words[0] is the program): an option this guard does not know asks (the rest may be a
+    Sampo run); NAME=value operands before the command are set; a Sampo run as the command is a run."""
+    if _sudo_unknown(words):
+        facts["sampo"] = True
+    args = words[1:]
+    k = _after_opts(args, _SUDO_VALUED)
+    while k < len(args) and "=" in args[k] and not args[k].startswith("-"):
+        _state_word(facts, args[k])  # sudo NAME=value cmd: an operand the strip did not take, a computed name too
+        k += 1
+    rest = _strip_wrappers(args[k:])[0] if k < len(args) else []
+    if rest and _is_sampo(rest):
+        facts["sampo"] = True
+
+
+def _runner_code(name, args, i):
+    """The command text an option of a runner carries, or None: env -S 'CMD' (glued too), and for su, runuser and script
+    -c 'CMD' (glued -c'CMD' and -qc'CMD' too), --command and --session-command, with a value after = or as the next word,
+    and an unambiguous prefix of either long name (at least four letters)."""
+    a = args[i]
+    nxt = args[i + 1] if i + 1 < len(args) else None
+    if name == "env":
+        if a in ("-S", "--split-string"):
+            return nxt
+        m = re.match(r"-S(.+)$", a)
+        return m.group(1) if m else None
+    if a.startswith("--"):
+        key, eq, value = a[2:].partition("=")
+        if len(key) >= 4 and ("command".startswith(key) or "session-command".startswith(key)):
+            return value if eq else nxt
+        return None
+    if re.match(r"-[A-Za-z]*c$", a):  # -c, -qc: the command is the next word
+        return nxt
+    m = re.match(r"-[A-Za-z]*c(.+)$", a)  # -c'CMD', -qc'CMD': glued
+    return m.group(1) if m else None
+
+
+_FUNC_DEF = re.compile(r"(?:^|[\s;&|(])(?:function\s+\w|\w+\s*\(\s*\))")  # a shell function: its body runs when called
+
+
+def state_env_run(cmd, cwd=None):
+    """T-5379 (slice B of T-5372), revised T-5547 round 6: whether a Bash command moves where Sampo reads its state, so
+    the user is asked first. Rule A: a Sampo state name (FOREMAN_STATE, FOREMAN_HOME, SAMPO_HOME) in an assignment shape
+    anywhere in the command text, or in a script it runs, asks. Rule B: a generic name (HOME, TMPDIR, TMP, TEMP, XDG_*)
+    that the command sets asks only when the same command visibly runs Sampo. The test runner's own command (alone)
+    passes Rule A: it is plugin code the agent runs all day with a home of its own. Returns the names (a list, empty when
+    the command passes); cwd is where a relative script path is read from."""
+    facts = {"a": set(), "sets": set(), "allsets": set(), "sampo": False, "runner": False, "other": False,
+             "seen": 0, "cwd": cwd or "", "raw": cmd, "moved": False, "later": [], "persist": set(), "persistent": False}
+    if _FUNC_DEF.search(cmd):  # ls() { sampo status; }; HOME=/x ls: a function's body runs when it is called, so the whole
+        facts["later"].append(cmd)  # text is judged as one (the walk below reads the same text too)
+    try:
+        facts["cwd"] = facts["cwd"] or os.getcwd()
+        _state_walk(cmd, facts, 0)
+    except Exception:  # an odd command: the text as a quote-blind scan reads it, with every name it sets
+        facts["other"] = True
+        if _SAMPO_CODE.search(cmd):
+            facts["sets"] |= facts["allsets"]
+        _state_flat(cmd, facts)
+    if facts["other"] or not facts["runner"]:  # the test runner's own command alone passes (its words are no set)
+        _state_unquoted(cmd, facts)
+    if facts["a"]:
+        return sorted(facts["a"])
+    names = set(facts["sets"])  # each name here is set by a simple command whose own run is Sampo's (_state_close)
+    if facts["sampo"]:
+        names |= facts["persist"]  # an export or a bare NAME=value earlier in the command outlives it: a Sampo run asks
+    else:
+        names.discard(_STATE_COMPUTED)
+    return sorted(names)
 
 
 _OPT_WITH_VALUE = ("-o", "-O", "-W", "-X", "-Q", "-r")
@@ -6644,27 +7022,6 @@ def _script_path(args, code="cemE"):
         elif not a.startswith("-"):
             return a
     return None
-
-
-def _state_script(args, facts, code="cemE"):
-    """A shell or interpreter given a file: the file's text when it is on disk (a plain file only: a pipe or device would
-    block the hook), else the whole command's own text (a script the same command wrote with cat > or printf >)."""
-    path = _script_path(args, code)
-    if path is None:
-        return
-    p = path if os.path.isabs(path) else os.path.join(facts["cwd"], path)
-    body = ""
-    try:
-        if os.path.isfile(p):
-            with open(p, encoding="utf-8", errors="replace") as f:
-                body = f.read(65536)
-    except OSError:
-        pass
-    texts = (body, facts["raw"], facts["whole"])  # the file, and what this command wrote (printf, echo, cat <<EOF)
-    if any(_STATE_CODE.search(t) for t in texts):
-        facts["runs"] = True
-        _state_sets(body, facts)  # a script that sets the name itself: export FOREMAN_STATE=… on a line of it
-        _state_sets(facts["raw"], facts)
 
 
 def _git_common(start):
@@ -6725,25 +7082,6 @@ def _plugin_runner(argv, cwd, moved=False):
         return common is not None and common == _git_common(own)
     except OSError:
         return False
-
-
-def state_env_run(cmd, cwd=None):
-    """T-5379 (slice B of T-5372): whether a Bash command both moves where Sampo reads its state (FOREMAN_STATE,
-    FOREMAN_HOME or SAMPO_HOME, set inline, by env, export or declare) and runs sampo, fm or plugin code, so the user
-    is asked first (an agent's own state would hold its own trust files). The test runner (plugin/tests/run.py) is
-    plugin code the agent runs all day with a home of its own, so it never counts as the run. A command the parser
-    can't read is judged on its words. Returns the names it sets (a list, empty when the command passes); cwd is where
-    a relative script path is read from."""
-    if not _STATE_PRE.search(_STATE_UNQUOTE.sub("", cmd)):  # nearly every command: one scan, on the text the shell reads
-        return []
-    facts = {"sets": set(), "runs": False, "seen": 0, "cwd": cwd or "", "raw": cmd, "moved": False,
-             "whole": _STATE_UNQUOTE.sub("", cmd)}
-    try:
-        facts["cwd"] = facts["cwd"] or os.getcwd()
-        _state_env_facts(cmd, facts, 0)
-    except Exception:  # an odd command: its words, as a quote-blind scan reads them
-        _state_words(cmd, facts)
-    return sorted(facts["sets"]) if facts["sets"] and facts["runs"] else []
 
 
 def is_rule_list(cmd):

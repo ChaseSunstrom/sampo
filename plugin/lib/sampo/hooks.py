@@ -4453,10 +4453,10 @@ def _state_env_ask(pl, guard=None, p=None):
     there is no answer of the user's: T-2282 refuses those files outside the user's own state, and this is the second
     layer, at the command. An ask where a person can answer (a bench or a demo sets them on purpose); under a headless
     run or full autonomy nobody answers a prompt, so there it is a deny that names the way forward (sampo task block).
-    The test runner's runs and a setter with nothing of Sampo's to run pass. The guard's own parse
-    (fmguard.state_env_run), so a form it reads
-    for the other rules reads the same here; the rule lives after the guarded-tool split, so sampo-fast, which stops
-    at that split and hands a Bash call to Python, is unchanged."""
+    The test runner's own command and a setter with nothing of Sampo's to run pass. The verdict is fmguard.state_env_run's
+    (Rule A: a state name anywhere; Rule B: a generic name set by a command that runs Sampo; a script is judged on its
+    first 1 MB, never on its size). The rule lives after the guarded-tool split, so sampo-fast, which stops at that split and hands a
+    Bash call to Python, is unchanged."""
     if pl.get("tool_name") != "Bash":
         return None
     cmd = (pl.get("tool_input") or {}).get("command")
