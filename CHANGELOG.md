@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- test_roles.SeedReview no longer goes red on trunk when claude_bench is off, since its fixture project turns the switch on for its own run (T-5872).
 - The lane pilot's headless resolver loads the main checkout's plugin and runs its `sampo` from the main install, so Claude Code no longer refuses its lane's conflicted files as "a sensitive file" (T-5868).
 - sampo lane land treats a lane whose reviewed tip is already on trunk (merged inside a stacked lane, no commit past it) as merged: --first says so and the normal close runs (T-5861).
 - A land that closes a lane from its commit trailers now writes the trailer's CHANGELOG line into CHANGELOG.md (the deferred commit step had dropped it), and the lease-overlap refusal test asserts the task and session it names (T-5858).
