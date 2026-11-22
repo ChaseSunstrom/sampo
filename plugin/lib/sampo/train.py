@@ -2522,11 +2522,38 @@ def first_ids(p, add=()):
     return keep if add else have
 
 
+def _restart_carry(p, ready=None, alone=()):
+    """T-5023: what a restarting land hands its successor besides the --first ids: the lanes it left ready, and which
+    of them were express from --first (`alone`). Given `ready`, it writes them; without, it takes them (read and
+    emptied): the successor promotes an express lane named --first, never one that only sat in the restart queue."""
+    d = os.path.join(p.dir, "land-first")
+    path = os.path.join(d, "carry")
+    with c.lock(d):
+        if ready is not None:
+            c.write_atomic(path, json.dumps({"ready": list(ready), "alone": [t for t in ready if t in set(alone)]}))
+            return None
+        try:
+            with open(path) as f:
+                got = json.load(f)
+            os.unlink(path)
+        except (OSError, ValueError):
+            got = {}
+    got = got if isinstance(got, dict) else {}  # a hand-edited file is read as far as it makes sense
+    return {k: [t for t in got[k] if isinstance(t, str)] if isinstance(got.get(k), list) else [] for k in ("ready", "alone")}
+
+
 def land_key(b):
     """T-3796: the order lanes train in: urgent, then performance and security fixes, then the user's own asks, then
     the rest (discovered work, follow-ups), oldest first in each."""
     kind = 0 if b.type in ("PERFORMANCE", "SECURITY") else 1 if b.meta.get("source") == "user" else 2
     return (b.priority != "urgent", kind, c.id_num(b.id))
+
+
+def is_express(b):
+    """T-5023: a performance fix, a security fix or an urgent lane (the ones land_key sorts first): named --first, it
+    trains next and alone, a batch of one, so no ordinary lane's gate holds it back. The gate itself is never skipped.
+    Several express lanes train in the order they were named --first (FIFO), not re-sorted by land_key."""
+    return b.type in ("PERFORMANCE", "SECURITY") or b.priority == "urgent"
 
 
 def _stale_affected(b, sha, main):
@@ -2676,9 +2703,12 @@ def _land_trains(p, main, batch, owed):
     waiting = set(lanes.awaiting_merge(p, briefs)) - set(landed)
     sort(x for x in briefs if x.id in waiting)
     seen = set(waiting) | set(landed)
+    alone = set()  # T-5023: the express lanes taken from --first: each trains as a batch of one
+    carry = _restart_carry(p)  # T-5023: a restarted land's queue: its lanes are promoted only if they were before
     first_taken = set()  # T-4013: every --first id this land took (`asked` is the ship request's flag, not this)
     while True:
         jump = first_ids(p)  # T-3796: asked for meanwhile go next, a lane finished since the land began too
+        carried, carry = carry, {"ready": [], "alone": []}  # T-5023: the restart's queue counts at the first read only
         first_taken.update(jump)
         moved = {t for t, _ in parked if t in first_taken and tested.get(t) != tip(by[t])}
         if moved:  # T-4013: a --first lane parked on a conflict its tip has since moved past is judged again
@@ -2698,6 +2728,15 @@ def _land_trains(p, main, batch, owed):
                 sort(b for b in now if b.id in late)
                 seen |= late
             front = [t for t in jump if t in ready]
+            # T-5023: express lanes lead the queue and train alone; a restart's queue (first iteration only) carries
+            # the lanes that were express then, and no ordinary-by-name lane turns express because it waited there
+            fast = [t for t in front if is_express(by[t]) and (t not in carried["ready"] or t in carried["alone"])]
+            for t in fast:
+                if t not in alone:
+                    print(f"sampo lane land: {t} is express (performance, security or urgent): it trains next, alone",
+                          file=sys.stderr, flush=True)
+            alone.update(fast)
+            front = fast + [t for t in front if t not in fast]
             ready = front + [t for t in ready if t not in front]
             if any(t not in front for t in jump):  # (`now` above is a list of briefs; this one a map by id)
                 by_id = {b.id: b for b in c.load_briefs(p)}
@@ -2705,11 +2744,14 @@ def _land_trains(p, main, batch, owed):
                 why = next((w for i, w in parked if i == t), "")
                 print(f"sampo lane land: --first {t}: " + _first_state(by_id.get(t), t, why, landed),
                       file=sys.stderr, flush=True)
+        ready.sort(key=lambda t: t not in alone)  # T-5023: stable; a held express lane sorted back in leads again
         if ready and trains:  # T-4767: a lane waits out the trains before it: its check is read again at this one's start
             ready = recheck(ready)
         if not ready:
             break
-        ids, ready = (ready, []) if live_mode(p) else (ready[:batch], ready[batch:])  # T-5444: live, one train for all
+        # T-5444: live, one train for all; T-5023: an express lane at the head trains alone, live or not
+        cut = 1 if ready[0] in alone else len(ready) if live_mode(p) else batch
+        ids, ready = ready[:cut], ready[cut:]
         print(f"sampo lane land: train {trains + 1}: {', '.join(ids)}", file=sys.stderr, flush=True)
         tested.update({i: tip(by[i]) for i in ids})  # train() reads the same heads as it starts
         head0 = c._git(main, "rev-parse", "HEAD", timeout=10).strip()  # T-3851: the skills this train adds
@@ -2754,6 +2796,7 @@ def _land_trains(p, main, batch, owed):
         if ready and _code_stamp() != stamp:  # T-3973: the train changed Sampo itself: the rest runs on the new code
             restart = True
             first_ids(p, ready)  # the restarted land trains them in this order, not re-sorted
+            _restart_carry(p, ready, alone)
             break
     if not restart:  # a restart's leftovers close under the new code (it finds them merged and open again)
         close([t for t in left if t not in {x for x, _ in hand}])  # one tried at a boundary was said there

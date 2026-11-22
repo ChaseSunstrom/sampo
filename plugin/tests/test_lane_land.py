@@ -71,6 +71,10 @@ class LandCase(TrainCase):
     def land(self, *a, check=True):
         return self.fm("lane", "land", *a, check=check, timeout=120)
 
+    def trains(self, r):
+        """The lanes each train of a land took, one string per train, in order."""
+        return re.findall(r"(?m)^sampo lane land: train \d+: (.+)$", r.stderr)
+
 
 class CloseFields(LandCase):
     def task(self, ac="true"):
@@ -405,9 +409,6 @@ class Land(LandCase):
         r = self.land("--batch", "2")
         self.assertEqual([self.brief(t).status for t in ids], ["done"] * 3, r.stdout + r.stderr)
         self.assertEqual(self.gate_runs(), 2, "one gate run per batch")
-
-    def trains(self, r):
-        return re.findall(r"(?m)^sampo lane land: train \d+: (.+)$", r.stderr)
 
     def test_urgent_lanes_land_first_then_performance_then_the_users_asks_then_the_rest(self):
         # T-3796: by brief id, perf fixes and the user's asks waited hours behind 80 older lanes (2026-11-07)
