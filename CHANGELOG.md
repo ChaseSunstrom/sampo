@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- A card.json hooks key runs small confined scripts at set points of a call (before, after_gen, after_check, after_apply, on_fail), one child per used point at about 22 ms, and none when nothing is declared (T-5946).
 - sampo tidy --report (and --json) lists, per project and in total, each Sampo-owned kind's size, count, newest use, owner and what its cap would free, within a time budget that names anything it could not size (T-5951).
 - sampo cost --per-lane prints each landed lane's input, cache read, cache write and output tokens split by lead, builder, reviewer and fixer with a median per role, shows runs that fit no lane, and --save-baseline/--compare-baseline track the change per role (T-5950).
 - Review briefs now name the touched-function bodies and stack-card checklists by file path instead of inlining them, so a fixture lane's brief drops from 10,250 to 6,244 characters (T-5964).
