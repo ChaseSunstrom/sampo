@@ -40,3 +40,18 @@ class FinishReuse(ForemanTestCase):
         os.remove(self.flag)
         self.fm("task", "finish", "T-0001", "--audit", "self")
         self.assertEqual(self.runs(), 3)  # its newest run failed: the close runs it again
+
+
+class FinishPriority(ForemanTestCase):
+    """T-5792: a close from the main checkout is landing work every lane waits on, so its criterion runs take freed
+    test slots ahead of builder runs (the slot-priority switch), as the gates already do."""
+
+    def test_a_close_from_the_main_checkout_runs_its_criteria_at_slot_priority(self):
+        self.fm("init")
+        seen = os.path.join(self.tmp, "prio")
+        cmd = f"sh -c 'echo \"${{FOREMAN_SLOT_PRIORITY:-unset}}\" > {seen}'"
+        env = {k: v for k, v in os.environ.items() if k not in ("FOREMAN_SLOT_PRIORITY", "SAMPO_SLOT_PRIORITY")}
+        self.fm("task", "new", "Close at priority", "--type", "FEATURE", "--tier", "S", "--ac", f"it runs :: {cmd}",
+                "--step", "do it", "--focus", env=env)
+        self.fm("task", "finish", "T-0001", "--audit", "self", env=env)
+        self.assertEqual(open(seen).read().strip(), "1")
