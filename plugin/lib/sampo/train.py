@@ -481,13 +481,6 @@ _MAP_FILE = re.compile(r"MASTER\.md|docs/map/[^/\0]+\.md")  # T-5472: MASTER.md 
 _MARKER = re.compile(r"^(?:<{7}|>{7})(?: .*)?$|^={7}$", re.M)  # a conflict marker line
 
 
-def _map_only(files):
-    """T-4375: True when there are conflicted files and every one is MASTER.md or a docs/map/*.md entry: two lanes
-    that each add a sentence to one long entry clash textually though nothing disagrees. One code file among them:
-    False."""
-    return bool(files) and all(_MAP_FILE.fullmatch(f) for f in files)
-
-
 def _plain_file(wt, rel):
     """T-5836: the lstat of `rel` in the scratch tree `wt` when it is a plain file the train may write: a regular file
     (no link, folder, fifo or device), with one hard link, whose real path is `wt`/`rel` itself (no folder on the way
