@@ -129,6 +129,37 @@ class ShipCase(LandCase):
             c.save_brief(self.p, b)
         return ids
 
+    def term_child(self, out, tid=None, want="a" * 40, during=None):
+        """_ship_child here over a marker of this process: its ship mock (no process is started: no pid reaches a kill)
+        runs `during()` (what happens to the remote while the ship runs), then raises the ship's end by SIGTERM carrying
+        `out` (what the ship had printed). (the lane's id, what the child printed, its return)."""
+        import contextlib
+        import io
+        from unittest import mock
+        from sampo import release
+        tid = tid or self.lanes_ready(1)[0]
+        if tid != c.STANDING_SHIP:  # the standing grant is never spent
+            release._spend(self.p, tid, "a ship")
+            self.assertNotIn("publish", self.brief(tid).meta.get("allow") or [])
+        path = train._ship_marker(self.p)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            json.dump({"pid": os.getpid(), "ticks": train._ticks(os.getpid()), "started": time.time(), "want": want,
+                       "ship_head": "", "again": False, "final": True}, f)
+        err = train._ShipTerm(signal.SIGTERM)
+        err.ship_out = out
+
+        def ended(*a, **kw):
+            if during:
+                during()
+            raise err
+
+        buf = io.StringIO()
+        with mock.patch.object(train, "_ship_run", side_effect=ended), contextlib.redirect_stdout(buf):
+            rc = train._ship_child({"project": [self.p.slug, self.p.root, self.p.dir, self.p.lane], "main": self.repo,
+                                    "grant": tid})
+        return tid, buf.getvalue(), rc
+
     def land_blocked(self, n=3):
         """A land of n lanes, one per train, whose first ship's push is held: the land ends while that ship still runs."""
         ids = self.lanes_ready(n)
@@ -475,31 +506,6 @@ class Died(ShipCase):
         self.assertRegex(self.log(), r"(?m)^\d\d:\d\d:\d\d ship pid \d+ .*SIGTERM.*given back")
         self.assertNotIn("untouched", self.log())
 
-    def term_child(self, out, tid=None):
-        """_ship_child here over a marker of this process: its ship mock raises the ship's end by SIGTERM carrying `out`
-        (what the ship had printed). (the lane's id, what the child printed, its return)."""
-        import contextlib
-        import io
-        from unittest import mock
-        from sampo import release
-        tid = tid or self.lanes_ready(1)[0]
-        if tid != c.STANDING_SHIP:  # the standing grant is never spent
-            release._spend(self.p, tid, "a ship")
-            self.assertNotIn("publish", self.brief(tid).meta.get("allow") or [])
-        path = train._ship_marker(self.p)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w") as f:
-            json.dump({"pid": os.getpid(), "ticks": train._ticks(os.getpid()), "started": time.time(), "want": "a" * 40,
-                       "ship_head": "", "again": False, "final": True}, f)
-        err = train._ShipTerm(signal.SIGTERM)
-        err.ship_out = out
-
-        buf = io.StringIO()
-        with mock.patch.object(train, "_ship_run", side_effect=err), contextlib.redirect_stdout(buf):
-            rc = train._ship_child({"project": [self.p.slug, self.p.root, self.p.dir, self.p.lane], "main": self.repo,
-                                    "grant": tid})
-        return tid, buf.getvalue(), rc
-
     def test_died_a_signal_before_the_push_landed_gives_the_spent_grant_back_and_says_so(self):
         tid, out, rc = self.term_child("tests passed\n")
         self.assertEqual(rc, 128 + signal.SIGTERM)
@@ -536,6 +542,150 @@ class Died(ShipCase):
             meta = c.read_meta(self.p)
             meta.pop("ship_claim")
             c.write_meta(self.p, meta)
+
+
+class TermGrant(ShipCase):
+    """T-5980: a killed ship's spent grant is given back only after origin shows its main lacks the ship's head. The ship
+    here is a mock (no process starts, so no pid ever reaches a kill); the remote is the real bare origin."""
+
+    def setUp(self):
+        super().setUp()
+        self.open(9)  # origin's pre-receive hook holds each push until its go file exists: this test's own pushes pass
+
+    def held(self, tid):
+        return "publish" in (c.find_brief(self.p, tid).meta.get("allow") or [])
+
+    def commit(self):
+        """A new local commit on the repo's HEAD: (its sha)."""
+        self.git("commit", "--allow-empty", "-qm", "a head to ship")
+        return self.git("rev-parse", "HEAD").strip()
+
+    def origin_main(self):
+        return subprocess.run(["git", "-C", self.origin, "rev-parse", "main"], capture_output=True, text=True).stdout.strip()
+
+    def test_term_grant_a_remote_that_never_moved_gives_the_grant_back(self):
+        head = self.commit()
+        tid, out, rc = self.term_child("tests passed\n", want=head)
+        self.assertTrue(self.held(tid), "origin's main is where it was and lacks the head: nothing landed")
+        self.assertRegex(out, r"SIGTERM.*nothing was pushed.*given back")
+
+    def test_term_grant_a_remote_that_has_the_head_keeps_the_grant_spent(self):
+        """The kill came between the push and its print: the output shows nothing, origin has the head."""
+        head = self.commit()
+        tid, out, rc = self.term_child("tests passed\n", want=head,
+                                       during=lambda: self.git("push", "-q", "origin", "HEAD:main"))
+        self.assertEqual(self.origin_main(), head)
+        self.assertFalse(self.held(tid), "the push landed: one yes is one push")
+        self.assertNotIn("given back", out)
+        self.assertRegex(out, r"SIGTERM.*(moved or has its head|spent)")
+
+    def test_term_grant_a_remote_that_already_had_the_head_keeps_the_grant_spent(self):
+        head = self.commit()
+        self.git("push", "-q", "origin", "HEAD:main")
+        tid, out, rc = self.term_child("tests passed\n", want=head)
+        self.assertFalse(self.held(tid), "main is the head before and after: not a proof that nothing was pushed")
+        self.assertNotIn("given back", out)
+
+    def test_term_grant_a_remote_whose_main_moved_keeps_the_grant_spent(self):
+        """Another push moved main (the ship's pushed sha is a cherry-pick, not the head): the ship may have been it."""
+        head = self.commit()
+        other = self.commit()
+        self.git("reset", "-q", "--hard", head)
+        tid, out, rc = self.term_child("tests passed\n", want=head,
+                                       during=lambda: self.git("push", "-q", "origin", f"{other}:refs/heads/main"))
+        self.assertEqual(self.origin_main(), other)
+        self.assertFalse(self.held(tid))
+        self.assertNotIn("given back", out)
+
+    def test_term_grant_a_remote_that_cannot_be_reached_keeps_the_grant_spent(self):
+        head = self.commit()
+        gone = os.path.join(self.tmp, "no-such-origin.git")
+        tid, out, rc = self.term_child("tests passed\n", want=head,
+                                       during=lambda: self.git("remote", "set-url", "origin", gone))
+        self.assertFalse(self.held(tid), "the remote could not say whether the push landed: spent, never doubled")
+        self.assertNotIn("given back", out)
+        self.assertRegex(out, r"SIGTERM.*could not be asked")
+
+    def test_term_grant_a_remote_unreachable_before_the_ship_keeps_the_grant_spent(self):
+        head = self.commit()
+        self.git("remote", "set-url", "origin", os.path.join(self.tmp, "no-such-origin.git"))
+        tid, out, rc = self.term_child("tests passed\n", want=head)
+        self.assertFalse(self.held(tid), "where main was is unknown: the grant is not given back on a guess")
+        self.assertNotIn("given back", out)
+
+    def test_term_grant_the_ship_ending_in_an_exception_asks_the_remote_too(self):
+        """_ship_child's own except branch (the ship's run raised) takes the same give-back path."""
+        from unittest import mock
+        head = self.commit()
+        tid = self.lanes_ready(1)[0]
+        from sampo import release
+        release._spend(self.p, tid, "a ship")
+        path = train._ship_marker(self.p)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            json.dump({"pid": os.getpid(), "ticks": train._ticks(os.getpid()), "started": time.time(), "want": head,
+                       "ship_head": "", "again": False, "final": True}, f)
+
+        def ran(*a, **kw):
+            self.git("push", "-q", "origin", "HEAD:main")
+            raise OSError("the ship's group was killed")
+
+        import contextlib
+        import io
+        buf = io.StringIO()
+        with mock.patch.object(train, "_ship_run", side_effect=ran), contextlib.redirect_stdout(buf):
+            train._ship_child({"project": [self.p.slug, self.p.root, self.p.dir, self.p.lane], "main": self.repo,
+                               "grant": tid})
+        self.assertFalse(self.held(tid), "origin has the head: the grant stays spent")
+
+    def test_term_grant_the_standing_ship_asks_no_remote(self):
+        from unittest import mock
+        from sampo import release
+        c.set_standing_ship(self.p, True, "keep pushing to main", "test")
+        with mock.patch.object(release, "_main_at", side_effect=AssertionError("the remote was asked")):
+            self.assertIsNone(train._remote_main(self.p, c.STANDING_SHIP))
+            tid, out, rc = self.term_child("tests passed\n", tid=c.STANDING_SHIP)
+        self.assertRegex(out, r"standing ship")
+
+    def test_term_grant_a_push_that_timed_out_gives_the_grant_back_only_when_main_lacks_the_sha(self):
+        """release._push_main: git's runner ended the push on its timeout, so its child died and nothing says it did not
+        land. Origin is asked; a refusal by git itself landed nothing."""
+        from unittest import mock
+        from sampo import release
+        from sampo import cli
+        head = self.commit()
+        tid = self.lanes_ready(1)[0]
+        timed_out = cli.UsageError("git push -q origin x:refs/heads/main failed: timed out after 300 s")
+        with mock.patch.object(release, "_git", side_effect=timed_out):
+            with self.assertRaises(cli.UsageError):
+                release._push_main(self.p, tid, head, "origin", "a hand ship")
+        self.assertTrue(self.held(tid), "origin's main lacks the sha: nothing landed, the grant is back")
+        self.git("push", "-q", "origin", "HEAD:main")
+        with mock.patch.object(release, "_git", side_effect=timed_out):
+            with self.assertRaises(cli.UsageError):
+                release._push_main(self.p, tid, head, "origin", "a hand ship")
+        self.assertFalse(self.held(tid), "origin's main is at the sha: the push landed, the grant stays spent")
+        refused = cli.UsageError("git push failed: ! [rejected] (non-fast-forward)")
+        b = self.brief(tid)
+        b.meta["allow"] = ["publish"]
+        c.save_brief(self.p, b)
+        with mock.patch.object(release, "_git", side_effect=refused):
+            with self.assertRaises(cli.UsageError):
+                release._push_main(self.p, tid, head, "origin", "a hand ship")
+        self.assertTrue(self.held(tid), "a push git refused landed nothing: given back even though main has the sha")
+
+    def test_term_grant_the_push_primitive_unreachable_remote_after_a_timeout_stays_spent(self):
+        from unittest import mock
+        from sampo import release
+        from sampo import cli
+        head = self.commit()
+        tid = self.lanes_ready(1)[0]
+        self.git("remote", "set-url", "origin", os.path.join(self.tmp, "no-such-origin.git"))
+        timed_out = cli.UsageError("git push failed: timed out after 300 s")
+        with mock.patch.object(release, "_git", side_effect=timed_out):
+            with self.assertRaises(cli.UsageError):
+                release._push_main(self.p, tid, head, "origin", "a hand ship")
+        self.assertFalse(self.held(tid), "the remote can't say: spent, never doubled")
 
 
 class Cap(unittest.TestCase):

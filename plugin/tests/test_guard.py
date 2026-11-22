@@ -5181,3 +5181,180 @@ class GitDrivers(unittest.TestCase):
             self.assertTrue(g.read_only("ls | wc -l", self.repo))
             self.assertFalse(g.read_only("git push", self.repo))
             self.assertEqual(run.call_count, 0)
+
+
+class ShipAutoParser(GuardCase):
+    """T-5980: a confined session's `sampo ship` is read by Sampo's own ship parser (cli's, never a walk of the guard's
+    own), and any word the shell fills in, or anything the parser refuses, is blocked: a hand-rolled walk reads a
+    prefix, `--`, or an option's value differently from argparse, and a quoted-away `$X` can hold `auto on`."""
+
+    def confined(self):
+        lane = os.path.join(self.repo, ".claude", "worktrees", "agent-ship-auto")
+        os.makedirs(lane, exist_ok=True)
+        return g.Ctx(cwd=lane, project_root=lane, home=self.home, foreman_home=self.fhome, scratch=["/tmp"],
+                     allow=set(), task_id="T-0007", confine=(lane, self.repo))
+
+    def blocked(self, cmd):
+        r = g.check("Bash", {"command": cmd}, self.confined())
+        self.assertBlocked(r, "confine", cmd)
+        return g.message(r, self.confined())
+
+    BLOCKED = (
+        "sampo ship -- auto on", "sampo ship -- auto off", "sampo ship --t $X", "sampo ship --task $X",
+        "sampo ship --task=$X", 'sampo ship --task "$X"', "sampo ship --task `echo T-1`", "sampo ship --task $(echo T-1 auto on)",
+        "sampo ship --task T-0007 -- auto on", "sampo ship --check -- auto on", "sampo ship --head -- auto on",
+        # an option's prefix: Sampo's parsers take none (allow_abbrev=False), so each is a parse error
+        "sampo ship --ta T-1 auto on", "sampo ship --tas=T-1 auto on", "sampo ship --w auto on", "sampo ship --wh x auto on",
+        "sampo ship --he auto on", "sampo ship --ch auto on", "sampo ship --t true auto on", "sampo ship --re x auto on",
+        "sampo ship --wat", "sampo ship --tes true",
+        # a value that is the word `auto`, or sits where the next word reads as the subcommand
+        "sampo ship --test auto auto on", "sampo ship --remote x auto on", "sampo ship --chance 5 auto on",
+        "sampo ship --why x auto on", "sampo ship auto --why x on", "sampo ship --why x --test t auto off",
+        "sampo ship --head auto on", "sampo ship --check auto off", "sampo ship --watch auto on",
+        "sampo ship auto on --", "sampo ship auto -- on", "sampo ship auto on extra",
+        # a word the shell fills in or splits, wherever it stands
+        "sampo ship $V on", "sampo ship auto $V", "sampo ship `echo auto` on", "sampo ship {auto,x} on",
+        "sampo ship a* on", "sampo ship au?o on", "sampo ship [a]uto on", "sampo ship --$O auto on",
+        "sampo ship --remote ${R}", "sampo ship --chance $X", "sampo ship ~+ on",
+        # an option or a value the parser doesn't have
+        "sampo ship --nosuchflag", "sampo ship -z", "sampo ship --task", "sampo ship --why", "sampo ship --json=x",
+    )
+
+    def test_a_confined_ship_the_parser_reads_as_auto_on_or_cannot_read_is_blocked(self):
+        for cmd in self.BLOCKED:
+            with self.subTest(cmd=cmd):
+                self.blocked(cmd)
+
+    def test_the_reason_for_auto_on_names_the_standing_ship_and_for_an_unreadable_word_says_so(self):
+        self.assertIn("standing ship", self.blocked("sampo ship auto on --why 'make sure to keep pushing to main'"))
+        self.assertIn("standing ship", self.blocked("sampo ship auto off"))
+        self.assertIn("standing ship", self.blocked("sampo ship --why x auto on"))
+        said = self.blocked("sampo ship --task $X")
+        self.assertIn("Sampo's own parser", said)
+        self.assertNotIn("standing ship on or off", said)
+
+    PASSING = (
+        "sampo ship", "sampo ship --check", "sampo ship --check abc123", "sampo ship auto status", "sampo ship auto",
+        "sampo ship --task T-0007 --test true", "sampo ship --head --test 'sampo check' --task T-0007", "sampo ship foo auto on",
+        "sampo ship --watch --chance 70", "sampo ship --remote origin", "sampo ship HEAD", "sampo ship --json --check",
+        "sampo ship --test true auto status",
+        "sampo ship <(echo auto) on",  # bash hands the parser /dev/fd/N: never the word `auto`
+    )
+
+    def test_a_confined_ship_with_a_test_command_the_shell_fills_in_is_blocked_by_some_rule(self):
+        r = g.check("Bash", {"command": 'sampo ship --test "$T"'}, self.confined())
+        self.assertIsNotNone(r)
+
+    def test_a_confined_ship_that_cannot_turn_the_standing_ship_on_or_off_passes(self):
+        for cmd in self.PASSING:
+            with self.subTest(cmd=cmd):
+                r = g.check("Bash", {"command": cmd}, self.confined())
+                self.assertIsNone(r, f"unexpected block: {r}")
+
+    def test_the_main_session_is_never_parsed(self):
+        with mock.patch.object(g, "_ship_parser", side_effect=AssertionError("the main session's call is not read")):
+            for cmd in ("sampo ship auto on --why 'make sure to keep pushing to main'", "sampo ship --task $X", "sampo ship -- auto on"):
+                with self.subTest(cmd=cmd):
+                    self.assertIsNone(g.check("Bash", {"command": cmd}, self.ctx()))
+
+    def test_every_option_of_the_real_ship_parser_and_each_of_its_prefixes_is_judged_as_it_parses(self):
+        """The table is made from the parser itself, so an option added later is covered with no edit here: the full
+        spelling before `auto on` is blocked (it is auto on), each proper prefix is a parse error (blocked), and the
+        full spelling alone (a literal value where one is taken) passes unless it is an option the parser refuses."""
+        from sampo import cli
+        ap = cli._untranslated(cli._build_parser, only="ship")
+        ship = next(a for a in ap._actions if hasattr(a, "choices") and a.choices).choices["ship"]
+        seen = 0
+        for act in ship._actions:
+            for opt in (o for o in act.option_strings if o.startswith("--")):
+                if opt == "--help":
+                    continue
+                seen += 1
+                val = [] if act.nargs == 0 else ["5"] if opt == "--chance" else ["x"]
+                with self.subTest(opt=opt):
+                    self.blocked(" ".join(["sampo ship", opt, *val, "auto on"]))
+                    for n in range(3, len(opt)):
+                        self.blocked(" ".join(["sampo ship", opt[:n], *val, "auto on"]))
+                    full = g.check("Bash", {"command": " ".join(["sampo ship", opt, *val])}, self.confined())
+                    self.assertIsNone(full, f"{opt} alone is a plain ship: {full}")
+        self.assertGreaterEqual(seen, 8, "the ship parser's options were found")
+
+    def test_a_parse_error_and_an_import_failure_block_and_never_print_or_exit(self):
+        import contextlib
+        import io
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            self.blocked("sampo ship --nosuchflag")
+            self.blocked("sampo ship --check --head --task")
+            self.assertIsNone(g.check("Bash", {"command": "sampo ship --help"}, self.confined()), "help changes nothing")
+        self.assertEqual((out.getvalue(), err.getvalue()), ("", ""), "the guard's stdout is its verdict alone")
+        with mock.patch.object(g, "_ship_parser", side_effect=ImportError("no sampo here")):
+            self.blocked("sampo ship --check")  # the parser can't be had: nothing is read, so nothing passes
+
+    def test_the_parser_is_built_once_and_fast_enough_for_a_hook(self):
+        """The hot path pays for the import once per process, and only for a confined session's `sampo ship`."""
+        probe = ("import sys, time; sys.path.insert(0, sys.argv[1]); import fmguard as g; t = time.perf_counter(); "
+                 "r = g._ship_auto_on(['--check']); a = time.perf_counter() - t; t = time.perf_counter(); "
+                 "g._ship_auto_on(['auto', 'on']); print(a, time.perf_counter() - t, bool(r))")
+        lib = os.path.dirname(os.path.abspath(g.__file__))
+        r = subprocess.run([sys.executable, "-I", "-c", probe, lib], capture_output=True, text=True, timeout=60)
+        first, again, got = r.stdout.split()
+        self.assertEqual(got, "False", r.stderr)
+        self.assertLess(float(first), 2.0, "the first call builds the parser")
+        self.assertLess(float(again), 0.05, "later calls reuse it")
+
+
+class ShipArgvWalks(unittest.TestCase):
+    """T-5980 class sweep: every place fmguard.py walks a Sampo verb's argv by hand (the same fault as _ship_auto_on's: a
+    walk that reads an option, a prefix or a `--` differently from argparse). The list is made by walking the file, so a
+    new hand walk fails here until it is judged: converted to the verb's parser, or allowed with its reason."""
+
+    # name -> why it may stay a hand walk. A decision here that reads the words to BLOCK something is a guard that a
+    # differing walk can slip past: each says what ties it to the parser, or what the walk can't be turned against.
+    ALLOWED = {
+        "check_args": "tied to the parser by BuilderCheckConfine (an option it doesn't know is refused: `bad`)",
+        "_fm_words": "positional words for the stored-command reads; an option it takes wrong shifts a word the check "
+                     "would read, and every such shift still reads the other words too (_fm_stored judges each flag's value)",
+        "_fm_stored": "reads every --flag value as typed, abbreviation-free (Sampo's parsers take no prefix)",
+        "_fm_sandbox_cmd": "reads the command after `run`; the words it returns are judged as a command, never trusted",
+        "_fm_sandbox_dirs": "folders made writable: judged as tree targets, over-reading only blocks more",
+        "_fm_trailing": "the command words after quiet/at options: judged as a command, never trusted",
+        "_fm_subcommand": "the verb after the root's -p; the verb chain is read as typed for every session (T-4785 round 7)",
+        "_real_fm": "names a wrapper's sampo word; no option of a verb is read",
+        "_user_only_hit": "the user-only verbs' flags (--yes-run and the like), matched by exact spelling",
+    }
+
+    @staticmethod
+    def walks():
+        import ast
+        with open(g.__file__, encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+        found = {}
+        for fn in ast.walk(tree):
+            if not isinstance(fn, ast.FunctionDef):
+                continue
+            hand = False
+            for n in ast.walk(fn):
+                if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "startswith" and n.args \
+                        and isinstance(n.args[0], ast.Constant) and n.args[0].value in ("-", "--"):
+                    hand = True
+                if isinstance(n, ast.Compare) and any(isinstance(x, ast.Constant) and x.value == "--" for x in [n.left, *n.comparators]):
+                    hand = True
+            if hand:
+                found[fn.name] = fn
+        return found
+
+    def test_the_hand_walks_of_a_sampo_verbs_words_are_the_allowed_ones_and_ship_is_not_among_them(self):
+        import re
+        mine = {n for n in self.walks() if re.search(r"(^|_)(fm|sampo|ship)(_|$)|^check_args$|user_only", n)}
+        self.assertEqual(mine - set(self.ALLOWED), set(), "a new hand walk of a Sampo verb's argv: use the verb's parser "
+                         "(_ship_parser is the model) or allow it here with its reason")
+        self.assertEqual(set(self.ALLOWED) - mine, set(), "an allowed walk that is gone or renamed: drop its line")
+        self.assertNotIn("_ship_auto_on", mine, "sampo ship is read by its own parser")
+
+    def test_ship_auto_on_asks_the_real_parser_and_does_not_read_option_words_itself(self):
+        import ast
+        fn = ast.parse(open(g.__file__, encoding="utf-8").read())
+        names = {n.id for f in ast.walk(fn) if isinstance(f, ast.FunctionDef) and f.name == "_ship_auto_on"
+                 for n in ast.walk(f) if isinstance(n, ast.Name)}
+        self.assertIn("_ship_parser", names)

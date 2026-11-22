@@ -600,14 +600,23 @@ def private_lines(root, tip, files, cap=5):
     return out
 
 
+def _main_at(p, remote):
+    """T-5980: the sha `remote`'s main is at (git ls-remote, 15s): "" when the remote has no main, None when it can't be
+    told (unreachable, a timeout, git missing). The one question every give-back asks the remote."""
+    try:
+        got = c._git(p.root, "ls-remote", remote, "refs/heads/main", timeout=15, proc=True)
+    except Exception:  # noqa: BLE001 — unknown is None, never a guess
+        return None
+    if got.returncode != 0:
+        return None
+    return (got.stdout.split() or [""])[0]
+
+
 def _push_landed(p, remote, sha):
     """T-5938 review: whether `remote`'s main is at `sha` now (git ls-remote, 15s). False when it is not; True too when it
     can't be told (an unreachable remote): after an interrupted push the grant is then left spent, never doubled."""
-    try:
-        got = c._git(p.root, "ls-remote", remote, "refs/heads/main", timeout=15, proc=True)
-        return got.returncode != 0 or got.stdout.split()[:1] == [sha]
-    except Exception:  # noqa: BLE001 — unknown reads as landed: the spent grant stays spent
-        return True
+    at = _main_at(p, remote)
+    return at is None or at == sha
 
 
 def _push_main(p, tid, sha, remote, by):
@@ -620,7 +629,9 @@ def _push_main(p, tid, sha, remote, by):
     except BaseException as e:  # T-5938 review: an interrupt (Ctrl-C) between the spend and the push ends here too
         if tid == c.STANDING_SHIP:  # T-5938: nothing was spent
             raise
-        if not isinstance(e, Exception) and _push_landed(p, remote, sha):  # an interrupt can come after the push: one yes, one push
+        # an interrupt, or a push git's runner ended on its timeout (T-5980: its child died, so nothing says the push did not
+        # land), can come after the push: one yes, one push. A push git itself refused landed nothing: given back
+        if (not isinstance(e, Exception) or "timed out after" in str(e)) and _push_landed(p, remote, sha):
             raise
         with c.lock(p.dir):
             b = c.find_brief(p, tid)

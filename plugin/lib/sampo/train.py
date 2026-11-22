@@ -3491,19 +3491,38 @@ def _ship_term(signum, frame):
     raise _ShipTerm(signum)
 
 
-def _term_grant(p, grant, ran, seen):
+def _remote_main(p, grant):
+    """T-5980: the sha origin's main is at before a ship of `grant` starts (the ship pushes to origin: the train never
+    passes --remote); None for the standing grant (never spent, nothing to give back) and when it can't be told."""
+    if grant == c.STANDING_SHIP:
+        return None
+    from sampo import release
+    return release._main_at(p, "origin")
+
+
+def _term_grant(p, grant, ran, seen, head="", before=None):
     """T-5938 review: what became of `grant` when its ship was ended by a signal, as the clause the ship's log line ends
     with (and the grant given back when that is the truth). A ship killed after its push spent a task's grant
     (release._push_main spends first) and before the push landed leaves it spent, and the killed ship can't give it back:
     it is given back here, unless the ship's own output shows its push landed ("main at <sha>", printed after the push).
-    The standing grant is never spent. A signal that came while no ship ran (`ran` False: the ship had ended and was
-    being settled) says what is not known and touches nothing."""
+    T-5980: the output is not proof the push did not land (the kill can come between the push and its print), so the
+    remote is asked (release._main_at) and the grant is given back only when it answers and its main is where it was before
+    the ship (`before`) and is not `head`; a remote that has the head, whose main moved, or that can't be reached leaves
+    it spent (a missed give-back is one more `fm ask`; a double spend is a push nobody agreed to). The standing grant is
+    never spent. A signal that came while no ship ran (`ran` False: the ship had ended and was being settled) says what
+    is not known and touches nothing."""
     if grant == c.STANDING_SHIP:
         return "the standing ship stays on and the next ship goes ahead"
     if not ran:
         return "the grant is as its last ship left it and the next ship goes ahead"
     if SHIPPED_AT.search(seen or ""):
         return "its push had landed, so the grant stays spent and the next ship goes ahead"
+    from sampo import release
+    now = release._main_at(p, "origin")
+    if now is None or before is None:
+        return "the remote could not be asked whether its push landed, so the grant stays spent and the next ship goes ahead"
+    if now != before or (head and now == head):
+        return "origin's main moved or has its head, so the grant stays spent and the next ship goes ahead"
     try:
         gave = _give_back(p, grant)
     except Exception as e:  # noqa: BLE001 — the line says it didn't, never an exception out of the ship's end
@@ -3521,6 +3540,7 @@ def _ship_child(a):
     main, grant = a["main"], a["grant"]
     path = _ship_marker(p)
     t_start, old, running = time.time(), {}, False  # running: a ship of ours is between its start and its end
+    head, before = "", None  # the head this ship tests, and where origin's main was before it (T-5980: for a give-back)
     try:  # T-5938: SIGTERM/SIGHUP end this ship with a line, never silently (SIGKILL can't: the next ship's reap says it)
         for sig in (signal.SIGTERM, signal.SIGHUP):
             old[sig] = signal.signal(sig, _ship_term)
@@ -3534,13 +3554,15 @@ def _ship_child(a):
                 m.update(ship_head=head, again=False)
                 c.write_atomic(path, json.dumps(m))
             print(f"{_hms()} ship of {head[:9]} on {grant}'s publish grant", flush=True)
+            before = _remote_main(p, grant)  # T-5980: where origin's main was before this ship's push could move it
             t0 = time.time()
             running = True
             try:
                 rc, out = _ship_run(main, grant, head)
             except Exception as e:  # noqa: BLE001 — never an exception out of the loop
                 # the ship's group was killed with it (_ship_run): a grant its push spent is given back, as for a signal
-                rc, out = 1, f"{type(e).__name__}: {e}; {_term_grant(p, grant, True, getattr(e, 'ship_out', ''))}"
+                rc, out = 1, (f"{type(e).__name__}: {e}; "
+                              f"{_term_grant(p, grant, True, getattr(e, 'ship_out', ''), head, before)}")
             running = False
             line, _ = _ship_end(p, grant, head, rc, out, t0, time.time())
             print(f"{_hms()} {c.fit(c.plain(line), REFUSAL_LINE)}", flush=True)
@@ -3570,7 +3592,7 @@ def _ship_child(a):
         name = signal.Signals(sig).name
         what = "the grant could not be looked at and the next ship goes ahead"
         with contextlib.suppress(Exception):  # the grant first (a spent one is given back), then what became of it is said
-            what = _term_grant(p, grant, running, getattr(e, "ship_out", ""))
+            what = _term_grant(p, grant, running, getattr(e, "ship_out", ""), head, before)
         print(f"{_hms()} ship pid {os.getpid()} on {grant}'s grant ended by {name}: {what}", flush=True)
         _ship_end(p, grant, str((_read_marker(p) or {}).get("ship_head") or ""), 128 + sig,
                   f"sampo: ship ended by {name}", t_start, time.time())

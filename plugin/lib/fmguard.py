@@ -468,6 +468,10 @@ def _message(block, ctx):
     if cat == "confine" and str(detail).startswith("sampo ship auto"):  # T-5938
         return ("Ward: blocked confine: sampo ship auto on|off. A builder or a headless pilot never turns the project's standing "
                 "ship on or off (it pushes trunk after every land): the user says so in their own words, and the main session runs it.")
+    if cat == "confine" and str(detail).startswith("sampo ship"):  # T-5980: a ship the guard can't read as Sampo's parser does
+        return (f"Ward: blocked confine: {detail}. A builder or a headless pilot's `sampo ship` is read by Sampo's own parser "
+                "and must be plain words (no $VAR, backtick, glob or brace): a word the shell fills in could be `auto on`, "
+                "which turns the standing ship on. Write the ship's words out; it is the main session's to run anyway.")
     if cat == "confine" and str(detail).startswith("sampo check"):  # T-4785
         return (f"Ward: blocked confine: {detail}. A builder runs the gates (sampo check, check list, check office) but "
                 f"never changes them: report the gate change you need to the main thread, which sets the project's gates.")
@@ -9173,9 +9177,9 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
                     "verb it is)")):
                 found.append(("confine", why))  # T-4785: a builder never changes the project's gates
                 confined = True  # its own reason says more than the general one below
-            elif getattr(ctx, "confine", None) and tsub == "ship" and _ship_auto_on(trest):
-                found.append(("confine", "sampo ship auto on|off"))  # T-5938: a builder or headless pilot never turns on the project's standing ship
-                confined = True
+            elif getattr(ctx, "confine", None) and tsub == "ship" and (why := _ship_auto_on(trest)):
+                found.append(("confine", why))  # T-5938: a builder or headless pilot never turns on the project's standing ship
+                confined = True  # T-5980: nor does a ship that Sampo's own parser can't be asked about
             else:
                 confined = False
             # T-4785 round 7: and the verb chain is read as typed for every session (no credited value), so the shell
@@ -11739,40 +11743,67 @@ def _builder_check(rest):
     return ""
 
 
-_SHIP_FLAGS = ("--watch", "--check", "--head")
-_SHIP_VALUED = ("--why", "--remote", "--test", "--chance", "--task")
-
-
 def _ship_filled(w):
-    return _unliteral(w) or _unresolvable(w) or bool(re.search(r"[*?\[]|[<>]\(", w))
+    """T-5980: whether the shell may turn this word into other words (or other text) at run time. The guard reads quote-
+    stripped words, so a quoted "$X" and an unquoted $X look alike: any `$` or backtick is filled in, quoted or not. A
+    glob or a process substitution counts only for a word with no space (a word with one was quoted, or can only match a
+    name with a space in it: never the word `auto` or `on`)."""
+    return _unliteral(w) or _unresolvable(w) or (not re.search(r"\s", w) and bool(re.search(r"[*?\[]|[<>]\(", w)))
+
+
+_SHIP_PARSER = []  # [(sampo.cli, its ship parser)], built on the first confined `sampo ship` of a process
+
+
+class _ShipRefused(Exception):
+    """T-5980: the ship parser's error or exit, raised where argparse would print and exit the hook's own process."""
+
+
+def _ship_parser():
+    """T-5980: (cli, Sampo's own parser for `sampo ship`), built once per process (cli._build_parser(only="ship"): the
+    root, `ship` and its options, as `sampo ship` itself builds them). The one place the guard imports Sampo: only a
+    confined session's `sampo ship` gets here (test_guard.ShipAutoParser measures the cost). Its error and exit are
+    replaced on every parser of the tree, so a refusal raises _ShipRefused instead of printing and ending the hook."""
+    if not _SHIP_PARSER:
+        from sampo import cli
+
+        def refuse(*args, **kw):
+            raise _ShipRefused(str(args[0]) if args else "")
+
+        ap = cli._untranslated(cli._build_parser, only="ship")
+        for prs in cli._all_parsers(ap):
+            prs.error, prs.exit = refuse, refuse
+        _SHIP_PARSER.append((cli, ap))
+    return _SHIP_PARSER[0]
 
 
 def _ship_auto_on(rest):
-    """T-5938: whether `sampo ship <rest>` may turn the standing ship on or off: `auto` as the FIRST positional word (the
-    command reads it as the subcommand only there; the options' values are not positional words) followed by a word `on`
-    or `off`, or a word the shell fills in or splits where a positional word could be (it could be either). An option's
-    value the shell fills in is free for --task alone (`--task "$TID"`: the grant's id). Only the confined caller's rule
-    (a builder, the lane pilot's headless claude): the command itself refuses the same two in a lane."""
-    pos, i = [], 0
-    while i < len(rest):
-        w = rest[i]
-        i += 1
-        if w.startswith("-") and w != "-":
-            opt, eq, val = w.partition("=")
-            if _ship_filled(opt):
-                return True  # the option's own name is filled in at run time
-            hits = [o for o in _SHIP_FLAGS + _SHIP_VALUED if o.startswith(opt)] if opt.startswith("--") else []
-            if not any(h in _SHIP_VALUED for h in hits):
-                continue
-            if not eq and i < len(rest):
-                val, i = rest[i], i + 1
-            if _ship_filled(val) and set(hits) != {"--task"}:
-                return True
-            continue
-        if _ship_filled(w):
-            return True
-        pos.append(w)
-    return pos[:1] == ["auto"] and any(w in ("on", "off") for w in pos[1:])  # round 3: off too
+    """T-5938, T-5980: why a confined session may not run `sampo ship <rest>`, or "". The words are read by Sampo's own ship
+    parser as `sampo` reads them (cli._options_first, then parse_args: prefixes, `--` and option values as argparse takes
+    them, never a walk of the guard's own: that one differed in each). Blocked: a word the shell fills in or splits
+    anywhere (quoted or not: the guard's words carry no quotes, so `--task "$TID"` and `--task $TID` read alike, and the
+    second may split into `T-1 auto on`), words the parser refuses (an unknown option, a prefix, a missing value), a parser
+    that can't be had (the import failed: nothing is read, so nothing passes), and `auto` as the FIRST positional word
+    followed by a word `on` or `off` (a wider reading than the command's own `auto on|off|status`, never a narrower).
+    Only the confined caller's rule (a builder, the lane pilot's headless claude): the command itself refuses the same
+    two in a lane."""
+    if any(_ship_filled(w) for w in rest):
+        return "sampo ship with a word the shell fills in or splits at run time (the guard can't read it as Sampo's own parser would)"
+    import contextlib
+    import io
+    try:
+        cli, ap = _ship_parser()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):  # -h prints; the hook's stdout is its verdict
+            args = ap.parse_args(cli._options_first(ap, ["ship", *rest]))
+    except _ShipRefused as e:
+        if not e.args[0]:  # an exit with no message: -h/--help (the parser printed its help and left): nothing is turned on
+            return ""
+        return "sampo ship the guard can't read as Sampo's own parser does (" + e.args[0][:80] + ")"
+    except Exception as e:  # noqa: BLE001 — an import failure or a parser fault: fails closed
+        return f"sampo ship the guard can't read: Sampo's own parser is not available ({type(e).__name__})"
+    words = list(args.commits or [])
+    if words[:1] == ["auto"] and any(w in ("on", "off") for w in words[1:]):  # round 3: off too
+        return "sampo ship auto on|off"
+    return ""
 
 
 def _fm_stored(sub, rest, fm_args):

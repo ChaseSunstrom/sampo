@@ -1327,17 +1327,18 @@ class StandingShipConfine(GuardCase):
             with self.subTest(cmd=cmd):
                 self.assertIsNone(g.check("Bash", {"command": cmd}, self.confined()))
 
-    def test_a_ship_on_a_task_named_by_a_variable_passes_but_an_auto_word_after_a_filled_in_word_does_not(self):
-        """T-5938 review: only `auto` as the first positional word is the subcommand, so `sampo ship --task "$TID"` (the
-        grant's id is an option's value) passes for a confined session; an expansion anywhere a positional word could be
-        (or in the value of an option that is not --task) still reads as either word."""
-        for cmd in ('sampo ship --task "$TID"', "sampo ship --task=$TID --test true", 'sampo ship --task "$TID" --head',
-                    "sampo ship --head --test 'sampo check' --task T-0007", "sampo ship foo auto on"):
+    def test_a_ship_with_a_word_the_shell_fills_in_is_blocked_wherever_it_stands(self):
+        """T-5938 review, T-5980: only `auto` as the first positional word is the subcommand, but the guard's words carry no
+        quotes: `--task "$TID"` reads as `--task $TID`, which splits into `T-1 auto on` when TID holds it. So a word the
+        shell fills in is blocked anywhere (the lane's own ship names its grant in words); written out, the same ship passes."""
+        for cmd in ("sampo ship --head --test 'sampo check' --task T-0007", "sampo ship foo auto on",
+                    "sampo ship --task T-0007 --test true --head"):
             with self.subTest(cmd=cmd):
                 self.assertIsNone(g.check("Bash", {"command": cmd}, self.confined()))
         for cmd in ("sampo ship --task T-0007 auto on", 'sampo ship --task "$TID" auto on', "sampo ship --why x --task $T auto off",
                     "sampo ship --chance $X", "sampo ship --remote $R auto", 'sampo ship $A "$TID"', "sampo ship --$O auto on",
-                    "sampo ship --tas=T-1 auto on"):
+                    "sampo ship --tas=T-1 auto on", 'sampo ship --task "$TID"', "sampo ship --task=$TID --test true",
+                    'sampo ship --task "$TID" --head'):
             with self.subTest(cmd=cmd):
                 self.assertBlocked(g.check("Bash", {"command": cmd}, self.confined()), "confine")
 
