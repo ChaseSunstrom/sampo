@@ -320,7 +320,7 @@ class Checks(_TmpDir):
         self.assertEqual(d.check_frontmatter(PLUGIN).status, "PASS")
         root = os.path.join(self.t, "plug")
         self.write("plug/skills/x/SKILL.md", "---\nname: x\ndescription: does things well enough\n---\nbody\n")
-        self.write("plug/agents/a.md", "---\nname: a\ndescription: agent\ntools: Read, Write\n---\n400 words\n")
+        self.write("plug/agents/a.md", "---\nname: a\ndescription: agent\ntools: Read, Write\n---\n1500 characters\n")
         r = d.check_frontmatter(root)
         self.assertEqual(r.status, "FAIL")
         self.assertIn("Write", r.detail)
@@ -563,7 +563,7 @@ class Checks(_TmpDir):
         # Claude Code treats an empty or omitted tools list as "every tool" (sub-agents docs).
         for tools in ("[]", ""):
             with self.subTest(tools=tools):
-                self.write("empty/agents/a.md", f"---\nname: a\ndescription: agent\ntools: {tools}\n---\n400 words\n")
+                self.write("empty/agents/a.md", f"---\nname: a\ndescription: agent\ntools: {tools}\n---\n1500 characters\n")
                 r = d.check_frontmatter(os.path.join(self.t, "empty"))
                 self.assertEqual(r.status, "FAIL")
                 self.assertIn("every tool", r.detail)

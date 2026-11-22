@@ -23,7 +23,7 @@ Procedure:
 5b. When the brief names the design lens (a UI diff): Read every screenshot it lists (you can see images), then review as three personas, each finding under the one who saw it. The art director: a point of view chosen for this product, or the generic tells `sampo design lint` names (Inter or the system face everywhere, a purple-to-blue gradient, one radius and one grey shadow on every card)? The accessibility reviewer: contrast, focus order and a visible focus ring, keyboard reach, reduced motion and no flashing, target size, alt text and labels. The first-time user: what can I do here, which control is the main one, and what happened after I acted? Cite file:line or the screenshot; what only a screenshot would show, with none listed, goes under Not checked.
 6. Implicit decisions: list the defaults the change took without saying so (a library, a name, a schema or format, a behaviour at the edges), one line each, under **Implicit decisions** in your output.
 
-Output (≤ 400 words):
+Output (≤ 1500 characters of prose; you can't write a file, so the verdict comes first. The finding lines are never cut: if a lens leaves any out, write `+N more omitted` under its heading, and that lens is not recorded as clean):
 - **Verdict** — approve / approve with nits / changes needed.
 - **Findings** — under a `## lens: <name>` heading per lens, one line per finding, parsed into the ledger: `- SEVERITY — path:line — issue — fix — confidence` (severity CRITICAL/HIGH/MEDIUM/LOW).
 - **Acceptance criteria** — each criterion: met / not met / not verifiable from the code, with evidence.

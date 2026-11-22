@@ -697,6 +697,7 @@ class PassingShapes(_Tasks):
         self.assertIn(self.block(), contract)
         for shape in ("--ac", "--run-file", "git -C", ".venv/bin/python", "env NAME=v"):
             self.assertIn(shape, self.block())
+        self.assertIn("1500 characters", contract)  # T-5598: the report cap is a rule, so the brief's copy carries it
 
     def test_the_lane_brief_carries_the_passing_shapes(self):
         tid = self.task("Shaped")

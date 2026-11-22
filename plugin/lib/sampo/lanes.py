@@ -2304,6 +2304,7 @@ _VERDICT_APPROVE = ("approve", "approve with nits")  # T-5516: the only verdict 
 _VERDICT_CHANGES = ("changes needed", "changes-needed")  # the only words that mark the task for the builder
 _CLEAN_SUFFIX = re.compile(r"approve|approve with nits|ok|clean|pass|met|(?:no|\d+) findings?(?::.*)?")
 _BLOCKING = ("HIGH", "CRITICAL")  # a finding this severe keeps its lens from being recorded as clean
+_OMITTED = re.compile(r"(?i)^(?:[-*]\s*)?\+\d+ more omitted\b")  # T-5598: a reviewer's "+N more omitted" under a heading
 
 
 def _clean_suffix(text):
@@ -2352,6 +2353,9 @@ def reviewer_lenses(msg):
             counts.setdefault(lens, 0)
             if not _clean_suffix(h.group(2)):
                 unclean.add(lens)
+            continue
+        if lens and _OMITTED.match(line):  # T-5598: the report cap cut findings under this heading: not a clean lens
+            unclean.add(lens)
             continue
         m = _FINDING.match(line)
         if lens and m:

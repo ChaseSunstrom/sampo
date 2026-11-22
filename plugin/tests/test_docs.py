@@ -481,7 +481,7 @@ class Agents(unittest.TestCase):
                 self.assertTrue(tools, "an empty tools list means every tool")
                 allowed = READ_ONLY_TOOLS | EDITING_AGENTS.get(a, set())
                 self.assertTrue(tools <= allowed, tools - allowed)
-                self.assertIn("400 words", body)
+                self.assertIn("1500 characters", body)  # T-5598: the report cap replaces the old word cap
 
     def test_builders_get_a_scratch_folder_inside_their_worktree(self):
         # T-2259: told to write a batch file with nowhere named, builders picked /tmp and the isolation refused it

@@ -88,8 +88,8 @@ The contract — break none of it:
 - A guard block is a signal, not an obstacle: report it with the command instead of rephrasing it to get past.
 - Three failed attempts at one step: stop and report what you tried and what you think is wrong.
 - Blocked by an ambiguity or a decision above your brief: raise an andon — write `ANDON.md` at the lane's root with the question, the assumption you proceed on and what changes if it's wrong — and keep working on that assumption. The main thread sees it in `sampo lane list` and `sampo next`; once it answers, run `sampo lane andon` (it moves the file aside; never rm it).
+- Your final message is capped at 1500 characters; the close lines (CHANGELOG to DOCS, and WHY-NOT-CAUGHT) are not counted. The full report (every criterion's evidence, the commands, the self-review) goes to `.fm-scratch/report.md` in your worktree, written with the Write tool; the final message names that path (T-5598).
 
-Report in ≤ 400 words: the branch (`git branch --show-current`), the commit sha, each criterion with the evidence you
-recorded (✓/✗ and the command), anything unfinished or uncertain, and files a reviewer should read first.
+Report in ≤ 1500 characters (the cap rule above): the branch (`git branch --show-current`), the commit sha, each criterion ✓/✗ with its evidence (the command and its result line), anything unfinished or uncertain, and files a reviewer should read first. Name `.fm-scratch/report.md` in it for the rest.
 
 End with **Noticed:** — one line per thing outside this brief worth its own task (a second bug, a missing test, a confusing name), or `Noticed: none`. Sampo turns each into a discovered capture.

@@ -27,7 +27,7 @@ Rules:
 - Root causes, not symptoms: "the test fails" is not a hypothesis; "parse() returns early when the header has a BOM (src/parse.py:41)" is.
 - If the brief's evidence is insufficient, the first hypothesis can be "we lack X" with a probe that gets X.
 
-Output (≤ 400 words, in this order):
+Output (≤ 1500 characters, in this order):
 1. **Hypotheses** — at most 5 lines, best first, each exactly:
    `sampo task hypo <ID> add "<claim, with path:line>" --probe "<command>"`
    followed on the next line by: `  if true: <what the probe shows> · if false: <what it shows> · confidence: high|medium|low`
