@@ -850,13 +850,122 @@ def _heal_note():
         f"Still empty, HEAD's copy is unreadable: {names(failed)}; run sampo doctor --repair." if failed else "") if x)
 
 
+SUBCOMPACT = "subcompact-"  # T-5685: a subagent's PreCompact marker, sessions/<sid>.subcompact-<agent_id>
+
+
+def _agent_id(pl):
+    aid = str(pl.get("agent_id") or "")
+    return aid if re.fullmatch(r"[\w-]{4,64}", aid) else ""
+
+
+def _payload_keys(pl):
+    """T-5685: the names of a hook payload's fields, never their values: the ledger records which signal arrived."""
+    return sorted(str(k) for k in pl)[:40]
+
+
+def _named(v):
+    """T-5685: a path from a hook payload, as a comparable string: untrusted text, so bounded."""
+    return str(v or "").rstrip("/")[:4096]
+
+
+def _marker_of(path):
+    """T-5685: a PreCompact marker's content, or None for a file that is not one (unreadable, or not a JSON object)."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            m = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return m if isinstance(m, dict) else None
+
+
+def _subagent_compact(pl):
+    """T-5685: whether a compact SessionStart is a subagent's. Its payload names an agent_id or a transcript under
+    subagents/; or exactly one marker of this session_id names this start by transcript_path or cwd, and that marker is
+    taken (once). A subagent shares its lead's session_id, so a marker is matched by its own transcript or worktree,
+    never by the session alone: the lead's start never takes a builder's marker, and an ambiguous start takes none.
+    agent_type alone doesn't count: a session started with --agent carries it too."""
+    sid = pl.get("session_id")
+    if pl.get("source") != "compact" or not (sid and re.fullmatch(r"[\w-]{1,100}", sid)):
+        return False
+    folder = os.path.join(c.state_dir(), "sessions")
+    try:
+        names = [n for n in os.listdir(folder) if n.startswith(sid + "." + SUBCOMPACT)]
+    except OSError:
+        names = []
+    transcript, cwd = _named(pl.get("transcript_path")), _named(pl.get("cwd"))
+    named = []
+    for name in names:
+        m = _marker_of(os.path.join(folder, name))
+        if m and ((transcript and _named(m.get("transcript_path")) == transcript)
+                  or (cwd and _named(m.get("cwd")) == cwd)):
+            named.append(name)
+    if len(named) == 1:
+        try:
+            os.remove(os.path.join(folder, named[0]))
+        except OSError:  # another SessionStart took it first
+            pass
+    return bool(_agent_id(pl) or "/subagents/" in str(pl.get("transcript_path") or "") or len(named) == 1)
+
+
+def _mark_subcompact(pl):
+    """T-5685: a subagent's PreCompact (its payload's agent_id) leaves a marker naming its transcript and its cwd, the
+    two things its own SessionStart carries. A main session's PreCompact leaves nothing and takes nothing: it shares the
+    session_id with its builders, and a builder's marker is matched only by the start it names (_subagent_compact)."""
+    sid, aid = pl.get("session_id"), _agent_id(pl)
+    if not (aid and sid and re.fullmatch(r"[\w-]{1,100}", sid)):
+        return
+    folder = os.path.join(c.state_dir(), "sessions")
+    body = json.dumps({"transcript_path": _named(pl.get("transcript_path")), "cwd": _named(pl.get("cwd"))})
+    try:
+        os.makedirs(folder, exist_ok=True)
+        c.write_atomic(os.path.join(folder, f"{sid}.{SUBCOMPACT}{aid}"), body, durable=False)
+    except OSError:
+        log_error("PreCompact", _tb())
+
+
+def _agent_line(p):
+    """T-5685: a subagent's compaction context, one line of at most 300 characters: its task, its lane and the next
+    action. The lead's project block is not sent to it: the brief and the lane's own state carry the rest."""
+    lane = os.path.basename(str(p.lane).rstrip("/")) if p.lane else "main"
+    b = c.active_brief_fast(p, p.lane)
+    if not b:
+        line = f"Sampo, after compaction: no task is focused in lane {lane}; sampo focus <task id> sets one."
+    else:
+        line = f"Sampo, after compaction: {b.id} {b.title} in lane {lane}."
+        try:
+            line += f" Next: {c.next_action(b)}"
+        except Exception:
+            log_error("SessionStart", _tb())
+    return c.fit(re.sub(r"[\x00-\x1f\x7f]", " ", line), 300)
+
+
+def _subagent_start(pl):
+    """T-5685: a subagent's compaction gets the one line and no session side effects: the one-shot notes stay, and no
+    holder mark or view is made. Its ledger row keeps the payload's key names, so the next real signal can be read back."""
+    p = c.find_project(_cwd(pl))
+    if not p:
+        return None
+    c.log_event(p, "session_start", data={"source": "compact", "root": c.PLUGIN_ROOT, "subagent": True,
+                                          "keys": _payload_keys(pl)}, session=pl.get("session_id"))
+    try:
+        line = _agent_line(p)
+    except Exception:
+        log_error("SessionStart", _tb())
+        return None
+    return {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": line}}
+
+
 def session_start(pl):
+    if _subagent_compact(pl):  # T-5685: before the session's own clear, notes and views: one line for a subagent
+        return _subagent_start(pl)
     healed_note = _heal_note()
     sid = pl.get("session_id")
     if sid and re.fullmatch(r"[\w-]{1,100}", sid):  # a new or compacted context: the next prompt restates the state,
         folder = os.path.join(c.state_dir(), "sessions")  # and one-shot notes (outline, thrash, tripwires) re-arm
         try:
-            keep = (sid + ".taint.", sid + ".keep.")  # T-1053; T-1889: what the session was told for good
+            # T-1053; T-1889: what the session was told for good. T-5685: a subagent's marker waits for its own start,
+            # which may come after the lead's (the builder shares the lead's session_id): the lead's sweep leaves it
+            keep = (sid + ".taint.", sid + ".keep.", sid + "." + SUBCOMPACT)
             names = [n for n in os.listdir(folder) if n.startswith(sid + ".") and not n.startswith(keep)]
         except OSError:
             names = []
@@ -976,8 +1085,10 @@ def session_start(pl):
                             session=sid)
         except Exception:
             log_error("SessionStart", _tb())
-    c.log_event(p, "session_start", data={"source": pl.get("source"), "root": c.PLUGIN_ROOT},  # T-0391: the code
-                session=sid)  # this session runs (fm doctor compares it with the installed one)
+    data = {"source": pl.get("source"), "root": c.PLUGIN_ROOT}  # T-0391: the code this session runs
+    if pl.get("source") == "compact":  # T-5685: which fields a compaction's payload carries (names, never values)
+        data["keys"] = _payload_keys(pl)
+    c.log_event(p, "session_start", data=data, session=sid)  # fm doctor compares it with the installed one
     if second_due(pl, meta, busy) and not os.environ.get("FOREMAN_NO_BACKGROUND"):  # T-0276: never in the hook's time
         try:
             subprocess.Popen([os.path.join(c.PLUGIN_ROOT, "bin", "fm"), "second", "session", "--if-due",
@@ -5967,6 +6078,7 @@ def pre_model_switch(pl):
 
 
 def pre_compact(pl):
+    _mark_subcompact(pl)  # T-5685: first, so a main session's clear is never skipped by a failure further down
     try:
         from sampo import modelup
         modelup.on_compact(pl)
