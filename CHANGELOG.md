@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- A builder now reviews its own diff with the intent, edge and adversary lenses (sampo audit prep --rehearse) and fixes each finding's siblings, reviewers list every sibling instance, a diff touching subprocess, env, paths, hooks or auth gets a threat-model file in round 1, and rework_rounds counts each audit prep at a new lane tip (T-5972).
 - MASTER.md's file-map index lines are back under 160 characters, so test_map_room is green on trunk again (T-5983).
 - A reviewer's reply now records its audits itself in the usual cases: the review brief its prompt reads (or the task its agent was first bound to) decides the task, not every task id the report names, a delta round naming the lane's new head is accepted on the moved lane, and an approve after a changes-needed round records the lenses as pass with the round count (T-5913).
 - A user prompt like 'set the self filed tasks to unlimited' or 'N a day' now sets the discovered/followup/self trigger budgets from the prompt hook through a small matcher of the user's own words to one guarded verb (one use, 120 s expiry, a user_grant ledger row, quoted and pasted text excluded), and 'triggers set --budget unlimited' is accepted (T-5897).
