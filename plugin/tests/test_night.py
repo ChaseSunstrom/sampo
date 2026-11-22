@@ -345,7 +345,7 @@ class KalevalaNight(ForemanTestCase):  # T-3082 step 3: the night runs Kalevala'
             f.write("{not json")
         out = json.loads(self.fm("night", "--dry-run", "--json").stdout)
         names = [j["name"] for j in out["jobs"]]
-        self.assertIn("landscape", names)
+        self.assertIn("scout", names)  # T-5506: an unconditional job; landscape runs only in Sampo's home since T-3362
         self.assertNotIn("kalevala rounds", names)
 
 

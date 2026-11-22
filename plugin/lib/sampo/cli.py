@@ -10048,7 +10048,7 @@ def _build_parser(only=None):
     s = add("posture", cmd_posture, tier=("Project and settings", 710), help="lite: only the guard's hook runs in this project; full: every hook (T-0963)")
     s.add_argument("state", nargs="?", choices=["lite", "full"])
 
-    s = add("approve-reads", cmd_approve_reads, tier=("Project and settings", 760), help="on: Sampo answers Claude Code's permission dialog for commands "
+    s = add("approve-reads", cmd_approve_reads, tier=("Project and settings", 761), help="on: Sampo answers Claude Code's permission dialog for commands "
                                                        "that only read (yours to turn on; T-0974)")
     s.add_argument("state", nargs="?", choices=["on", "off"])
 
@@ -10319,7 +10319,7 @@ def _build_parser(only=None):
                    "say whether K still crashes")
     s.add_argument("--budget", type=float, default=120.0, help="seconds before the run stops (default 120)")
     s.add_argument("--capture", action="store_true", help="file each crash as a FIX with its reproducer, once per signature")
-    s = add("headroom", lazy("sampo.headroom", "cmd_headroom"), tier=("Project and settings", 876), help="the project's "
+    s = add("headroom", lazy("sampo.headroom", "cmd_headroom"), tier=("Project and settings", 877), help="the project's "
             "bounded lists the work outgrew: orphans (steers, asks, failures that fit no member), a cap raised, a cap hit; "
             "--ask puts the top five to a local model, --capture files what it names as tasks, once each (T-3328)")
     s.add_argument("--ask", action="store_true", help="ask a local model what a complete version of each lacks (cached "

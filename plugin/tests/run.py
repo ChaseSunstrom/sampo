@@ -79,6 +79,9 @@ OPERATOR_SWITCHES.add("NO_JOIN")  # T-4267: a run's own switch, never a test's
 OPERATOR_SWITCHES.add("TRAIN_PROBES")  # T-3770: a runner's probe switch is never a test's
 OPERATOR_SWITCHES.add("TOWER_GAP")  # T-3504: the tower-update push gap; a test that needs it sets it itself
 OPERATOR_SWITCHES.add("TEST_RUN_ID")  # T-4268: the check's id for its gate's record; a nested run in a class never gets it
+OPERATOR_SWITCHES.add("CACHE_FULL")  # T-5482: a whole run skips its cached classes (the train and the behind verify set it); never a test's
+OPERATOR_SWITCHES.add("HOLD_JOBS")  # T-5465: how many lane holds run at once; the operator's knob, a test sets its own
+OPERATOR_SWITCHES.add("SHAPE_BATCH_WALL_S")  # T-5380: a shape batch's wall in seconds; the operator's, a test passes its own
 OPERATOR_SWITCHES.add("BENCH_MIN_FREE_GB")  # T-3747: the operator's disk budget for bench builds; the low-disk test sets its own
 OPERATOR_SWITCHES.add("NO_COVERED")  # T-4288: the "Already covered?" note's switch; helpers set the tests' default, Covered its own
 # T-4239: a land's ship pin, caps and line stamp are the land's (its gate runs these tests inside it), never a test's

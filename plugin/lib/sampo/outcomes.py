@@ -276,7 +276,7 @@ def panel_report(p, outs=None):
     panel against no-panel tasks per tier (rival reads skew to M/L, so a tier is the like-for-like read), each with its
     n; 'all' mixes tiers and is labelled unmatched."""
     rows = panel_join(p, outs)
-    rates = {t: panel_rates([r for r in rows if r["tier"] == t]) for t in ("S", "M", "L")}
+    rates = {t: panel_rates([r for r in rows if r["tier"] == t]) for t in c.TIERS if t not in c.BIG_TIERS}  # T-4220
     rates["all"] = panel_rates(rows)
     lines = []
     for k, g in rates.items():
