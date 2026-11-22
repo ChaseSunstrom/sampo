@@ -589,7 +589,7 @@ def _names_changelog(root, rel):
         return True
 
 
-def ran_tests(root, base, tree, paths, detail=None):
+def ran_tests(root, base, tree, paths, detail=None, by_class=None, recorded=None):
     """T-3603: the test files of the classes the test runner's cache (plugin/tests/run.py: per class, what its last
     green runs read and the functions they ran) says ran a changed function of paths or read a changed file whole,
     between `base` and git tree `tree`: a test that drives code only through a hook's JSON or a child process (T-3670's
@@ -599,11 +599,18 @@ def ran_tests(root, base, tree, paths, detail=None):
     a class's newest record only, and the cache is one file per repo, shared by every worktree: a green run of lane L1
     can push out the older record that showed a whole-file read L2's older test code still does, so L2's affected set may
     miss that class (function keys, probes and data files count from every record). The post-merge full verify catches
-    what that gap lets through."""
+    what that gap lets through. T-5588: by_class gets {test file: the names of its classes selected}, and recorded
+    {test module name: the names of every class the cache holds a record of}: what lets the caller name classes, not
+    the module, and tell a class the cache never saw (it must run) from one that read nothing changed."""
     got = _run_cache(root) if paths and tree else None
     if not got:
         return []
     table, classes = got
+    if recorded is not None:
+        for cid, recs in classes.items():
+            head, _, name = cid.rpartition(".")
+            if recs and head:
+                recorded.setdefault(head.rpartition(".")[2], set()).add(name)
     changed, funcs, fn = set(paths), {}, set()
     for i, k in enumerate(table):
         f, sep, q = k.partition("::")
@@ -651,6 +658,8 @@ def ran_tests(root, base, tree, paths, detail=None):
                 detail[table[i]] = detail.get(table[i], 0) + 1
         if own and c.TESTISH.search(mod) and os.path.isfile(os.path.join(root, own)):
             out.add(own)
+            if by_class is not None:
+                by_class.setdefault(own, set()).add(cid.rpartition(".")[2])
     return sorted(out)
 
 

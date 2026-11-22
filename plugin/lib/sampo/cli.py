@@ -7954,6 +7954,76 @@ def _runnable(template, tests):
     return tests
 
 
+CLASS_IDS_MAX = 40  # T-5588: a module with more selected classes than this is named whole (a shorter command line)
+
+
+def _runner_takes_class_ids(root, template):
+    """T-5588: whether the {names} template's runner says it takes `module::Class`: the first file of the template that is a
+    run.py of the project and holds the CLASS_IDS marker (plugin/tests/run.py does). Another runner finds tests by bare
+    module name, and an older copy of run.py would call `test_x::A` no test."""
+    if "{names}" not in template:
+        return False
+    try:
+        run = next((w for w in shlex.split(template.replace("{names}", "")) if os.path.isfile(os.path.join(root, w))), None)
+        if not run or os.path.basename(run) != "run.py":
+            return False
+        with open(os.path.join(root, run), encoding="utf-8", errors="replace") as f:
+            return "CLASS_IDS" in f.read(2_000_000)
+    except (OSError, ValueError):
+        return False
+
+
+def _builds_classes_dynamically(tree):
+    """T-5588 review: True when a module may hold a test class the top-level ClassDef list doesn't show: a class defined
+    at module scope under an if/try/with/for, `globals()` (a `globals()[name] = type(...)` loop), a three-argument
+    `type(...)` call, or `load_tests` (unittest's own hook to add tests). Such a module's classes have no record to
+    say a selected sibling is enough, so it runs whole. Classes inside a function or another class are no test classes."""
+    import ast
+    todo = [n for n in tree.body if not isinstance(n, ast.ClassDef)]
+    while todo:
+        n = todo.pop()
+        if isinstance(n, ast.ClassDef):
+            return True
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if n.name == "load_tests":
+                return True
+            continue
+        todo.extend(ast.iter_child_nodes(n))  # statements, except handlers and match cases alike
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Name) and n.id in ("globals", "load_tests"):
+            return True
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "type" and len(n.args) == 3:
+            return True
+    return False
+
+
+def _class_ids(root, by_class, recorded):
+    """T-5588: {test file: [class names]} for the files whose run the cache narrows to some of their classes: the classes
+    it saw reach the change (by_class), when every class the file defines that could be a test (it has a test_ method or
+    a base class) has a record there (recorded: module -> class names) and the file still defines each one named. A class
+    the cache never saw (new, renamed, one a record of another worktree's file still names) is no class it can speak
+    for: that module runs whole, as does one whose selected classes are all of its test classes, or more than
+    CLASS_IDS_MAX. A file that can't be read or parsed is left whole."""
+    import ast
+    out = {}
+    for f, want in by_class.items():
+        try:
+            with open(os.path.join(root, f), encoding="utf-8", errors="replace") as fh:
+                tree = ast.parse(fh.read(2_000_000))
+        except (OSError, SyntaxError, ValueError, RecursionError, MemoryError):
+            continue
+        if _builds_classes_dynamically(tree):
+            continue
+        top = [n for n in tree.body if isinstance(n, ast.ClassDef)]
+        tests ={n.name for n in top if any(isinstance(b, ast.Name) and b.id != "object" or not isinstance(b, ast.Name)
+                                            for b in n.bases)
+                 or any(isinstance(d, (ast.FunctionDef, ast.AsyncFunctionDef)) and d.name.startswith("test") for d in n.body)}
+        seen = recorded.get(os.path.basename(f).rsplit(".", 1)[0], set())
+        if want <= {n.name for n in top} and tests <= seen and not tests <= want and len(want) <= CLASS_IDS_MAX:
+            out[f] = sorted(want)
+    return out
+
+
 def _test_importers(root, files):
     """T-4684: the test modules that really import one of `files` (changed .py files of a tests folder), directly or
     through another module that does, read from the imports of the .py files under each file's folder: a module's name
@@ -8196,6 +8266,7 @@ def affected(p, b=None, skipped=None, since=None, detail=None, only=None, hold=F
     budget = {HOOK_BUDGET[1]} if changed & set(HOOK_BUDGET[0]) and os.path.isfile(os.path.join(p.root, HOOK_BUDGET[1])) else set()
     rules = {f"plugin/tests/{t}.py" for t in RULE_TESTS if os.path.isfile(os.path.join(p.root, "plugin", "tests", t + ".py"))} \
         if wide or fresh else set()  # T-2992: a builder's missing MASTER bullet or fm shim fails in its own lane; T-4684: a NEW test module trips them too (T-3316), a changed one doesn't
+    ids = {}  # T-5588: test file -> the class names its run is narrowed to (below)
     if lock is not None:  # T-4648: the bounded lock: the linked tests of the scope's files, no hub, rule or budget extras
         budget = rules = set()
         every = sorted((t for t in set(smap.tests_for(m, sorted(changed))) | own  # T-4149: a deleted file takes no slot
@@ -8207,17 +8278,28 @@ def affected(p, b=None, skipped=None, since=None, detail=None, only=None, hold=F
         picked = _hub_tests(p, m, base, sorted(wide), detail, tree)  # T-3306: a hub file's symbols, not the whole file
         # T-3603: the tests the run cache saw run a changed function (T-3670: one that drives a hook only by its JSON)
         parts = {} if why is not None else None  # T-4288: which changed part reached how many recorded classes
-        ran = set(smap.ran_tests(p.root, base, tree, sorted(wide), detail=parts)) if wide else set()
+        classed, recorded = {}, {}  # T-5588: the classes of each run-cache module the cache saw reach the change
+        ran = set(smap.ran_tests(p.root, base, tree, sorted(wide), detail=parts, by_class=classed, recorded=recorded)) if wide else set()
         linked = set(smap.tests_for(m, sorted(wide - set(picked))))
         if why is not None:  # T-4288: where each test came from (sampo check --affected --why)
             why.update(parts=parts, sources={"changed test": own, "map link": linked, "hub symbol": set().union(*picked.values()),
                                              "test importer": importers, "co-change": paired, "once broke": broke,
                                              "import budget": budget, "rule test": rules, "run cache": ran})
-        every = sorted(linked | set().union(*picked.values()) | own | importers | paired | broke | budget | rules | ran)
+        others = linked | set().union(*picked.values()) | own | importers | paired | broke | budget | rules
+        every = sorted(others | ran)
+        # T-5588: a module only the run cache selected is named by the classes it saw reach the change, when the runner
+        # takes class ids: run.py then runs those with the result cache on, not every class of the module
+        if template and _runner_takes_class_ids(p.root, template):
+            ids = _class_ids(p.root, {f: k for f, k in classed.items() if f not in others}, recorded)
     if among is not None:
         every = [x for x in every if x in among]
-    fill =lambda tpl, ts: tpl.replace("{tests}", " ".join(shlex.quote(t) for t in ts)).replace(  # noqa: E731
-        "{names}", " ".join(shlex.quote(os.path.basename(t).rsplit(".", 1)[0]) for t in ts))
+
+    def fill(tpl, ts, ids=None):  # a module in ids is named with its classes: test_x::A test_x::B
+        def name(t):
+            mod = os.path.basename(t).rsplit(".", 1)[0]
+            return [f"{mod}::{k}" for k in ids[t]] if ids and t in ids else [mod]
+        return tpl.replace("{tests}", " ".join(shlex.quote(t) for t in ts)).replace(
+            "{names}", " ".join(shlex.quote(n) for t in ts for n in name(t)))
 
     def home(tpl, ts):  # T-2836: a {names} runner finds tests by bare name, so only the ones in its own folder
         if "{names}" not in tpl:
@@ -8238,7 +8320,7 @@ def affected(p, b=None, skipped=None, since=None, detail=None, only=None, hold=F
         rest = [x for x in every if not any(x.endswith(e) for e in by)]
         groups = [("", template, home(template, _runnable(template, rest)))] if template else []
         groups += [(e, t, home(t, [x for x in every if x.endswith(e)])) for e, t in by.items()]
-        return [fill(t, ts) for _, t, ts in groups if ts], sorted({x for _, _, ts in groups for x in ts})
+        return [fill(t, ts, ids if e == "" else None) for e, t, ts in groups if ts], sorted({x for _, _, ts in groups for x in ts})
     cmds, tests = build(every)
     red = set()  # T-1101: another open task's red-first test files
     skip = red_first_tests(p, act, cmds, red) if cmds else {}
@@ -8418,7 +8500,7 @@ def _estimate(root, cmd, env):
         except ValueError:
             continue
         if (len(words) > 2 and os.path.basename(words[0]).startswith("python") and words[1].endswith("run.py")
-                and all(re.fullmatch(r"[A-Za-z_][\w.]*", w) for w in words[2:])):
+                and all(re.fullmatch(r"[A-Za-z_][\w.]*(?:::[A-Za-z_]\w*)?", w) for w in words[2:])):  # T-5588: mod::Class
             parts.append([words[0], words[1], "--estimate", *words[2:]])
     for argv in parts:
         try:

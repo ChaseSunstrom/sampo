@@ -77,6 +77,75 @@ class Args(unittest.TestCase):
         self.assertEqual(run.classes(["test_run.py"], ["no_such_test"], set(), names=["test_run"]), [])
         self.assertGreater(len(run.classes(["test_run.py"], [], set(), names=["test_run"])), 1)  # a name alone: all
 
+    def test_a_class_id_selects_only_that_class(self):  # T-5588: a module's every class ran for one class's change
+        rel = os.path.relpath(run.HERE)
+        for spec in ("test_run::Args", "test_run.py::Args", f"{rel}/test_run.py::Args"):
+            names, hit = run.parse([spec]).names, set()
+            self.assertEqual(run.classes(["test_run.py"], [], hit, names=names), ["test_run.Args"], spec)
+            self.assertEqual(hit, set(names), "the name that matched is the one the 'no test matches' check reads")
+        both = run.parse(["test_run::Args", "test_run::Load"]).names
+        self.assertEqual(sorted(run.classes(["test_run.py"], [], set(), names=both)), ["test_run.Args", "test_run.Load"])
+        mixed = run.parse(["test_run::Args", "test_genesis"]).names  # a bare module still selects all of its classes
+        self.assertEqual({c for c in run.classes(["test_run.py", "test_genesis.py"], [], set(), names=mixed)
+                          if c.startswith("test_run.")}, {"test_run.Args"})
+        self.assertGreater(len({c for c in run.classes(["test_run.py", "test_genesis.py"], [], set(), names=mixed)
+                                if c.startswith("test_genesis.")}), 0)
+        for part in ("test_run::Arg", "test_run::rgs"):
+            self.assertEqual(run.classes(["test_run.py"], [], set(), names=run.parse([part]).names), [], part)
+
+    def test_a_class_id_with_a_method_selects_that_test_and_a_bad_id_is_refused(self):  # T-5588
+        import io
+        names = run.parse(["test_run::Args"]).names
+        self.assertEqual(run.classes(["test_run.py"], ["test_names_are_k_patterns"], set(), names=names), ["test_run.Args"])
+        for bad in ("test_run::", "::Args", "test_run::Args::x", "test_run::Ar gs", "/etc/passwd.py::Args",
+                    "test_run::Args.test_names_are_k_patterns"):
+            with self.assertRaises(SystemExit, msg=bad), contextlib.redirect_stderr(io.StringIO()):
+                run.parse([bad])
+
+    def test_a_class_name_is_what_python_calls_an_identifier(self):  # T-5588 review: not a hand-written regex
+        import io
+        self.assertEqual(run.parse(["test_run::Ärgs"]).names, ["test_run.Ärgs."], "a unicode letter names a class")
+        for bad in ("test_run::A²", "test_run::1Args", "test_ü²::Args"):  # \w takes the superscript, Python does not
+            with self.assertRaises(SystemExit, msg=bad), contextlib.redirect_stderr(io.StringIO()):
+                run.parse([bad])
+
+    def test_a_missing_class_is_said_by_its_id_not_its_internal_form(self):  # T-5588
+        import io
+        from unittest import mock
+        err, real = io.StringIO(), run.classes
+        only = lambda patterns, *a, **k: real(["test_run.py"], *a, **k)  # noqa: E731  (not the whole folder)
+        with mock.patch.object(sys, "argv", ["run.py", "test_run::NoSuchClass"]), in_process(), \
+                mock.patch.object(run, "classes", only), contextlib.redirect_stderr(err):
+            self.assertEqual(run.main(), 1)
+        self.assertIn("no test matches test_run::NoSuchClass", err.getvalue())
+
+    def test_only_a_linked_worktree_reads_as_a_lane_not_a_submodule_or_a_separate_git_dir(self):  # T-5588 review
+        import subprocess
+
+        def git(cwd, *a):
+            subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "-c", "protocol.file.allow=always", *a],
+                           cwd=cwd, check=True, capture_output=True, timeout=60)
+        with tempfile.TemporaryDirectory() as d:
+            main, lane, apart, gitdir = (os.path.join(d, n) for n in ("main", "lane", "apart", "apart.git"))
+            os.makedirs(main)
+            git(main, "init", "-q")
+            git(main, "commit", "-q", "--allow-empty", "-m", "x")
+            git(main, "worktree", "add", "-q", lane)
+            git(d, "init", "-q", "--separate-git-dir", gitdir, apart)
+            self.assertFalse(run.in_lane(main), "the main checkout")
+            self.assertTrue(run.in_lane(lane), "a linked worktree")
+            self.assertFalse(run.in_lane(apart), "a checkout whose git dir lives elsewhere is not a linked worktree")
+            self.assertFalse(run.in_lane(d), "outside git")
+
+    def test_the_sample_rate_is_off_in_a_lane_and_kept_for_the_full_gate(self):  # T-5588
+        from unittest import mock
+        with mock.patch.object(run, "in_lane", return_value=True):
+            self.assertEqual(run.sample_rate(full=False), 0.0)
+            self.assertEqual(run.sample_rate(full=True), run.SAMPLE)
+        with mock.patch.object(run, "in_lane", return_value=False):
+            self.assertEqual(run.sample_rate(full=False), run.SAMPLE)
+            self.assertEqual(run.sample_rate(full=True), run.SAMPLE)
+
     def test_shards_split_the_classes_disjointly_and_cover_them_all(self):  # T-1842: one CI job ran out of time
         import contextlib
         import io

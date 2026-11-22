@@ -1112,6 +1112,7 @@ class Main(unittest.TestCase):
         self.blobs, self.git_dir = {"a.py": "ka", "b.py": "kb", "c.py": "kc", "other.py": "ko"}, "/repo"
         self.fail_ids, self.late, self.skips, self.during, self.blind = set(), set(), set(), {}, set()
         self.once = {}  # T-4274: class -> how many more times it fails before it passes (a flake)
+        self.lane, self.asked = False, []  # T-5588: whether run.py is in a lane's worktree (the sample is off there)
 
     def main(self, *argv, cids=("test_m.A", "test_m.B"), tests=1, matched=None, sample=0.5):
         ran, err = [], io.StringIO()
@@ -1132,7 +1133,13 @@ class Main(unittest.TestCase):
                 return c, 1, "boom", n, 0.0
             return c, int(c in self.fail_ids), "boom" if c in self.fail_ids else "", n, 0.0
         rnd = sample if callable(sample) else (lambda: sample)
-        with mock.patch.object(run, "classes", fake_classes(list(cids), tests, matched)), \
+        fake = fake_classes(list(cids), tests, matched)
+
+        def classes(*a):  # T-5588: the names the run asked for, as run.classes gets them
+            self.asked = list(a[3])
+            return fake(*a)
+        with mock.patch.object(run, "classes", classes), \
+                mock.patch.object(run, "in_lane", lambda: self.lane), \
                 mock.patch.object(run, "run_one", run_one), \
                 mock.patch.object(run, "tree", lambda: ("/repo", dict(self.blobs), self.git_dir)), \
                 mock.patch.object(run.random, "random", rnd), \
@@ -1159,6 +1166,26 @@ class Main(unittest.TestCase):
         self.assertEqual(core.judged(0, err)[0], 0, "a fully cached run is evidence, not a run of no tests")
         self.assertTrue(core.passed_summary(err))
         self.assertEqual(core.judged(0, "Ran 0 tests in 0.000s\n\nOK\n")[0], 5, "a run of nothing still proves nothing")
+
+    def test_a_class_id_run_reads_and_writes_the_cache_for_that_class_alone(self):  # T-5588
+        code, ran, _ = self.main("test_m::A", cids=("test_m.A",))
+        self.assertEqual((code, ran, self.asked), (0, ["test_m.A"], ["test_m.A."]))
+        self.assertEqual(sorted(self.cache()), ["test_m.A"], "written: the class ran whole")
+        code, ran, err = self.main("test_m::A", cids=("test_m.A",))
+        self.assertEqual((code, ran), (0, []), err)
+        self.assertIn("skipped 1 classes green at the same code", err)
+        self.blobs["a.py"] = "ka2"  # what the class read changed: it runs again
+        self.assertEqual(self.main("test_m::A", cids=("test_m.A",))[1], ["test_m.A"])
+
+    def test_a_lane_run_skips_the_resample_of_cache_hits_and_the_full_gate_and_a_checkout_keep_it(self):  # T-5588
+        self.main("test_m")
+        self.lane = True
+        code, ran, err = self.main("test_m", sample=0.0)  # every hit drawn, were the sample on
+        self.assertEqual((code, ran), (0, []), err)
+        with mock.patch.dict(os.environ, {"SAMPO_CACHE_FULL": "1"}):  # the post-merge verify, from a lane's folder too
+            self.assertEqual(sorted(self.main(sample=0.0)[1]), ["test_m.A", "test_m.B"])
+        self.lane = False
+        self.assertEqual(sorted(self.main("test_m", sample=0.0)[1]), ["test_m.A", "test_m.B"])
 
     def test_a_partly_cached_run_counts_ran_and_cached_apart(self):
         self.main("test_m")

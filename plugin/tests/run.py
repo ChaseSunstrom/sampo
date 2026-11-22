@@ -1058,6 +1058,7 @@ def estimate(names, times, slots):
     `times` (load_times: job id -> seconds), over `slots` CPU slots. A class run whole and, another time, split into its
     tests has both kinds of key: it counts as the larger of the two. Classes with no record add nothing (known counts
     the ones that do), so the caller never sizes below its own floor. One pass over the times."""
+    names = [n.replace("::", ".").rstrip(".") for n in names]  # T-5588: parse's "mod.Class." and `mod::Class` are Module.Class
     mods = {n for n in names if "." not in n}
     named = {n for n in names if "." in n}
     per = {}
@@ -1101,6 +1102,7 @@ def _write_json(path, d):
 
 NO_CACHE = "SAMPO_NO_TEST_CACHE"  # T-3502: =1 (or FOREMAN_NO_TEST_CACHE) runs every class, cached or not
 CACHE_FULL = "SAMPO_CACHE_FULL"  # T-3638: =1 lets a full run (no names) skip cached classes; only the post-merge verify sets it
+CLASS_IDS = True  # T-5588: names may be `module::Class` (parse): sampo check --affected reads this word to name classes
 SAMPLE = 0.1 # the share of cached classes rerun anyway: a file the coverage missed shows, and the cache is dropped
 STATE = ".sampo/"  # Sampo's synced task state: every sampo call writes it, no test reads it (each has its own home)
 PRUNE_S = 14 * 86400  # a repo's cache unused this long (a removed lane's) is deleted
@@ -1245,6 +1247,26 @@ def _where():
 def _common():
     """The repo's shared git folder; None outside git."""
     return (_where() or (None, None))[1]
+
+
+def in_lane(here=None):
+    """T-5588: True in a linked worktree (a lane): its own git dir (`rev-parse --git-dir`) is a sub-folder of the shared
+    one (`--git-common-dir`), not the shared one itself. False in the main checkout, a submodule or a checkout whose
+    git dir lives elsewhere (both have the two equal: not `.git` being a file) and outside git."""
+    here = here or HERE
+    try:
+        own, shared = (os.path.realpath(os.path.join(here, _git(here, "rev-parse", flag).strip()))
+                       for flag in ("--git-dir", "--git-common-dir"))
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return own != shared
+
+
+def sample_rate(full):
+    """T-5588: the share of cache hits rerun anyway. A lane's run is one selected class set the accept check reruns
+    in full after the merge, so it skips the resample; the full gate (SAMPO_CACHE_FULL, the post-merge verify) and any
+    run outside a lane keep it: a coverage miss still shows there."""
+    return SAMPLE if full or not in_lane() else 0.0
 
 
 # T-4268: one JSON per run under <repo id>.runs/, named by end time then pid (a whole-suite run's with its worktree's
@@ -3234,11 +3256,20 @@ def parse(argv=None):
                                              "their tests that match a -k (T-1994)")
     a = ap.parse_intermixed_args(argv)  # names may sit on either side of -k
     for i, n in enumerate(a.names):  # T-3428: a path into the tests dir names its module
-        if "/" in n or n.endswith(".py"):
-            d, f = os.path.split(n)
+        # T-5588: `module::Class` (the module as below) selects that one class: its id as t.id() holds it, "mod.Class."
+        mod, sep, cls = n.partition("::")
+        if sep and not (mod and cls.isidentifier()):
+            ap.error(f"{n}: a class id is module::Class, like test_run::Args")
+        if "/" in mod or mod.endswith(".py"):
+            d, f = os.path.split(mod)
             if not (f.startswith("test") and f.endswith(".py") and (not d or os.path.realpath(d) == os.path.realpath(HERE))):
                 ap.error(f"{n}: not a test name or a test_*.py file in {HERE}")
-            a.names[i] = f[:-3]
+            mod = f[:-3]
+        if sep:
+            if not mod.isidentifier():
+                ap.error(f"{n}: a class id is module::Class, like test_run::Args")
+            mod += f".{cls}."
+        a.names[i] = mod
     if a.deadline is not None and a.deadline < 1:  # review: 0 is falsy and turned the deadline off
         ap.error("--deadline takes a number of seconds, 1 or more")
     if a.shard is not None:
@@ -3297,7 +3328,8 @@ def _suite(a):
         fold = lambda s: s.lower().replace("_", "")  # noqa: E731
         near = dict.fromkeys(seg for i in ids if any(n in i for n in missing) for seg in i.split(".")
                              if any(fold(x) in fold(seg) for x in a.k))  # T-2003: -k core_integrity meant CoreIntegrity
-        sys.stderr.write(f"run.py: no test matches {', '.join(missing)}"  # T-1999: say what filtered it out
+        shown = [n[:-1].replace(".", "::", 1) if n.endswith(".") else n for n in missing]  # T-5588: a class id as typed
+        sys.stderr.write(f"run.py: no test matches {', '.join(shown)}"  # T-1999: say what filtered it out
                          + (f" with -k {' -k '.join(a.k)}" if a.k else "")
                          + (f"; did you mean {' or '.join('-k ' + s for s in list(near)[:3])}?" if near else "") + "\n")
         return 1
@@ -3326,7 +3358,7 @@ def _suite(a):
         gen, recs = load_cache(cache)
         rec = {c: r for c in todo for r in recs.get(c, ())[::-1] if r[0] == digest(r[2], value)} if a.names or incr else {}
         hits = {c: r[1] for c, r in rec.items()}
-        drawn = {c for c in hits if random.random() < SAMPLE}
+        drawn = {c for c in hits if random.random() < sample_rate(incr)}  # T-5588: none in a lane, unless the full gate
         skip = {c: n for c, n in hits.items() if c not in drawn}
         if cpu_base:  # T-3757: a cached class costs what it cost then; one over its margin runs, so it is measured
             known = {c: rec[c][3] for c in skip if len(rec[c]) > 3}

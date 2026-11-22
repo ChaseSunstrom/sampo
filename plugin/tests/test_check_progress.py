@@ -90,6 +90,14 @@ class SizedDeadline(unittest.TestCase):
         self.assertEqual(runpy.estimate(["test_a.Two"], times, slots=4)["seconds"], 10.0)
         self.assertEqual(runpy.estimate(["test_zz"], times, slots=4)["known"], 0)
 
+    def test_a_class_id_is_estimated_in_each_form_it_arrives_in(self):  # T-5588 review: parse gives "mod.Class."
+        times = {"test_a.One": 30.0, "test_a.Two": 10.0, "test_a.Two.test_x": 4.0, "test_b.Three": 60.0}
+        for name in ("test_a.Two.", "test_a::Two", "test_a.Two"):
+            self.assertEqual(runpy.estimate([name], times, slots=4)["seconds"], 10.0, name)
+        self.assertEqual(runpy.estimate(runpy.parse(["test_a::One", "test_b"]).names, times, slots=4),
+                         {"seconds": 90.0, "known": 2, "slots": 4}, "the names as the command line parses them")
+        self.assertEqual(runpy.estimate(["test_a.Tw."], times, slots=4)["known"], 0, "a prefix is no class")
+
     def test_run_py_answers_estimate_without_running_a_test(self):
         here = os.path.dirname(os.path.abspath(__file__))
         r = subprocess.run([sys.executable, os.path.join(here, "run.py"), "--estimate", "test_zz_no_such_module"],
@@ -112,6 +120,10 @@ class SizedDeadline(unittest.TestCase):
             py = sys.executable
             got = cli._estimate(d, f"{py} t/run.py test_a test_b && {py} t/run.py test_c.One", dict(os.environ))
             self.assertEqual(got, {"seconds": 30.0, "known": 3, "slots": 4})
+            ids = cli._estimate(d, f"{py} t/run.py test_a::One test_b::Two test_c", dict(os.environ))
+            self.assertEqual(ids, {"seconds": 30.0, "known": 3, "slots": 4}, "T-5588: the class ids --affected passes")
+            for bad in ("test_a::", "test_a::One::x", "::One", "test_a:One", "test_a::One;x"):
+                self.assertIsNone(cli._estimate(d, f"{py} t/run.py {bad}", dict(os.environ)), bad)
             self.assertIsNone(cli._estimate(d, f"{py} t/run.py -k x test_a", dict(os.environ)), "a flag: not asked")
             self.assertIsNone(cli._estimate(d, f"(cd sub && {py} t/run.py test_a)", dict(os.environ)))
             self.assertIsNone(cli._estimate(d, "pytest tests/", dict(os.environ)))

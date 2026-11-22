@@ -227,6 +227,105 @@ class AffectedSymbols(ForemanTestCase):
         self.edit("return 6", "return 66")  # eps: no class ran it
         self.assertFalse([t for t in self.run_affected()[0] if "drive" in t], "an uncalled function selects none")
 
+    # T-5588: the {names} runner can take `module::Class`; the selection says which classes of a module the cache saw
+    # reach the change, so a lane's run does not start every class of the module
+    CLASSES = "import unittest\n\n\nclass Drive(unittest.TestCase):\n    def test_a(self):\n        pass\n\n\n" \
+              "class Other(unittest.TestCase):\n    def test_b(self):\n        pass\n"
+
+    def class_run(self, body=CLASSES, runner="CLASS_IDS = True\n", recorded=("Drive", "Other"), reach=None):
+        """test_drive_beta holds `body` (committed), the {names} runner is tests/run.py holding `runner`, the cache holds
+        `recorded` classes of the module: those in `reach` ran beta, the others alpha. Returns the command fm would run
+        for an edit to beta, as words."""
+        import run
+        import shlex
+        from sampo import cli
+        self.write("tests/test_drive_beta.py", body)
+        self.write("tests/run.py", runner)
+        self.commit("classes")
+        self.fm("check", "affected", "python3 tests/run.py {names}")
+        self.ran({"test_drive_alpha": [HUB + "::", HUB + "::alpha"]})
+        reach = ("Drive",) if reach is None else reach
+        path = run.cache_path(os.path.realpath(os.path.join(self.repo, ".git")))
+        run.save_cache(path, {f"test_drive_beta.{k}": ["d", 1, ["tests/test_drive_beta.py", "tests/test_drive_beta.py::",
+                                                                HUB + "::", HUB + ("::beta" if k in reach else "::alpha")]]
+                              for k in recorded}, 0)
+        self.edit("return 2", "return 22")
+        why = {}
+        cmd, tests, _ = cli.affected(self.p, why=why, since="HEAD")  # the classes commit is the base: only the edit is new
+        self.assertIn("tests/test_drive_beta.py", tests)
+        self.assertEqual({k for k, v in why["sources"].items() if "tests/test_drive_beta.py" in v}, {"run cache"})
+        return shlex.split(cmd)
+
+    def test_a_module_the_cache_selected_runs_only_the_classes_that_ran_the_change(self):
+        words = self.class_run()
+        self.assertIn("test_drive_beta::Drive", words)
+        self.assertNotIn("test_drive_beta::Other", words)
+        self.assertNotIn("test_drive_beta", words, "not the whole module")
+
+    def test_a_module_with_a_class_the_cache_never_saw_runs_whole(self):
+        fresh = self.CLASSES + "\n\nclass Fresh(unittest.TestCase):\n    def test_c(self):\n        pass\n"
+        words = self.class_run(body=fresh)
+        self.assertIn("test_drive_beta", words)
+        self.assertFalse([w for w in words if w.startswith("test_drive_beta::")])
+
+    def test_every_class_reaching_the_change_is_the_module_itself(self):
+        words = self.class_run(reach=("Drive", "Other"))
+        self.assertIn("test_drive_beta", words)
+        self.assertFalse([w for w in words if w.startswith("test_drive_beta::")])
+
+    def test_a_class_the_file_no_longer_defines_runs_the_module_whole(self):  # the cache is shared by every worktree
+        words = self.class_run(recorded=("Drive", "Other", "Gone"), reach=("Drive", "Gone"))
+        self.assertIn("test_drive_beta", words)
+        self.assertFalse([w for w in words if w.startswith("test_drive_beta::")])
+
+    def test_a_runner_that_does_not_say_it_takes_class_ids_gets_module_names(self):
+        words = self.class_run(runner="# a runner of the project's own\n")
+        self.assertIn("test_drive_beta", words)
+        self.assertFalse([w for w in words if "::" in w])
+
+    def test_a_changed_test_module_runs_whole(self):  # its classes changed: the cache says nothing of the new code
+        self.class_run()
+        self.write("tests/test_drive_beta.py", self.CLASSES + "\n# edited\n")
+        from sampo import cli
+        import shlex
+        words = shlex.split(cli.affected(self.p, since="HEAD")[0])
+        self.assertIn("test_drive_beta", words)
+        self.assertFalse([w for w in words if w.startswith("test_drive_beta::")])
+
+    def test_a_module_with_more_classes_than_the_cap_runs_whole(self):
+        from sampo import cli
+        names = [f"C{i}" for i in range(cli.CLASS_IDS_MAX + 1)]
+        body = "import unittest\n\n\n" + "\n\n".join(f"class {n}(unittest.TestCase):\n    def test_x(self):\n        pass\n"
+                                                      for n in names + ["Z"])
+        words = self.class_run(body=body, recorded=(*names, "Z"), reach=tuple(names))
+        self.assertIn("test_drive_beta", words)
+        self.assertFalse([w for w in words if w.startswith("test_drive_beta::")])
+
+    def hidden_runs_whole(self, extra):  # T-5588 review: a test class no record speaks for: the module runs whole
+        words = self.class_run(body=self.CLASSES + "\n\n" + extra)
+        self.assertIn("test_drive_beta", words)
+        self.assertFalse([w for w in words if w.startswith("test_drive_beta::")])
+
+    def test_a_test_class_under_an_if_runs_the_module_whole(self):
+        self.hidden_runs_whole("if True:\n    class Cond(unittest.TestCase):\n        def test_c(self):\n            pass\n")
+
+    def test_a_test_class_under_a_try_or_an_except_runs_the_module_whole(self):
+        self.hidden_runs_whole("try:\n    pass\nexcept ImportError:\n    class Late(unittest.TestCase):\n        pass\n")
+
+    def test_a_test_class_built_by_globals_and_type_runs_the_module_whole(self):
+        self.hidden_runs_whole("for _n in ('X', 'Y'):\n    globals()[_n] = type(_n, (unittest.TestCase,), {})\n")
+
+    def test_a_test_class_built_by_type_alone_runs_the_module_whole(self):
+        self.hidden_runs_whole("Z = type('Z', (unittest.TestCase,), {'test_z': lambda self: None})\n")
+
+    def test_a_load_tests_hook_runs_the_module_whole(self):
+        self.hidden_runs_whole("def load_tests(loader, tests, pattern):\n    return tests\n")
+
+    def test_a_class_inside_a_test_method_does_not_keep_a_module_whole(self):  # T-5588 review: only module scope counts
+        body = self.CLASSES.replace("        pass\n\n\nclass Other", "        class Local:\n            pass\n\n\nclass Other", 1)
+        self.assertIn("class Local", body)
+        self.assertIn("test_drive_beta::Drive", self.class_run(body=body))
+
     def test_a_record_whose_test_file_is_gone_selects_nothing(self):
         self.ran({"test_drive_gone": [HUB + "::beta"]})
         self.edit("return 2", "return 22")
