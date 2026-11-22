@@ -6,6 +6,7 @@ fast-forwards to the gated tip.
 The train's check_run carries the code tree (core.code_tree: no CHANGELOG.md, no sync mirror), so `sampo check` after
 each close reuses the pass while the code is unchanged. T-3544: the full-suite gate runs only the tests the batch's
 changes reach (_affected_gate); the full suite then runs on the landed merges in the background (lanes.pm_run)."""
+import ast
 import concurrent.futures
 import contextlib
 import fcntl
@@ -23,6 +24,7 @@ import statistics
 import subprocess
 import sys
 import tempfile
+import textwrap
 import threading
 import time
 import typing
@@ -563,20 +565,189 @@ def _union_map(wt, files):
     return doubled
 
 
+_TEST_FILE = re.compile(r"plugin/tests/[^/\0]+\.py")
+_MARK_LINE = re.compile(rb"(?:<{7}|\|{7}|={7}|>{7})(?: |$)")  # a conflict marker line (after its newline is cut)
+TESTS_KEY = "+tests"  # T-5824: kept[lane id + TESTS_KEY] = the test files the lane's merge resolved by keeping both insertions
+
+
+def _tests_only(files):
+    """T-5824: True when there are conflicted files and every one is a plugin/tests/*.py file."""
+    return bool(files) and all(_TEST_FILE.fullmatch(f) for f in files)
+
+
+def _bound(source):
+    """The names the top-level statements of python `source` (text) bind, one entry per binding: a def, a class, an
+    assignment target (also annotated), an imported name (the `as` name, else the first dotted part). None when it does
+    not parse."""
+    try:
+        body = ast.parse(source).body
+    except (SyntaxError, ValueError):
+        return None
+    got = []
+
+    def target(t):
+        if isinstance(t, ast.Name):
+            got.append(t.id)
+        elif isinstance(t, (ast.Tuple, ast.List)):
+            for e in t.elts:
+                target(e)
+        elif isinstance(t, ast.Starred):
+            target(t.value)
+    for s in body:
+        if isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            got.append(s.name)
+        elif isinstance(s, ast.Assign):
+            for t in s.targets:
+                target(t)
+        elif isinstance(s, ast.AnnAssign):
+            target(s.target)
+        elif isinstance(s, (ast.Import, ast.ImportFrom)):
+            got += [a.asname or a.name.split(".")[0] for a in s.names if a.name != "*"]
+    return got
+
+
+def _indent(line):
+    """Width of a line's leading whitespace, a tab counting to the next multiple of 8."""
+    s = line.expandtabs()
+    return len(s) - len(s.lstrip())
+
+
+def _block(lines):
+    """(indent, names bound) of an inserted block (list of byte lines): the smallest indent of its non-blank lines (None
+    for a blank block) and the names its statements bind once it is dedented. None when it is not utf-8 or does not
+    parse on its own."""
+    try:
+        text = b"".join(lines).decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    rows = [x for x in text.splitlines() if x.strip()]
+    low = min((_indent(x) for x in rows), default=None)
+    names = _bound(textwrap.dedent(text)) if rows else []
+    return None if names is None else (low, names)
+
+
+def _insertion_union(ours, base, theirs):
+    """T-5824: the three versions (bytes) of one file merged with `git merge-file --diff3`; a conflict hunk whose base part
+    is empty (both sides only added lines at that spot) becomes ours then theirs. The merged bytes, or None to leave the
+    merge as it was: a hunk that held a base line (a changed line is a disagreement), a clean run (git's own merge saw a
+    conflict this did not), a marker line already in an input, a merge-file that timed out, or a union that could change
+    what a line means or shadow a name: the two inserted blocks start at different indents (a method added to the last
+    class beside a class would join that class), or one starts deeper than the line before the hunk, or one does not
+    parse on its own, or both bind one name (a def, a class, an assignment target, an imported name), or the result
+    does not parse or binds a top-level name more times than either side does."""
+    if any(_MARK_LINE.match(ln.rstrip(b"\r\n")) for t in (ours, base, theirs) for ln in t.splitlines()):
+        return None
+    try:
+        with tempfile.TemporaryDirectory(prefix="sampo-union-") as d:
+            paths = []
+            for n, t in (("ours", ours), ("base", base), ("theirs", theirs)):
+                paths.append(os.path.join(d, n))
+                with open(paths[-1], "wb") as fh:
+                    fh.write(t)
+            r = subprocess.run(["git", "merge-file", "-p", "--diff3", "-L", "ours", "-L", "base", "-L", "theirs", *paths],
+                               capture_output=True, timeout=60)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if r.returncode < 1 or r.returncode > 127:
+        return None
+    out, state, mine, old, other, hunks = [], 0, [], [], [], 0
+    for ln in r.stdout.splitlines(keepends=True):
+        bare = ln.rstrip(b"\r\n")
+        if state == 0 and bare.startswith(b"<<<<<<< "):
+            state, mine, old, other = 1, [], [], []
+        elif state == 1 and bare.startswith(b"||||||| "):
+            state = 2
+        elif state == 2 and bare == b"=======":
+            state = 3
+        elif state == 3 and bare.startswith(b">>>>>>> "):
+            if old:
+                return None  # a base line sits in this hunk: someone changed it
+            m1, m2 = _block(mine), _block(other)
+            if m1 is None or m2 is None or set(m1[1]) & set(m2[1]):
+                return None
+            if m1[0] is not None and m2[0] is not None:
+                before = next((_indent(x.decode("utf-8", "replace")) for x in reversed(out) if x.strip()), None)
+                if m1[0] != m2[0] or (before is not None and m1[0] > before):
+                    return None
+            out += mine + other
+            state, hunks = 0, hunks + 1
+        elif state == 0:
+            out.append(ln)
+        elif state == 1:
+            mine.append(ln)
+        elif state == 2:
+            old.append(ln)
+        else:
+            other.append(ln)
+    if state or not hunks:
+        return None
+    merged = b"".join(out)
+    try:
+        have, a, z = (_bound(t.decode("utf-8")) for t in (merged, ours, theirs))
+    except UnicodeDecodeError:
+        return None
+    if have is None or a is None or z is None:
+        return None
+    if any(have.count(n) > max(a.count(n), z.count(n)) for n in set(have)):
+        return None
+    return merged
+
+
+def _union_tests(wt, files):
+    """T-5824: resolve the merge in `wt`, conflicted only in test files `files`: each file's three index stages through
+    _insertion_union. All results are read first and written only when every one is a union (a plain file, all three
+    stages present). The list of files, or None leaving the merge as it was, for the caller to abort."""
+    stages = {}  # path: {stage: mode}
+    for rec in _git(wt, "ls-files", "-u", "-z").stdout.split("\0"):
+        head, _, path = rec.partition("\t")
+        parts = head.split()
+        if len(parts) == 3 and path in files:
+            stages.setdefault(path, {})[parts[2]] = parts[0]
+    done = {}
+    for f in files:
+        got = stages.get(f, {})
+        if sorted(got) != ["1", "2", "3"] or any(m not in ("100644", "100755") for m in got.values()) \
+                or os.path.islink(os.path.join(wt, f)):
+            return None
+        texts = []
+        for n in ("2", "1", "3"):
+            out = subprocess.run(["git", "-C", wt, "show", f":{n}:{f}"], capture_output=True)
+            if out.returncode:
+                return None
+            texts.append(out.stdout)
+        text = _insertion_union(*texts)
+        if text is None:
+            return None
+        done[f] = text
+    for f, data in done.items():
+        with open(os.path.join(wt, f), "wb") as fh:
+            fh.write(data)
+        if _git(wt, "add", "--", f).returncode:
+            return None
+    return sorted(done)
+
+
 def _merge_in(wt, b, tip, log, kept=None):
     """Merge `tip` into the scratch tree; a conflict is aborted and logged (id, files). The new head sha or None.
     T-4375: a conflict only in docs/map/*.md entries is resolved keeping both sides' lines, the files recorded in
-    `kept` (lane id: files) for the train to say and follow up."""
+    `kept` (lane id: files) for the train to say and follow up. T-5824: a conflict only in plugin/tests/*.py files where
+    every hunk is a pure insertion (both sides only added lines at that spot) keeps ours then theirs, the files recorded
+    in `kept` under the lane id + TESTS_KEY; the train's gate judges the result as it does any merge."""
     ident = ("-c", "user.name=sampo", "-c", "user.email=sampo@localhost")
     msg = f"Merge {b.id}: {b.title}"
     if kept is not None:
         kept.pop(b.id, None)
+        kept.pop(b.id + TESTS_KEY, None)
     before = _git(wt, "rev-parse", "HEAD").stdout.strip()
     r = _git(wt, *ident, "merge", "--no-ff", "-m", msg, tip)
     if not r.returncode:
         return _over_cap(wt, b, before, log)
     files = [f for f in _git(wt, "diff", "--name-only", "--diff-filter=U", "-z").stdout.split("\0") if f]
     doubled = _union_map(wt, files) if kept is not None and _map_only(files) else None
+    unioned = _union_tests(wt, files) if kept is not None and doubled is None and _tests_only(files) else None
+    if unioned is not None and not _git(wt, *ident, "commit", "-m", msg).returncode:
+        kept[b.id + TESTS_KEY] = unioned
+        return _over_cap(wt, b, before, log)
     if doubled is not None and not _git(wt, *ident, "commit", "-m", msg).returncode:
         if doubled:  # T-5472: only a line kept twice needs a read; a clean key-aware merge needs none
             kept[b.id] = sorted(doubled)
@@ -2035,6 +2206,9 @@ def _run(p, main, ids, defer_verify=False, judged=None):
         lanes.log_landed(p, ",".join(ids_in), base, tip)  # T-4805: only now it landed; ship and release read it to skip these
         maps =[(i, kept_maps[i]) for i in ids_in if i in kept_maps]  # T-4375: only the lanes that landed this way
         map_task = _map_follow_up(p, maps) if maps else ""
+        unions = [(i, kept_maps[i + TESTS_KEY]) for i in ids_in if i + TESTS_KEY in kept_maps]  # T-5824
+        if unions:
+            c.log_event(p, "test_union", data={"lanes": {i: fs for i, fs in unions}})
         part = next((r["affected"] for r in green if r.get("affected")), None) or (live and "live")  # T-5444: verified behind
         if part:  # T-3544: the full suite the gate skipped verifies each landed merge in the background, newest first
             for i, (b, sha) in enumerate(merged):  # T-4718: a caller that ships next starts the verify after the ship asked
@@ -2058,7 +2232,7 @@ def _run(p, main, ids, defer_verify=False, judged=None):
                 "gate": round(max(0.0, t2 - t1 - confirm_s[0]) / 60, 1),
                 "confirm": round(confirm_s[0] / 60, 1), "land": round((t3 - t2) / 60, 1)}  # T-4676: gate + confirm = the gates
         return {"merged": ids_in, "left_out": left, "notes": notes, "kept": kept, "map_merged": maps,
-                "map_follow_up": map_task, "gate_runs": runs[0], "verify_owed": bool(part and defer_verify),
+                "test_merged": unions, "map_follow_up": map_task, "gate_runs": runs[0], "verify_owed": bool(part and defer_verify),
                 "probes": probes[0], "tip": tip, "branch": branch, "affected": part, "minutes": mins, "probes_skipped": sum(
                     w.startswith(SKIPPED) for _, w in notes), "lanes_probed": len(rows)}
     finally:
@@ -2169,6 +2343,8 @@ def _cmd_report(p, args, main, close, got, owed):
     lines += [f"  left out {i}: {w}" for i, w in got["left_out"]] + [f"  note {i}: {w}" for i, w in got["notes"]]
     lines += [f"  merged {i} keeping both sides' lines in {', '.join(fs)} (both rewrote one map line)"
               for i, fs in got.get("map_merged") or []]  # T-4375
+    lines += [f"  merged {i} keeping both sides' added lines in {', '.join(fs)} (both only added lines at one spot)"
+              for i, fs in got.get("test_merged") or []]  # T-5824
     if got.get("map_follow_up"):
         lines.append(f"  follow-up {got['map_follow_up']}: read the merged map entries (a line both sides rewrote is "
                      "kept twice)")

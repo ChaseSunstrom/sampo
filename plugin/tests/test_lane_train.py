@@ -518,6 +518,126 @@ class Train(TrainCase):
         p = c.find_project(self.repo)
         return [b for b in c.load_briefs(p) if b.meta.get("source") == "followup"]
 
+    TESTF = "plugin/tests/test_thing.py"
+    TBASE = "import unittest\n\n\nclass Old(unittest.TestCase):\n    def test_old(self):\n        self.assertTrue(True)\n"
+
+    @staticmethod
+    def tcls(name, body="True"):
+        return f"\n\nclass {name}(unittest.TestCase):\n    def test_it(self):\n        self.assertTrue({body})\n"
+
+    def tbase(self, name=TESTF, text=TBASE):
+        """T-5824: a committed test file two lanes can each append a class to."""
+        self.map_base(name, text)
+
+    def test_insertion_union_lands_two_lanes_that_each_append_a_class_at_one_spot(self):
+        """T-5824: the 2026-11-22 shape (T-5497, T-5725, T-5793): both lanes only added lines at the end of one test
+        file, so the train keeps ours then theirs and the gate judges; no park, no builder round."""
+        self.tbase()
+        a = self.lane(1, self.TESTF, self.TBASE + self.tcls("LaneOne"))
+        b = self.lane(2, self.TESTF, self.TBASE + self.tcls("LaneTwo"))
+        r = self.train(a, b)
+        self.assertNotIn("left out", r.stdout)
+        for tid in (a, b):
+            self.assertTrue(self.meta(tid)["lane_stop"].startswith("merged"), r.stdout)
+        text = self.read(self.TESTF)
+        self.assertEqual(text, self.TBASE + self.tcls("LaneOne") + self.tcls("LaneTwo"))
+        self.assertIn(f"merged {b} keeping both sides' added lines in {self.TESTF}", r.stdout)
+        self.assertEqual(self.git("ls-files", "-u"), "")
+        self.assertEqual(self.followups(), [], "a union of added lines needs no read")
+
+    def test_insertion_union_parks_a_lane_that_edits_a_line_the_other_changed(self):
+        """T-5824: a hunk with base lines in it is a disagreement, not an addition: the later lane parks as before."""
+        self.tbase()
+        a = self.lane(1, self.TESTF, self.TBASE.replace("assertTrue(True)", "assertTrue(1)"))
+        b = self.lane(2, self.TESTF, self.TBASE.replace("assertTrue(True)", "assertTrue(2)"))
+        r = self.train(a, b, check=False)
+        self.assertIn(f"left out {b}: conflicts with an earlier lane in the train: {self.TESTF}", r.stdout)
+        self.assertTrue(self.meta(a)["lane_stop"].startswith("merged"), r.stdout)
+        self.assertIn("assertTrue(1)", self.read(self.TESTF))
+
+    def test_insertion_union_parks_an_insertion_beside_a_changed_line(self):
+        """T-5824: one hunk that both added a block and changed a base line stays a conflict."""
+        self.tbase()
+        a = self.lane(1, self.TESTF, self.TBASE.replace("assertTrue(True)", "assertTrue(1)") + self.tcls("LaneOne", "'one'"))
+        b = self.lane(2, self.TESTF, self.TBASE.replace("assertTrue(True)", "assertTrue(2)") + self.tcls("LaneTwo", "'two'"))
+        r = self.train(a, b, check=False)
+        self.assertIn(f"left out {b}: conflicts with an earlier lane", r.stdout)
+
+    def test_insertion_union_parks_two_appended_classes_with_one_name(self):
+        """T-5824: the second class would shadow the first, so the union is refused and the lane parks."""
+        self.tbase()
+        a = self.lane(1, self.TESTF, self.TBASE + self.tcls("Same", "1"))
+        b = self.lane(2, self.TESTF, self.TBASE + self.tcls("Same", "2"))
+        r = self.train(a, b, check=False)
+        self.assertIn(f"left out {b}: conflicts with an earlier lane in the train: {self.TESTF}", r.stdout)
+        self.assertEqual(self.read(self.TESTF).count("class Same"), 1)
+
+    def test_insertion_union_parks_a_conflict_in_a_file_that_is_not_a_test(self):
+        """T-5824: the same append-append clash in plugin/lib code parks: only plugin/tests/*.py is unioned."""
+        code = "plugin/lib/thing.py"
+        self.map_base(code, "x = 1\n")
+        a = self.lane(1, code, "x = 1\ny = 2\n")
+        b = self.lane(2, code, "x = 1\nz = 3\n")
+        r = self.train(a, b, check=False)
+        self.assertIn(f"left out {b}: conflicts with an earlier lane in the train: {code}", r.stdout)
+
+    def test_insertion_union_parks_a_class_beside_a_method_added_to_the_last_class(self):
+        """T-5824 review: one lane appends a class at indent 0, the other a method at indent 4 to the last class; both
+        land at the end of the file, and the union would make the method a member of the first lane's class."""
+        self.tbase()
+        meth = "\n    def test_two(self):\n        self.assertTrue('two')\n"
+        a = self.lane(1, self.TESTF, self.TBASE + self.tcls("LaneOne", "'one'"))
+        b = self.lane(2, self.TESTF, self.TBASE + meth)
+        r = self.train(a, b, check=False)
+        self.assertIn(f"left out {b}: conflicts with an earlier lane in the train: {self.TESTF}", r.stdout)
+        self.assertNotIn("test_two", self.read(self.TESTF))
+
+    def test_insertion_union_keeps_two_methods_added_at_one_indent_to_the_last_class(self):
+        """T-5824 review: the indent rule parks a mismatch, not two blocks that start at the same indent."""
+        self.tbase()
+        m1 = "\n    def test_one(self):\n        self.assertTrue('one')\n"
+        m2 = "\n    def test_two(self):\n        self.assertTrue('two')\n"
+        a = self.lane(1, self.TESTF, self.TBASE + m1)
+        b = self.lane(2, self.TESTF, self.TBASE + m2)
+        r = self.train(a, b)
+        self.assertNotIn("left out", r.stdout)
+        self.assertEqual(self.read(self.TESTF), self.TBASE + m1 + m2)
+
+    def test_insertion_union_parks_what_it_cannot_prove_safe(self):
+        """T-5824 review: a merge-file that times out, a name bound twice (a top-level assignment, an import, a tab-indented
+        def), and a union that does not parse each return None, never a raise."""
+        from sampo import train
+        base = b"import unittest\n"
+        two = lambda x, y: (base + x, base, base + y)  # noqa: E731
+        self.assertEqual(train._insertion_union(*two(b"A = 1\n", b"B = 2\n")), b"import unittest\nA = 1\nB = 2\n")
+        for name, pair in {
+                "assignment": two(b"FIXTURE = 1\n", b"FIXTURE = 2\n"),
+                "import": two(b"from os import path as p\n", b"from sys import path as p\n"),
+                "tab def": (b"class C:\n\tdef a(self): pass\n\tdef f(self): pass\n", b"class C:\n\tdef a(self): pass\n",
+                            b"class C:\n\tdef a(self): pass\n\tdef f(self): return 2\n"),
+                "annotated": two(b"X: int = 1\n", b"X: int = 2\n"),
+                "does not parse": two(b"def broken(:\n", b"Z = 1\n")}.items():
+            self.assertIsNone(train._insertion_union(*pair), name)
+        with mock.patch.object(train.subprocess, "run", side_effect=subprocess.TimeoutExpired("git", 60)):
+            self.assertIsNone(train._insertion_union(*two(b"A = 1\n", b"B = 2\n")))
+
+    def test_insertion_union_parks_when_one_test_file_is_unioned_and_another_is_not(self):
+        """T-5824: every conflicted file must be a pure-insertion test file, or the merge is aborted whole."""
+        self.tbase()
+        other = "plugin/tests/test_other.py"
+        self.map_base(other, "a = 1\n")
+        a = self.lane(1, self.TESTF, self.TBASE + self.tcls("LaneOne"))
+        b = self.lane(2, self.TESTF, self.TBASE + self.tcls("LaneTwo"))
+        with open(os.path.join(self.tmp, "lane1", other), "w") as f:
+            f.write("a = 2\n")
+        self.git("commit", "-qam", "edit other", cwd=os.path.join(self.tmp, "lane1"))
+        with open(os.path.join(self.tmp, "lane2", other), "w") as f:
+            f.write("a = 3\n")
+        self.git("commit", "-qam", "edit other", cwd=os.path.join(self.tmp, "lane2"))
+        r = self.train(a, b, check=False)
+        self.assertIn(f"left out {b}: conflicts with an earlier lane in the train", r.stdout)
+        self.assertEqual(self.git("ls-files", "-u"), "")
+
     def test_map_only_conflict_keeps_both(self):
         """T-4375: two lanes that each add a sentence to the same docs/map entry both land; T-5472: the key-aware map
         merge puts both sentences on the one entry line, so there is no copy to read and no follow-up."""
