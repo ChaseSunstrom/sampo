@@ -627,6 +627,62 @@ class Lanes(ForemanTestCase):
         self.assertIsNone(slanes._FAST_BUILD.match("plugin/native/sampo-fast.bak"))
         self.assertIsNone(slanes._FAST_BUILD.match("other/plugin/native/sampo-fast"))
 
+    def cargo_lane(self, title, body=None, link=None):
+        """T-5466: a lane whose ignored .cargo/config.toml holds `body` (or is a link to `link`), unmarked by Sampo."""
+        tid = self.new(title, self.repo, focus=False)
+        path = json.loads(self.fm("lane", "new", tid, "--json").stdout)["path"]
+        common = subprocess.run(["git", "-C", path, "rev-parse", "--git-common-dir"], capture_output=True,
+                                text=True).stdout.strip()
+        with open(os.path.join(path, common, "info", "exclude"), "a") as f:
+            f.write(".cargo/\n")
+        os.makedirs(os.path.join(path, ".cargo"))
+        cfg = os.path.join(path, ".cargo", "config.toml")
+        if link:
+            os.symlink(link, cfg)
+        else:
+            with open(cfg, "wb") as f:
+                f.write(body if isinstance(body, bytes) else body.encode())
+        return tid, path
+
+    def test_rm_discards_a_lane_whose_cargo_config_holds_only_build_location_keys(self):
+        # T-5466: a builder's per-task target-dir config (no Sampo mark) is a cache the lane's removal may delete
+        for body in ("[build]\ntarget-dir = '/x/T-1'\njobs = 4\n", "[build]\nincremental = false\n",
+                     "[build]\n"):
+            tid, path = self.cargo_lane("Own target dir", body)
+            self.assertEqual(slanes._left_work(path), [], body)
+            self.fm("lane", "rm", tid)
+            self.assertFalse(os.path.exists(path), body)
+
+    def test_rm_keeps_a_lane_whose_cargo_config_holds_anything_else(self):
+        # T-5466: another table or key, a link, bad TOML, a file over 4 KB or a non-UTF-8 file is the user's: kept
+        other = os.path.join(self.tmp, "elsewhere.toml")
+        with open(other, "w") as f:
+            f.write("[build]\ntarget-dir = '/x'\n")
+        cases = {"an env table": "[build]\ntarget-dir = '/x'\n[env]\nA = '1'\n",
+                 "rustflags": "[build]\nrustflags = ['-C', 'x']\n",
+                 "a top-level key": "jobs = 4\n[build]\njobs = 4\n",
+                 "a target table": "[target.x]\nlinker = 'y'\n",
+                 "a nested build table": "[build.sub]\njobs = 4\n",
+                 "bad toml": "[build\ntarget-dir = \n",
+                 "empty": "",
+                 "over 4 KB": "[build]\ntarget-dir = '/x/" + "a" * 5000 + "'\n",
+                 "not utf-8": b"[build]\njobs = 4\n\xff\xfe"}
+        for why, body in cases.items():
+            tid, path = self.cargo_lane("Not just a cache", body)
+            self.assertEqual(slanes._left_work(path), ["!! .cargo/"], why)
+            p = self.fm("lane", "rm", tid, check=False)
+            self.assertNotEqual(p.returncode, 0, why)
+            self.assertTrue(os.path.isdir(path), why)
+        tid, path = self.cargo_lane("A link", link=other)
+        self.assertEqual(slanes._left_work(path), ["!! .cargo/"], "a link is never a cache, whatever it points at")
+
+    def test_a_cargo_config_elsewhere_than_the_lane_root_is_not_a_cache(self):
+        # T-5466: only the lane's own .cargo/config.toml counts, not a nested one or a sibling file
+        tid, path = self.cargo_lane("Own target dir", "[build]\njobs = 4\n")
+        for rel in ("sub/.cargo/config.toml", ".cargo/config", ".cargo/other.toml"):
+            self.assertFalse(slanes._cache_name(path, rel), rel)
+        self.assertTrue(slanes._cache_name(path, ".cargo/config.toml"))
+
     def wreck(self, keep_one=False, empty_gitdir=False):
         """T-2257: a lane whose creation was cut off: 0-byte branch ref, every file empty, a stale admin lock."""
         tid = self.new("Cut off", self.repo, focus=False)

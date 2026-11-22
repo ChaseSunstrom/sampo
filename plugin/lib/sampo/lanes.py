@@ -1639,9 +1639,45 @@ def _drop_untracked_fast(path, status):
 
 def _own_cargo_config(path, rel):
     """T-4764: the lane's own `.cargo/config.toml` that Sampo wrote (its mark on the first line; core.lane_cargo_config):
-    a file removing the lane may delete. A user's file of that name is not."""
-    return rel == ".cargo/config.toml" and not os.path.islink(os.path.join(path, rel)) \
-        and c.cargo_config_ours(os.path.join(path, rel))
+    a file removing the lane may delete. A user's file of that name is not.
+    T-5466: also a file that holds only build-location keys: kith builders write a per-task target-dir config of their
+    own without Sampo's mark, and 31 merged kith lanes stayed open on it. That is a regular file (never a link) of at
+    most _BUILD_CFG_MAX bytes that parses with tomllib to exactly one table, [build], whose keys are all in
+    _BUILD_CFG_KEYS: where the lane builds, nothing a user would lose. Any other key or table, a link, bad TOML, a
+    file over the cap or one that can't be read keeps the lane."""
+    if rel != ".cargo/config.toml":
+        return False
+    full = os.path.join(path, rel)
+    if os.path.islink(full):
+        return False
+    return c.cargo_config_ours(full) or _build_location_only(full)
+
+
+_BUILD_CFG_KEYS = frozenset({"target-dir", "jobs", "incremental"})
+_BUILD_CFG_MAX = 4096
+
+
+def _build_location_only(full):
+    """T-5466: whether a cargo config file is a regular file whose whole content is a [build] table of build-location
+    keys (_BUILD_CFG_KEYS), read within _BUILD_CFG_MAX bytes; any failure to read or parse is False (the lane stays)."""
+    try:
+        fd = os.open(full, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+        try:
+            if not _stat.S_ISREG(os.fstat(fd).st_mode):
+                return False
+            with os.fdopen(fd, "rb", closefd=False) as f:
+                raw = f.read(_BUILD_CFG_MAX + 1)
+        finally:
+            os.close(fd)
+        if len(raw) > _BUILD_CFG_MAX:
+            return False
+        import tomllib
+        doc = tomllib.loads(raw.decode("utf-8"))
+    except (OSError, ValueError):  # tomllib.TOMLDecodeError and UnicodeDecodeError are ValueErrors
+        return False
+    build = doc.get("build") if list(doc) == ["build"] else None
+    return isinstance(build, dict) and set(build) <= _BUILD_CFG_KEYS \
+        and not any(isinstance(v, (dict, list)) for v in build.values())
 
 
 def resume(p, b, main, args, ended=False, recover=None, after=""):
