@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- sampo lane brief reads the helper names a task says it uses and, when the base lacks one that an open task's unlanded lane defines, records that task in depends_on and defers the brief naming both, instead of spending a builder run (T-5808).
 - Lease take from a builder lane notes a sibling lane's hold of its session and takes the lease, as a lane pre-claim is taken (T-5720).
 - sampo task show and sampo lane list print a short view from inside a builder's lane, with --full, --all, --json and the main checkout unchanged (T-5687).
 - The brief's section caps are now 800 and 1200 bytes, with callers filtered to code and to strong scope defs (T-5682).
