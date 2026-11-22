@@ -93,6 +93,11 @@ def commands():
                 "summary": "widen task scope: set the scope assignments on a task (scope+=PATH appends, scope-=PATH removes)", "text": "task set ID scope= widen task scope"})
     out.append({"name": "task set ID approved=true", "load": "fm task set ID approved=true",
                 "summary": "approve a task: mark it approved", "text": "task set ID approved=true approve a task"})
+    out.append({"name": "task plan --file PLANS.json", "load": "fm task plan --file PLANS.json",  # T-5728
+                "summary": "plan in one call: fill a whole plan, or several tasks' plans, from one JSON file "
+                           "(a refused lane brief writes the skeleton)",
+                "text": "task plan --file PLANS.json plan fill a whole plan several tasks in one call interpretation "
+                        "approach criteria steps one JSON file skeleton every gap at once"})
     out.append({"name": "task set ID --allow CATEGORY", "load": "fm task set ID --allow CATEGORY",
                 "summary": "allow a guard category on a task", "text": "task set ID --allow guard category allow a task"})
     return out

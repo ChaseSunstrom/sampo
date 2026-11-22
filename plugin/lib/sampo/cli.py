@@ -4987,6 +4987,9 @@ def plan_file(p, args):
                 and all(isinstance(e.get(k, ""), str) for k in ("interpretation", "approach"))):
             problems.append(f"{b.id}: interpretation, approach, criteria and steps are text (criteria and steps are lists)")
             continue
+        if any(c.TODO_MARK in t for t in [e.get("interpretation", ""), e.get("approach", ""), *crit, *steps]):
+            problems.append(f"{b.id} still has a {c.TODO_MARK} …> mark from the skeleton: write each one in your own words")
+            continue  # T-5728: a skeleton left as lane brief wrote it is never saved as the plan
         if crit and b.acceptance() and not e.get("replan"):
             problems.append(f"{b.id} is already planned with criteria; set \"replan\": true to re-plan it")
             continue
@@ -5023,7 +5026,33 @@ def plan_file(p, args):
         rows.append({"id": x.id, "criteria": len(crit), "steps": len(steps)})
         lines.append(f"{x.id}: planned ({len(crit)} criteria, {len(steps)} steps)")
     warns = _lint_verify(p, verifies)
-    return out(args, {"plans": rows}, "\n".join(lines) + _warned(warns))
+    left, skel = _plan_left(p, planned)  # T-5728: what each plan still lacks, once, with the skeleton to fill
+    for row in rows:
+        if row["id"] in left:
+            row["gaps"] = left[row["id"]]["lines"] + left[row["id"]]["others"]
+    return out(args, {"plans": rows}, "\n".join(lines) + skel + _warned(warns))
+
+
+def _plan_left(p, planned):
+    """T-5728: ({id: {"lines", "others"}}, text): the gaps each just-written plan still has, one short line each, and the
+    <ID>.PLANS.json skeleton of each (prefilled with its sections, a <TODO: …> per gap) that one more `sampo task plan
+    --file` fills: one file per task, each path printed."""
+    left, text = {}, []
+    for x in planned:
+        b = c.find_brief(p, x.id) or x
+        gaps = list(dict.fromkeys(c.plan_gaps(b, "full" if c.at_least(b.tier, "L") else c.effective_autonomy(p))))
+        entry, lines, others, rival = c.plan_skeleton(b, gaps)
+        if not (lines or others or rival):
+            continue
+        left[b.id] = {"lines": lines, "others": others}
+        text += [f"{b.id} still needs:", *lines, *[f"* {o}" for o in others]]
+        if rival:
+            text.append(f"* {c.gap_line(rival[0])} (sampo lane brief {b.id} starts it)" if rival[0].startswith("a cold")
+                        else f"* {c.gap_line(rival[0])}")
+        if lines:  # one file per task: two sessions never overwrite a shared PLANS.json
+            path = c.write_plan_skeleton(p, [entry])[b.id]
+            text.append(f"fill every {c.TODO_MARK} …> in the file, then: sampo task plan --file {path}")
+    return left, ("\n" + "\n".join(text)) if text else ""
 
 
 def _section_pairs(args):
@@ -9949,7 +9978,8 @@ def _build_parser(only=None):
 
     task_help = {  # T-1908: fm task -h, fm help and fm which read these
         "dissent": "add or resolve an objection raised against the plan",
-        "plan": "write the Interpretation, Approach, criteria and steps of many planned tasks from one JSON file (--file)",
+        "plan": "plan in one call: write the Interpretation, Approach, criteria and steps of one or many tasks from one JSON "
+                "file (--file; a refused lane brief writes the skeleton)",
         "split":"partition the task's files over the work graph into child tasks",
         "capsule": "a split child's bounded return to its parent",
         "follow": "list, settle (done, capture or drop with a why) the follow-ups captured on a task", "finding": "record one reviewer finding and if it held",
@@ -10581,7 +10611,8 @@ def _build_parser(only=None):
     s.add_argument("what", choices=["plan", "cheapest", "rival", "debate", "session"])
     s.add_argument("id", nargs="?", help="plan, rival, debate: the task")
     s.add_argument("--review", help="debate: the research note holding the earlier review")
-    s.add_argument("--model", help="plan, rival, session: the child's model, another than the main one (default sonnet)")
+    s.add_argument("--model", help="plan, rival, session: the child's model, another than the main one (default sonnet); "
+                                   "rival also takes 'local': the local model first, the child when none answers")
     s.add_argument("--if-due", action="store_true", help="session: only once a day")
     s.add_argument("--exclude", help="session: the current session's id (its transcript isn't the previous one)")
     s.add_argument("--force", action="store_true", help="plan: run it on a tier protocols.json gives no panel")
@@ -12585,13 +12616,16 @@ def _task_shape(parser, argv):
     acts = pos[1].choices if len(pos) > 1 and pos[1].choices else None
     if acts and len(rest) > 1 and rest[0] in acts and _TASK_ID.match(rest[1]):
         rest[0], rest[1] = rest[1], rest[0]
-    if sub in ("drop", "block", "defer", "unblock"):
-        for i, a in enumerate(rest):
-            if a == "--reason" and i + 1 < len(rest):
-                rest = rest[:i] + rest[i + 1:]
-                break
-            if a.startswith("--reason="):
-                rest[i] = a.split("=", 1)[1]
+    if sub in ("drop", "block", "defer", "unblock"):  # T-5728: --why is --reason's twin; the value goes right after the id
+        for i, a in enumerate(rest):  # (argparse takes a lone optional positional after other options as an extra)
+            val = None
+            if a in ("--reason", "--why") and i + 1 < len(rest):
+                val, rest = rest[i + 1], rest[:i] + rest[i + 2:]
+            elif a.startswith(("--reason=", "--why=")):
+                val, rest = a.split("=", 1)[1], rest[:i] + rest[i + 1:]
+            if val is not None:
+                at = next((j + 1 for j, x in enumerate(rest) if _TASK_IDS.match(x)), 0)
+                rest.insert(at, val)
                 break
     if not any(_TASK_IDS.match(a) for a in rest):  # review: an id or range after an option is still the task named
         try:

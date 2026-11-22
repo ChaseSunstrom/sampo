@@ -899,6 +899,35 @@ class TaskLifecycle(ForemanTestCase):
         self.assertIsNone(self.fm_json("resume")["id"])
 
 
+class WhyAlias(ForemanTestCase):  # T-5728: `task drop ID --why R` cost a round: --why is the reason, as --reason and the positional are
+    def new(self, title):
+        return json.loads(self.fm("task", "new", title, "--type", "FIX", "--tier", "S", "--ac", "x :: true", "--step", "s",
+                                  "--json").stdout)["id"]
+
+    def reason_of(self, tid, event):
+        rows = [e for e in c.ledger_tail(c.find_project(self.repo), 200) if e.get("task") == tid and e.get("event") == event]
+        return rows[-1]["data"]["reason"]
+
+    def test_why_alias_on_every_reason_verb(self):
+        tid = self.new("One")
+        self.fm("task", "block", tid, "--why", "waits on the vendor")
+        self.assertEqual(self.reason_of(tid, "task_block"), "waits on the vendor")
+        self.fm("task", "unblock", tid, "--why", "vendor answered")
+        self.assertEqual(self.reason_of(tid, "task_unblock"), "vendor answered")
+        self.fm("task", "defer", tid, "--why", "next week")
+        self.assertEqual(self.reason_of(tid, "task_defer"), "next week")
+        self.fm("task", "drop", tid, "--why", "no longer needed")
+        self.assertEqual(c.find_brief(c.find_project(self.repo), tid).status, "dropped")
+        self.assertEqual(self.reason_of(tid, "task_drop"), "no longer needed")
+
+    def test_why_alias_before_the_id_and_with_equals(self):
+        a, b = self.new("A"), self.new("B")
+        self.fm("task", "drop", "--why", "dup of the other", a)
+        self.assertEqual(self.reason_of(a, "task_drop"), "dup of the other")
+        self.fm("task", "drop", b, "--why=gone")
+        self.assertEqual(self.reason_of(b, "task_drop"), "gone")
+
+
 class StateViews(ForemanTestCase):
     def test_state_md_is_bounded(self):
         self.fm("init")

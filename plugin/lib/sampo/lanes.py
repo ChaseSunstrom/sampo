@@ -4418,6 +4418,83 @@ def card_section(p, b):
     return card_block(fit)
 
 
+RIVAL_WAIT = 60  # T-5728: seconds lane brief waits for a cold rival read it started, when that read is its one gap
+RIVAL_READ_S = 240  # the background read's own time box (second rival --timeout)
+
+
+def _rival_spawn(p, b):
+    """T-5728: the cold rival read of brief b, started detached (`sampo second rival ID --model local`: the local model
+    first, time-boxed), never two at once: the claim is an O_EXCL marker file (second.claim_mark), stale only when the
+    process it names is dead, and only the one that made the claim starts the read. The read removes the marker when it
+    ends, however it ends. True when a read is running, started now or before; False when none can start
+    (FOREMAN_NO_BACKGROUND, an unwritable marker): the caller then names the command."""
+    from sampo import second
+    if os.environ.get("FOREMAN_NO_BACKGROUND"):
+        return False
+    try:
+        if not second.claim_mark(p, b.id):
+            return True  # a live read holds it
+    except OSError:
+        return False
+    bin_ = os.path.join(c.PLUGIN_ROOT, "bin", "sampo")
+    try:
+        proc = subprocess.Popen([sys.executable, bin_, "-p", p.slug, "second", "rival", b.id, "--model", "local",
+                                 "--timeout", str(RIVAL_READ_S)], cwd=p.root, start_new_session=True,
+                                env={**os.environ, "FOREMAN_RIVAL_MARK": second.rival_mark(p, b.id)},
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        second.drop_mark(p, b.id)  # a read that never started must not hold the next one off
+        return False
+    second.set_mark_pid(p, b.id, proc.pid)  # from here the child's life is the claim
+    return True
+
+
+def _rival_wait(p, tid, secs):
+    """T-5728: True once task tid has its rival read (rival_at is set), polling up to `secs` seconds."""
+    end = time.monotonic() + max(0, secs)
+    while True:
+        x = c.find_brief(p, tid)
+        if x is not None and x.meta.get("rival_at"):
+            return True
+        if time.monotonic() >= end:
+            return False
+        time.sleep(min(1.0, max(0.0, end - time.monotonic())))
+
+
+def _plan_refusal(p, b, gaps):
+    """T-5728: ("" when the plan is complete now) or the one refusal for brief b: every gap on its own short line, the
+    PLANS.json skeleton that one `sampo task plan --file` fills, and the cold rival read started in the background rather
+    than handed back as a command. A rival read that is the only gap is waited for, RIVAL_WAIT seconds at most."""
+    _entry, lines, others, rival = c.plan_skeleton(b, gaps)
+    asked = [g for g in rival if g.startswith("a cold rival read")]
+    running = _rival_spawn(p, b) if asked else False
+    if asked and running and not (lines or others or [g for g in rival if g not in asked]):
+        if _rival_wait(p, b.id, RIVAL_WAIT):  # it landed: judged again, its open lines are the next gaps
+            b = c.find_brief(p, b.id) or b
+            gaps = list(dict.fromkeys([*c.plan_gaps(b, c.effective_autonomy(p)), *_door_gaps(p, b)]))
+            return _plan_refusal(p, b, gaps) if gaps else ""
+        why = re.search(r"\(([^;)]*)", asked[0])
+        return (f"{b.id} waits on its cold rival read ({why.group(1) if why else 'the plan asks for one'}): pending, started "
+                f"in the background; it lands on the task as Dissent lines; rerun sampo lane brief {b.id} in a minute")
+    rest = [g for g in rival if g not in asked or not running]  # a read that could not start is named as it was
+    out = [f"{b.id} isn't planned enough for a builder:"]
+    out += lines + [f"* {o}" for o in others] + [f"* {c.gap_line(g)}" for g in rest]
+    if lines:
+        path = c.write_plan_skeleton(p, [_entry])[b.id]
+        out.append(f"fill every {c.TODO_MARK} …> in the file, then: sampo task plan --file {path}")
+    if others or rest:
+        out.append("(* lines: not in the file; fix them with the command each names: sampo task set/ac/step/ask)")
+    if asked and running:
+        out.append("a cold rival read started in the background (local model first): its objections land on the task as "
+                   "Dissent lines; answer them with sampo task dissent after the plan call")
+    return "\n".join(out)
+
+
+def _door_gaps(p, b):
+    from sampo import doors as sdoors
+    return sdoors.brief_gaps(p, b)
+
+
 def builder_brief(p, b, args, resume_branch=None, after="", stacked=None):
     """T-0234: a self-contained brief for one S/M task worked by a sampo:fm-builder subagent in its own worktree
     (Agent isolation "worktree"; its `fm focus` binds the task there), and the Agent call that launches it. The main
@@ -4458,10 +4535,12 @@ def builder_brief(p, b, args, resume_branch=None, after="", stacked=None):
                    f"{b.id} once it reports or lands)"
                    if unreported else f"each is a finished lane not landed, and a lane starts from one base: land one "
                    f"first (sampo lane land --bg), then brief {b.id}"))
-    from sampo import doors as sdoors  # T-4821: focus's door gaps for a root door, read with no write (after the cheap refusals)
-    gaps = list(dict.fromkeys([*c.plan_gaps(b, c.effective_autonomy(p)), *sdoors.brief_gaps(p, b)]))
+    # T-4821: focus's door gaps for a root door, read with no write (after the cheap refusals)
+    gaps = list(dict.fromkeys([*c.plan_gaps(b, c.effective_autonomy(p)), *_door_gaps(p, b)]))
     if gaps:  # T-0823: the builder's first act is fm focus, which refuses these
-        raise c.PolicyError(f"{b.id} isn't planned enough for a builder: missing {', '.join(gaps)} (fm task set/ac/step)")
+        said = _plan_refusal(p, b, gaps)  # T-5728: every gap at once, the skeleton file, the rival read started
+        if said:
+            raise c.PolicyError(said)
     if not [v for _, v in b.verify_cmds() if v]:
         raise cli.UsageError(f"{b.id} has no criterion with a verify command: a builder needs checks it can run "
                                f"(fm task ac {b.id} add \"…\" --verify \"<cmd>\")")

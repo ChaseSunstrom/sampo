@@ -675,8 +675,10 @@ def _paid(model):
     return model in ("haiku", "sonnet", rune.REVIEW_MODELS[-1])  # a local answer is free
 
 
-def _ask(p, system, prompt, cheap=True, paid=0, feature=FEATURE, writer=None, profile=None, timeout=None, think=_RUN):
+def _ask(p, system, prompt, cheap=True, paid=0, feature=FEATURE, writer=None, profile=None, timeout=None, think=_RUN,
+         deadline=None):
     """(text, the model that answered): the local model first, else Haiku (cheap=False: the strongest review model).
+    deadline (T-5728): a time.monotonic() end the local candidates share: each gets what is left, none is asked past it.
     T-2994 writer: "haiku"/"sonnet" skip the local model and pay (same budget caps); "local" never pays.
     A sensitive project never goes to the cloud. Raises budget.BudgetError when the budget says no: today's cap, or the
     per-command cap over this call and the `paid` cloud calls the same run made before it. think: True/False for this
@@ -699,9 +701,15 @@ def _ask(p, system, prompt, cheap=True, paid=0, feature=FEATURE, writer=None, pr
         yield from (x for x in (_locals(sensitive) if local else ()) if not named or x.get("name") != named.get("name"))
     tried = []  # T-3152: each local model tried and why it gave nothing, named when the run stops
     for prof in cands():
+        left = timeout or TIMEOUT
+        if deadline is not None:  # T-5728: one wall-clock end for the whole call, not a timeout per candidate
+            left = min(left, deadline - time.monotonic())
+            if left <= 0:
+                tried.append(f"{prof['name']}: the deadline passed")
+                break
         try:
             r = models.complete(prof, [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
-                                max_tokens=min(prof.get("max_out", 4096), prof.get("context", 4096)), timeout=timeout or TIMEOUT,
+                                max_tokens=min(prof.get("max_out", 4096), prof.get("context", 4096)), timeout=left,
                                 think=think)
             if (r.get("text") or "").strip():
                 # a --think run books its rows under their own name, so coverage's "kept by model" is the A/B (T-2893)

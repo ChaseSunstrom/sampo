@@ -6598,6 +6598,94 @@ def plan_gaps(b, autonomy="standard"):
     return gaps
 
 
+# T-5728: a refusal lists every gap at once, each on one short line, with a PLANS.json skeleton that one
+# `sampo task plan --file` call fills. A gap the file can hold is a "- " line with a <TODO: …> in its field; the rest
+# (an approval, an assumption, a door) are "* " lines the file cannot fix.
+TODO_MARK = "<TODO:"
+_GAP_SHORT = (("Interpretation:", "Interpretation: 2+ readings (or the one reading and the one you ruled out, with why)"),
+              ("Approach (options", "Approach: 3+ options with outcomes, a use-what-exists, a do-less, 'Choice N (NN%): why'"))
+
+
+def gap_line(g, width=116):
+    """One short line for a gap: the whole gap when it fits, else its first clause without the command hint after it."""
+    g = plain(" ".join(str(g).split()))
+    if len(g) <= width:
+        return g
+    for head, short in _GAP_SHORT:
+        if g.startswith(head):
+            return fit(short, width)
+    return fit(g.split(" (", 1)[0].split("; sampo ", 1)[0].rstrip(" :;,"), width)
+
+
+def gap_field(g):
+    """Which PLANS.json field fixes a gap: interpretation, approach, criteria, steps, rival (lane brief starts that
+    read itself), or '' for a gap the file cannot hold."""
+    if g.startswith("Interpretation"):
+        return "interpretation"
+    if (g.startswith(("Approach", "a choice in Approach", "a confidence on the choice", "a use-what-exists option",
+                      "a do-less option")) or (g.startswith("option ") and " in Approach " in g)):
+        return "approach"
+    if g.startswith(("verify command on criterion", "acceptance criterion", "a criterion for")):
+        return "criteria"
+    if g == "step":
+        return "steps"
+    if g.startswith("a cold rival read") or re.match(r"\d+ open rival line", g):
+        return "rival"
+    return ""
+
+
+def plan_skeleton(b, gaps):
+    """(entry, lines, others, rival): the PLANS.json entry for brief b as it is now, a <TODO: gap> in the field of each gap
+    the file can hold, the "- " line of each of those, the gaps it cannot hold (short), and the rival gaps."""
+    acs, entry = b.acceptance(), {"id": b.id}
+    crit = []
+    for a in acs:
+        text, cmd = split_verify(a.text)
+        crit.append([text, cmd])
+    inter, appr = b.section("Interpretation").strip(), b.section("Approach (options → choice → why)").strip()
+    steps = [s.text for s in b.steps()]
+    lines, others, rival, extra = [], [], [], []
+    for g in gaps:
+        field, line = gap_field(g), gap_line(g)
+        mark = f"{TODO_MARK} {line.replace('<', '(').replace('>', ')')}>"
+        if field == "interpretation":
+            inter = f"{inter} {mark}".strip()
+        elif field == "approach":
+            appr = f"{appr} {mark}".strip()
+        elif field == "criteria":
+            m = re.match(r"verify command on criterion (\d+)", g)
+            if m and 0 < int(m.group(1)) <= len(crit):
+                crit[int(m.group(1)) - 1][1] = mark
+            else:
+                extra.append(f"{mark[:-1]} :: a check that can fail>")
+        elif field == "steps":
+            steps.append(mark)
+        elif field == "rival":
+            rival.append(g)
+            continue
+        else:
+            others.append(line)
+            continue
+        lines.append(f"- {line}")
+    entry.update(interpretation=inter, approach=appr,
+                 criteria=[f"{t} :: {v}" if v else t for t, v in crit] + extra, steps=steps)
+    if acs:
+        entry["replan"] = True  # the file replaces criteria the task already has
+    return entry, lines, others, rival
+
+
+def write_plan_skeleton(p, entries):
+    """The skeleton files for the entries (one per task that still has a gap): {id: path}. Each task has its own
+    <ID>.PLANS.json under the project's plans folder, replaced whole on each refusal, so two sessions refused on
+    different tasks never overwrite one shared file."""
+    out = {}
+    for e in entries:
+        path = os.path.join(p.dir, "plans", f"{e['id']}.PLANS.json")
+        write_atomic(path, json.dumps([e], indent=2, ensure_ascii=False) + "\n", durable=False)
+        out[e["id"]] = path
+    return out
+
+
 STAGES = ("planning", "ready", "executing", "verifying", "documenting", "auditing", "closing")  # stage()'s order
 
 

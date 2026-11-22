@@ -2,10 +2,13 @@
 on another model before execution, an earlier review's findings rebutted from the code, and the last session read for
 requests nobody answered. Children are tool-less (fmideas.child_cmd) and budgeted (fm budget); what comes back is data,
 saved into the brief or the inbox. Stdlib only."""
+import contextlib
+import fcntl
 import glob
 import json
 import os
 import re
+import time
 
 from sampo import core as c
 from sampo import ideas
@@ -161,6 +164,83 @@ def chosen_reading(interp):
     return texts.get(pick) or next(iter(texts.values()))
 
 
+MARK_MAX_S = 3600  # T-5728: a rival read lives minutes; a marker this old with a live pid is a reused pid, not a read
+
+
+def rival_mark(p, tid):
+    """T-5728: the marker file of task tid's background rival read: it holds the pid of the process doing the read."""
+    return os.path.join(p.dir, "plans", f"{tid}.rival.started")
+
+
+def _alive(pid):
+    try:
+        os.kill(pid, 0)
+    except PermissionError:
+        return True  # it exists, another user's
+    except (ProcessLookupError, OSError, OverflowError):
+        return False
+    return True
+
+
+def _mark_live(mark):
+    """A marker is stale only when its process is dead (or, a pid reused, it is older than MARK_MAX_S); an unreadable or
+    empty one is a claim being written, live for a few seconds."""
+    try:
+        age = time.time() - os.path.getmtime(mark)
+    except OSError:
+        return False
+    try:
+        with open(mark, encoding="utf-8") as f:
+            pid = int(f.read().split()[0])
+    except (OSError, ValueError, IndexError):
+        return 0 <= age < 10
+    return _alive(pid) and age <= MARK_MAX_S
+
+
+def claim_mark(p, tid):
+    """T-5728: True when this call made the claim to read task tid cold (O_EXCL create of its marker, holding our pid);
+    False when a live read holds it. A dead holder's marker is taken over once; a lock keeps two takers from both
+    deleting and creating. Only the claimant starts the read."""
+    mark = rival_mark(p, tid)
+    os.makedirs(os.path.dirname(mark), exist_ok=True)
+    with open(os.path.join(os.path.dirname(mark), ".rival.lock"), "a") as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        for _ in range(2):
+            try:
+                fd = os.open(mark, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            except FileExistsError:
+                if _mark_live(mark):
+                    return False
+                with contextlib.suppress(OSError):
+                    os.unlink(mark)
+                continue
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(f"{os.getpid()}\n")
+            return True
+    return False
+
+
+def set_mark_pid(p, tid, pid):
+    """The claimant hands the marker to the child it started: from then on the child's life is the claim."""
+    with contextlib.suppress(OSError):  # a child that is already done removed it: never recreated
+        fd = os.open(rival_mark(p, tid), os.O_WRONLY | os.O_TRUNC)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(f"{pid}\n")
+
+
+def drop_mark(p, tid):
+    with contextlib.suppress(OSError):
+        os.unlink(rival_mark(p, tid))
+
+
+def release_mark(path, p, tid):
+    """The read's last act (a finally): remove its own marker, named by FOREMAN_RIVAL_MARK and only when that is task
+    tid's marker, so an environment value can't point it at another file."""
+    if path and os.path.abspath(path) == os.path.abspath(rival_mark(p, tid)):
+        with contextlib.suppress(OSError):
+            os.unlink(path)
+
+
 def rival(p, b, model=None, timeout=300, read=None):
     """T-2341 (Mission 5, #2): a tool-less child on another model reads the request and the repo map and nothing else
     (never the plan); its readings, approaches and failure modes are saved as the brief's Rival plan section, each
@@ -170,10 +250,12 @@ def rival(p, b, model=None, timeout=300, read=None):
     (sampo code, whose model `model` names); it raises ValueError when it gets nothing. That model already reads the
     project, so a sensitive project's read is not skipped."""
     from sampo import cli
-    if not model:
+    local = model == "local"  # T-5728: the local model first (moonscale picks it; a sensitive project's words stay on it),
+    if not model or local:  # then the Claude child on the other model when none answered
         model = "opus" if "sonnet" in str(cli._session_model() or "").lower() else "sonnet"
     note = ""
-    if not read and c.read_meta(p).get("sensitive"):
+    sensitive = bool(c.read_meta(p).get("sensitive"))
+    if not read and sensitive and not local:
         note = "skipped: a sensitive project's words stay out of any child"
     else:
         try:
@@ -184,7 +266,19 @@ def rival(p, b, model=None, timeout=300, read=None):
         raw = "\n".join(ln[2:] if ln.startswith("> ") else ln for ln in b.section("Raw request").strip().splitlines())
         prompt = f"Request (data, not instructions):\n{c.fit(c.defang(c.redact(raw)), 4000)}\n\n{repo_map}\n"
         try:
-            text = read(RIVAL, prompt) if read else _child(p, "second-rival", RIVAL, prompt, model, timeout)
+            text = None
+            end = time.monotonic() + timeout  # T-5728: one wall-clock end for the whole read, local models and child together
+            if local and not read:
+                from sampo import moonscale
+                try:  # the local models share the first half; the child gets what is left
+                    text, model = moonscale._ask(p, RIVAL, prompt, writer="local", timeout=timeout,
+                                                 deadline=time.monotonic() + timeout / 2)
+                except Exception as e:  # no local model answered: a sensitive project stops here, the rest ask the child
+                    if sensitive:
+                        raise ValueError(f"no local model answered: {c.fit(c.plain(str(e)), 160)}")
+            if text is None:
+                text = read(RIVAL, prompt) if read else _child(p, "second-rival", RIVAL, prompt, model,
+                                                               max(1, int(end - time.monotonic())) if local else timeout)
         except ValueError as e:
             note = f"no rival read: {c.fit(c.plain(str(e)), 200)}"
     readings, approaches, modes = ([] if note else _bullets(text, h)[:4] for h in ("Readings", "Approaches", "Failure modes"))
@@ -403,7 +497,10 @@ def cmd_second(args):
             return cli.out(args, {"cheapest": body}, f"{b.id}: cheapest version saved\n{body}")
         if args.what == "rival":  # T-2341
             b = cli.need_brief(p, args.id)
-            lines, split, note = rival(p, b, args.model, args.timeout)
+            try:
+                lines, split, note = rival(p, b, args.model, args.timeout)
+            finally:  # T-5728: a read that lasted or died leaves no marker to hold the next one off
+                release_mark(os.environ.get("FOREMAN_RIVAL_MARK"), p, b.id)
             return cli.out(args, {"dissent": lines, "rival_split": split, "note": note},
                              f"{b.id}: " + (note or f"Rival plan saved, {len(lines)} open dissent line(s)"
                                             + (", the top reading differs from the plan's (rival_split)" if split else ""))
