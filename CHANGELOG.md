@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- `sampo fold set/page/--json` records one verdict per inbox or queued task in a fold ledger, lists every task with its verdict or "unfolded" on one page, and counts the standalone ones (T-5020).
 - `sampo.steward_dup` finds duplicate and foldable open tasks with a hashed word and bigram TF-IDF cosine over title and criteria, no training, bounded to milliseconds, and never pairs a task with its dependency (T-5019).
 - Capture placement verdict: `place_capture` says new, join, merge or duplicate with the target task, reason, backend and probability, from `models.decide` with the word-overlap rule as the under-the-bar fallback (T-5011).
 - Kalevala climbs unattended: each round starts one headless Claude session for every tower step that only a session takes (the first seed, Missions, intake, critique, gap map, blind spots, report), with no file-editing tools, a spend cap, Opus where the step is reasoning and Sonnet elsewhere, two at a time; drift, review and sweep run as jobs; a tower that fails one step twice is held si… (T-3843).
