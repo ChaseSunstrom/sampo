@@ -29,6 +29,13 @@ OLD = "2026-01-01T00:00:00"  # a lane quiet this long counts as finished (core.f
 first =lambda text: json.JSONDecoder().raw_decode(text)[0]  # --focus prints its own lines after the JSON
 
 
+def resume_block(brief):
+    """T-5684: the Resume section of a builder brief, from its header to the next section."""
+    start = brief.index("## Resume")
+    end = brief.find("\n## ", start + 1)
+    return brief[start:end if end >= 0 else len(brief)]
+
+
 class Lanes(ForemanTestCase):
     def setUp(self):
         super().setUp()
@@ -1750,6 +1757,193 @@ class Lanes(ForemanTestCase):
         brief = read_text(os.path.join(c.find_project(self.repo).dir, "audits", f"{tid}.builder.md"))
         self.assertIn(f"git merge foreman/{tid}", brief)
         self.assertNotIn(f"fm lane recover {tid}", self.fm("next").stdout, "its new process is recorded")
+
+    def commit_in(self, path, name, subject):
+        """T-5684: one more commit in a lane, adding one file."""
+        with open(os.path.join(path, name), "w") as f:
+            f.write(subject + "\n")
+        subprocess.run(["git", "-C", path, "add", "-A"], check=True)
+        subprocess.run(["git", "-C", path, "commit", "-qm", subject], check=True)
+
+    def test_resume_brief_lists_what_the_last_builder_committed(self):
+        # T-5684: the next builder skips re-reading the branch: its commits past the base, newest first, with a stat
+        tid, path = self.stopped_builder()
+        self.commit_in(path, "parser.py", "built the parser")
+        for i in range(12):
+            self.commit_in(path, f"step{i}.txt", f"step {i} done")
+        self.fm("lane", "resume", tid)
+        brief = read_text(os.path.join(c.find_project(self.repo).dir, "audits", f"{tid}.builder.md"))
+        block = resume_block(brief)
+        self.assertIn("step 11 done", block, "the newest commit is listed")
+        self.assertIn("13 commit(s) past the base", block)  # the parser commit took wip.py in with it: no WIP commit
+        self.assertIn("1 left out", block, "the cap says how many commits it left out")
+        self.assertNotIn("built the parser", block, "cut: the commit list stops at the newest twelve")
+        self.assertIn("parser.py", block, "the stat covers every commit on the branch, the cut ones too")
+        self.assertIn("14 files changed", block)
+
+    def test_resume_brief_shows_steps_and_evidence(self):
+        # T-5684: the steps done, the current one and the last evidence lines, so the next builder skips reading them
+        tid, path = self.stopped_builder()
+        p = c.find_project(self.repo)
+        b = c.find_brief(p, tid)
+        b.set_section("Steps", "1. [x] Tests first\n2. [ ] Build the parser  <- CURRENT\n3. [ ] Docs\n")
+        b.add_evidence("python3 plugin/tests/run.py test_x -k parse", "✓ 3 passed", step=1, ran=True)
+        c.save_brief(p, b)
+        self.fm("lane", "resume", tid)
+        block = resume_block(read_text(os.path.join(c.find_project(self.repo).dir, "audits", f"{tid}.builder.md")))
+        self.assertIn("Steps done: 1 of 3 (1)", block)
+        self.assertIn("Current: 2. Build the parser", block)
+        self.assertIn("test_x -k parse", block, "the last evidence line is named")
+
+    def test_resume_brief_names_the_stop_and_the_refusal(self):
+        # T-5684: a plain resume (no recover) names why its lane stopped, read before resume clears the stop mark
+        tid, path = self.stopped_builder()
+        p = c.find_project(self.repo)
+        slanes.stop_mark(p, tid, "refused")
+        c.log_event(p, "enforce", task=tid, data={"kind": "merge_refused", "reason": "criterion ok red: ZZ-RED-OUTPUT"})
+        self.fm("lane", "resume", tid)
+        brief = read_text(os.path.join(c.find_project(self.repo).dir, "audits", f"{tid}.builder.md"))
+        self.assertIn("Why it came back", brief)
+        self.assertIn("refused", brief)
+        self.assertIn("ZZ-RED-OUTPUT", brief, "the reason its last merge gave")
+        self.assertNotIn("lane_stop", json.loads(self.fm("task", "show", tid, "--json").stdout)["meta"])
+
+    def test_resume_state_is_bounded_and_a_first_brief_has_none(self):
+        # T-5684: a first brief carries no resume state; a resumed one's whole Resume block stays under RESUME_MAX
+        fresh = first(self.fm("task", "new", "Fresh", "--type", "FEATURE", "--tier", "M", "--ac", "ok :: true", "--step", "s",
+                              "--interpretation", "Reading 1: a. Reading 2: b.", "--approach", "1) a; fails if: x 2) use what exists: b; fails if: y 3) do less: c; fails if: z Choice 1 (80%): a", "--json").stdout)["id"]
+        self.fm("task", "set", fresh, "approved=true")
+        self.fm("lane", "brief", fresh)
+        p = c.find_project(self.repo)
+        first_brief = read_text(os.path.join(p.dir, "audits", f"{fresh}.builder.md"))
+        self.assertNotIn("## Resume", first_brief)
+        self.assertNotIn("Steps done:", first_brief)
+        tid, path = self.stopped_builder()
+        for i in range(14):
+            self.commit_in(path, f"f{i}.txt", f"step {i} " + "x" * 300)
+        b = c.find_brief(p, tid)
+        for i in range(6):
+            b.add_evidence(f"python3 plugin/tests/run.py test_{i} " + "y" * 450, "✓ 1 passed", step=1, ran=True)
+        c.save_brief(p, b)
+        self.fm("lane", "resume", tid)
+        brief = read_text(os.path.join(p.dir, "audits", f"{tid}.builder.md"))
+        block = resume_block(brief)
+        self.assertLessEqual(len(block.encode("utf-8")), slanes.RESUME_MAX, "the whole Resume block, state included")
+        self.assertIn("left out", block, "the cut says so")
+        self.assertIn("Steps done:", block)
+
+    def resumed_brief(self, tid):
+        """T-5684: the builder brief the last resume wrote for the task."""
+        return read_text(os.path.join(c.find_project(self.repo).dir, "audits", f"{tid}.builder.md"))
+
+    def set_stop(self, tid, **meta):
+        """T-5684: a stopped builder's lane mark and postmerge fields, set the way a merge leaves them."""
+        p = c.find_project(self.repo)
+        b = c.find_brief(p, tid)
+        b.meta.update(meta)
+        c.save_brief(p, b)
+
+    def test_resume_says_a_conflicted_stop_in_one_exact_sentence(self):
+        # T-5684 review: the stop sentence is exact for each kind of stop
+        tid, path = self.stopped_builder()
+        self.set_stop(tid, lane_stop="conflict 2026-01-01T00:00:00Z")
+        self.fm("lane", "resume", tid)
+        self.assertIn("The builder stopped: its merge into main conflicted (lane mark `conflict 2026-01-01T00:00:00Z`).",
+                      self.resumed_brief(tid))
+
+    def test_resume_says_a_guard_stop_in_one_exact_sentence(self):
+        tid, path = self.stopped_builder()
+        self.set_stop(tid, lane_stop="guard 2026-01-01T00:00:00Z core")
+        self.fm("lane", "resume", tid)
+        self.assertIn("The builder stopped: a guard stopped it (lane mark `guard 2026-01-01T00:00:00Z core`).",
+                      self.resumed_brief(tid))
+
+    def test_resume_says_nothing_about_a_stop_when_no_mark_is_on_record(self):
+        tid, path = self.stopped_builder()
+        self.fm("lane", "resume", tid)
+        block = self.resumed_brief(tid)
+        self.assertNotIn("The builder stopped", block)
+        self.assertNotIn("Its last refused merge", block)
+
+    def test_resume_takes_a_postmerge_red_as_the_refusal_reason(self):
+        # T-5684 review: a red merge reverted on main leaves no refusal event of its own in the ledger tail
+        tid, path = self.stopped_builder()
+        self.set_stop(tid, lane_stop="refused 2026-01-01T00:00:00Z", postmerge_red="test_mod.Cls", postmerge_sha="abcdef1234567",
+                      postmerge_at="2026-01-01T00:00:00Z")
+        self.fm("lane", "resume", tid)
+        self.assertIn("The builder stopped: its merge into main was refused (lane mark `refused 2026-01-01T00:00:00Z`).\n"
+                      "Its last refused merge said: red after merge: test_mod.Cls", self.resumed_brief(tid))
+
+    def test_an_old_postmerge_red_is_no_reason_for_a_later_refusal(self):
+        # T-5684 review: a red from an earlier revert, left by a refusal that wrote no stamp of its own (train.py), is stale
+        tid, path = self.stopped_builder()
+        self.set_stop(tid, lane_stop="refused 2026-01-01T00:00:00Z", postmerge_red="test_mod.Cls", postmerge_sha="abcdef1234567",
+                      postmerge_at="2025-06-01T00:00:00Z")
+        self.fm("lane", "resume", tid)
+        block = self.resumed_brief(tid)
+        self.assertNotIn("test_mod.Cls", block)
+        self.assertIn("Its last refused merge gave no reason on record.", block)
+
+    def test_a_refusal_event_older_than_the_mark_is_no_reason(self):
+        # T-5684 review: the ledger tail can hold an old refusal of this task; the mark's own refusal is the reason
+        tid, path = self.stopped_builder()
+        c.log_event(c.find_project(self.repo), "enforce", task=tid,
+                    data={"kind": "merge_refused", "reason": "criterion ok red: STALE-EVENT"})
+        self.set_stop(tid, lane_stop="refused 2999-01-01T00:00:00Z")
+        self.fm("lane", "resume", tid)
+        block = self.resumed_brief(tid)
+        self.assertNotIn("STALE-EVENT", block)
+        self.assertIn("Its last refused merge gave no reason on record.", block)
+
+    def test_a_refusal_event_at_the_mark_is_the_reason(self):
+        tid, path = self.stopped_builder()
+        c.log_event(c.find_project(self.repo), "enforce", task=tid,
+                    data={"kind": "merge_refused", "reason": "criterion ok red: FRESH-EVENT"})
+        self.set_stop(tid, lane_stop="refused 2000-01-01T00:00:00Z")
+        self.fm("lane", "resume", tid)
+        self.assertIn("Its last refused merge said: criterion ok red: FRESH-EVENT", self.resumed_brief(tid))
+
+    def test_a_later_refusal_replaces_an_earlier_postmerge_red(self):
+        # T-5684 review: a refusal that follows a postmerge red takes the stop's reason; the red is no longer current
+        tid, path = self.stopped_builder()
+        p = c.find_project(self.repo)
+        self.set_stop(tid, postmerge_red="test_mod.Cls", postmerge_sha="abcdef1234567")
+        slanes.stop_mark(p, tid, "refused")
+        c.log_event(p, "enforce", task=tid, data={"kind": "merge_refused", "reason": "criterion ok red: LATER-REFUSAL"})
+        self.fm("lane", "resume", tid)
+        block = self.resumed_brief(tid)
+        self.assertIn("Its last refused merge said: criterion ok red: LATER-REFUSAL", block)
+        self.assertNotIn("test_mod.Cls", block)
+
+    def test_a_long_stat_is_what_the_cut_drops_first(self):
+        # T-5684 review: the steps and the commits stay when the room runs out; the stat, last, is cut first
+        tid, path = self.stopped_builder()
+        p = c.find_project(self.repo)
+        b = c.find_brief(p, tid)
+        b.set_section("Steps", "1. [x] Tests first\n2. [ ] Build\n")
+        c.save_brief(p, b)
+        for i in range(24):
+            self.commit_in(path, f"module_{'x' * 96}_{i:02d}.py", f"file {i}")
+        self.fm("lane", "resume", tid)
+        block = resume_block(self.resumed_brief(tid))
+        self.assertLessEqual(len(block.encode("utf-8")), slanes.RESUME_MAX)
+        self.assertIn("holds 24 commit(s) past the base", block)
+        self.assertIn("Steps done: 1 of 2", block, "the steps are kept")
+        self.assertIn("(cut to fit the brief: `git log", block, "the cut names where the rest is")
+        self.assertNotIn("files changed", block, "the stat, the last part, is the one cut")
+
+    def test_resume_state_cuts_multibyte_text_at_a_whole_character(self):
+        # T-5684 review: accented, CJK and emoji text fits the same bound and is never cut in half
+        tid, path = self.stopped_builder()
+        for i in range(13):
+            self.commit_in(path, f"m{i}.txt", f"añadió el analizador {i} — 日本語のテスト 🚀 " * 8)
+        self.fm("lane", "resume", tid)
+        block = resume_block(self.resumed_brief(tid))
+        self.assertLessEqual(len(block.encode("utf-8")), slanes.RESUME_MAX)
+        self.assertIn("(cut to fit the brief", block, "the multibyte state is long enough to be cut")
+        self.assertNotIn("�", block, "no character is split")
+        self.assertIn("日本語のテスト", block)
+        self.assertIn("1 left out", block)
 
     def test_resume_refuses_a_live_builder_unless_forced_with_a_reason(self):
         from sampo import bus
@@ -3714,6 +3908,9 @@ class PostMergeVerify(ForemanTestCase):
         self.assertTrue(meta["lane_stop"].startswith("refused "), meta["lane_stop"])
         self.assertIn("test_mod.Cls", meta["postmerge_red"])
         self.assertIn("test_mod.Cls", slanes.recovery_after(self.p, c.find_brief(self.p, self.tid)))
+        refusals = [e for e in c.ledger_tail(self.p, 500) if e.get("task") == self.tid and e.get("event") == "enforce"
+                    and (e.get("data") or {}).get("kind") == "merge_refused"]
+        self.assertIn("test_mod.Cls", refusals[-1]["data"]["reason"], "the red merge is a refusal on the ledger too (T-5684)")
 
     def test_a_class_red_only_in_the_full_suite_is_a_flake_not_a_revert(self):
         # T-3216: BoardVerbs failed only inside full post-merge suites and reverted four good merges in an hour

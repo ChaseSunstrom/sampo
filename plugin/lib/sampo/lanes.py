@@ -1135,6 +1135,8 @@ def stop_mark(p, tid, kind, arg="", log="", tip=""):
 
     def mark(x):
         x.meta.update(lane_stop=stamp)
+        for k in ("postmerge_red", "postmerge_sha", "postmerge_at"):  # T-5684: a newer stop supersedes an old red
+            x.meta.pop(k, None)
         if tip:
             x.meta["lane_stop_tip"] = tip
         else:
@@ -1584,6 +1586,7 @@ def resume(p, b, main, args, ended=False, recover=None, after=""):
                      + (f" (forced: {why})" if why else "")
                      + (f" — recovery {recover['attempt']} of {RECOVERIES_MAX}: {STOP_CAUSES[recover['cause']][0]}"
                         if recover else ""))
+    after = after or _stop_text(p, b)  # T-5684: read before reset() clears the stop mark (a recovery's own cause stays)
     cli.mutate(p, b.id, reset, "lane_recover" if recover else "lane_resume",
                  {"path": path, "branch": branch if have else None, "forced": why or None, **(recover or {})})
     bus.release(p, b.id)  # T-1068: the fresh brief claims again
@@ -3469,6 +3472,56 @@ def lane_fn_overlap(p, b, main, base, briefs):
     return out
 
 
+RESUME_MAX = 3000  # T-5684: the whole Resume block of a resumed brief, bytes; the state a stopped builder left is cut to fit
+RESUME_COMMITS = 12  # T-5684: the newest commits past the base that a resumed brief lists (the count left out is said)
+RESUME_EVIDENCE = 6  # T-5684: the last evidence lines a resumed brief shows
+
+
+def _cut_to(text, room, note="\n(cut to fit the brief)"):
+    """T-5684: text cut to `room` bytes at a line break, with the cut said by `note` (its bytes are kept back from the
+    room); text that fits is returned as it is. A multibyte character is never split."""
+    raw = text.encode("utf-8")
+    if len(raw) <= room:
+        return text
+    keep = raw[:max(0, room - len(note.encode("utf-8")))].decode("utf-8", "ignore")
+    return (keep[:keep.rfind("\n")] if "\n" in keep else "") + note
+
+
+def resume_state(p, b, base, branch, room=RESUME_MAX):
+    """T-5684: what a stopped builder left on its branch, for the builder that takes the lane back: the commits past the
+    base (the newest RESUME_COMMITS, the count left out said), the stat of the branch's whole change, the steps done and
+    the current one, and the last RESUME_EVIDENCE evidence lines. All of it is read now, from git, the task and its
+    ledger, so nothing is stored. Every line is plain and fit to width, the text is redacted, and it is cut to `room`
+    bytes. A branch git doesn't know gives no commits and no stat, and the steps and evidence still show."""
+    root = c.main_worktree(p.root) or p.root
+    span = f"{base}..{branch}"
+    total = _git(root, "rev-list", "--count", span).stdout.strip()
+    total = int(total) if total.isdigit() else 0
+    lines = []  # T-5684 review: the order is what the cut keeps. Steps and evidence come first, the stat last.
+    steps = b.steps()
+    if steps:
+        done = [s.n for s in steps if s.done]
+        cur = b.current_step()
+        now = f". Current: {cur.n}. {c.fit(c.redact(c.plain(cur.text)), 160)}" if cur else ""
+        lines.append(f"Steps done: {len(done)} of {len(steps)}" + (f" ({', '.join(map(str, done))})" if done else "") + now)
+    ev = b.evidence()[-RESUME_EVIDENCE:]
+    if ev:
+        lines.append("Last evidence:")
+        lines += [f"  {c.fit(c.redact(c.plain(l)), 240)}" for l in ev]
+    if total:
+        shown = min(total, RESUME_COMMITS)
+        left = f", {total - shown} left out" if total > shown else ""
+        lines.append(f"`{branch}` holds {total} commit(s) past the base: the newest {shown} listed{left}:")
+        lines += [f"- {c.fit(c.redact(c.plain(l)), 160)}"
+                  for l in _git(root, "log", f"-n{shown}", "--format=%h %s", span, "--").stdout.splitlines() if l.strip()]
+        # the change's stat from the merge base; a stat that runs past 15 s is left out (_git gives "" then), not waited for
+        lines += [f"  {c.fit(c.redact(c.plain(l)), 160)}" for l in
+                  _git(root, "diff", "--stat=120", "--stat-count=20", f"{base}...{branch}", "--", timeout=15).stdout.splitlines()
+                  if l.strip()]
+    cut = f"\n(cut to fit the brief: `git log {span}` for the rest)"
+    return _cut_to("\n".join(lines), room, cut) if lines else ""
+
+
 def builder_brief(p, b, args, resume_branch=None, after=""):
     """T-0234: a self-contained brief for one S/M task worked by a sampo:fm-builder subagent in its own worktree
     (Agent isolation "worktree"; its `fm focus` binds the task there), and the Agent call that launches it. The main
@@ -3594,12 +3647,14 @@ def builder_brief(p, b, args, resume_branch=None, after=""):
         parts += ["## Files the base lacks", "The brief names these, and your base doesn't have them: create them if "
                   "the task makes them; if one should already exist, stop and report it.",
                   *[f"- {n}" for n in create], ""]
-    if resume_branch:
-        parts += ["## Resume", f"A builder worked this task before and stopped. Its work, including a WIP commit of its "
-                  f"unfinished files, is on branch `{resume_branch}`. Right after `fm focus {b.id}`, run "
-                  f"`git merge {resume_branch}` (never rebase; the one merge besides the fast-forward that the rules allow, "
-                  f"T-5475), read `git log {base}..{resume_branch}` and the Steps already ticked, and carry on from "
-                  f"there: build on that work, never re-author it.", ""]
+    if resume_branch:  # T-5684: the state below says what the branch holds, so the builder reads only what it needs
+        prose = (f"A builder worked this task before and stopped. Its work, including a WIP commit of its "
+                 f"unfinished files, is on branch `{resume_branch}`. Right after `fm focus {b.id}`, run "
+                 f"`git merge {resume_branch}` (never rebase; the one merge besides the fast-forward that the rules allow, "
+                 f"T-5475), and carry on from there: build on that work, never re-author it. The state below (its "
+                 f"commits, the steps done, the last evidence) says what it holds.")
+        state = resume_state(p, b, base, resume_branch, room=RESUME_MAX - len(prose.encode("utf-8")) - 16)
+        parts += ["## Resume", prose + ("\n" + state if state else ""), ""]
     if after:  # T-2354: a recovery says why the lane came back
         parts += ["## Why it came back", after.strip(), ""]
     try:
@@ -4803,9 +4858,13 @@ def _pm_revert(p, main, sha):
                 c.write_atomic(os.path.join(_pm_dir(p), f"{o['sha']}.json"), json.dumps(o))
     why = ", ".join(classes)
     by = c.joinmore(r.get("reached_by") or [], 5)
+    # T-5684: the refusal is on the ledger too, so a resumed brief names it the way a plain refusal is named
+    ts = c.now()  # T-5684: the mark and postmerge_at share it, so a later stop of another kind can't pass for this red
+    c.log_event(p, "enforce", task=r["task"], data={"kind": "merge_refused", "reason": f"red after merge: {why}"[:300],
+                                                   "sha": sha})
     cli.mutate(p, r["task"], lambda x: (x.append_log(f"red after merge: {why}; {sha[:9]} reverted" + (f" (reached by: {by})" if by else "")),
-                                        x.meta.update(lane_stop=f"refused {c.now()}", postmerge_red=why,
-                                                      postmerge_sha=sha), x.meta.pop("lane_stop_tip", None)),
+                                        x.meta.update(lane_stop=f"refused {ts}", postmerge_red=why,
+                                                      postmerge_sha=sha, postmerge_at=ts), x.meta.pop("lane_stop_tip", None)),
                "lane_red_after_merge", {"sha": sha, "classes": classes, "reached_by": r.get("reached_by") or []})
     return True
 
@@ -5028,11 +5087,50 @@ def _conflict_brief(p, b, main, branch, files, hunks=None):
     return out
 
 
-def _last_refusal(p, tid):
-    """T-1823: the reason the task's last refused merge gave (its red criterion and output tail), or ""."""
+def _last_refusal_event(p, tid):
+    """T-5684: the task's latest merge_refused ledger event (its dict), or None."""
     hits = [e for e in c.ledger_tail(p, 500) if e.get("task") == tid and e.get("event") == "enforce"
             and (e.get("data") or {}).get("kind") == "merge_refused"]
-    return hits[-1]["data"].get("reason", "") if hits else ""
+    return hits[-1] if hits else None
+
+
+def _last_refusal(p, tid):
+    """T-1823: the reason the task's last refused merge gave (its red criterion and output tail), or ""."""
+    ev = _last_refusal_event(p, tid)
+    return ev["data"].get("reason", "") if ev else ""
+
+
+def _refusal_reason(p, b, mark):
+    """T-5684: the reason a stop mark of kind refused names. A red-after-merge revert leaves postmerge_red with the mark's
+    own stamp (postmerge_at), and that is the reason. Otherwise the latest refusal on the ledger, but only one at or
+    after the mark's own time: an older refusal of this task is a different stop. "" when neither holds."""
+    words = mark.split(" ")
+    at = words[1] if len(words) > 1 else ""
+    pm = str(b.meta.get("postmerge_red") or "").strip()
+    if pm and at and str(b.meta.get("postmerge_at") or "") == at:
+        return f"red after merge: {pm}"
+    ev = _last_refusal_event(p, b.id)
+    if ev and str(ev.get("ts") or "") >= at:
+        return str(ev["data"].get("reason") or "")
+    return ""
+
+
+def _stop_text(p, b):
+    """T-5684: why the lane stopped, for the brief of a plain resume (recover() words its own cause): the mark its last
+    merge left (conflict, refused, guard, merged) and, for a refusal, the reason that merge gave. "" when no mark is on
+    record. Called before reset() clears the mark."""
+    mark = str(b.meta.get("lane_stop") or "").strip()
+    if not mark:
+        return ""
+    kind = mark.split(" ")[0]
+    words = {"conflict": "its merge into main conflicted", "refused": "its merge into main was refused",
+             "guard": "a guard stopped it", "merged": "its merge landed"}
+    lines = [f"The builder stopped: {words.get(kind, 'its lane was stopped')} (lane mark `{c.fit(c.plain(mark), 120)}`)."]
+    if kind == "refused":
+        why = _refusal_reason(p, b, mark)
+        lines.append(f"Its last refused merge said: {c.fit(c.plain(' '.join(why.split())), 600)}" if why
+                     else "Its last refused merge gave no reason on record.")
+    return "\n".join(lines)
 
 
 def _drop_path(p, tid):
