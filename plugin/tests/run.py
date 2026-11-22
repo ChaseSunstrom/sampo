@@ -8,6 +8,7 @@ Exit 1 on any failure, with each failing class's report.
 import argparse
 import ast
 import atexit
+import builtins
 import concurrent.futures
 import contextlib
 import hashlib
@@ -2129,25 +2130,113 @@ def _yields(body):
     return False
 
 
+_BY_NAME = ("globals", "dir", "vars", "locals")  # T-5499: what reads a module's names without writing them
+_BY_UNITTEST = ("setUpModule", "tearDownModule", "load_tests")  # T-5499: unittest looks these up on a module by name
+
+
+def _notes(fn):
+    """T-5499: a def's annotations (its arguments' and its return), which run at import before Python 3.14."""
+    a = fn.args
+    return [x.annotation for x in a.posonlyargs + a.args + a.kwonlyargs + [a.vararg, a.kwarg] if x and x.annotation] \
+        + ([fn.returns] if fn.returns else [])
+
+
+def _own(tree):
+    """T-5499: the module-level defs that are only a name and a signature: ({id(def)}), the rest of the module not
+    able to tell which def it is. A def with no decorator, constant defaults (a number, string, None, True, a minus
+    sign before one), constant annotations (any, with `from __future__ import annotations`), a name bound nowhere
+    else in the module (an import, an assignment, a second def, a global statement, a builtin, a dunder like
+    __getattr__, setUpModule, tearDownModule or load_tests, which unittest finds by name) and no use at import time
+    (a default, a decorator, a class body, module code: a use inside any function, or in the body of
+    `if __name__ == "__main__":`, is a call that runs the def, so its caller's record holds it; its else branch and
+    other tests run at import). A module that reads its own names (globals(), dir(), vars(), locals()) or imports
+    `*` has none."""
+    binds, loads = [], set()
+    todo = [(n, True, False) for n in tree.body]  # a node, whether it binds a module name, whether its loads count
+    while todo:
+        n, bind, quiet = todo.pop()
+        kids = []
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bind and binds.append(n.name)
+            kids += n.decorator_list
+            if isinstance(n, ast.ClassDef):
+                kids += n.bases + [k.value for k in n.keywords]
+                todo.extend((c, False, quiet) for c in n.body)  # a name a class binds is the class's
+            else:
+                kids += n.args.defaults + [d for d in n.args.kw_defaults if d] + _notes(n)
+        elif isinstance(n, ast.Lambda):
+            kids += n.args.defaults + [d for d in n.args.kw_defaults if d]
+        else:
+            if isinstance(n, ast.Name):
+                if isinstance(n.ctx, ast.Load):
+                    quiet or loads.add(n.id)
+                elif bind:
+                    binds.append(n.id)
+            elif isinstance(n, (ast.Import, ast.ImportFrom)):
+                if any(a.name == "*" for a in n.names):
+                    return set()
+                bind and binds.extend((a.asname or a.name).split(".")[0] for a in n.names)
+            elif isinstance(n, ast.ExceptHandler):
+                bind and n.name and binds.append(n.name)
+            elif isinstance(n, (ast.MatchAs, ast.MatchStar)):
+                bind and n.name and binds.append(n.name)
+            elif isinstance(n, ast.MatchMapping):
+                bind and n.rest and binds.append(n.rest)
+            if (isinstance(n, ast.If) and isinstance(n.test, ast.Compare) and isinstance(n.test.left, ast.Name)
+                    and n.test.left.id == "__name__" and [type(o) for o in n.test.ops] == [ast.Eq]
+                    and [getattr(c, "value", 0) for c in n.test.comparators] == ["__main__"]):
+                todo.extend((c, bind, True) for c in n.body)  # `if __name__ == "__main__":` runs as a script: only its body
+                kids += [n.test] + n.orelse
+            else:
+                kids += ast.iter_child_nodes(n)
+        todo.extend((k, bind, quiet) for k in kids)
+    of_other = set()  # dir(x), vars(x): not the module's (ast.walk gives a call before its func)
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id in ("dir", "vars") and (n.args or n.keywords):
+            of_other.add(id(n.func))
+        elif isinstance(n, ast.Name) and n.id in _BY_NAME and id(n) not in of_other:
+            return set()
+        elif isinstance(n, (ast.Global, ast.Nonlocal)):
+            binds.extend(n.names)
+        elif isinstance(n, ast.NamedExpr) and isinstance(n.target, ast.Name):
+            binds.append(n.target.id)
+    const = lambda d: isinstance(d, ast.Constant) or (isinstance(d, ast.UnaryOp) and isinstance(d.operand, ast.Constant))  # noqa: E731
+    lazy = any(isinstance(n, ast.ImportFrom) and n.module == "__future__" and any(a.name == "annotations" for a in n.names)
+               for n in tree.body)  # no annotation runs at import
+    return {id(n) for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and not n.decorator_list
+            and all(const(d) for d in n.args.defaults + [d for d in n.args.kw_defaults if d])
+            and (lazy or all(isinstance(a, ast.Constant) for a in _notes(n)))
+            and binds.count(n.name) == 1 and n.name not in loads and not hasattr(builtins, n.name)
+            and n.name not in _BY_UNITTEST and not (n.name.startswith("__") and n.name.endswith("__"))}
+
+
 def units(data):
-    """T-3603: a Python source's parts, ({function qualname: its body's hash}, the rest's hash), None when it doesn't
+    """T-3603: a Python source's parts, ({function qualname: its hash}, the rest's hash), None when it doesn't
     parse. A function's body with its docstring (no code here reads a __doc__ it didn't call) and the functions and
     classes in it ("f.<locals>.g" is f's); the rest is the file with each body cut to whether it yields (a generator
     never started ran none of its body: turning one into a function reruns every class that ran its module). Neither
-    holds line numbers or comments. A qualname defined twice (an if/else) is one part of both bodies."""
+    holds line numbers or comments. A qualname defined twice (an if/else) is one part of both bodies.
+    T-5499: a module-level def that is only its name and signature (_own()) is no part of the rest: its part holds its
+    signature too, so adding, removing or re-signing one moves its own part and no class that ran the module reruns
+    for it; the rest keeps a note of each such def that yields. A method stays in its class's part of the rest.
+    Accepted gaps (the 1-in-10 rerun is their backstop): a class that imported a name without calling it isn't rerun
+    when it goes, nor one that lists it in `__all__` and is star-imported by another module, nor one that
+    mock.patch("mod.g")es a g it never ran."""
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")  # an invalid escape's SyntaxWarning is the module's business
             tree = ast.parse(data)
     except Exception:  # not Python: a syntax error, a null byte, too deep
         return None
-    funcs = {}
+    funcs, own = {}, _own(tree)
 
     def walk(body, prefix):
         for node in body:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 b, name = node.body, prefix + node.name
-                funcs[name] = funcs.get(name, "") + "\0" + "\n".join(ast.dump(s) for s in b)
+                head = (f"{type(node).__name__} {ast.dump(node.args)} {ast.dump(node.returns) if node.returns else ''} "
+                        f"{[ast.dump(t) for t in getattr(node, 'type_params', ())]}" if id(node) in own else "")
+                funcs[name] = funcs.get(name, "") + "\0" + head + "\n".join(ast.dump(s) for s in b)
                 node.body = [ast.Expr(ast.Constant(_yields(b)))]
             elif isinstance(node, ast.ClassDef):
                 walk(node.body, prefix + node.name + ".")
@@ -2157,6 +2246,8 @@ def units(data):
                 for sub in (getattr(node, "handlers", None) or []) + (getattr(node, "cases", None) or []):
                     walk(sub.body, prefix)
     walk(tree.body, "")
+    tree.body = [ast.Expr(ast.Constant("yields " + n.name)) if id(n) in own and n.body[0].value.value else n
+                 for n in tree.body if id(n) not in own or n.body[0].value.value]  # a stub: whether the def yields
     h = lambda s: hashlib.sha1(s.encode("utf-8", "surrogateescape")).hexdigest()  # noqa: E731
     return {q: h(s) for q, s in funcs.items()}, h(ast.dump(tree))
 

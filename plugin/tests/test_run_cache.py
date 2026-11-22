@@ -156,24 +156,98 @@ class Coverage(unittest.TestCase):
         return sorted(k[len(rel) + 2:] for k in keys if after(k) != before[k])
 
     def test_a_function_s_key_moves_with_its_own_body_alone(self):  # T-3603
-        for old, new, want in (("return a + 1", "return a + 2", ["f"]),
-                               ("return 3", "return 4", ["C.m"]),  # a nested function is its outer one's
-                               ("    return 2\n", "    return 2  # two\n", []),  # a comment
-                               ("X = 1\n", "\n\nX = 1\n", []),  # every line below moved
-                               ("def f(a=1)", "def f(a=2)", [""]),  # a default runs at import: the module's
-                               ('"""F\'s doc."""', '"""F\'s new doc."""', ["f"]),  # no code here reads __doc__
-                               ("X = 1", "X = 2", [""]), ("Y = 2", "Y = 3", [""]),
-                               ("def g():", "@staticmethod\ndef g():", [""]),  # a decorator
-                               ("def gen():", "def h():\n    pass\n\n\ndef gen():", [""]),  # a new function
-                               ("return [1]", "yield 1", ["", "gen"]),  # a call no longer runs its body
-                               ("def g():", "def g2():", ["", "g"])):  # gone: the class that ran it reruns
+        more = lambda *names: ("", "f", "g", "C.m", "gen") + names  # noqa: E731  # a unit that doesn't exist yet or any more
+        for old, new, want, units in (
+                ("return a + 1", "return a + 2", ["f"], more()),
+                ("return 3", "return 4", ["C.m"], more()),  # a nested function is its outer one's
+                ("    return 2\n", "    return 2  # two\n", [], more()),  # a comment
+                ("X = 1\n", "\n\nX = 1\n", [], more()),  # every line below moved
+                ("def f(a=1)", "def f(a=2)", ["f"], more()),  # T-5499: a constant default is the function's own
+                ('"""F\'s doc."""', '"""F\'s new doc."""', ["f"], more()),  # no code here reads __doc__
+                ("X = 1", "X = 2", [""], more()), ("Y = 2", "Y = 3", [""], more()),
+                ("def g():", "@staticmethod\ndef g():", ["", "g"], more()),  # a decorator: g leaves its own part
+                ("def g():", "def g(b=int()):", ["", "g"], more()),  # a default that calls something runs at import
+                ("def m(self):", "@staticmethod\n    def m(self):", [""], more()),
+                ("def g():", "def g(b=1, *, c=-2, d=None):", ["g"], more()),  # a new signature: g's own
+                ("def g():", "def g() -> 'int':", ["g"], more()),  # a string or None annotation is a constant
+                ("def g():", "def g(a: None = None) -> None:", ["g"], more()),
+                ("def g():", "def g() -> int:", ["", "g"], more()),  # a name runs at import (before Python 3.14)
+                ("def g():", "def g(a: list[int] = None):", ["", "g"], more()),
+                ("def gen():", "def h():\n    pass\n\n\ndef gen():", ["h"], more("h")),  # T-5499: a new function
+                ("def gen():", "async def h():\n    pass\n\n\ndef gen():", ["h"], more("h")),
+                ("def g():\n    return 2\n\n\n", "", ["g"], more()),  # a removed one
+                ("def g():", "def g2():", ["g", "g2"], more("g2")),  # gone: the class that ran it reruns
+                ("return [1]", "yield 1", ["", "gen"], more()),  # a call no longer runs its body
+                ("def gen():", "def h():\n    yield 1\n\n\ndef gen():", ["", "h"], more("h")),  # a new generator
+                ("    def m(self):", "    def n(self):\n        pass\n\n    def m(self):", [""], more()),  # a method
+                ("def m(self):", "def m(self, b=1):", [""], more())):
             with self.subTest(new):
                 git(self.d, "checkout", "-q", "--", ".")
-                self.assertEqual(self.moved(old, new), want)
+                self.assertEqual(self.moved(old, new, units=units), want)
         annotate = ("", "__annotate__", "C.__annotate__", "f")  # no def of that name: the annotations' own code
         git(self.d, "checkout", "-q", "--", ".")
         self.assertEqual(self.moved("X = 1", "X: int = 1", units=annotate), ["", "C.__annotate__", "__annotate__"])
         self.assertEqual(self.moved("return a + 1", "return a + 2", units=annotate), ["f"])
+
+    def test_a_def_the_module_may_see_by_name_stays_in_its_body(self):  # T-5499
+        """A re-signed g moves the module's '' (and not g) when something else in the module can tell which g it is."""
+        for what, extra in (("an import it shadows", "\nfrom os import path as g\n"),
+                            ("a name bound twice", "\ng = 3\n"),
+                            ("a def of it twice", "\ndef g():\n    return 4\n"),
+                            ("a global statement", "\ndef set_g():\n    global g\n    g = 1\n"),
+                            ("a nonlocal statement", "\ndef o():\n    g = 1\n\n    def i():\n        nonlocal g\n        g = 2\n"),
+                            ("a walrus", "\nif (g := 1):\n    pass\n"),
+                            ("an except target", "\ntry:\n    pass\nexcept Exception as g:\n    pass\n"),
+                            ("a match capture", "\nmatch 1:\n    case g:\n        pass\n"),
+                            ("a match star capture", "\nmatch [1]:\n    case [*g]:\n        pass\n"),
+                            ("a for target", "\nfor g in []:\n    pass\n"),
+                            ("an import of it", "\nimport g\n"),
+                            ("globals()", "\nNAMES = sorted(globals())\n"),
+                            ("locals()", "\nNAMES = locals()\n"),
+                            ("dir()", "\nNAMES = dir()\n"), ("vars()", "\nNAMES = vars()\n"),
+                            ("a use in a lambda's default", "\nF = lambda a=g: a\n"),
+                            ("a use as a base", "\nclass D(g):\n    pass\n"),
+                            ("a use in a decorator", "\n@g\ndef h():\n    pass\n"),
+                            ("a use in the guard's else", "\nif __name__ == '__main__':\n    pass\nelse:\n    g()\n"),
+                            ("a use under a guard that isn't one", "\nif __name__ != '__main__':\n    g()\n"),
+                            ("a use under another guard", "\nif __name__ == 'other':\n    g()\n"),
+                            ("a star import", "\nfrom os.path import *\n"),
+                            ("a use at import", "\nHANDLERS = [g]\n"),
+                            ("a use in a default", "\ndef h(a=g):\n    pass\n"),
+                            ("a use in a class body", "\nclass D:\n    k = g\n")):
+            with self.subTest(what):
+                git(self.d, "checkout", "-q", "--", ".")
+                self.edit("plugin/lib/units.py", extra)
+                self.assertEqual(self.moved("def g():", "def g(b=1):"), [""])
+        git(self.d, "checkout", "-q", "--", ".")
+        self.edit("plugin/lib/units.py", "\ndef open():\n    return 5\n")  # a builtin's name
+        self.assertEqual(self.moved("def open():", "def open(b=1):", units=("", "open")), [""])
+        name = "def g():\n    return 2\n"
+        for what, extra in (("a use in a function", "\ndef h():\n    return g()\n"),
+                            ("a use under the main guard", "\nif __name__ == '__main__':\n    g()\n"),
+                            ("dir(x)", "\nNAMES = dir(os)\n"), ("vars(x)", "\nNAMES = vars(os)\n"),
+                            ("a local named like a method", "\ndef o():\n    g = 1\n    return g\n"),
+                            ("a method of that name", "\nclass D:\n    def g(self):\n        return 1\n")):
+            with self.subTest(what):
+                git(self.d, "checkout", "-q", "--", ".")
+                self.edit("plugin/lib/units.py", extra)
+                self.assertEqual(self.moved(name, name.replace("g()", "g(b=1)")), ["g"])
+        for hook in ("__getattr__", "setUpModule", "tearDownModule", "load_tests"):  # looked up by name: the module's
+            with self.subTest(hook):
+                git(self.d, "checkout", "-q", "--", ".")
+                self.edit("plugin/lib/units.py", f"\ndef {hook}(name):\n    return 1\n")
+                self.assertEqual(self.moved(f"def {hook}(name)", f"def {hook}(name, b=1)", units=("", hook)), [""])
+        with self.subTest("from __future__ import annotations"):  # no annotation runs at import
+            git(self.d, "checkout", "-q", "--", ".")
+            with open(os.path.join(self.d, "plugin/lib/units.py"), "w") as f:
+                f.write("from __future__ import annotations\n" + UNITS)
+            self.assertEqual(self.moved("def g():", "def g() -> int:"), ["g"])
+
+    def test_adding_a_test_module_hook_reruns_the_classes_that_ran_the_module(self):  # T-5499: unittest finds it by name
+        for hook in ("setUpModule", "tearDownModule", "load_tests"):
+            with self.subTest(hook):
+                git(self.d, "checkout", "-q", "--", ".")
+                self.assertEqual(self.moved("def gen():", f"def {hook}(*a):\n    pass\n\n\ndef gen():"), [""])
 
     def test_a_file_that_doesn_t_parse_or_is_gone_moves_every_key(self):
         every = ["", "C.m", "f", "g", "gen"]
