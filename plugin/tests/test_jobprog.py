@@ -85,8 +85,9 @@ class JobRows(ForemanTestCase):
 
     def test_a_huge_log_reads_only_its_tail(self):
         path = self.log("early line\n" + "y" * (jobprog.TAIL_B * 3) + "\nlate line\n")
-        with mock.patch("builtins.open", side_effect=AssertionError("no whole-file read")):
+        with mock.patch.object(os, "lseek", wraps=os.lseek) as seek:
             self.assertEqual(jobprog.last_line(path), "late line")
+        seek.assert_called_once_with(mock.ANY, os.path.getsize(path) - jobprog.TAIL_B, os.SEEK_SET)  # one seek: the last TAIL_B bytes
 
     def test_a_missing_log_a_symlink_a_fifo_a_directory_and_another_users_file_give_no_line(self):
         self.assertIsNone(jobprog.last_line(os.path.join(self.repo, "nope.log")))
