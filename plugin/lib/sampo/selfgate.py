@@ -510,6 +510,21 @@ def hook_map(p, main, head, base):
     return got
 
 
+def cached_hook_map(p, main, base):
+    """T-5935: the saved hook map when it is still true at `base` (its commit is `base`, or nothing between them touched a
+    hook entry, hooks.json, a mapped module or the bench), else None: a live train's front gate reads it without a bench
+    run (hook_map re-runs the base's hooks to refresh a stale one) and times the hooks whenever it is None."""
+    try:
+        with open(os.path.join(p.dir, "hook-modules.json"), encoding="utf-8") as f:
+            prev = json.load(f)
+        old = {k: v for k, v in prev["map"].items() if isinstance(v, list)}
+        if old and (prev["sha"] == base or not _refresh(_changed(main, prev["sha"], base), old)):
+            return old
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, RuntimeError, subprocess.SubprocessError):
+        pass
+    return None
+
+
 QUALITY_ROWS = ("footprint ", "verbs ", "hook ")  # T-3219: rows the standing yes may pass (never "guard…")
 
 

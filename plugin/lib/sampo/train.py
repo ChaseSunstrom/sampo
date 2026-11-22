@@ -1200,7 +1200,31 @@ class ShapeVerdict(typing.NamedTuple):
         return ""
 
 
-def _live_shape(wt, p=None, main=None, base=None, classes=None):
+SHAPE_DOCS_ONLY = ("docs/map/", "docs/assets/", "site/assets/diagrams/", "research/models/", "CHANGELOG.md")  # test_docs reads these
+SHAPE_INERT = ("docs/", "research/")  # (what is not in SHAPE_DOCS_ONLY) read by no module but the repo-wide old-namespace grep
+SHAPE_ALWAYS = ("test_rename_scan",)  # git-greps the whole repo for the old namespace: any file can turn it red (one grep)
+
+
+def shape_classes(files):
+    """T-5935: the repo-shape modules (core.repo_shape_modules) a change to `files` can turn red. Only the files known to
+    be read by one module narrow the run: the map, the diagrams, the frozen models (site build) and the changelog are
+    test_docs's; a docs page or a research note is no module's input. Any other file (the plugin, the front docs and the
+    site that test_rename_scan scans, a bench readme, a workflow) may reach any module. test_rename_scan always runs: its
+    old-namespace grep covers every tracked file (SHAPE_ALWAYS). None for no list (every module runs, as before) and for
+    a change that may reach every module."""
+    if not files:
+        return None
+    docs = False
+    for f in files:
+        f = str(f)
+        if f.startswith(SHAPE_DOCS_ONLY):
+            docs = True
+        elif not f.startswith(SHAPE_INERT):
+            return None
+    return [m for m in c.repo_shape_modules() if m in SHAPE_ALWAYS or docs and m == "test_docs"]
+
+
+def _live_shape(wt, p=None, main=None, base=None, classes=None, files=None):
     """T-5590: the live train's one repo-shape run on the merged tree, before anything lands (a module, an env name or a
     help position a lane adds is red here, not on trunk). T-5806: a ShapeVerdict, so _run splits a red batch by lane:
     green when the tree is green or not a Sampo tree (_shape_tree).
@@ -1208,9 +1232,15 @@ def _live_shape(wt, p=None, main=None, base=None, classes=None):
     red only for the classes not red on the base: those are trunk's, filed once as an express FIX (the key is the class
     set) and never stop a train (a class red on the merged tree but green on the base still does). A base with no
     verdict forgives nothing.
-    T-5853: `classes` (the red classes a batch run named, joined) runs only those: a subset tree of the cull."""
+    T-5853: `classes` (the red classes a batch run named, joined) runs only those: a subset tree of the cull.
+    T-5935: `files` (the train's changed files) runs only the modules whose inputs changed (shape_classes): none for a
+    train that changed no input of any, which is green with no run."""
     if not _shape_tree(wt):
         return ShapeVerdict("green")
+    if not classes and (sub := shape_classes(files)) is not None:
+        if not sub:
+            return ShapeVerdict("green")
+        classes = ", ".join(sub)
     t0 = time.monotonic()
     verdict, names = _shape_run(wt, shape_batch_wall(), classes) if classes else _shape_run(wt, shape_batch_wall())
     secs = time.monotonic() - t0
@@ -1419,15 +1449,41 @@ def _holds(p, main, lanes_tips):
 LIVE_TIMING_HOLD = "live_timing_hold"  # T-5446: meta key: the merged batch a live train's hook timing held
 
 
-def _live_timing(p, main, wt, base):
+def _train_files(main, wt, base):
+    """T-5935: the files the merged tree changes against `base` (both sides of a rename), or None when git can't say: the
+    front gate's phases take it as 'unknown, run everything'."""
+    sha = _git(wt, "rev-parse", "HEAD").stdout.strip()
+    r = _git(main, "diff", "--name-only", "--no-renames", "-z", base, sha)
+    if not sha or r.returncode:
+        return None
+    return [f for f in r.stdout.split("\0") if f]
+
+
+def _live_timing(p, main, wt, base, files=None):
     """T-5446: the self-change gate with its hook timing on a live train's merged tree, once for the whole batch: [] when it
     holds, else its refusal rows (recorded in meta, so the next land times each lane and leaves out the one that slowed
-    the hooks). Each lane's own hold already ran the guard replay, cases, footprint and verb rows."""
+    the hooks). Each lane's own hold already ran the guard replay, cases, footprint and verb rows.
+    T-5935: no hook bench when no changed file is one a hook can run or read (`selfgate._benched`: docs, tests, notes), or
+    when the saved hook map says no changed file is one a hook process loaded; a missing or stale map times as before.
+    A skipped bench still runs the gate without it (timing=False) when a plugin/ file changed: the merged tree's footprint
+    and verb rows are judged on the batch, as two lanes each under the ratchet can pass it together. `files` is the
+    train's changed-file list (_train_files), read here when not given."""
     import types
     from sampo import selfgate
     sha = _git(wt, "rev-parse", "HEAD").stdout.strip()
-    files = [f for f in _git(main, "diff", "--name-only", base, sha).stdout.splitlines() if f.strip()]
-    rows = selfgate.gate(p, types.SimpleNamespace(id="live-train", meta={}), main, sha, files)
+    if files is None:
+        files = [f for f in _git(main, "diff", "--name-only", base, sha).stdout.splitlines() if f.strip()]
+    benched = [f for f in files if selfgate._benched(f)]
+    hmap = selfgate.cached_hook_map(p, main, base) if benched else None
+    who = types.SimpleNamespace(id="live-train", meta={})
+    if not benched or (hmap and not selfgate.needs_timing(files, hmap)):
+        c.log_event(p, "live_timing_skipped", data={"sha": sha[:12], "files": len(files), "benched": benched[:10]})
+        rows = []
+        if any(f.startswith("plugin/") for f in files):  # the bench is skipped, the merged tree's footprint and verbs are not:
+            rows = selfgate.gate(p, who, main, sha, files, timing=False)  # two lanes each under the ratchet can pass it together
+        c.update_meta(p, **{LIVE_TIMING_HOLD: sha if rows else None})
+        return rows
+    rows = selfgate.gate(p, who, main, sha, files)
     c.update_meta(p, **{LIVE_TIMING_HOLD: sha if rows else None})
     return rows
 
@@ -1924,8 +1980,11 @@ def _run(p, main, ids, defer_verify=False, judged=None):
             else:
                 todo.append((len(rows), b, tip))
                 rows.append((b, tip, None))
+    t_holds = time.monotonic()
     for i, why in zip([i for i, _, _ in todo], _holds(p, main, [(b, tip) for _, b, tip in todo])):
         rows[i] = (rows[i][0], rows[i][1], why)
+    phases = {"holds": time.monotonic() - t_holds, "smoke": 0.0, "shape": 0.0, "timing": 0.0}  # T-5935: seconds per phase
+    tfiles = None  # T-5935: the merged tree's changed files (None: unknown, every phase runs whole)
 
     # T-3770: when the gate is the suite the affected template runs (T-3544), it runs every lane's affected tests on the
     # merged tree, and a red one bisects on its red classes alone (T-3602): a probe per lane ran them all twice (the
@@ -2320,7 +2379,7 @@ def _run(p, main, ids, defer_verify=False, judged=None):
             if not kept or _git(wt, "rev-parse", "HEAD^{tree}").stdout.strip() == tree0:
                 return parked, kept, ShapeVerdict("green"), len(seen)
             trunk_watch()
-            return parked, kept, _live_shape(wt, p, main, base), len(seen)  # the one whole run of the kept build
+            return parked, kept, _live_shape(wt, p, main, base, files=tfiles), len(seen)  # the one whole run of the kept build
 
         ids_m, pool, parked, trees, classes = [b.id for b, _ in merged], merged, {}, 0, []
         for rnd in (1, 2):
@@ -2356,13 +2415,19 @@ def _run(p, main, ids, defer_verify=False, judged=None):
         if sub:  # T-3809: the modules a merged lane's covered criteria name run in this gate (after the base probe: a new
             # lane's module is no test of the base); form() keeps those the tree has
             sub = (*sub[:2], list(dict.fromkeys([*sub[2], *(f for b, _ in merged for f in covers(b.id))])))
+        if live and merged:
+            tfiles = _train_files(main, wt, base)  # T-5935: what the merged tree changes: the shape and timing phases take what it reaches
+        t_ph = time.monotonic()
         if live and merged and (smoke := _live_smoke(wt)):  # T-5444: the one front check: the merged tree compiles
             raise c.PolicyError(f"the merged tree does not compile, nothing landed: {smoke}")
-        if live and merged and (shape := _live_shape(wt, p, main, base)).verdict != "green":  # T-5590, T-5805: the batch's new repo-shape reds, once
+        phases["smoke"], t_ph = time.monotonic() - t_ph, time.monotonic()
+        if live and merged and (shape := _live_shape(wt, p, main, base, files=tfiles)).verdict != "green":  # T-5590, T-5805: the batch's new repo-shape reds, once
             merged = shape_split(shape)  # T-5806: a red parks the lane(s) that bring it and the rest land; a cut stops the land
-        if live and merged and (slow := _live_timing(p, main, wt, base)):  # T-5446: the hooks timed once per batch
+        phases["shape"], t_ph = time.monotonic() - t_ph, time.monotonic()
+        if live and merged and (slow := _live_timing(p, main, wt, base, tfiles)):  # T-5446: the hooks timed once per batch
             raise c.PolicyError("the self-change gate holds the merged batch, nothing landed: " + c.joinmore(slow, 4, "; ")
                                 + "; the next land times each lane and leaves out the one that slowed the hooks")
+        phases["timing"] = time.monotonic() - t_ph
         ok = not merged or live or gate()
         first = list(results)
         last = {r["cmd"]: r for r in results if not r["exit"]}  # each gate's newest passing row
@@ -2584,7 +2649,7 @@ def _run(p, main, ids, defer_verify=False, judged=None):
         return {"merged": ids_in, "left_out": left, "notes": notes, "kept": kept, "map_merged": maps,
                 "test_merged": unions, "map_follow_up": map_task, "gate_runs": runs[0], "verify_owed": bool(part and defer_verify),
                 "map_moved": [(i, "; ".join(moved_maps[i])) for i in ids_in if moved_maps.get(i)],  # T-5381
-                "probes": probes[0], "tip": tip, "branch": branch, "affected": part, "minutes": mins, "probes_skipped": sum(
+                "probes": probes[0], "tip": tip, "branch": branch, "affected": part, "minutes": mins, "phases": phases, "probes_skipped": sum(
                     w.startswith(SKIPPED) for _, w in notes), "lanes_probed": len(rows)}
     finally:
         for folder in olds:  # T-4728: each one the train made (the first, and one rebuilt after a loss), nothing else
@@ -3143,7 +3208,7 @@ def _accepted(b):
         return None
 
 
-def _train_times(p, land_id, n, got, by, wall):
+def _train_times(p, land_id, n, got, by, wall, closes=0.0):
     """T-4239: one train's times: the summary row (lanes landed, minutes in the gate, minutes waiting: the train's wall
     time minus its gate run, the probes, the merge and the queue before them) and, for a train that landed lanes, a
     land_train ledger event (lanes, seconds, gate_s, wait_s, at, each lane's accept time)."""
@@ -3152,11 +3217,14 @@ def _train_times(p, land_id, n, got, by, wall):
     row = {"train": n, "lanes": list(got["merged"]), "gate": gate, "waiting": wait, "seconds": round(wall, 1)}
     if got["merged"]:
         acc = {t: a for t in got["merged"] if (a := _accepted(by.get(t)))}
+        got_ph = got.get("phases") if isinstance(got.get("phases"), dict) else {}
+        phases = {k: round(float(got_ph.get(k) or 0.0), 1) for k in ("holds", "smoke", "shape", "timing")}
+        phases["closes"] = round(max(0.0, float(closes or 0.0)), 1)  # T-5935: seconds per phase (closes: the closer's, meanwhile)
         try:
             c.log_event(p, "land_train", data={"land": land_id, "train": n, "lanes": list(got["merged"]),
                                                "seconds": round(wall, 1), "gate_s": round(gate * 60, 1),
                                                "wait_s": round(max(0.0, wall - gate * 60), 1),
-                                               "at": round(time.time(), 3), "accepted": acc})
+                                               "at": round(time.time(), 3), "accepted": acc, "phases": phases})
         except Exception:  # noqa: BLE001 — a record that can't be written never stops the land
             pass
     return row
@@ -3647,6 +3715,7 @@ class _Closer:
         self.holding = self.stopped = False
         self.only = None  # trim(keep): the ids that may still close (None: any)
         self.fast = set()  # T-5873: ids whose close passed its criteria and waits only for its commit (after_train)
+        self.spent = 0.0  # T-5935: seconds the work has run in all: a train's closes phase is the growth over its span
         # T-5912: the leftovers (merged and open before the land) close beside the train's own lanes, up to `par` at once:
         # the worker thread takes any batch, the extra ones (par - 1 at most) only a leftover's, and none starts until one
         # leftover has finished (its close recorded the gate pass on trunk's code that the others' closes then reuse)
@@ -3716,11 +3785,13 @@ class _Closer:
                     return
                 ids = self.q.pop(at)
                 self.fast.difference_update(ids)  # before the work: its own commit wait puts them back (after_train)
+            t_work = time.monotonic()
             passed = False
             try:
                 passed = bool(self.work(ids))
             except Exception as e:  # noqa: BLE001 — the work reports its own; one batch never ends the worker
                 print(f"sampo lane land: a close batch failed: {type(e).__name__}: {c.fit(str(e), 200)}", file=sys.stderr, flush=True)
+            self.spent += time.monotonic() - t_work
             with self.cv:
                 if passed and self.left.issuperset(ids):
                     self.left_ran += 1
@@ -4190,6 +4261,7 @@ def _land_trains(p, main, batch, owed, closer=None):
         tested.update({i: tip(by[i]) for i in ids})  # train() reads the same heads as it starts
         head0 = c._git(main, "rev-parse", "HEAD", timeout=10).strip()  # T-3851: the skills this train adds
         t_train = time.monotonic()
+        closes0 = getattr(closer, "spent", 0.0)  # T-5935
         closer.hold(True)  # T-5368: the closes run on, only their commits wait for this train's lock
         try:
             got = train(p, main, ids, defer_verify=True)
@@ -4228,7 +4300,8 @@ def _land_trains(p, main, batch, owed, closer=None):
                 measure.note_pipeline_merged(p, by[t])
         landed += got["merged"]
         parked += got["left_out"]
-        times.append(_train_times(p, land_id, trains, got, by, time.monotonic() - t_train))
+        times.append(_train_times(p, land_id, trains, got, by, time.monotonic() - t_train,
+                                  closes=getattr(closer, "spent", 0.0) - closes0))
         to_close(got["merged"], front=True)  # T-5368: on the closer's thread: the next train starts at once
         # T-5873: no leftover slice per train: all of them go on at once; T-5912: after the first train's merges, so that
         # train never waits behind them (the FIX-waiting and red-waiting ones are not: release_waiting, look_red)

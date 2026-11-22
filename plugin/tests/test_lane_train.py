@@ -513,11 +513,11 @@ class Train(TrainCase):
             train._held(p, b, self.repo, "HEAD")
             base = self.git("rev-parse", "HEAD").strip()
             with mock.patch.object(selfgate, "gate", lambda *a, **k: ["hook Stop p95 100.0 -> 140.0 ms"]):
-                self.assertTrue(train._live_timing(p, self.repo, self.repo, base))
+                self.assertTrue(train._live_timing(p, self.repo, self.repo, base, ["plugin/lib/sampo/x.py"]))  # T-5935: a benched file
             self.assertTrue(c.read_meta(p).get(train.LIVE_TIMING_HOLD))
             train._held(p, b, self.repo, "HEAD")
             with mock.patch.object(selfgate, "gate", lambda *a, **k: []):
-                self.assertEqual(train._live_timing(p, self.repo, self.repo, base), [])
+                self.assertEqual(train._live_timing(p, self.repo, self.repo, base, ["plugin/lib/sampo/x.py"]), [])
             self.assertFalse(c.read_meta(p).get(train.LIVE_TIMING_HOLD))
             train._held(p, b, self.repo, "HEAD")
         self.assertEqual(seen, [True, False, True, False],

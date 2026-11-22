@@ -21,6 +21,7 @@ from unittest import mock
 import test_lane_land
 from test_accept_check import AcceptCase, stub
 from test_express_lane import ExpressBase
+from test_lane_train import TrainCase
 
 from sampo import core as c
 from sampo import train
@@ -555,6 +556,163 @@ class ExpressTrainsTogether(ExpressBase):
         r = self.land("--batch", "3")
         self.assertIn(f"{ids[1]} is express (performance, security or urgent): it trains next, first in the train, ahead of the ordinary lanes",
                       r.stderr)
+
+
+class SlimGate(TrainCase):
+    """T-5935: the live front gate does only what the train's changed files call for: the hook bench runs when a lane
+    changes a file the hooks load, the repo-shape run takes the classes whose inputs changed, the base bench runs once
+    per base, and each land_train event says where its seconds went."""
+
+    def hook_map(self, *files):
+        from sampo import core as c
+        p = c.find_project(self.repo)
+        with open(os.path.join(p.dir, "hook-modules.json"), "w", encoding="utf-8") as f:
+            json.dump({"sha": self.git("rev-parse", "HEAD"), "map": {"Stop": list(files)}}, f)
+        return p
+
+    def timed(self, p, name, text="x = 1\n"):
+        """(the rows _live_timing gave, the files the self-change gate was asked about) for a commit that adds `name`."""
+        from sampo import selfgate
+        base = self.git("rev-parse", "HEAD")
+        os.makedirs(os.path.dirname(os.path.join(self.repo, name)), exist_ok=True)
+        with open(os.path.join(self.repo, name), "w") as f:
+            f.write(text)
+        self.git("add", name)
+        self.git("commit", "-qm", f"change {name}")
+        calls, self.quick = [], []  # the gate asked with its bench / without it (timing=False)
+        with mock.patch.object(selfgate, "gate", lambda *a, **k: (calls if k.get("timing", True) else self.quick).append(a[4]) or []):
+            rows = train._live_timing(p, self.repo, self.repo, base)
+        return rows, calls
+
+    def test_slim_a_train_that_touches_no_hook_loaded_file_runs_no_bench(self):
+        mapped = "plugin/lib/sampo/core.py"
+        p = self.hook_map(mapped)
+        for name, called in (("docs/board.md", False), ("plugin/web/page.js", False),
+                             ("plugin/lib/sampo/unloaded.py", False), (mapped, True)):
+            rows, calls = self.timed(p, name)
+            self.assertEqual(bool(calls), called, f"{name}: the self-change gate (and its bench) ran: {calls}")
+            self.assertEqual(rows, [])
+            self.assertEqual(bool(self.quick), name.startswith("plugin/") and not called,
+                             f"{name}: a skipped bench still ran the footprint and verb rows on a plugin change: {self.quick}")
+
+    def test_slim_two_lanes_each_under_the_footprint_ratchet_are_held_when_the_merged_tree_crosses_it(self):
+        from sampo import selfgate
+        os.makedirs(os.path.join(self.repo, "plugin", "lib"))
+        with open(os.path.join(self.repo, "plugin", "lib", "fmguard.py"), "w") as f:
+            f.write("x = 1\n")
+        self.git("add", "plugin")
+        self.git("commit", "-qm", "a Sampo tree")
+        p = self.hook_map("plugin/lib/sampo/core.py")  # the bench is skipped: neither new file is one a hook loads
+        base = self.git("rev-parse", "HEAD")
+        for name in ("plugin/web/a.js", "plugin/web/b.js"):  # two lanes, each +1.5% alone (under the 2% ratchet)
+            os.makedirs(os.path.join(self.repo, os.path.dirname(name)), exist_ok=True)
+            with open(os.path.join(self.repo, name), "w") as f:
+                f.write("1\n")
+        self.git("add", "plugin")
+        self.git("commit", "-qm", "both lanes merged")
+        sizes = iter([{"rules chars": 1000}, {"rules chars": 1030}])  # base, then the merged tree: +3%
+        with mock.patch.object(selfgate, "_footprint", lambda *a: next(sizes)), \
+                mock.patch.object(selfgate, "_corpus", lambda: []), mock.patch.object(selfgate, "_verdicts", lambda *a: []), \
+                mock.patch.object(selfgate, "_paired", side_effect=AssertionError("the bench ran")):
+            rows = train._live_timing(p, self.repo, self.repo, base)
+        self.assertEqual(len(rows), 1, rows)
+        self.assertTrue(rows[0].startswith("footprint rules chars 1000 -> 1030"), rows)
+        from sampo import core as c
+        self.assertTrue(c.read_meta(p).get(train.LIVE_TIMING_HOLD), "the next land judges each lane")
+
+    def test_slim_with_no_hook_map_a_docs_only_train_runs_no_bench_but_a_plugin_file_does(self):
+        from sampo import core as c
+        p = c.find_project(self.repo)
+        self.assertFalse(self.timed(p, "docs/board.md")[1])
+        self.assertTrue(self.timed(p, "plugin/lib/sampo/unknown.py")[1], "an unknown map times as before")
+
+    def test_slim_a_skipped_bench_is_logged_and_clears_a_standing_timing_hold(self):
+        from sampo import core as c
+        p = self.hook_map("plugin/lib/sampo/core.py")
+        c.update_meta(p, **{train.LIVE_TIMING_HOLD: "old"})
+        self.timed(p, "docs/board.md")
+        self.assertFalse(c.read_meta(p).get(train.LIVE_TIMING_HOLD))
+        self.assertTrue(c.ledger_tail(p, 50, ["live_timing_skipped"]))
+
+    def test_slim_only_the_shape_classes_whose_inputs_changed_run(self):
+        # test_rename_scan git-greps the whole repo for the old namespace: it runs for every narrowed train
+        self.assertEqual(train.shape_classes(["docs/board.md", "research/x.md"]), ["test_rename_scan"])
+        self.assertEqual(train.shape_classes(["docs/map/ops-1.md"]), ["test_docs", "test_rename_scan"])
+        self.assertEqual(train.shape_classes(["CHANGELOG.md", "docs/board.md"]), ["test_docs", "test_rename_scan"])
+        self.assertEqual(train.shape_classes(["research/models/frozen.json"]), ["test_docs", "test_rename_scan"],
+                         "the site build reads the frozen models")
+        self.assertIsNone(train.shape_classes(["MASTER.md"]), "test_rename_scan scans the front docs too")
+        self.assertIsNone(train.shape_classes(["docs/board.md", "bench/a.txt"]), "a file no rule knows may reach any class")
+        self.assertIsNone(train.shape_classes(["plugin/lib/sampo/x.py"]), "the plugin is every class's input")
+        self.assertIsNone(train.shape_classes(["docs/board.md", "plugin/tests/test_a.py"]))
+        self.assertIsNone(train.shape_classes([]), "no file list: every class, as before")
+        self.assertIsNone(train.shape_classes(None))
+
+    def test_slim_live_shape_runs_no_class_for_docs_and_the_subset_for_a_map_page(self):
+        from sampo import core as c
+        p = c.find_project(self.repo)
+        ran = []
+
+        def shape_run(wt, wall=None, classes=None):
+            ran.append(classes)
+            return "green", ""
+        with mock.patch.object(train, "_shape_tree", lambda wt: True), mock.patch.object(train, "_shape_run", shape_run):
+            self.assertEqual(train._live_shape(self.repo, p, self.repo, "b", files=["docs/board.md"]).verdict, "green")
+            self.assertEqual(ran, ["test_rename_scan"], "a docs-only train still runs the old-namespace grep, nothing else")
+            train._live_shape(self.repo, p, self.repo, "b", files=["docs/map/ops-1.md"])
+            self.assertEqual(ran[1:], ["test_docs, test_rename_scan"])
+            train._live_shape(self.repo, p, self.repo, "b", files=["plugin/lib/sampo/x.py"])
+            train._live_shape(self.repo, p, self.repo, "b")
+            self.assertEqual(ran[2:], [None, None], "a plugin change, or no list, runs the whole set")
+
+    def test_slim_the_base_bench_runs_once_per_base(self):
+        from sampo import selfgate
+        benches = []
+        slow = {"Stop": {"p95": 10.0, "cpu_p95": 10.0}}
+        with mock.patch.object(selfgate, "_bench", lambda plugin: benches.append(plugin) or (slow, {})), \
+                mock.patch.object(selfgate, "_load_pc", lambda: 0.5):
+            cache = {}
+            selfgate._paired("base", "head-1", cache)
+            first = len(benches)
+            self.assertEqual(first, 2 * selfgate.PAIRS, "the first train benches base and head")
+            selfgate._paired("base", "head-2", cache)  # a second train on the same base: only the head again
+            self.assertEqual(len(benches) - first, selfgate.PAIRS)
+            self.assertEqual(benches.count("base"), selfgate.PAIRS, "the base's bench ran once")
+
+    def test_slim_each_land_train_event_carries_per_phase_seconds(self):
+        from sampo import core as c
+        p = c.find_project(self.repo)
+        got = {"merged": ["T-1"], "left_out": [], "minutes": {},
+               "phases": {"holds": 3.21, "smoke": 0.4, "shape": 12.0, "timing": 0.0}}
+        train._train_times(p, "L-1", 1, got, {}, 20.0, closes=5.5)
+        ev = c.ledger_tail(p, 50, ["land_train"])[-1]["data"]
+        self.assertEqual(ev["phases"], {"holds": 3.2, "smoke": 0.4, "shape": 12.0, "timing": 0.0, "closes": 5.5})
+        train._train_times(p, "L-1", 2, {"merged": ["T-2"], "left_out": [], "minutes": {}}, {}, 20.0)
+        self.assertEqual(c.ledger_tail(p, 50, ["land_train"])[-1]["data"]["phases"],
+                         {"holds": 0.0, "smoke": 0.0, "shape": 0.0, "timing": 0.0, "closes": 0.0},
+                         "an old-shaped result still records every phase")
+
+    def test_slim_a_live_train_hands_its_changed_files_to_the_shape_and_timing_phases(self):
+        from sampo import core as c
+        self.fm("lane", "mode", "live")
+        tid = self.lane(1, "docs/board.md")
+        p = c.find_project(self.repo)
+        seen = {}
+
+        def shape(wt, p=None, main=None, base=None, classes=None, files=None):
+            seen.setdefault("shape", files)
+            return train.ShapeVerdict("green")
+
+        def timing(p, main, wt, base, files=None):
+            seen.setdefault("timing", files)
+            return []
+        with mock.patch.dict(os.environ, {"FM_POSTMERGE_CMD": "true", "FOREMAN_NO_BACKGROUND": "1"}), \
+                mock.patch.object(train, "_live_shape", shape), mock.patch.object(train, "_live_timing", timing):
+            got = train.train(p, self.repo, [tid])
+        self.assertEqual(seen["shape"], ["docs/board.md"])
+        self.assertEqual(seen["timing"], ["docs/board.md"])
+        self.assertEqual(sorted(got["phases"]), ["holds", "shape", "smoke", "timing"])
+        self.assertTrue(all(isinstance(v, float) and v >= 0 for v in got["phases"].values()), got["phases"])
 
 
 class LeftoverBase(test_lane_land.LandCase):
