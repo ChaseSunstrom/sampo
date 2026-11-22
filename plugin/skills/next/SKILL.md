@@ -1,6 +1,6 @@
 ---
 name: next
-description: Use whenever a task is finished, blocked or dropped, or the user says next or continue: closes it, starts the next.
+description: Use whenever a task ends (done, blocked, dropped) or the user says next or continue: closes it, starts the next.
 ---
 
 # Sampo: next

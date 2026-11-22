@@ -1,6 +1,6 @@
 export const meta = {
   name: 'ideas',
-  description: 'Grounded brainstorm: lens agents read the code; each idea is new, partial or built, with evidence',
+  description: 'Grounded brainstorm: lens agents read the code; each idea is new, partial or built.',
   whenToUse: 'Open-ended improvement requests needing ideas grounded in this repo. Args: the request.',
   phases: [
     { title: 'Ideas', detail: 'one code-reading agent per lens' },

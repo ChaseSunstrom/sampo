@@ -1,6 +1,6 @@
 ---
 name: security-audit
-description: Use whenever code takes user input, secrets, auth or an API route, or needs a security review: threat-check it.
+description: Use whenever code takes user input, secrets, auth or an API route, or needs a security review.
 ---
 
 # Sampo: security review

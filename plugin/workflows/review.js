@@ -1,7 +1,7 @@
 export const meta = {
   name: 'review',
   description: 'Five-lens review of a diff: a reviewer per lens, then skeptics try to refute each finding',
-  whenToUse: 'Before closing an M or L task or merging a builder branch. Args: a range, branch or task id; none: the uncommitted change.',
+  whenToUse: 'Before closing an M or L task or merging a builder branch. Args: range, branch, task id or none.',
   phases: [
     { title: 'Scope', detail: 'collect the diff and its changed files' },
     { title: 'Review', detail: 'intent, adversary, edge, operator, maintainer' },

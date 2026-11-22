@@ -1,6 +1,6 @@
 ---
 name: improve
-description: Use whenever the user asks to improve Sampo itself, or its self-inbox has items and the queue is empty: eval-gated changes.
+description: Use whenever asked to improve Sampo itself, or its self-inbox has items and the queue's empty: eval-gated changes.
 ---
 
 # Sampo: improve (bounded, eval-gated)

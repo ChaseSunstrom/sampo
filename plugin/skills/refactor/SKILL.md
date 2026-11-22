@@ -1,6 +1,6 @@
 ---
 name: refactor
-description: Use whenever you refactor, simplify or delete dead code: pin behaviour first, then change in small steps.
+description: Use whenever you refactor, simplify or delete dead code: pin behaviour first, then change in steps.
 ---
 
 # Sampo: refactor and clean up

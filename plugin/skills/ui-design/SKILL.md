@@ -1,6 +1,6 @@
 ---
 name: ui-design
-description: "Use whenever you build or restyle a page, component, animation or 3D scene: direction, tokens, motion, QA."
+description: "Use whenever you build or restyle a page, component, animation or 3D scene: tokens, motion, QA."
 ---
 
 # Sampo: UI design, motion and 3D

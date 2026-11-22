@@ -1,6 +1,6 @@
 ---
 name: performance
-description: Use whenever you optimize or improve performance, or something is slow: profile, change one thing, measure.
+description: Use whenever you optimize or improve performance, or something is slow: profile, then measure.
 ---
 
 # Sampo: performance

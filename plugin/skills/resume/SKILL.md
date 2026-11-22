@@ -1,6 +1,6 @@
 ---
 name: resume
-description: Use whenever you start after /compact, /clear or a crash, or "where were we" is asked: restores task context.
+description: Use after /compact, /clear or a crash, or when "where were we" is asked: restores context.
 ---
 
 # Sampo: resume

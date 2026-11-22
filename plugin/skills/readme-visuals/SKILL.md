@@ -1,6 +1,6 @@
 ---
 name: readme-visuals
-description: "Use whenever a README, docs or landing page is drafted or reworked: app screenshots, SVG diagrams, dark+light."
+description: "Use whenever a README or docs page is drafted or reworked: app screenshots, SVG diagrams, dark+light."
 ---
 
 # Sampo: README visuals

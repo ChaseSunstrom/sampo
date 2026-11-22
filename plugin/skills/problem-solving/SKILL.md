@@ -1,6 +1,6 @@
 ---
 name: problem-solving
-description: Use whenever a fix failed twice or you ask why something happens: rank causes, probe the cheapest first.
+description: Use whenever a fix failed twice or you ask why: rank causes, probe the cheapest first.
 ---
 
 # Sampo: solve the problem, not the symptom
