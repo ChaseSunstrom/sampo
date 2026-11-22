@@ -4225,6 +4225,7 @@ _EV_RE = lazy(r"^-\s+\((step|ac)\s+(\d+)\)")
 _AUDIT_RE = lazy(r"^-\s+\(audit\s+([a-z]+)\)")
 _TREE_MARK = lazy(r"\[tree ([0-9a-f]+)\]")
 _RAN_MARK = " [ran]"  # evidence fm produced by running the command (fm task evidence --run, fm check)
+CLOSE_PENDING, CLOSE_COMMITTED = "land: close commit pending", "land: close committed"  # T-5368: the Log's marks of a land close's two phases
 _INCONCLUSIVE = " [inconclusive]"  # T-0255: a run that neither proves nor disproves: kept, never counted
 _REWOUND = " [rewound]"  # T-1267: a step proof whose files a /rewind or a revert took back: kept, never counted
 _ASSUME_RE = lazy(r"^- (?:\[(assumed|verified|false)(?:: (.*?))?\] )?(.*)$")  # T-0254
@@ -4240,7 +4241,7 @@ def _ledger(text, code=False):
 def _unmarked(text):
     """Typed text can't carry the marks fm appends ([tree …], [ran]): they would forge a worktree id or a run."""
     text = re.sub(r"\(cold read\b", "(cold-read", text)  # T-2338: the cold-read mark is fm's alone
-    return re.sub(r"\[(tree|ran|inconclusive|rewound|world)\b", r"(\1", text)
+    return re.sub(r"\[(tree|ran|inconclusive|rewound|world|post-merge record)\b", r"(\1", text)
 
 
 LOCKS = ("uv.lock", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "poetry.lock", "Pipfile.lock", "Cargo.lock",
@@ -4518,7 +4519,13 @@ class Brief:
         self.set_section(name, cur + line + "\n")
 
     def append_log(self, text, ts=None):
+        if text.strip() in (CLOSE_PENDING, CLOSE_COMMITTED):  # T-5368: typed text is never fm's own mark (append_mark)
+            text = f"{text.strip()} (typed)"
         self._append_line("Log", f"- {ts or now()} {redact(text)}")
+
+    def append_mark(self, text, ts=None):
+        """T-5368: fm's own close mark (CLOSE_PENDING, CLOSE_COMMITTED) on the Log: only here, never through append_log."""
+        self._append_line("Log", f"- {ts or now()} {text}")
 
     # --- steps
     def steps(self):
@@ -4752,14 +4759,17 @@ class Brief:
                 return True
         return False
 
-    def add_evidence(self, cmd, result, step=None, ac=None, ts=None, tree=None, ran=False, inconclusive=False):
+    def add_evidence(self, cmd, result, step=None, ac=None, ts=None, tree=None, ran=False, inconclusive=False, via=None):
         tag = f"(step {step}) " if step is not None else f"(ac {ac}) " if ac is not None else ""
         # One line, like the result: evidence() reads only lines that start "- ", so a heredoc's later lines (and
         # its "→ exit 0") were dropped and a multi-line run could never close a miss or a step.
         cmd = _unmarked(redact(str(cmd)).replace("`", "'").replace("\n", " ").strip())
         result = defang(_unmarked(redact(str(result)).replace("\n", " ").strip()))
         # [ran]: fm ran it (only runs decide pass/fail); [tree]: the files it was recorded against (audit_blockers)
-        mark = (_INCONCLUSIVE if inconclusive else "") + (_RAN_MARK if ran else "") + (f" [tree {tree}]" if tree else "")
+        # T-5368: `via` (a merge's short sha) says no command ran here: a post-merge full suite record stood for it; the
+        # [ran] mark stays beside it, as the gates read a [ran] pass
+        mark = (_INCONCLUSIVE if inconclusive else "") + (_RAN_MARK if ran else "") \
+            + (f" [post-merge record {re.sub(r'[^0-9a-f]', '', str(via))[:12]}]" if via else "") + (f" [tree {tree}]" if tree else "")
         w = world_here() if ran else None  # T-2398: the interpreter and lockfiles this run leaned on (fm doctor)
         mark += f" [world {w}]" if w else ""
         self._append_line("Verification evidence", f"- {tag}`{cmd}` → {result}{mark} ({ts or now()})")

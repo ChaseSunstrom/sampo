@@ -3354,6 +3354,7 @@ class PostMergeVerify(ForemanTestCase):
         self.assertEqual([self.state(s) for s in shas], ["green"] * 3)
         self.assertEqual(len(read_text(runs).splitlines()), 1, "one suite run stands for all three")
         self.assertEqual(slanes.pm_records(self.p)[shas[0]].get("covered_by"), shas[2])
+        self.assertFalse(slanes.pm_records(self.p)[shas[0]].get("narrowed"), "a full green suite on newest is no narrowed run")
 
     def test_a_flaky_red_on_the_newest_still_settles_every_older_pending_one(self):
         # T-3800: one class red inside the full suite at HEAD but green alone fell back to a full suite per merge,
@@ -3379,6 +3380,8 @@ class PostMergeVerify(ForemanTestCase):
         slanes.pm_run(self.p, self.repo)
         self.assertEqual([self.state(a), self.state(b)], ["green", "green"])
         self.assertTrue(slanes.pm_records(self.p)[a].get("covered_by"))
+        self.assertTrue(slanes.pm_records(self.p)[a].get("narrowed"),  # T-5368: no full suite ran on a's tree: not a proof
+                        "a record covered by a narrowed run says so")
         self.assertEqual(self.state(bad), "reverted")
         self.assertNotEqual(self.state(n), "reverted", "the newest merge isn't blamed for an older one's red")
         self.assertEqual(read_text(runs).count("run"), 3, "the HEAD run, x's own verify, then n's: none for a or b")

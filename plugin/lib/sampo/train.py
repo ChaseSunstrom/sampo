@@ -1079,16 +1079,56 @@ def train_hold(p, chain=None):
             "held": max(0.0, time.time() - at)}
 
 
+OWN_COMMIT_WAIT_S = 10.0  # T-5368: a train waits this long, in all, for the land's own closer to let go of the lock
+_own = {"n": 0, "end": 0.0}  # this process's closer commits: how many run now, and when the last one let go (monotonic)
+_own_mu = threading.Lock()
+
+
+@contextlib.contextmanager
+def _own_commit():
+    """T-5368: marks this process's close commit, from before it asks for the train's lock until after it lets go. The
+    closing file only exists while the lock is held, so a train that asked in the instants before it was written, or
+    after it was removed (the lock goes a moment later), found no close and was refused: it stopped the land."""
+    with _own_mu:
+        _own["n"] += 1
+    try:
+        yield
+    finally:
+        with _own_mu:
+            _own["n"] -= 1
+            _own["end"] = time.monotonic()
+
+
+def _own_closer(grace=2.0):
+    """True while this process's closer commits, or let go of the lock within `grace` s."""
+    with _own_mu:
+        return _own["n"] > 0 or time.monotonic() - _own["end"] < grace
+
+
 @contextlib.contextmanager
 def _train_run_lock(p, main=None, ids=()):
-    """The train's lock for one run: a second train is refused after 1 s, but a hand close's commit is waited for."""
+    """The train's lock for one run: a second train is refused after 1 s, but a hand close's commit is waited for, and so
+    is this land's own closer (T-5368: for 10 s in all, however its closing file reads at that instant)."""
     with contextlib.ExitStack() as st:
         try:
             st.enter_context(train_lock(p, timeout=1))  # a second train, not a lane merge, waits on this one
         except c.LockTimeout:
-            if not _closing(p):
+            if _closing(p):
+                st.enter_context(train_lock(p, timeout=CLOSE_WAIT_S))  # LockTimeout again if the close outlasts the wait
+            elif _own_closer():
+                end = time.monotonic() + OWN_COMMIT_WAIT_S
+                while True:
+                    try:
+                        st.enter_context(train_lock(p, timeout=1))
+                        break
+                    except c.LockTimeout:
+                        if _closing(p):
+                            st.enter_context(train_lock(p, timeout=CLOSE_WAIT_S))
+                            break
+                        if time.monotonic() >= end or not _own_closer():
+                            raise
+            else:
                 raise
-            st.enter_context(train_lock(p, timeout=CLOSE_WAIT_S))  # LockTimeout again if the close outlasts the wait
         if main:
             st.enter_context(_train_running(p, main, ids))
         yield
@@ -2505,9 +2545,9 @@ def land(p, main, batch=None):
         return _land(p, main, batch or c.TRAIN_BATCH)
 
 
-def first_ids(p, add=()):
+def first_ids(p, add=(), peek=False):
     """T-3796: the ids sampo lane land --first put ahead of the rest: `add` appends to them (returning them all);
-    with none, they are taken (returned and emptied) at a train boundary."""
+    with none, they are taken (returned and emptied) at a train boundary. T-5368: `peek` only reads them."""
     d = os.path.join(p.dir, "land-first")
     path = os.path.join(d, "ids")
     with c.lock(d):
@@ -2516,6 +2556,8 @@ def first_ids(p, add=()):
                 have = f.read().split()
         except OSError:
             have = []
+        if peek:
+            return have
         keep = list(dict.fromkeys([*have, *add])) if add else []
         if keep or have:
             c.write_atomic(path, " ".join(keep))
@@ -2592,17 +2634,107 @@ def start_verify(p, main, owed):
             c.log_event(p, "postmerge_spawn_failed", data={"why": c.fit(str(e), 200)})
 
 
+CLOSE_POLL_S = 3.0  # T-5368: a land waiting on its closes looks for a lane named --first (one accepted is) this often
+CLOSE_RETRIES = 2  # a close whose trunk moved under its run (a train's fast-forward) runs again this many times, then waits
+
+
+class _Closer:
+    """T-5368: a land's closes run on this thread, one at a time, so a train never waits for one: 2026-11-21 a land's
+    closes took 30 to 100 s each for an hour, between its trains, and four lanes accepted meanwhile waited for them. The
+    land puts ids on the queue and goes on training; its end waits for the queue (idle), looking for new lanes meanwhile.
+    `work(ids)` is the land's close and never raises. A close whose commit waits for a running train (`holding`)
+    goes to `later`, back on the queue when the train ends (hold(False))."""
+
+    def __init__(self):
+        self.cv = threading.Condition()
+        self.work = None
+        self.q, self.later, self.thread = [], [], None
+        self.holding = self.stopped = False
+
+    def _wake(self):  # under cv
+        if self.thread is None and self.q and not self.stopped:
+            self.thread = threading.Thread(target=self._run, name="sampo-land-closes", daemon=True)
+            self.thread.start()
+
+    def put(self, ids, front=False):
+        """ids close next (front: before what is queued, a train's own lanes before the leftovers) or last."""
+        ids = list(ids)
+        if ids:
+            with self.cv:
+                self.q.insert(0, ids) if front else self.q.append(ids)
+                self._wake()
+
+    def hold(self, on):
+        """A train is running (on): a close's commit waits for it in `later`; its end puts them back."""
+        with self.cv:
+            self.holding = on
+            if not on and self.later:
+                self.q.extend(self.later)
+                self.later = []
+                self._wake()
+
+    def after_train(self, ids):
+        with self.cv:
+            if self.holding:
+                self.later.append(list(ids))
+            else:  # the train ended meanwhile
+                self.q.append(list(ids))
+                self._wake()
+
+    def _run(self):
+        while True:
+            with self.cv:
+                if self.stopped or not self.q:
+                    self.thread = None
+                    self.cv.notify_all()
+                    return
+                ids = self.q.pop(0)
+            try:
+                self.work(ids)
+            except Exception as e:  # noqa: BLE001 — the work reports its own; one batch never ends the worker
+                print(f"sampo lane land: a close batch failed: {type(e).__name__}: {c.fit(str(e), 200)}", file=sys.stderr, flush=True)
+            with self.cv:
+                self.cv.notify_all()
+
+    def idle(self):
+        with self.cv:
+            return self.thread is None and not self.q and not self.later
+
+    def wait(self, timeout):
+        with self.cv:
+            if self.thread is not None:
+                self.cv.wait(timeout)
+
+    def stop(self):
+        """No batch begins from now (the running one finishes): what was queued, for the caller to say or leave."""
+        with self.cv:
+            self.stopped = True
+            dropped = [t for ids in self.q + self.later for t in ids]
+            self.q, self.later = [], []
+            return dropped
+
+    def join(self):
+        with self.cv:
+            while self.thread is not None:
+                self.cv.wait(1.0)
+
+
 def _land(p, main, batch):
     """T-4718: the trains defer their background verify; it starts after the ship (or, whatever happens, at the end)."""
     owed = [False]
+    closer = _Closer()
     try:
-        return _land_trains(p, main, batch, owed)
+        return _land_trains(p, main, batch, owed, closer)
     finally:
+        closer.stop()  # T-5368: a land that raised leaves its queued closes to the next land (merged and open: it finds them)
+        closer.join()
         start_verify(p, main, owed)
 
 
-def _land_trains(p, main, batch, owed):
+def _land_trains(p, main, batch, owed, closer=None):
+    from sampo import cli
     from sampo import lanes
+    closer = closer or _Closer()
     stamp = _code_stamp()  # the code this process loaded
     briefs = c.load_briefs(p)
     branch = _git(main, "symbolic-ref", "--short", "-q", "HEAD").stdout.strip() or "HEAD"
@@ -2643,10 +2775,41 @@ def _land_trains(p, main, batch, owed):
                   if kind == "joined" else f"ship not started: {m}"), file=sys.stderr, flush=True)
         return None
 
+    queued = set()  # T-5368: the ids put on the closer (once each)
+
+    def retry(tid, why):  # on the closer's thread: a refusal that is no verdict on the task goes round again
+        # (a moved trunk is _close's own retry, CLOSE_RETRIES reruns in all: one layer, not one on top of the other)
+        if why.startswith(COMMIT_WAIT) and closer.holding:  # its proof stands: the train's end commits it
+            closer.after_train([tid])
+            return True
+        return False
+
     def close(ids):  # T-3796: each lane closes once its train lands it, not after the whole pile has trained
-        done, left = close_landed(p, main, ids, settled=settled)
-        closed.extend(done)
-        hand.extend(left)
+        for tid in ids:  # T-5368: on the closer's thread, whose queue the trains' boundaries and the land's end feed
+            if closer.stopped:  # a restart: what is not closed yet is merged and open, the next land finds it
+                break
+            try:
+                done, left_ = close_landed(p, main, [tid], settled=settled, again=retry,
+                                           commit_wait=lambda: 1.0 if closer.holding else None)
+            except Exception as e:  # noqa: BLE001 — close_landed keeps each lane's own; this is all it could not
+                done, left_ = [], [(tid, f"{type(e).__name__}: {e}")]
+            closed.extend(done)
+            hand.extend(left_)
+    closer.work = close
+
+    def wait_closes():
+        """T-5368: the trains are done and the closes are not: wait for them, but a lane named --first (a lane accepted
+        meanwhile is) trains at once, its gate running beside the closes. True when one came, False once the closes are done."""
+        while not closer.idle():
+            closer.wait(CLOSE_POLL_S)
+            if first_ids(p, peek=True):
+                return True
+        return bool(first_ids(p, peek=True))
+
+    def to_close(ids, front=False):
+        todo = [t for t in ids if t not in queued]
+        queued.update(todo)
+        closer.put(todo, front)
 
     def note_park(pairs):  # T-4252: one line per lane left out, as it happens; plain() keeps a gate's output to one line
         for i, w in pairs:
@@ -2749,6 +2912,9 @@ def _land_trains(p, main, batch, owed):
         if ready and trains:  # T-4767: a lane waits out the trains before it: its check is read again at this one's start
             ready = recheck(ready)
         if not ready:
+            to_close([t for t in left if t not in queued])  # T-5368: the leftovers close now, a lane named meanwhile trains
+            if wait_closes():
+                continue
             break
         # T-5444: live, one train for all; T-5023: an express lane at the head trains alone, live or not
         cut = 1 if ready[0] in alone else len(ready) if live_mode(p) else batch
@@ -2757,6 +2923,7 @@ def _land_trains(p, main, batch, owed):
         tested.update({i: tip(by[i]) for i in ids})  # train() reads the same heads as it starts
         head0 = c._git(main, "rev-parse", "HEAD", timeout=10).strip()  # T-3851: the skills this train adds
         t_train = time.monotonic()
+        closer.hold(True)  # T-5368: the closes run on, only their commits wait for this train's lock
         try:
             got = train(p, main, ids, defer_verify=True)
             owed[0] = owed[0] or bool(got.get("verify_owed"))
@@ -2768,6 +2935,8 @@ def _land_trains(p, main, batch, owed):
         except c.LockTimeout:
             stopped = "a sampo lane train is running: land again after it"
             break
+        finally:
+            closer.hold(False)
         note_park(got["left_out"])  # T-4252: before the next train starts, not in the summary
         if got.get("kept"):  # T-4007: the main checkout's local changes the fast-forward set aside
             print(f"sampo lane land: {got['kept']}", file=sys.stderr, flush=True)
@@ -2775,9 +2944,8 @@ def _land_trains(p, main, batch, owed):
         landed += got["merged"]
         parked += got["left_out"]
         times.append(_train_times(p, land_id, trains, got, by, time.monotonic() - t_train))
-        close(got["merged"])
-        close([t for t in left if _retry_due(p, t)][:LEFT_PER_TRAIN])  # T-3969: a prepped one closes now, not hours on
-        left = [t for t in left if t not in {x for x, _ in closed}]
+        to_close(got["merged"], front=True)  # T-5368: on the closer's thread: the next train starts at once
+        to_close([t for t in left if t not in queued and _retry_due(p, t)][:LEFT_PER_TRAIN])  # T-3969: a prepped one closes now, not hours on
         if got["merged"]:
             try:  # a note to the sessions never costs the land
                 announce_skills(main, head0, c._git(main, "rev-parse", "HEAD", timeout=10).strip())
@@ -2799,8 +2967,11 @@ def _land_trains(p, main, batch, owed):
             first_ids(p, ready)  # the restarted land trains them in this order, not re-sorted
             _restart_carry(p, ready, alone)
             break
-    if not restart:  # a restart's leftovers close under the new code (it finds them merged and open again)
-        close([t for t in left if t not in {x for x, _ in hand}])  # one tried at a boundary was said there
+    if restart:  # a restart's leftovers close under the new code (it finds them merged and open again)
+        closer.stop()
+    else:
+        to_close([t for t in left if t not in queued])  # one tried at a boundary was said there
+    closer.join()  # T-5368: the land's last ship and its summary come after every close
     for tid, why in parked:
         kind, arg = _park_kind(why)
         lanes.stop_mark(p, tid, kind, arg, log=f"land: parked: {c.fit(why, 300)}", tip=tested.get(tid, ""))
@@ -2816,20 +2987,25 @@ def _land_trains(p, main, batch, owed):
             "train_times": times, "ship_asked": asked, "ship_failed": ship_failed}
 
 
-def close_landed(p, main, ids, who="sampo lane land", settled=None):
+def close_landed(p, main, ids, who="sampo lane land", settled=None, again=None, commit_wait=None):
     """T-4596: the one close every landing path makes (a land's trains, a multi-id sampo lane merge, sampo lane land
     --merged): each id's task closes through `_close` (sampo task finish's own checks, re-run on the trunk; nothing
     forced) and its lane goes with it. ([(id, the close's last line)], [(id, why it is left for a hand close)]); one
     lane's refusal or error never costs the others theirs. settled (T-5535) collects the ids whose close settled a gap.
+    T-5368: `again(id, why)` is asked of a refusal and, True, takes the id over (it is queued to close again: neither
+    closed nor left); `commit_wait` is the seconds (or a function giving them) a commit waits for a running train.
     The gates need no run of their own here: finish reuses the
     full pass on record for the trunk's code tree, which the CHANGELOG line each close commits leaves valid (the code
     tree leaves CHANGELOG.md out), so N closes cost one gate run at most, the first, and none after a train."""
     closed, hand = [], []
     for tid in ids:
         try:
-            why, last = _close(p, main, tid, settled)
+            why, last = _close(p, main, tid, settled, commit_wait)
         except Exception as e:  # noqa: BLE001 — one lane's close never costs the others theirs
             why, last = f"{type(e).__name__}: {e}", ""
+        if why and again and again(tid, why):
+            print(f"{who}: {tid} goes round again: {c.fit(why, 200)}", file=sys.stderr, flush=True)
+            continue
         (hand if why else closed).append((tid, why or last))
         steps = close_steps(last) if not why else ""  # T-4600: a slow close names its step in the land's own log
         print(f"{who}: left for a hand close {tid}: {c.fit(why, 400)}" if why else f"{who}: closed {tid}",
@@ -2872,7 +3048,8 @@ def _merged_lanes(p, main):
     first_parent = None  # the trunk's first-parent line, read at most once
     for b in sorted(c.load_briefs(p), key=lambda x: c.id_num(x.id)):
         path = b.meta.get("lane") or ""
-        if b.status in c.CLOSED or not path:
+        owes = b.status == "done" and _commit_pending(b)  # T-5368: proved and done, its CHANGELOG commit never made
+        if (b.status in c.CLOSED and not owes) or not path:
             continue
         branch = b.meta.get("lane_branch") or f"foreman/{b.id}"
         tip = _git(main, "rev-parse", "--verify", "-q", f"{branch}^{{commit}}").stdout.strip()
@@ -2916,6 +3093,46 @@ def _drop_empty(p, main, empty):
     return dropped, kept
 
 
+PM_POLL_S = 5.0  # T-5368: how often a sweep looks again at a post-merge verify it waits for
+PM_WAIT_S = 1800.0  # T-5368: the longest it waits (a verify that outlives it is closed beside, its tests rerun then)
+
+
+def _pm_unsettled(p, ids):
+    """T-5368: [(task id, merge sha, state)] of the post-merge verifies of these tasks' merges that are on their way to a
+    result: running with a live runner, or pending and just landed (SENTINEL_MIN: older is stuck, no runner took it).
+    A finished one (green, red, reverted), a dead runner's and another task's are not waited for."""
+    from sampo import cli
+    from sampo import lanes
+    want = set(ids)
+    out = []
+    for r in lanes.pm_records(p).values():
+        fresh = (a := c.age_days(r.get("at"))) is not None and a < cli.SENTINEL_MIN / 1440
+        if r.get("task") in want and (r.get("state") == "running" and not lanes._pm_dead(r)
+                                      or r.get("state") == "pending" and fresh):
+            out.append((r["task"], r.get("sha") or "", r["state"]))
+    return sorted(out)
+
+
+def _wait_pm(p, ids, who):
+    """T-5368: a sweep's closes rerun criteria that the post-merge verify of the same merges is running (and caches by
+    class once it passes): the sweep waits for it, up to PM_WAIT_S, and says so. '' when none was running, else what it
+    did for the gate line ('waited 41 s for the post-merge verify', or that it was still running at the deadline)."""
+    first = _pm_unsettled(p, ids)
+    if not first:
+        return ""
+    t0 = time.monotonic()
+    print(f"{who}: waiting for the post-merge verify of {', '.join(sorted({t for t, _, _ in first}))} "
+          f"(up to {PM_WAIT_S:.0f} s) before the closes: its tests are theirs", file=sys.stderr, flush=True)
+    while _pm_unsettled(p, ids):
+        left = PM_WAIT_S - (time.monotonic() - t0)
+        if left <= 0:
+            s = f"the post-merge verify was still running after {time.monotonic() - t0:.0f} s"
+            print(f"{who}: {s}: closing beside it", file=sys.stderr, flush=True)
+            return s
+        time.sleep(max(0.0, min(PM_POLL_S, left)))
+    return f"waited {time.monotonic() - t0:.0f} s for the post-merge verify"
+
+
 def land_merged(p, main, drop_empty=False):
     """T-4596: close the tasks of every lane whose tip is already on the trunk (a hand train, `sampo lane merge`, or a
     land cut short landed them and closed nothing): the lane goes and the task closes through `close_landed`. One gate
@@ -2928,6 +3145,15 @@ def land_merged(p, main, drop_empty=False):
     from sampo import cli
     if why := held_by_active(p, main, ids=[]):  # T-4692: merged lanes are on the trunk: only the changelog is left to hold
         raise c.PolicyError(why)
+    # T-5368: the wait for a post-merge verify (up to PM_WAIT_S) comes before the land lock: a land that came meanwhile
+    # is not refused for it. The lanes it waits for are read once here; the sweep below reads them again under the lock.
+    try:  # a land that runs is said at once: no wait for a verify first (the lock is taken again below, after the wait)
+        with c.lock(os.path.join(p.dir, "land"), timeout=1):
+            pass
+    except c.LockTimeout:
+        raise c.PolicyError("another sampo lane land is running; it closes the lanes it lands") from None
+    waiting = _merged_lanes(p, main)[0]
+    waited =_wait_pm(p, [t for t, _ in waiting], "sampo lane land --merged") if waiting else ""
     with contextlib.ExitStack() as held:
         try:
             held.enter_context(c.lock(os.path.join(p.dir, "land"), timeout=1))
@@ -2958,6 +3184,7 @@ def land_merged(p, main, drop_empty=False):
                 left.extend((t, why) for t, _ in on)
                 on = []
                 gate = "one sampo check on the trunk, red"
+        gate += f" ({waited})" if waited else ""
         closed, hand = close_landed(p, main, [t for t, _ in on], who="sampo lane land --merged", settled=settled) \
             if on else ([], [])
         left.extend(hand)
@@ -3085,7 +3312,16 @@ def _closed_text(got):
     return f"{len(got['closed'])} closed" + (f" ({m} settled)" if m else "")
 
 
-def _close(p, main, tid, settled=None):
+PENDING_COMMIT, COMMITTED = c.CLOSE_PENDING, c.CLOSE_COMMITTED  # T-5368: the Log's marks of a close's two phases
+
+
+def _wait(w):
+    """T-5368: a commit's wait for the train's lock: a number, or a function asked when the commit is reached (a train
+    may have started during the criteria), or None for the default."""
+    return w() if callable(w) else w
+
+
+def _close(p, main, tid, settled=None, commit_wait=None):
     """('', 'TITLE — the close's last line'), or (why it's left for a hand close, ''). The task closes from the main
     checkout with its lane still in place, which goes only once the close is done: a refused close keeps it for a fix.
     Only audits made after the lane's tip commit count, and the close's lenses name that tip. A close that settled a gap
@@ -3096,6 +3332,13 @@ def _close(p, main, tid, settled=None):
         return f"{why.split(': finish')[0]}, so land closes nothing more", ""
     b = cli.need_brief(p, tid)
     path = b.meta.get("lane") or ""
+    if b.status == "done" and _commit_pending(b):  # T-5368: its criteria passed in an earlier land; the commit waited
+        f = lanes.close_fields(b.section(lanes.CLOSE_FIELDS))
+        title = lanes.close_line(f.get("title"), "title", tid)[0] or lanes.close_line(b.title, "title", tid)[0]
+        why, out = _commit_close(p, tid, title, path, _wait(commit_wait))
+        if why:
+            return why, ""
+        return _finish_close(p, main, tid, path, title, out, 0.0)
     if b.status == "done":  # T-3907: closed inside its lane; the merge was all it lacked
         try:
             lanes.remove(p, b, main)
@@ -3142,23 +3385,69 @@ def _close(p, main, tid, settled=None):
     # T-5444: a live land's close re-runs no linked tests: the behind suite runs them all on the merged head and reverts
     live_skip = ["--skip-affected", "live landing: the behind suite verifies the merged head and reverts a red merge"] \
         if live_mode(p) else []
-    try:
-        with train_lock_closing(p):  # T-4540: the close commits on trunk: it waits for a running train (bounded), not beside it
-            rc, out, err = _sampo(["task", "finish", tid, "--audit", f"{LAND_AUDIT} (lane tip {sha})", "--result", seen,
-                                   *[x for lens in sorted(set(fresh) - {"self"}) for x in ("--lens", f"{lens}: {seen}")],
-                                   *why_arg, *tip, *live_skip, *run_arg, "--commit", title])
-    except c.LockTimeout:
-        return ("a running train holds trunk: the close waits for it, and the next land retries it"
-                + ("; its lane is kept" if path else ""), "")
+    # T-5368: the criteria (and the audits, the evidence, the task's done) run with no lock: a slow one froze every train
+    # and every later close for the whole of its tests. Only the CHANGELOG line and the commit take trunk's lock, below.
+    argv = ["task", "finish", tid, "--audit", f"{LAND_AUDIT} (lane tip {sha})", "--result", seen,
+            *[x for lens in sorted(set(fresh) - {"self"}) for x in ("--lens", f"{lens}: {seen}")],
+            *why_arg, *tip, *live_skip, *run_arg, "--defer-changelog"]
+    rc, out, err = _sampo(argv)
+    for _ in range(CLOSE_RETRIES):  # trunk moved under the run (a train's fast-forward): again, at most CLOSE_RETRIES reruns
+        if not (rc and cli.TREE_MOVED in (err or out)):
+            break
+        rc, out, err = _sampo(argv)
+    if rc and cli.TREE_MOVED in (err or out):  # the next land, then
+        return _why(err or out) + ("; its lane is kept" if path else ""), ""  # no verdict on the task: nothing logged
     if rc:
         why = _why(err or out) + ("; its lane is kept" if path else "")
         nb = cli.need_brief(p, tid)  # after the refusal: it may have touched the brief, and the hash must match then
         nb.append_log(f"land: close refused: {c.fit(' '.join(why.split()), 400)} @ {_brief_hash(nb)} {sha} {_code_id()}")
         c.save_brief(p, nb)
         return why, ""
-    finish_s = time.monotonic() - t_finish
+    # proved and done, and the finish wrote the mark that its commit is owed with the done itself (T-5368: a crash
+    # between the two left the task done and its CHANGELOG line never committed); a land that can't take the lock now
+    # leaves the commit to the next
+    why, out2 = _commit_close(p, tid, title, path, _wait(commit_wait))
+    if why:
+        return why, ""
     if kinds and settled is not None:  # T-5535: counted once it has closed, not when it settled
         settled.append(tid)
+    return _finish_close(p, main, tid, path, title, out + "\n" + out2, time.monotonic() - t_finish)
+
+
+def _commit_pending(b):
+    """T-5368: True when the task's newest close mark says its criteria passed and its commit is still owed. A mark is a
+    Log line that is exactly `- <time> <mark>`: a note that merely ends with its text is none."""
+    marks = [m for x in b.section("Log").splitlines()
+             if (m := re.fullmatch(r"- \S+ (" + re.escape(PENDING_COMMIT) + "|" + re.escape(COMMITTED) + r")", x.rstrip()))]
+    return bool(marks) and marks[-1].group(1) == PENDING_COMMIT
+
+
+COMMIT_WAIT = "a running train holds trunk"  # T-5368: the start of the refusal a commit that timed out on a train's lock gives
+
+
+def _commit_close(p, tid, title, path, timeout=None):
+    """T-5368: the second half of a land's close: the CHANGELOG line and the commit of a done task, under the train's
+    lock (T-4540: a running train is waited for, bounded, never committed beside; `timeout` seconds, default
+    lanes.TRUNK_WAIT_S). ('', the finish's output), or (why it is left, ''): the mark stays, and the next land commits it."""
+    from sampo import cli
+    keep = "; its lane is kept" if path else ""
+    try:
+        with _own_commit(), train_lock_closing(p, timeout):
+            rc, out, err = _sampo(["task", "finish", tid, "--commit", title])
+    except c.LockTimeout:
+        return COMMIT_WAIT + ": the close's commit waits for it, and the next land retries it" + keep, ""
+    if rc:
+        return _why(err or out) + keep, ""
+    nb = cli.need_brief(p, tid)
+    nb.append_mark(COMMITTED)
+    c.save_brief(p, nb)
+    return "", out
+
+
+def _finish_close(p, main, tid, path, title, out, finish_s):
+    """The lane goes once its task is closed and committed ('', the close's last line)."""
+    from sampo import cli
+    from sampo import lanes
     done = cli.need_brief(p, tid)
     t_lane = time.monotonic()
     if path and done.meta.get("lane"):

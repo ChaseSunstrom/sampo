@@ -7,7 +7,7 @@ import time
 from unittest import mock
 
 from test_lane_train import TrainCase  # the fixtures (and helpers' sys.path) come first
-from test_lane_land import report
+from test_lane_land import LandCase, report
 from sampo import core as c
 from sampo import lanes
 from sampo import train
@@ -55,10 +55,11 @@ class TrunkWaits(TrainCase):
         self.fm("task", "set", self.tid, "--section", "Close fields", "--text", report(self.tid))
         self.fm("task", "audit", self.tid, "self", "one fm-reviewer pass on the branch", "no findings")
         with self.held_train_lock(), mock.patch.object(lanes, "TRUNK_WAIT_S", 0.2), \
-                mock.patch.object(train, "_sampo", wraps=train._sampo) as sampo:
+                mock.patch.object(train, "_sampo", wraps=train._sampo) as sampo, LandCase.in_project(self):
             why, title = train._close(self.p, self.repo, self.tid)
-        finishes = [call.args[0][:2] for call in sampo.call_args_list if call.args and call.args[0][:1] == ["task"]]
-        self.assertNotIn(["task", "finish"], finishes, "the hand close did not commit beside the train")
+        # T-5368: the criteria run without the lock; only the commit waits for it
+        finishes = [call.args[0] for call in sampo.call_args_list if call.args and call.args[0][:2] == ["task", "finish"]]
+        self.assertTrue(all("--commit" not in argv for argv in finishes), "the hand close did not commit beside the train")
         self.assertIn("train", why, why)
         self.assertEqual(title, "")
 

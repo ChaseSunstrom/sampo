@@ -3,16 +3,20 @@ its brief at its return; sampo task finish reads them when its own flags are abs
 lane land trains every finished lane in batches, closes each landed one from its brief, parks the rest with the reason,
 and ships on a publish grant already given. The drive names it when 2+ lanes wait and no land runs."""
 # map-links: plugin/lib/sampo/train.py
+import contextlib
 import os
 import re
 import subprocess
 import sys
 import time
 import unittest
+from unittest import mock
 
 from test_lane_train import TrainCase, first
 
+from sampo import cli
 from sampo import core as c
+from sampo import lanes
 from sampo import train
 
 OLD = "2026-01-01T00:00:00"  # a lane quiet this long counts as finished (core.finished_lanes)
@@ -74,6 +78,19 @@ class LandCase(TrainCase):
     def trains(self, r):
         """The lanes each train of a land took, one string per train, in order."""
         return re.findall(r"(?m)^sampo lane land: train \d+: (.+)$", r.stderr)
+
+    @contextlib.contextmanager
+    def in_project(self):
+        """T-5368: code run in this process whose sampo verbs (train._sampo spawns them) find this test's project: its
+        cwd and state folder, as fm() gives its own subprocesses."""
+        env = {"FOREMAN_HOME": self.home, "FOREMAN_INHIBITED": "1", "FOREMAN_DOCTOR_BENCH": "0", "FOREMAN_DOCTOR_BUILD": "0"}
+        here = os.getcwd()
+        os.chdir(self.repo)
+        try:
+            with mock.patch.dict(os.environ, env):
+                yield
+        finally:
+            os.chdir(here)
 
 
 class CloseFields(LandCase):
@@ -447,9 +464,14 @@ class Land(LandCase):
         self.train(early)  # merged by a train of its own: open until a land closes it
         r = self.land("--batch", "1")
         steps = re.findall(r"(?m)^sampo lane land: (train \d+: \S+|closed \S+)$", r.stderr)
-        # T-3884: leftovers after the train's own closes; T-3969: at the first boundary, not after the last train
-        self.assertEqual(steps, [f"train 1: {a}", f"closed {a}", f"closed {early}", f"train 2: {b}", f"closed {b}"],
-                         r.stderr)
+        # T-3884: leftovers after the train's own closes; T-3969: at the first boundary, not after the last train.
+        # T-5368: the closes run on their own worker, so train 2 need not wait for them: only each close's own order stands
+        self.assertEqual(sorted(steps), sorted([f"train 1: {a}", f"closed {a}", f"closed {early}", f"train 2: {b}",
+                                                f"closed {b}"]), r.stderr)
+        at = {s: i for i, s in enumerate(steps)}
+        self.assertEqual(steps[0], f"train 1: {a}", r.stderr)
+        self.assertLess(at[f"closed {a}"], at[f"closed {early}"], "a train's own lanes close before the leftovers")
+        self.assertLess(at[f"train 2: {b}"], at[f"closed {b}"], r.stderr)
 
     def test_a_refused_leftover_is_tried_once_per_land_until_its_brief_changes(self):
         # T-3969: 2026-11-08, 63 merged-open tasks prepped for their closes waited for the land run's end (hours)
@@ -467,7 +489,7 @@ class Land(LandCase):
         tried = re.findall(rf"(?m)^sampo lane land: left for a hand close {early}: .*$", r.stderr)
         self.assertEqual(len(tried), 1, r.stderr)
         self.assertIn("docs impact missing", tried[0])
-        self.assertLess(r.stderr.index(tried[0]), r.stderr.index("train 2:"), "tried at the first boundary")
+        self.assertGreater(r.stderr.index(tried[0]), r.stderr.index("train 1:"), "tried after the first train's boundary")
 
     def test_a_live_projects_close_check_skips_classes_green_at_the_same_code(self):
         # T-5483: the hourly tick's land --merged ran all 12,000 tests uncached, queued behind the behind verify on the
@@ -678,6 +700,146 @@ class Land(LandCase):
         log = subprocess.run(["git", "-C", origin, "log", "--format=%s", "main"], capture_output=True, text=True).stdout
         self.assertIn(f, log)
         self.assertNotIn("publish", self.brief(g).meta.get("allow") or [])
+
+
+PROBE = ("import fcntl, os, sys\n"
+         "d, out = sys.argv[1], sys.argv[2]\n"
+         "if os.path.basename(os.getcwd()).startswith('lane'):\n"  # the land's check in the lane's folder, under its train
+         "    sys.exit(0)\n"
+         "fd = os.open(os.path.join(d, '.lock'), os.O_CREAT | os.O_RDWR)\n"
+         "try:\n"
+         "    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+         "    state = 'free'\n"
+         "except BlockingIOError:\n"
+         "    state = 'held'\n"
+         "if os.path.exists(os.path.join(d, 'closing')):\n"
+         "    state = 'closing'\n"
+         "open(out, 'a').write(state + '\\n')\n"
+         "sys.exit(0 if state == 'free' else 1)\n")
+
+
+class CloseLock(LandCase):
+    """T-5368: a land's close ran its criteria (and the changelog commit) with the train lock held, so a train waited,
+    and a hand close waited on a train, for up to 50 minutes of someone else's tests. The lock is held for the commit."""
+
+    def test_a_lands_close_holds_the_train_lock_only_around_its_commit_not_while_its_criteria_run(self):  # lock
+        p = c.find_project(self.repo)
+        probe, out = os.path.join(self.tmp, "probe.py"), os.path.join(self.tmp, "probed")
+        with open(probe, "w") as f:
+            f.write(PROBE)
+        tid = self.lane(1, "a.txt", when=OLD, ac=f"python3 {probe} {os.path.join(p.dir, 'train')} {out}")
+        self.audited(tid)
+        self.returned(tid, "Lane 1")
+        r = self.land()
+        states = []
+        if os.path.exists(out):
+            with open(out) as f:
+                states = f.read().split()
+        self.assertTrue(states, "the criterion's command ran at the close: " + r.stdout + r.stderr)
+        self.assertEqual(set(states), {"free"}, f"the lock was not free while the criteria ran: {states}\n{r.stdout}")
+        self.assertEqual(self.brief(tid).status, "done", r.stdout + r.stderr)
+        self.assertIn("Lane 1 lands with one gate run", self.log(), "the changelog line is committed under the lock")
+        self.assertEqual(self.git("status", "--porcelain", "--untracked-files=no"), "")
+        self.assertFalse(os.path.exists(os.path.join(p.dir, "train", "closing")), "its mark is cleared")
+
+    def test_a_close_whose_commit_waits_for_the_train_lock_keeps_its_proof_and_the_next_land_commits_it(self):
+        p = c.find_project(self.repo)
+        tid = self.lane(1, "a.txt", when=OLD)
+        self.audited(tid)
+        self.returned(tid, "Lane 1")
+        self.train(tid)
+        with c.lock(os.path.join(p.dir, "train"), timeout=1), mock.patch.object(lanes, "TRUNK_WAIT_S", 0.2), \
+                mock.patch.object(train, "_sampo", wraps=train._sampo) as sampo, self.in_project():
+            why, title = train._close(p, self.repo, tid)
+        finishes = [call.args[0] for call in sampo.call_args_list if call.args and call.args[0][:2] == ["task", "finish"]]
+        self.assertIn("train", why, why)
+        self.assertEqual(title, "")
+        self.assertEqual(len(finishes), 1, finishes)
+        self.assertNotIn("--commit", finishes[0], "the criteria ran with no commit, so no lock")
+        self.assertEqual(self.brief(tid).status, "done", "its proof is kept")
+        self.assertNotIn("Lane 1 lands with one gate run", self.log(), "nothing written to trunk beside the train")
+        self.assertEqual(self.git("status", "--porcelain", "--untracked-files=no"), "", "nothing half-written on trunk")
+        with self.in_project():
+            why, title = train._close(p, self.repo, tid)  # the lock is free: the next land commits what was proved
+        self.assertEqual(why, "")
+        self.assertTrue(title)
+        self.assertIn("Lane 1 lands with one gate run", self.log())
+        self.assertEqual(self.git("status", "--porcelain", "--untracked-files=no"), "")
+        self.assertFalse(os.path.isdir(os.path.join(self.tmp, "lane1")), "its lane goes with the commit")
+
+    def landed(self):
+        tid = self.lane(1, "a.txt", when=OLD)
+        self.audited(tid)
+        self.returned(tid, "Lane 1")
+        self.train(tid)
+        return tid
+
+    def test_a_crash_right_after_the_proof_leaves_the_commit_owed_and_the_merged_sweep_commits_it(self):  # T-5368 review
+        p = c.find_project(self.repo)
+        tid = self.landed()
+        real = train._sampo
+
+        def dies_after_finish(args, *a, **k):  # the process is gone once finish --defer-changelog has returned
+            out = real(args, *a, **k)
+            if args[:2] == ["task", "finish"] and "--defer-changelog" in args:
+                raise RuntimeError("killed")
+            return out
+        with mock.patch.object(train, "_sampo", dies_after_finish), self.in_project():
+            with self.assertRaises(RuntimeError):
+                train._close(p, self.repo, tid)
+        b = self.brief(tid)
+        self.assertEqual(b.status, "done")
+        self.assertTrue(train._commit_pending(b), "the finish wrote the owed commit with the done: " + b.section("Log"))
+        self.assertNotIn("Lane 1 lands with one gate run", self.log())
+        self.assertEqual([t for t, _ in train._merged_lanes(p, self.repo)[0]], [tid], "a done task owing its commit is swept")
+        r = self.land("--merged")
+        self.assertIn(f"closed {tid}", r.stdout + r.stderr)
+        self.assertIn("Lane 1 lands with one gate run", self.log())
+        self.assertFalse(train._commit_pending(self.brief(tid)))
+
+    def test_a_close_whose_trunk_moved_mid_run_runs_once_more(self):  # T-5368 review
+        p = c.find_project(self.repo)
+        tid = self.landed()
+        real, calls = train._sampo, []
+
+        def moves_once(args, *a, **k):
+            if args[:2] == ["task", "finish"] and "--defer-changelog" in args:
+                calls.append(1)
+                if len(calls) == 1:
+                    return 1, "", f"sampo: refused: {tid} not finished: {cli.TREE_MOVED}; nothing recorded"
+            return real(args, *a, **k)
+        with mock.patch.object(train, "_sampo", moves_once), self.in_project():
+            why, title = train._close(p, self.repo, tid)
+        self.assertEqual((why, len(calls)), ("", 2), why)
+        self.assertEqual(self.brief(tid).status, "done")
+
+    def test_a_close_whose_trunk_keeps_moving_is_left_for_the_next_land_with_no_refusal_logged(self):  # T-5368 review
+        p = c.find_project(self.repo)
+        tid = self.landed()
+        real, calls = train._sampo, []
+
+        def always_moves(args, *a, **k):
+            if args[:2] == ["task", "finish"] and "--defer-changelog" in args:
+                calls.append(1)
+                return 1, "", f"sampo: refused: {tid} not finished: {cli.TREE_MOVED}; nothing recorded"
+            return real(args, *a, **k)
+        with mock.patch.object(train, "_sampo", always_moves), self.in_project():
+            why, title = train._close(p, self.repo, tid)
+        # one retry layer: the first run and at most CLOSE_RETRIES (2) reruns, so a moving trunk costs the criteria 3 runs
+        self.assertEqual(len(calls), 1 + train.CLOSE_RETRIES, "reruns are bounded in all, not per layer")
+        self.assertEqual(train.CLOSE_RETRIES, 2)
+        self.assertIn(cli.TREE_MOVED, why)
+        self.assertNotIn("close refused", self.brief(tid).section("Log"), "no verdict on the task: the next land retries")
+        self.assertNotEqual(self.brief(tid).status, "done")
+
+    def test_the_pending_mark_is_the_whole_log_text_not_a_line_that_merely_ends_with_it(self):  # T-5368 review
+        from types import SimpleNamespace
+        def brief(*lines):
+            return SimpleNamespace(section=lambda name: "\n".join(lines))
+        mark = c.CLOSE_PENDING
+        self.assertTrue(train._commit_pending(brief(f"- 2026-01-01T00:00:00Z {mark}")))
+        self.assertFalse(train._commit_pending(brief(f"- 2026-01-01T00:00:00Z the note said {mark}")))
+        self.assertFalse(train._commit_pending(brief(f"- 2026-01-01T00:00:00Z {mark}", f"- 2026-01-02T00:00:00Z {c.CLOSE_COMMITTED}")))
 
 
 class FreshProcess(unittest.TestCase):
@@ -1077,6 +1239,122 @@ class HandCloseGroups(LandCase):
         missing = [g for g in groups if "no audit recorded" in g]
         self.assertEqual(len(missing), 1, r.stdout)
         self.assertIn(f"hand close group (1) no audit recorded: {d} ", missing[0])
+
+
+class OffTrain(LandCase):
+    """T-5368: a land's closes ran between its trains, one by one (30 to 100 s each for an hour on 2026-11-21), and four
+    lanes accepted meanwhile waited for the land's next train boundary. The closes run on their own worker now: a lane
+    queued or accepted while they are pending trains within one gate, not after the last of them."""
+
+    def setUp(self):
+        super().setUp()
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(self.repo)  # the close runs `sampo` from the cwd: the test's repo, not this checkout
+        self.p = c.find_project(self.repo)
+
+    def run_land(self, slow, first_after, want):
+        """A land (this process, its own thread) whose close of `slow` blocks until `go` is set; once that close has
+        begun, `first_after()` runs, and the land is given 40 s to train `want`. The order of events:
+        [('train', ids) | ('close', id), ('closed', id)]."""
+        import threading
+        order, begun, go, out = [], threading.Event(), threading.Event(), {}
+        real_close, real_train = train._close, train.train
+
+        def close(p, main, tid, *a, **k):
+            if tid == slow:
+                begun.set()
+                go.wait(60)
+            order.append(("close", tid))
+            got = real_close(p, main, tid, *a, **k)
+            order.append(("closed", tid))
+            return got
+
+        def trained(p, main, ids, *a, **k):
+            order.append(("train", list(ids)))
+            return real_train(p, main, ids, *a, **k)
+
+        def land():
+            try:
+                with self.in_project():
+                    out["got"] = train.land(self.p, self.repo, 1)
+            except BaseException as e:  # noqa: BLE001 — reported by the test thread
+                out["err"] = e
+        with mock.patch.object(train, "_close", close), mock.patch.object(train, "train", trained):
+            t = threading.Thread(target=land, daemon=True)
+            t.start()
+            try:
+                self.assertTrue(begun.wait(60), "the slow close began: " + repr(order))
+                first_after()
+                deadline = time.monotonic() + 40
+                while time.monotonic() < deadline and ("train", [want]) not in order:
+                    time.sleep(0.2)
+            finally:
+                go.set()
+                t.join(120)
+        return order, out
+
+    def test_a_first_lane_queued_while_closes_are_pending_trains_before_the_remaining_closes_finish(self):
+        early, a = (self.lane(n, f"{n}.txt", when=OLD) for n in (1, 2))
+        d = self.lane(3, "3.txt")  # committed just now: not finished until its builder returns
+        self.audited(early, a)
+        self.returned(early, "Lane 1")
+        self.returned(a, "Lane 2")
+        self.train(early)  # merged by a train of its own: open until a land closes it (its close is the slow one)
+
+        def queue_d():  # d is accepted and named --first while the land is busy closing
+            self.audited(d)
+            self.returned(d, "Lane 3")
+            train.first_ids(self.p, [d])
+        order, out = self.run_land(early, queue_d, d)
+        late = [i for i, e in enumerate(order) if e == ("train", [d])]
+        self.assertTrue(late, f"the --first lane trained while a close was pending: {order} {out}")
+        self.assertLess(late[0], order.index(("closed", early)), f"before the slow close finished: {order}")
+        self.assertNotIn("err", out, out)
+        self.assertEqual([self.brief(t).status for t in (early, a, d)], ["done"] * 3, f"{order} {out}")
+        self.assertEqual(sorted(out["got"]["closed"]), sorted([early, a, d]), out["got"])
+
+    def test_closes_still_pending_at_the_last_train_finish_before_the_land_returns(self):
+        early, a = (self.lane(n, f"{n}.txt", when=OLD) for n in (1, 2))
+        self.audited(early, a)
+        self.returned(early, "Lane 1")
+        self.returned(a, "Lane 2")
+        self.train(early)
+        order, out = self.run_land(early, lambda: None, a)
+        self.assertNotIn("err", out, out)
+        self.assertEqual(sorted(out["got"]["closed"]), sorted([early, a]), out["got"])
+        self.assertEqual([self.brief(t).status for t in (early, a)], ["done", "done"], order)
+
+    def test_a_train_waits_for_the_lands_own_closer_to_let_go_of_the_lock_not_one_second(self):
+        """The closer removes its closing file and lets go of the lock a moment later: a train that asks in that gap found
+        no close and was refused after 1 s, which stopped the land. Here the closer holds the lock 1.5 s with the file
+        already gone; the train must get the lock when it lets go."""
+        import threading
+        held, got = threading.Event(), {}
+
+        def finish(args):  # runs inside the close's commit, under the train's lock
+            with contextlib.suppress(OSError):
+                os.remove(os.path.join(self.p.dir, "train", lanes.CLOSE_MARK))
+            held.set()
+            time.sleep(1.5)
+            return 1, "", "nothing to commit"
+
+        def closer():
+            with mock.patch.object(train, "_sampo", finish):
+                got["commit"] = train._commit_close(self.p, "T-9999", "t", "")
+        t = threading.Thread(target=closer, daemon=True)
+        t.start()
+        try:
+            self.assertTrue(held.wait(30), "the closer holds the lock")
+            t0 = time.monotonic()
+            try:
+                with train._train_run_lock(self.p):
+                    got["waited"] = time.monotonic() - t0
+            except c.LockTimeout as e:
+                self.fail(f"the train was refused after {time.monotonic() - t0:.1f} s while the closer held the lock: {e}")
+        finally:
+            t.join(60)
+        self.assertGreater(got["waited"], 0.3, "it waited for the closer, not slipped past it")
+        self.assertLess(got["waited"], 10, got)
 
 
 if __name__ == "__main__":

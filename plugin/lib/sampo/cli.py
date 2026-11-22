@@ -1132,6 +1132,8 @@ def cmd_task(args):
             if files:  # recall's "Start here" and edit tripwires for the next related task
                 b.set_section("Files touched", "".join(f"- {f}\n" for f in files[:30]))  # not a list: a recall section; the diff has the rest
             b.append_log("done")  # T-0487: what passed on which model, for fm cost --by-model (and routing later)
+            if getattr(args, "defer_changelog", False):  # T-5368: its commit is owed: written with the done, so no crash splits them
+                b.append_mark(c.CLOSE_PENDING)
             logged.update(model=_session_model(), harness=c.harness(), type=b.type, tier=b.tier, verified=b.meta["verified"],  # T-2739
                           planned=len(b.meta.get("scope") or []), changed=len(files),  # T-0644
                           **({"unproven": b.meta["unproven"]} if b.meta.get("unproven") else {}))
@@ -1739,7 +1741,9 @@ def _task_finish(p, args):
         args.timeout = 600  # the fixed limit the close has always had (scaled by load)
     claims = parse_claims(getattr(args, "claim", None))  # a bad tag stops it before anything runs
     lane = c._git(p.root, "rev-parse", "--abbrev-ref", "HEAD").strip() == (b.meta.get("lane_branch") or f"foreman/{b.id}")
-    if lane and not args.commit:  # T-4049: in its own lane, the close commits what it wrote
+    if getattr(args, "defer_changelog", False) and args.commit:  # T-5368: the line and the commit go together, later
+        raise UsageError("--defer-changelog leaves the commit to a later `sampo task finish ID --commit MSG`: drop --commit")
+    if lane and not args.commit and not getattr(args, "defer_changelog", False):  # T-4049: in its own lane, the close commits what it wrote
         args.commit = f"{b.id}: close"
     if b.status == "dropped":  # T-0679 chaos test
         raise c.PolicyError(f"{b.id} is dropped: reopen it first (sampo task set {b.id} status=planned)")
@@ -1797,6 +1801,16 @@ def _task_finish(p, args):
 
     here = (c.worktree_id(p.root), c.world_here())  # T-2644: the files and the world a reused pass must match
     args.reused = []
+    # T-5368: a land's close holds no lock while its criteria run: a train may move trunk meanwhile, and evidence stamped
+    # after would claim a tree the criteria never ran on. The committed code tree, read before and again after the run.
+    trunk0 = c.code_tree(p.root, "HEAD") if getattr(args, "defer_changelog", False) else None
+    pm_via = {}  # T-5368: command -> the merge whose green post-merge suite stood for its run (labelled so in the evidence)
+    pm_trees = []  # T-5368: this code tree, read once (a git tree read) and only for a criterion a post-merge run could prove
+
+    def pm_tree():
+        if not pm_trees:
+            pm_trees.append(c.code_tree(p.root))
+        return pm_trees[0]
 
     def run(cmd):
         why = []
@@ -1804,6 +1818,11 @@ def _task_finish(p, args):
             # T-3120: the full gates passed on this code tree (any task's run; only CHANGELOG/mirror lines differ)
             args.reused.append(f"{cmd} ({hit})")  # the summary names the hit, not "this tree and world"
             runs[cmd] = (0, f"✓ gates: reusing the full {hit}")
+            print(runs[cmd][1])
+        if cmd not in runs and (rec := _pm_proof(p, cmd, pm_tree)):  # T-5368: the full suite already ran these on this code
+            pm_via[cmd] = rec["sha"][:9]
+            args.reused.append(f"{cmd} (post-merge suite {rec['sha'][:9]})")
+            runs[cmd] = (0, f"✓ post-merge full suite green on this code tree (merge {rec['sha'][:9]}): not rerun")
             print(runs[cmd][1])
         if cmd not in runs and (at := b.passed_here(cmd, *here)):  # T-2644: it just passed on these very files
             args.reused.append(f"{cmd} (this tree and world)")
@@ -1855,9 +1874,10 @@ def _task_finish(p, args):
     from sampo import concerns  # T-4189: a task reopened by a repeated report needs a run on the real surface
     gaps += concerns.safe_gaps(p, b, then=[(n, cmd) for kind, n, cmd in todo if kind == "step" and cmd],
                                then_ac=[(n, cmd) for kind, n, cmd in todo if kind in ("ac", "final") and cmd] + [(0, args.run)])
-    if args.commit:  # T-4585: a credential in the files to commit is found now, not after the gates (checked again after)
+    to_commit = args.commit or ("deferred" if getattr(args, "defer_changelog", False) else "")  # T-5368: its commit comes later
+    if to_commit:  # T-4585: a credential in the files to commit is found now, not after the gates (checked again after)
         try:
-            _commit_task(p, b, args.commit, dry=True, with_=args.with_)
+            _commit_task(p, b, to_commit, dry=True, with_=args.with_)
         except (c.PolicyError, UsageError) as e:  # T-4147: listed with the other missing lines
             gaps.append(" ".join(str(e).split()))
     if gaps:  # T-0704, T-4147: every missing line in one refusal, before any gate or verify command starts
@@ -1884,13 +1904,16 @@ def _task_finish(p, args):
     dat = dataproof.for_task(p, b)
     if dat:
         results.append(("final", None, "fm prove --data", *dat))
+    if getattr(args, "defer_changelog", False) and _trunk_unsteady(p, trunk0):  # nothing recorded: the next land closes it on the new trunk
+        raise c.PolicyError(f"{b.id} not finished: {TREE_MOVED}; nothing recorded, the next land runs them again")
     tree = c.worktree_id(p.root)
 
     def record(x):
         for n in evidenced:
             x.mark_step(n)  # refuses a failed run, as fm task step done does
         for kind, n, cmd, code, output in results:
-            x.add_evidence(cmd, c.run_result(code, output, cmd), tree=tree, ran=True, **({} if kind == "final" else {kind: n}))
+            x.add_evidence(cmd, c.run_result(code, output, cmd), tree=tree, ran=True, via=pm_via.get(cmd),
+                           **({} if kind == "final" else {kind: n}))
             if not code and kind != "final":
                 x.check_ac(n) if kind == "ac" else x.mark_step(n)
         if not any(code for *_, code, _ in results):
@@ -1926,11 +1949,14 @@ def _task_finish(p, args):
         raise c.PolicyError(f"{b.id} not finished; failing (recorded):\n  - " + "\n  - ".join(failed))
     with _span(args, "affected"):  # T-4600: the step that held 8 to 18 minutes of a land's closes
         _close_affected(p, need_brief(p, b.id), runs, args)  # T-1117: what it changed must not break what's linked to it
+    if getattr(args, "defer_changelog", False) and _trunk_unsteady(p, trunk0):  # T-5368: the linked tests ran minutes on a trunk
+        # a train may have moved: the proof above is of the old tree, so it is not marked done on the new one
+        raise c.PolicyError(f"{b.id} not finished: {TREE_MOVED}; the next land runs them again")
     if getattr(args, "ablate", False):
         _ablate(p, need_brief(p, b.id), args)
-    if args.commit:  # T-0720: a credential found now leaves the task open to fix it, not done and uncommitted
+    if to_commit:  # T-0720: a credential found now leaves the task open to fix it, not done and uncommitted
         with _span(args, "commit"):
-            _commit_task(p, need_brief(p, b.id), args.commit, dry=True, with_=args.with_)
+            _commit_task(p, need_brief(p, b.id), to_commit, dry=True, with_=args.with_)
     with _span(args, "advice"):
         _close_advice(p, need_brief(p, b.id))
         _stamp_lenses_at_tip(p, b, lenses, args, tree)
@@ -1962,8 +1988,8 @@ def _task_finish(p, args):
             c.regen_views(p)
         print(f"{b.id}: captured {f.id} — catch it earlier: {c.fit(why, 80)}")
     # T-4015: no why-not-caught nudge on an S fix: only M/L need one, and they are refused without it
-    if not rc:  # T-3500: after the close's checks, so the audits they judged still cover the tree
-        _changelog_line(p, b, fields)
+    if not rc and not getattr(args, "defer_changelog", False):  # T-3500: after the close's checks, so the audits they judged still cover the tree
+        _changelog_line(p, b, fields)  # T-5368: a land's close defers it to its commit, taken under the train lock
     if args.commit and not rc:
         with _span(args, "commit"):
             _commit_task(p, need_brief(p, b.id), args.commit, stack=args.stack, check=args.stack_check, with_=args.with_)
@@ -2556,23 +2582,79 @@ def _pm_covers(p):
                 and c.code_tree(p.root, g.get("covered_by") or g["sha"]) == now)
 
 
+TREE_MOVED = "trunk moved while its criteria ran"  # T-5368: a deferred close's refusal that is no verdict on the task (train._close)
 PM_LOOK = 5  # post-merge records a close reads, newest first: each costs a git tree read
 
 
-def _pm_green_here(p, ctree):
-    """T-4605: a post-merge full verify (lanes.pm_run) of a landed commit was green on the code tree `ctree` now: the
-    whole suite ran on this code, which covers what a train's affected-only pass left out. A verify still pending, one
-    that failed, and one of a merge a revert followed (not a commit's own tree) cover nothing."""
+def _trunk_unsteady(p, trunk0):
+    """T-5368: a deferred close's trunk moved under its run, or its code tree could not be read (trunk0 None, or now:
+    no reading is no proof it stayed). The close refuses (TREE_MOVED)."""
+    return trunk0 is None or c.code_tree(p.root, "HEAD") != trunk0
+
+
+def _pm_green_rec(p, ctree, own=False, names=()):
+    """The post-merge record (T-4605) that proves the code tree `ctree`: a full verify (lanes.pm_run) of a landed commit
+    was green on this code tree now, so the whole suite ran on this code, which covers what a train's affected-only pass
+    left out. A verify still pending, one that failed, and one of a merge a revert followed (not a commit's own tree)
+    cover nothing. T-5368: with `own` (a criterion naming test modules `names`), a record a narrowed run covered (red
+    classes alone, the rest of the suite on another commit: lanes._pm_cover how=) covers nothing either, no full suite
+    ran on its tree; a cover record proves only with an explicit narrowed False (an old one has no flag); and a green
+    excused by `unrelated` classes, or by `flaky` ones in a named module, never ran that class green: the named
+    command could fail. None when no record does."""
     from sampo import lanes
     if not ctree:
-        return False
-    recs = [r for r in lanes.pm_records(p).values() if r.get("state") == "green" and not r.get("after_reverts")]
+        return None
+
+    def proves(r):
+        if r.get("state") != "green" or r.get("after_reverts"):
+            return False
+        if not own:
+            return True
+        if r.get("narrowed") or (r.get("covered_by") and r.get("narrowed") is not False):
+            return False
+        if r.get("unrelated"):
+            return False
+        return not {str(k).split(".")[0] for k in r.get("flaky") or ()} & set(names)
+    recs = [r for r in lanes.pm_records(p).values() if proves(r)]
     recs.sort(key=lambda r: str(r.get("at") or ""), reverse=True)
     for r in recs[:PM_LOOK]:
         a = c.age_days(r.get("at"))
         if a is not None and a < CACHE_DAYS and c.code_tree(p.root, r.get("covered_by") or r.get("sha")) == ctree:
-            return True
-    return False
+            return r
+    return None
+
+
+def _pm_green_here(p, ctree):
+    """T-4605: a post-merge full verify of a landed commit was green on the code tree `ctree` now (_pm_green_rec)."""
+    return _pm_green_rec(p, ctree) is not None
+
+
+PM_NAMES = re.compile(r"python3 plugin/tests/run\.py((?: [A-Za-z_]\w*)+)")
+PM_TEST_DEF = re.compile(r"^[ \t]+(?:async[ \t]+)?def[ \t]+test", re.M)
+
+
+def _pm_has_tests(path):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return bool(PM_TEST_DEF.search(f.read(2_000_000)))
+    except OSError:
+        return False
+
+
+def _pm_proof(p, cmd, tree_of):
+    """T-5368: the post-merge record that proves criterion command `cmd`, else None. Only exactly `python3
+    plugin/tests/run.py NAMES` qualifies (no flag, -k, env prefix or shell syntax: a full suite run is not that command),
+    each name a plain test module of this repo that holds a test (a dotted Module.Class, or a name matching no test, is
+    red when run "no test matches", not covered: it runs for real), and the suite's command not overridden
+    (FM_POSTMERGE_CMD's record is not run.py's). Records a narrowed run covered don't prove it."""
+    m = PM_NAMES.fullmatch(cmd.strip())
+    if not m or os.environ.get("FM_POSTMERGE_CMD"):
+        return None
+    tests = os.path.join(p.root, "plugin", "tests")
+    names = m.group(1).split()
+    if not all(n.startswith("test_") and _pm_has_tests(os.path.join(tests, n + ".py")) for n in names):
+        return None
+    return _pm_green_rec(p, tree_of(), own=True, names=names)  # the tree is read only for a command that can qualify
 
 
 def _unlink(path):
@@ -9521,6 +9603,8 @@ def _build_parser(only=None):
                         "the set's sized limit from its recorded seconds, and a set over the ceiling is refused at once; "
                         "set, that limit is used as given and nothing is sized)")
     t.add_argument("--commit", metavar="MESSAGE", help="then commit the task's own files with this message")
+    t.add_argument("--defer-changelog", action="store_true", help="a land's close: no CHANGELOG line and no commit now; "
+                   "`sampo task finish ID --commit MSG` on the done task writes the line and commits (T-5368)")
     t.add_argument("--with", dest="with_", action="append", metavar="FILE",
                    help="with --commit: also commit FILE, which was already uncommitted when the task was focused "
                         "(repeatable)")

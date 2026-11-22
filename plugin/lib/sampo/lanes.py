@@ -4539,7 +4539,7 @@ def _pm_cover(p, main, todo, newest, how=None):
         r = pm_records(p).get(s)
         if not r or not (r["state"] == "pending" or (r["state"] == "running" and _pm_dead(r))):
             continue
-        pm_set(p, s, state="green", covered_by=newest)
+        pm_set(p, s, state="green", covered_by=newest, narrowed=bool(how))  # T-5368: no full suite on its tree
         said = f"verified: {how}, on {newest[:9]}, which contains {s[:9]}" if how else \
             f"verified: the full suite is green on {newest[:9]}, which contains {s[:9]}"
         cli.mutate(p, r["task"], lambda x, s=s, said=said: (x.append_log(said), x.meta.update(lane_verified=s)),

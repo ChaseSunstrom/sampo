@@ -5,13 +5,22 @@ close sampo lane land makes for each landed lane) now serves three callers: land
 on the gate pass already on record for the trunk (one gate run when none is), and leaves a dirty lane, a task with no
 close fields or audits, and a task whose own verify fails on the trunk active, the reason on the task and in the output."""
 # map-links: plugin/lib/sampo/train.py
+import contextlib
+import io
 import json
 import os
 import subprocess
+import threading
+import time
 import unittest
+from unittest import mock
 
 from helpers import FM
 from test_lane_land import OLD, LandCase
+
+from sampo import core as c
+from sampo import lanes
+from sampo import train
 
 
 class Merged(LandCase):
@@ -39,6 +48,96 @@ class Merged(LandCase):
 
     def folder(self, n):
         return os.path.isdir(os.path.join(self.tmp, f"lane{n}"))
+
+    def pm_file(self, sha, state, tid, **kv):
+        """A post-merge verify record the way lanes.pm_record writes it (state: pending, running (this pid), green …)."""
+        p = c.find_project(self.repo)
+        os.makedirs(os.path.join(p.dir, "postmerge"), exist_ok=True)
+        with open(os.path.join(p.dir, "postmerge", f"{sha}.json"), "w") as f:
+            json.dump({"sha": sha, "task": tid, "state": state, "n": time.time_ns(), "at": c.now(), "pid": os.getpid(),
+                       **kv}, f)
+        return p
+
+    def sweep_here(self):
+        """The sweep in this process (its waiting is patched short): (the result, what it said on stderr)."""
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.in_project():
+            got = train.land_merged(c.find_project(self.repo), self.repo)
+        return got, err.getvalue()
+
+    def test_merged_waits_for_a_running_post_merge_verify_of_its_lanes_and_says_so(self):  # verify, T-5368
+        ids = self.lanes_ready(2)
+        self.hand_merge(1, 2)
+        sha = self.git("rev-parse", "HEAD")
+        p = self.pm_file(sha, "running", ids[0])  # the merge's verify is still running: its tests are the closes' tests
+        flip = threading.Timer(0.8, lanes.pm_set, (p, sha), {"state": "green"})
+        flip.start()
+        self.addCleanup(flip.cancel)
+        t0 = time.monotonic()
+        with mock.patch.object(train, "PM_POLL_S", 0.1), mock.patch.object(train, "PM_WAIT_S", 60):
+            got, err = self.sweep_here()
+        self.assertGreaterEqual(time.monotonic() - t0, 0.7, "the closes waited for the verify to end")
+        self.assertIn("post-merge verify", err)
+        self.assertIn(ids[0], err, "it names the task whose verify it waits for")
+        self.assertEqual(sorted(got["closed"]), sorted(ids), got)
+        self.assertIn("waited", got["gate"], "the result says it waited")
+
+    def test_merged_waits_for_the_verify_with_no_land_lock_held(self):  # verify, T-5368 review
+        ids = self.lanes_ready(1)
+        self.hand_merge(1)
+        p = c.find_project(self.repo)
+        seen = []
+
+        def probe(pp, want, who):  # a second sweep (or a hand land) must be able to take the lock while this one waits
+            try:
+                with c.lock(os.path.join(p.dir, "land"), timeout=0.5):
+                    seen.append("free")
+            except c.LockTimeout:
+                seen.append("held")
+            return ""
+        with mock.patch.object(train, "_wait_pm", probe), self.in_project():
+            got = train.land_merged(p, self.repo)
+        self.assertEqual(seen, ["free"], "the land lock is not held through up to 30 minutes of waiting")
+        self.assertEqual(got["closed"], ids, got)
+
+    def test_merged_says_another_land_runs_before_it_waits_for_a_verify(self):  # verify, T-5368 re-review
+        ids = self.lanes_ready(1)
+        self.hand_merge(1)
+        self.pm_file(self.git("rev-parse", "HEAD"), "running", ids[0])  # a verify it would wait up to 30 minutes for
+        p = c.find_project(self.repo)
+        waited = []
+        with c.lock(os.path.join(p.dir, "land"), timeout=1), self.in_project(), \
+                mock.patch.object(train, "_wait_pm", lambda *a: waited.append(a) or ""):
+            with self.assertRaises(c.PolicyError) as ctx:
+                train.land_merged(p, self.repo)
+        self.assertIn("another sampo lane land is running", str(ctx.exception))
+        self.assertEqual(waited, [], "refused before any waiting")
+
+    def test_merged_does_not_wait_for_a_verify_of_another_task_a_dead_one_or_a_finished_one(self):  # verify, T-5368
+        ids = self.lanes_ready(1)
+        self.hand_merge(1)
+        sha = self.git("rev-parse", "HEAD")
+        p = c.find_project(self.repo)
+        for what in (("running", "T-9999", {}), ("running", ids[0], {"pid": 4194305}), ("green", ids[0], {}),
+                     ("red", ids[0], {}), ("pending", ids[0], {"at": "2020-01-01T00:00:00Z"})):
+            with self.subTest(what):
+                self.pm_file(sha, what[0], what[1], **what[2])
+                self.assertEqual(train._pm_unsettled(p, ids), [], "nothing of its lanes' to wait for")
+        self.pm_file(sha, "pending", ids[0])  # just landed: its runner is about to take it
+        self.assertEqual([t for t, _, _ in train._pm_unsettled(p, ids)], ids)
+        self.pm_file(sha, "running", ids[0])
+        self.assertEqual([t for t, _, _ in train._pm_unsettled(p, ids)], ids)
+
+    def test_merged_waits_for_a_verify_only_up_to_a_deadline_then_closes_and_says_it_was_still_running(self):  # verify
+        ids = self.lanes_ready(1)
+        self.hand_merge(1)
+        self.pm_file(self.git("rev-parse", "HEAD"), "running", ids[0])  # never ends
+        t0 = time.monotonic()
+        with mock.patch.object(train, "PM_POLL_S", 0.05), mock.patch.object(train, "PM_WAIT_S", 0.4):
+            got, err = self.sweep_here()
+        self.assertLess(time.monotonic() - t0, 30, "bounded by its deadline")
+        self.assertIn("still running", err)
+        self.assertEqual(got["closed"], ids, "the close goes on without it")
 
     def test_merged_closes_every_merged_lane_on_one_gate_run_when_no_pass_is_on_record(self):
         ids = self.lanes_ready(3)

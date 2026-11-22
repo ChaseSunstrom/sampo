@@ -302,6 +302,231 @@ class CloseGates(ForemanTestCase):
         self.assertEqual(self.sentinel(), "ran")
 
 
+MARKED = ("import os, unittest\n\n\nclass Marked(unittest.TestCase):\n    def test_marked(self):\n"
+          "        open(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "
+          "'ran.marker'), 'w').close()\n")
+
+
+class PostMergeProof(ForemanTestCase):
+    """T-5368: a criterion whose command is exactly `python3 plugin/tests/run.py NAMES` is proven by a green post-merge full
+    suite (lanes.pm_records) on this very code tree, recorded as [ran] evidence citing the merge, and runs no test; any
+    other record (red, pending, reverted, another tree) or command (-k, flags, a name that is no test) runs as before.
+    The tests' own file writes `ran.marker` when it runs."""
+    CMD = "python3 plugin/tests/run.py test_marked"
+
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        os.makedirs(os.path.join(self.repo, "plugin", "tests"))
+        shutil.copy(os.path.join(HERE, "run.py"), os.path.join(self.repo, "plugin", "tests", "run.py"))
+        self.write("calc.py", SRC)
+        self.write("plugin/tests/test_marked.py", MARKED)
+        self.write(".gitignore", "__pycache__/\nran.marker\n")
+        subprocess.run(["git", "-C", self.repo, "add", "-A"], check=True)
+        subprocess.run(["git", "-C", self.repo, "commit", "-qm", "suite"], check=True)
+        self.p = c.find_project(self.repo)
+
+    def write(self, rel, text):
+        with open(os.path.join(self.repo, rel), "w") as f:
+            f.write(text)
+
+    def head(self):
+        return subprocess.run(["git", "-C", self.repo, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+
+    def pm(self, sha, state, **kv):  # a post-merge verify record, as lanes.pm_record writes it
+        os.makedirs(os.path.join(self.p.dir, "postmerge"), exist_ok=True)
+        with open(os.path.join(self.p.dir, "postmerge", f"{sha}.json"), "w") as f:
+            json.dump({"sha": sha, "task": "T-0001", "state": state, "n": time.time_ns(), "at": c.now(), **kv}, f)
+
+    def close(self, cmd, *records, extra=()):
+        """A new task whose one criterion is `cmd`, finished with these post-merge records on file ((sha, state, kv));
+        (exit code, the evidence text, whether the test ran)."""
+        marker = os.path.join(self.repo, "ran.marker")
+        if os.path.exists(marker):
+            os.remove(marker)
+        shutil.rmtree(os.path.join(self.p.dir, "postmerge"), ignore_errors=True)
+        for sha, state, kv in records:
+            self.pm(sha, state, **kv)
+        tid = self.fm_json("task", "new", "Change add", "--type", "FEATURE", "--tier", "S", "--ac", f"works :: {cmd}",
+                           "--step", "s", "--scope", "calc.py")["id"]
+        self.fm("focus", tid)
+        r = self.fm("task", "finish", tid, "--audit", "self", "--run", "true", *extra, check=False,
+                    env={"FOREMAN_SENTINEL": "off"})
+        ev = "\n".join(c.find_brief(self.p, tid).evidence())
+        return r, ev, os.path.exists(marker)
+
+    def test_post_merge_green_on_this_tree_proves_the_criterion_and_runs_no_test(self):
+        sha = self.head()
+        r, ev, ran = self.close(self.CMD, (sha, "green", {}))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(ran, "the full suite already ran it on this code: no rerun")
+        self.assertIn("post-merge full suite", ev)
+        self.assertIn(sha[:9], ev, "the evidence cites the merge it verified")
+        self.assertIn("[ran]", ev)
+
+    def test_post_merge_green_that_covered_this_tree_by_a_later_commit_proves_it(self):
+        sha = self.head()
+        r, ev, ran = self.close(self.CMD, ("e" * 40, "green", {"covered_by": sha, "narrowed": False}))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(ran)
+        self.assertIn("post-merge full suite", ev)
+
+    def test_post_merge_red_pending_running_or_reverted_proves_nothing(self):
+        sha = self.head()
+        for what in ({"state": "red", "classes": ["x.Y"]}, {"state": "pending"}, {"state": "running", "pid": os.getpid()},
+                     {"state": "reverted"}, {"state": "conflict"}, {"state": "green", "after_reverts": ["a" * 40]}):
+            with self.subTest(what):
+                r, ev, ran = self.close(self.CMD, (sha, what.pop("state"), what))
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertTrue(ran, "no green record for this code: the criterion runs")
+                self.assertNotIn("post-merge full suite", ev)
+
+    def test_post_merge_green_on_another_code_tree_or_long_ago_proves_nothing(self):
+        old = self.head()
+        self.write("calc.py", SRC + "# changed\n")
+        subprocess.run(["git", "-C", self.repo, "commit", "-qam", "change"], check=True)
+        r, ev, ran = self.close(self.CMD, (old, "green", {}))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(ran, "an older code tree: the criterion runs")
+        r, ev, ran = self.close(self.CMD, (self.head(), "green", {"at": "2020-01-01T00:00:00Z"}))
+        self.assertTrue(ran, "a record past CACHE_DAYS proves nothing")
+
+    def test_post_merge_proof_is_for_the_exact_names_command_only(self):
+        sha = self.head()
+        for cmd in ("python3 plugin/tests/run.py test_marked -k marked", "python3 plugin/tests/run.py -k marked",
+                    "python3 plugin/tests/run.py", "python3 plugin/tests/run.py test_marked && true",
+                    "python3 plugin/tests/run.py test_marked; true", "python3 plugin/tests/run.py $(true) test_marked",
+                    "python3 plugin/tests/run.py ../test_marked", "python3 plugin/tests/run.py test_marked --fast",
+                    "SAMPO_CACHE_FULL=1 python3 plugin/tests/run.py test_marked", "python3 other/run.py test_marked"):
+            with self.subTest(cmd):
+                r, ev, ran = self.close(cmd, (sha, "green", {}))
+                self.assertNotIn("post-merge full suite", ev, cmd)
+
+    def test_post_merge_proof_needs_the_named_test_to_exist(self):
+        r, ev, ran = self.close("python3 plugin/tests/run.py test_nothing", (self.head(), "green", {}))
+        self.assertNotEqual(r.returncode, 0, "a name that is no test file is not covered by a suite that never ran it")
+        self.assertNotIn("post-merge full suite", ev)
+
+    def test_a_dotted_name_or_a_module_with_no_test_is_run_not_proven(self):
+        # T-5368 review: Module.Class (or a name matching nothing) fails "no test matches" when run: a green suite
+        # that never ran that name proves nothing for it
+        self.write("plugin/tests/test_empty.py", "import unittest\n\n\ndef helper():\n    return 1\n")
+        subprocess.run(["git", "-C", self.repo, "add", "-A"], check=True)
+        subprocess.run(["git", "-C", self.repo, "commit", "-qm", "empty"], check=True)
+        sha = self.head()  # committed: a record proves only the tree the close runs on
+        for cmd in ("python3 plugin/tests/run.py test_marked.Marked", "python3 plugin/tests/run.py test_marked.Nothing",
+                    "python3 plugin/tests/run.py test_empty", "python3 plugin/tests/run.py test_marked test_empty"):
+            with self.subTest(cmd):
+                r, ev, ran = self.close(cmd, (sha, "green", {}))
+                self.assertNotIn("post-merge full suite", ev, cmd)
+
+    def test_a_record_covered_by_a_narrowed_run_proves_nothing(self):
+        # T-5368 review: _pm_cover(how=...) marks merges green on a red-classes-alone run: the full suite never ran there
+        sha = self.head()
+        r, ev, ran = self.close(self.CMD, ("e" * 40, "green", {"covered_by": sha, "narrowed": True}))
+        self.assertTrue(ran, "a narrowed cover is no full suite on this tree: the criterion runs")
+        self.assertNotIn("post-merge full suite", ev)
+
+    def test_a_cover_record_proves_only_with_an_explicit_not_narrowed(self):
+        # T-5368 re-review: records written before the flag existed carry no `narrowed` key: they may be narrowed covers
+        sha = self.head()
+        r, ev, ran = self.close(self.CMD, ("e" * 40, "green", {"covered_by": sha}))
+        self.assertTrue(ran, "an old cover record (no flag) is not known to be a full suite: the criterion runs")
+        self.assertNotIn("post-merge full suite", ev)
+        r, ev, ran = self.close(self.CMD, ("e" * 40, "green", {"covered_by": sha, "narrowed": False}))
+        self.assertFalse(ran)
+        self.assertIn("post-merge full suite", ev)
+
+    def test_a_green_excused_by_unrelated_or_flaky_proves_no_criterion_naming_the_excused_module(self):
+        # T-5368 re-review: lanes.pm_run sets green with unrelated=/flaky= for classes that were red: running them fails
+        sha = self.head()
+        for kv in ({"unrelated": ["test_marked.Marked"]}, {"unrelated": ["test_other.Other"]},
+                   {"flaky": ["test_marked.Marked"]}, {"flaky": ["test_marked"], "unrelated": []}):
+            with self.subTest(kv):
+                r, ev, ran = self.close(self.CMD, (sha, "green", kv))
+                self.assertTrue(ran, "an excused red class was never green here: the criterion runs")
+                self.assertNotIn("post-merge full suite", ev)
+        r, ev, ran = self.close(self.CMD, (sha, "green", {"flaky": ["test_other.Other"], "unrelated": []}))
+        self.assertFalse(ran, "a flaky class of another module leaves this module's proof whole")
+        self.assertIn("post-merge full suite", ev)
+
+    def test_a_deferred_close_is_refused_when_the_trunk_code_tree_cannot_be_read(self):
+        # T-5368 re-review: a None tree before the run must not switch the trunk-moved guard off
+        from sampo import cli
+        self.assertTrue(cli._trunk_unsteady(self.p, None))
+        self.assertFalse(cli._trunk_unsteady(self.p, c.code_tree(self.p.root, "HEAD")))
+        self.assertTrue(cli._trunk_unsteady(self.p, "0" * 40))
+
+    def test_a_typed_note_equal_to_a_close_mark_cannot_forge_it(self):
+        # T-5368 re-review: `task log` text goes to the Log: a note reading as the pending mark would owe a commit
+        from sampo import train
+        tid = self.fm_json("task", "new", "Change add", "--type", "FEATURE", "--tier", "S", "--ac", "works :: true",
+                           "--step", "s", "--scope", "calc.py")["id"]
+        self.fm("task", "log", tid, c.CLOSE_PENDING)
+        self.fm("task", "log", tid, c.CLOSE_COMMITTED)
+        b = c.find_brief(self.p, tid)
+        self.assertFalse(train._commit_pending(b))
+        self.fm("task", "log", tid, c.CLOSE_PENDING)
+        self.assertFalse(train._commit_pending(c.find_brief(self.p, tid)), "a typed pending mark owes nothing")
+        b = c.find_brief(self.p, tid)
+        b.append_mark(c.CLOSE_PENDING)
+        self.assertTrue(train._commit_pending(b), "fm's own write path still marks")
+
+    def test_a_deferred_close_whose_trunk_moved_while_its_criteria_ran_records_nothing(self):
+        # T-5368 review: phase 1 holds no lock now: a train's fast-forward can move trunk mid-run, and evidence stamped
+        # after it would claim a tree the criteria never ran on
+        mover = "echo '# moved' >> calc.py && git commit -qam moved"  # in the task's scope: only the move can refuse it
+        r, ev, ran = self.close(mover, (self.head(), "green", {}), extra=("--defer-changelog",))
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("trunk moved", r.stdout + r.stderr)
+        self.assertNotIn("calc.py", ev, "no evidence on a tree the criterion did not run on")
+        self.assertNotEqual(c.find_brief(self.p, "T-0001").status, "done")
+
+    def test_a_deferred_close_whose_trunk_moved_during_its_affected_run_is_refused_not_done(self):
+        # T-5368 final review: the first check runs before the linked tests, which take minutes: a train may move trunk there
+        import contextlib
+        import io
+        from unittest import mock
+        from sampo import cli
+        tid = self.fm_json("task", "new", "Change add", "--type", "FEATURE", "--tier", "S", "--ac", "works :: true",
+                           "--step", "s", "--scope", "calc.py")["id"]
+        self.fm("focus", tid)
+
+        def moves(*a, **k):  # what a train's fast-forward does while the linked tests run
+            self.write("calc.py", SRC + "# moved\n")
+            subprocess.run(["git", "-C", self.repo, "commit", "-qam", "moved"], check=True)
+        env = {"FOREMAN_HOME": self.home, "FOREMAN_INHIBITED": "1", "FOREMAN_DOCTOR_BENCH": "0",
+               "FOREMAN_DOCTOR_BUILD": "0", "FOREMAN_SENTINEL": "off"}
+        here, err = os.getcwd(), io.StringIO()
+        os.chdir(self.repo)
+        try:
+            with mock.patch.dict(os.environ, env), mock.patch.object(cli, "_close_affected", moves), \
+                    contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+                rc = cli.main(["task", "finish", tid, "--audit", "self", "--run", "true", "--defer-changelog"])
+        finally:
+            os.chdir(here)
+        self.assertNotEqual(rc, 0, err.getvalue())
+        self.assertIn(cli.TREE_MOVED, err.getvalue())
+        self.assertNotEqual(c.find_brief(self.p, tid).status, "done")
+
+    def test_a_deferred_close_on_a_steady_trunk_still_closes(self):
+        r, ev, ran = self.close("true", extra=("--defer-changelog",))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(c.find_brief(self.p, "T-0001").status, "done")
+        self.assertIn(c.CLOSE_PENDING, c.find_brief(self.p, "T-0001").section("Log"), "done and its commit owed, in one write")
+
+    def test_the_evidence_is_labelled_a_post_merge_record_the_close_still_accepts(self):
+        # T-5368 review: not a bare [ran] (which says fm ran the command): a distinct mark naming the merge
+        sha = self.head()
+        r, ev, ran = self.close(self.CMD, (sha, "green", {}))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        line = next(l for l in ev.splitlines() if "post-merge full suite" in l)
+        self.assertIn(f"[post-merge record {sha[:9]}]", line)
+        self.assertIn("[ran]", line, "the gates read a [ran] pass: the criterion counts as proven")
+        typed = c._unmarked("x [post-merge record abc] y")
+        self.assertNotIn("[post-merge record", typed, "typed text can't forge the mark")
+
+
 class FinishListsAll(ForemanTestCase):
     """T-4147: one refusal of sampo task finish names every field the close still lacks, each with its fix, before a
     gate or a verify command starts; --dry prints the same list and changes nothing, --json carries it as an array."""
