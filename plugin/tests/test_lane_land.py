@@ -467,6 +467,25 @@ class Land(LandCase):
         self.assertIn("docs impact missing", tried[0])
         self.assertLess(r.stderr.index(tried[0]), r.stderr.index("train 2:"), "tried at the first boundary")
 
+    def test_a_live_projects_close_check_skips_classes_green_at_the_same_code(self):
+        # T-5483: the hourly tick's land --merged ran all 12,000 tests uncached, queued behind the behind verify on the
+        # same code; a live project's verify already runs cached, so the closes' one check does too
+        seen = os.path.join(self.tmp, "cache-env")
+        self.fm("check", "add", f'echo "${{FOREMAN_CACHE_FULL:-${{SAMPO_CACHE_FULL:-unset}}}}" >> {seen}')
+        outs = []
+        for n, mode in ((1, "train"), (2, "live")):
+            p = c.find_project(self.repo)
+            c.write_meta(p, {**c.read_meta(p), "train_mode": mode})
+            tid = self.lane(n, f"{n}.txt", when=OLD)
+            self.audited(tid)
+            self.returned(tid, f"Lane {n}")
+            self.git("merge", "--no-ff", "-q", "-m", f"merge lane {n}", f"foreman/lane{n}")
+            r = self.fm("lane", "land", "--merged", check=False, timeout=120)
+            outs.append(r.stdout + r.stderr)
+            self.assertTrue(os.path.exists(seen), outs[-1])
+        with open(seen) as f:
+            self.assertEqual(f.read().split(), ["unset", "1"], "\n".join(outs))
+
     def test_a_closed_tasks_merged_lane_is_removed_by_the_land(self):
         # T-3969: 19 lanes of done, merged tasks stood on disk until removed by hand (2026-11-08)
         x, y = self.lane(1, "x.txt", when=OLD), self.lane(2, "y.txt", when=OLD)

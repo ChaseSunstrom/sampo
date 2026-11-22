@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- In a live project, `sampo lane land --merged` checks the trunk with the test cache, as the behind verify does: the hourly tick's land had run all 12,000 tests uncached, queued behind the verify on the same code (T-5483).
 - The behind verify runs the whole suite uncached once a day (after 24 hours or 20 runs), not every 4 hours: 4 of a day's 7 verifies had run all 13,000 tests uncached, 2 to 4 hours each (T-5482).
 - A recovered builder builds on its earlier branch: the builder rules allow the one merge its brief's Resume section names, where they forbade every merge and recovered builders started over (T-5475).
 - MASTER.md and docs/map files merge through a key-aware driver instead of a union: a line a lane still had at its base no longer comes back beside the version trunk changed or moved (23 stale MASTER.md bullets returned that way in one land), two appended clauses land on one line, and only two rewrites of the same words keep both versions for a read (T-5472).

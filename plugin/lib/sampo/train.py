@@ -2901,7 +2901,11 @@ def land_merged(p, main, drop_empty=False):
         elif on:  # one run for all of them; finish then reuses it for each close (a red one closes nothing)
             print(f"sampo lane land --merged: no gate pass on record for the trunk: one sampo check for the "
                   f"{len(on)} lane(s)", file=sys.stderr, flush=True)
-            rc, out, err = _sampo(["check"])
+            # T-5483: a live project lands with no front gate and its behind verify already runs cached, so this one
+            # check skips the classes green at the same code too (1 in 10 rerun): the hourly tick's land ran all 12,000
+            # tests uncached, queued behind the verify on the same code
+            live = c.read_meta(p).get("train_mode") == "live"
+            rc, out, err = _sampo(["check"], env={**os.environ, "SAMPO_CACHE_FULL": "1"} if live else None)
             gate = "ran one sampo check on the trunk" if not rc else ""
             if rc:
                 why = f"the trunk's gates are red, so no close rides on them: {c.fit(_why(err or out), 300)}"
