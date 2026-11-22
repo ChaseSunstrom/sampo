@@ -24,6 +24,7 @@ import sys
 import tempfile
 import threading
 import time
+import typing
 
 from sampo import core as c
 from sampo.lanes import CLOSE_MARK, CriterionRed, _git, _ref_ok, _verify, clear_git_locks, cpu_env, git_lock_lines, \
@@ -717,18 +718,159 @@ def _live_smoke(wt):
     return "" if r.returncode == 0 else (r.stdout + r.stderr).strip()[-600:] or f"exit {r.returncode}"
 
 
-def _live_shape(wt):
+class ShapeVerdict(typing.NamedTuple):
+    """T-5806: a repo-shape run's result: verdict 'green' | 'red' | 'cut' (no verdict), names the red classes joined (for a
+    cut built by the search: why there is no verdict), secs the seconds a fresh run took (0 for a verdict from the cache)."""
+    verdict: str
+    names: str = ""
+    secs: float = 0.0
+
+    @property
+    def why(self):
+        """What a refusal says ('' when green): red names the classes, a cut (no verdict) is refused too."""
+        if self.verdict == "red":
+            return f"the merged tree breaks the repo-shape classes: {self.names}"
+        if self.verdict == "cut":
+            return (f"its repo-shape run has no verdict: {self.names}" if self.names else
+                    f"its repo-shape run was cut (no verdict) at {SHAPE_BATCH_WALL_ENV}={shape_batch_wall()} s")
+        return ""
+
+
+def _live_shape(wt, p=None, main=None, base=None):
     """T-5590: the live train's one repo-shape run on the merged tree, before anything lands (a module, an env name or a
-    help position a lane adds is red here, not on trunk). '' when the tree is green or not a Sampo tree (_shape_tree);
-    else why: red names the classes, a cut (no verdict, the batch wall) is refused as well."""
+    help position a lane adds is red here, not on trunk). T-5806: a ShapeVerdict, so _run splits a red batch by lane:
+    green when the tree is green or not a Sampo tree (_shape_tree).
+    T-5805: given the project, main and the base sha, a red tree runs the base's shape too (once per base, cached) and is
+    red only for the classes not red on the base: those are trunk's, filed once as an express FIX (the key is the class
+    set) and never stop a train (a class red on the merged tree but green on the base still does). A base with no
+    verdict forgives nothing."""
     if not _shape_tree(wt):
-        return ""
+        return ShapeVerdict("green")
+    t0 = time.monotonic()
     verdict, names = _shape_run(wt, shape_batch_wall())
-    if verdict == "green":
-        return ""
-    if verdict == "red":
-        return f"the merged tree breaks the repo-shape classes: {names}"
-    return f"its repo-shape run was cut (no verdict) at {SHAPE_BATCH_WALL_ENV}={shape_batch_wall()} s"
+    secs = time.monotonic() - t0
+    if verdict == "red" and p is not None and main and base:
+        try:
+            old = _base_shape_red(p, main, base)
+        except Exception:  # noqa: BLE001: no base verdict forgives nothing
+            old = None
+        if old:
+            new = [n for n in (x.strip() for x in names.split(",")) if n and n not in old]
+            if not new:
+                _trunk_red_capture(p, base, old)
+                return ShapeVerdict("green", "", secs)
+            names = ", ".join(new)
+    return ShapeVerdict(verdict, names, secs)
+
+
+SHAPE_CULL_WALLS = 2  # T-5806: the fresh shape seconds one cull may spend, in batch walls (shape_batch_wall()); cache hits are free
+
+
+def _shape_cull(ids, shape, suspects=(), budget=None):
+    """T-5806: {lane id: (why, its classes)} the lanes to park so the rest of `ids` (merge order) is green on the repo-shape
+    classes, from `shape(ids subset, fresh=False) -> ShapeVerdict` (the caller merges that subset on a fresh tree and
+    caches a verdict per tree; `fresh` skips the cache).
+    The lanes the red classes name (`suspects`) go out first: the rest of the batch green means the culprits are among
+    them, and only those are searched, on top of the rest (so a pair of which only one is named parks that one alone: the
+    land stays safe, the other lane is judged on the next train). Else (or after that) the prefix bisect of _run's gate red:
+    the lane whose merge turns the prefix red; one red alone with the lanes before it green is the culprit, one green alone
+    is parked with the earlier lane it needs (a second bisect), both, as no lane is red alone there. The bisect takes a
+    red to be monotonic: when no prefix of the whole batch is red, the batch's red is run once more, uncached, and a green
+    rerun lands it all with nothing parked (a flake). A cut run (no verdict) raises, and so does a search that has spent
+    `budget` fresh seconds (default SHAPE_CULL_WALLS batch walls): nothing is parked then."""
+    parked, spent = {}, [0.0]
+    cap = SHAPE_CULL_WALLS * shape_batch_wall() if budget is None else budget
+    order = {i: n for n, i in enumerate(ids)}
+
+    def run(sel, fresh=False):
+        if spent[0] >= cap:
+            raise c.PolicyError(f"the repo-shape search for the lane(s) that turn it red spent {int(spent[0])} s of fresh runs "
+                                f"(cap {int(cap)} s, {SHAPE_CULL_WALLS} x {SHAPE_BATCH_WALL_ENV}): nothing landed and no lane "
+                                "parked; fix the red classes or land fewer lanes")
+        v = shape(sorted(sel, key=order.get), fresh=True) if fresh else shape(sorted(sel, key=order.get))
+        spent[0] += v.secs
+        if v.verdict == "cut":
+            raise c.PolicyError(v.why + ": nothing landed and no lane parked")
+        return v
+
+    fixed, pool = [], list(ids)  # fixed: lanes proven green together, never parked; pool: where the culprits are
+    if (sus := [i for i in ids if i in set(suspects)]) and len(sus) < len(ids):
+        rest = [i for i in ids if i not in sus]
+        if run(rest).verdict == "green":
+            fixed, pool = rest, sus
+    while pool:
+        top = run(fixed + pool)
+        if top.verdict == "green":
+            break
+        lo, hi, red = 0, len(pool), top
+        while hi - lo > 1:
+            mid = (lo + hi) // 2
+            got = run(fixed + pool[:mid])
+            lo, hi, red = (lo, mid, got) if got.verdict == "red" else (mid, hi, red)
+        if hi == len(pool) and len(fixed) + len(pool) == len(ids):  # the whole batch, no prefix of it red
+            if (again := run(fixed + pool, fresh=True)).verdict == "green":  # no prefix red: the batch's red was a flake
+                break
+            red = again
+        h, group = pool[hi - 1], [pool[hi - 1]]
+        if hi > 1 and run(fixed + [h]).verdict != "red":  # green alone: it needs an earlier lane of the pool
+            lo2, hi2 = 0, hi - 1
+            while hi2 - lo2 > 1:
+                mid = (lo2 + hi2) // 2
+                lo2, hi2 = (lo2, mid) if run(fixed + pool[:mid] + [h]).verdict == "red" else (mid, hi2)
+            group = [pool[hi2 - 1], h]
+        for i in group:
+            other = [x for x in group if x != i]
+            parked[i] = (f"its merge turns the repo-shape classes red ({red.names or 'unnamed'})" + (
+                f" together with {other[0]}, parked with it: neither is red alone" if other else ""), red.names)
+        pool = [i for i in pool if i not in group]
+    return parked
+
+
+LIVE_SHAPE_BASE = "live_shape_base"  # T-5805: meta key: {"sha": base, "red": [classes red on it]} (one entry, the last base run)
+
+
+def _trunk_red_capture(p, base, classes):
+    """T-5805: one express (urgent) trunk-red FIX for the shape classes red on the train's base, keyed on the class set
+    (the key lanes.pm_inherited files under too, so a set is asked once). A capture that fails never changes the verdict."""
+    try:
+        from sampo import cli, eco
+        names = c.joinmore([c.fit(c.plain(k), 100) for k in classes], 8)
+        key = "Trunk red: " + ", ".join(c.fit(c.plain(k), 100) for k in sorted(classes))
+        b, new = eco.capture_once(p, f"Trunk red: {names}\n\nThe repo-shape classes fail on trunk at {base[:9]}; a live "
+                                     "train lands past them and refuses only a class it turns red itself. Fix them or find "
+                                     "what turned them red.", "FIX", "trunk-red", key=key)
+        if new:
+            cli.mutate(p, b.id, lambda x: x.meta.update(priority="urgent"), "trunk_red_shape",
+                       {"classes": classes[:20], "left_out": max(0, len(classes) - 20)})
+    except Exception as e:  # noqa: BLE001
+        c.log_event(p, "live_shape_capture_failed", data={"error": c.fit(str(e), 200)})
+
+
+def _base_shape_cached(p, base):
+    """T-5806: the classes the last base run found red on `base` (a list, [] when green), or None: no run kept for it."""
+    got = c.read_meta(p).get(LIVE_SHAPE_BASE)
+    return got["red"] if isinstance(got, dict) and got.get("sha") == base and isinstance(got.get("red"), list) else None
+
+
+def _base_shape_red(p, main, base):
+    """T-5805: the repo-shape classes red on `base` (a list, [] when green), or None with no verdict (a cut, a tree that
+    would not build). Cached in meta per base sha: a land retried on the same base runs the base once."""
+    if (got := _base_shape_cached(p, base)) is not None:
+        return got
+    wt = c.scratch_tree("sampo-shape-base-", main)
+    try:
+        if _git(main, "worktree", "add", "-q", "--detach", wt, base).returncode or not _shape_tree(wt):
+            return None
+        verdict, names = _shape_run(wt, shape_batch_wall())
+    finally:
+        _git(main, "worktree", "remove", "--force", wt)
+        shutil.rmtree(wt, ignore_errors=True)
+        c.scratch_release(wt)
+    if verdict == "cut":
+        return None
+    red = sorted(n.strip() for n in names.split(",") if n.strip()) if verdict == "red" else []
+    c.update_meta(p, **{LIVE_SHAPE_BASE: {"sha": base, "red": red}})
+    return red
 
 
 def _held(p, b, main, tip):
@@ -1574,6 +1716,49 @@ def _run(p, main, ids, defer_verify=False, judged=None):
         confirm_s[0] += time.monotonic() - t0c
         return not results[-1]["exit"]
 
+    def shape_split(first):
+        """T-5806: the live batch whose merged tree is red on the repo-shape classes (`first`): the batch less the lane(s)
+        _shape_cull blames, each left out with the classes named (its log, `left`), rebuilt on the base. Each subset is
+        merged on a fresh tree and judged once per tree (a verdict is kept per tree hash, the batch's own included). A cut
+        run is no verdict: the land stops with nothing parked, as before. The lanes whose diff (or the tests it reaches)
+        touches a red class's module are tried first."""
+        if first.verdict != "red":
+            raise c.PolicyError("the merged batch's repo-shape run did not pass, nothing landed: " + first.why)
+        ids_m = [b.id for b, _ in merged]
+        ensure_wt()
+        seen = {_git(wt, "rev-parse", "HEAD^{tree}").stdout.strip(): first}
+
+        if _base_shape_cached(p, base) is None:  # _live_shape ran the base for this red and got no verdict
+            raise c.PolicyError(f"the repo-shape run of the base {base[:9]} has no verdict (cut at {SHAPE_BATCH_WALL_ENV}="
+                                f"{shape_batch_wall()} s, or its tree would not build), so no lane can be blamed for a class "
+                                f"the base may carry: nothing landed and no lane parked ({first.why})")
+
+        def shape(sel, fresh=False):
+            trunk_watch()  # a moved trunk ends the search: its verdicts are of a base that is gone
+            n = len(left)
+            build(base, [(b, tips[b.id]) for b, _ in merged if b.id in sel])
+            conflicts, left[n:] = left[n:], []  # a merge conflict of a subset is the final build's to name
+            if conflicts:  # the lane is judged absent there: no verdict, as a cut
+                return ShapeVerdict("cut", f"the subset does not merge ({conflicts[0][0]}: {conflicts[0][1]})")
+            ensure_wt()
+            key = _git(wt, "rev-parse", "HEAD^{tree}").stdout.strip()
+            if key in seen and not fresh:
+                return seen[key]._replace(secs=0.0)  # a cache hit costs no shape seconds
+            seen[key] = _live_shape(wt, p, main, base)  # base-relative: a class red on the base is no lane's
+            return seen[key]
+
+        mods = {_mod(n) for n in re.split(r"[,\s]+", first.names) if n}
+        sus = {i for i in ids_m if mods & ({_stem(f) for f in diff(i)} | {_stem(t) for t in reach(i)})}
+        parked = _shape_cull(ids_m, shape, sus)
+        for i in (i for i in ids_m if i in parked):
+            left.append((i, parked[i][0]))
+            cli.mutate(p, i, lambda x, w=parked[i][0]: x.append_log("left out of a merge train: " + w), "lane_train_red",
+                       {"cmd": "repo-shape", "failing": [n for n in re.split(r"[,\s]+", parked[i][1]) if n],
+                        "blamed": "shape bisection"})
+        c.log_event(p, "lane_train_shape_cull", data={"parked": sorted(parked), "kept": [i for i in ids_m if i not in parked],
+                                                       "classes": first.names, "trees": len(seen)})
+        return build(base, [(b, tips[b.id]) for b, _ in merged if b.id not in parked])
+
     try:
         merged = build(base, cands)
         ensure_wt()
@@ -1589,8 +1774,8 @@ def _run(p, main, ids, defer_verify=False, judged=None):
             sub = (*sub[:2], list(dict.fromkeys([*sub[2], *(f for b, _ in merged for f in covers(b.id))])))
         if live and merged and (smoke := _live_smoke(wt)):  # T-5444: the one front check: the merged tree compiles
             raise c.PolicyError(f"the merged tree does not compile, nothing landed: {smoke}")
-        if live and merged and (shape := _live_shape(wt)):  # T-5590: the merged batch's repo-shape classes, once
-            raise c.PolicyError("the merged batch's repo-shape run did not pass, nothing landed: " + shape)
+        if live and merged and (shape := _live_shape(wt, p, main, base)).verdict != "green":  # T-5590, T-5805: the batch's new repo-shape reds, once
+            merged = shape_split(shape)  # T-5806: a red parks the lane(s) that bring it and the rest land; a cut stops the land
         if live and merged and (slow := _live_timing(p, main, wt, base)):  # T-5446: the hooks timed once per batch
             raise c.PolicyError("the self-change gate holds the merged batch, nothing landed: " + c.joinmore(slow, 4, "; ")
                                 + "; the next land times each lane and leaves out the one that slowed the hooks")

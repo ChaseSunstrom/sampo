@@ -97,16 +97,79 @@ class Train(TrainCase):
         with open(os.path.join(shape, "plugin", "tests", "run.py"), "w") as f:
             f.write("# a stand-in runner\n")
         with mock.patch.object(train, "_shape_run", return_value=("green", "")) as run:
-            self.assertEqual(train._live_shape(plain), "", "another project's tree is not held to the classes")
+            self.assertEqual(train._live_shape(plain).verdict, "green", "another project's tree is not held to the classes")
             run.assert_not_called()
-            self.assertEqual(train._live_shape(shape), "")
+            self.assertEqual(train._live_shape(shape).verdict, "green")
             run.assert_called_once()
         with mock.patch.object(train, "_shape_run", return_value=("red", "test_docs, test_run")):
-            self.assertIn("breaks the repo-shape classes: test_docs, test_run", train._live_shape(shape))
+            got = train._live_shape(shape)
+            self.assertEqual((got.verdict, got.names), ("red", "test_docs, test_run"))
+            self.assertIn("breaks the repo-shape classes: test_docs, test_run", got.why)
         with mock.patch.object(train, "_shape_run", return_value=("cut", "")):
-            why = train._live_shape(shape)
-            self.assertIn("was cut", why)
-            self.assertIn("SAMPO_SHAPE_BATCH_WALL_S", why)
+            got = train._live_shape(shape)
+            self.assertEqual(got.verdict, "cut")
+            self.assertIn("was cut", got.why)
+            self.assertIn("SAMPO_SHAPE_BATCH_WALL_S", got.why)
+
+    def test_live_shape_base_red_classes_do_not_stop_a_train_only_new_ones_do(self):
+        # T-5805: a class red on the base is trunk's, not the batch's: the train lands, and one express FIX names the set
+        from sampo import train
+        p = c.find_project(self.repo)
+        os.makedirs(os.path.join(self.repo, "plugin", "tests"))
+        with open(os.path.join(self.repo, "plugin", "tests", "run.py"), "w") as f:
+            f.write("# the trunk's stand-in runner\n")
+        self.git("add", "plugin")
+        self.git("commit", "-qm", "a Sampo tree with its runner")
+        base = self.git("rev-parse", "HEAD").strip()
+        shape = os.path.join(self.tmp, "shape")
+        os.makedirs(os.path.join(shape, "plugin", "tests"))
+        with open(os.path.join(shape, "plugin", "tests", "run.py"), "w") as f:
+            f.write("# a stand-in runner\n")
+        runs = lambda merged, basev: mock.patch.object(train, "_shape_run", side_effect=[merged, basev])
+        with runs(("red", "test_docs, test_run"), ("red", "test_docs, test_run")) as run:
+            self.assertEqual(train._live_shape(shape, p, self.repo, base).verdict, "green", "all red on the base: nothing new")
+            self.assertEqual(run.call_count, 2)
+        with runs(("red", "test_docs"), ("red", "test_docs")) as run:  # the base's verdict is cached per sha
+            self.assertEqual(train._live_shape(shape, p, self.repo, base).verdict, "green")
+            self.assertEqual(run.call_count, 1, "the base ran once for its sha")
+        trunk = [b for b in c.load_briefs(p) if "Trunk red" in b.title]
+        self.assertEqual(len(trunk), 1, "one trunk-red FIX per class set")
+        self.assertEqual(trunk[0].priority, "urgent")
+        self.assertIn("test_docs", trunk[0].title)
+        c.update_meta(p, live_shape_base=None)
+        with runs(("red", "test_docs, test_new"), ("red", "test_docs")):
+            got = train._live_shape(shape, p, self.repo, base)
+            self.assertEqual(got.verdict, "red")
+            self.assertIn("breaks the repo-shape classes: test_new", got.why)
+            self.assertNotIn("test_docs", got.why)
+        c.update_meta(p, live_shape_base=None)
+        with runs(("red", "test_docs"), ("green", "")):
+            self.assertIn("breaks the repo-shape classes: test_docs", train._live_shape(shape, p, self.repo, base).why)
+        c.update_meta(p, live_shape_base=None)
+        with runs(("red", "test_docs"), ("cut", "")):
+            self.assertIn("breaks the repo-shape classes: test_docs", train._live_shape(shape, p, self.repo, base).why,
+                          "a base with no verdict forgives nothing")
+
+    def test_live_land_shape_base_red_lands_a_batch_red_only_where_its_base_is_and_refuses_a_new_class(self):
+        # T-5805: the whole land, with a trunk whose runner is red on test_docs
+        self.fm("lane", "mode", "live")
+        os.makedirs(os.path.join(self.repo, "plugin", "tests"))
+        with open(os.path.join(self.repo, "plugin", "tests", "run.py"), "w") as f:
+            f.write("import sys\nprint('  failed class: test_docs')\nsys.exit(1)\n")
+        self.git("add", "plugin")
+        self.git("commit", "-qm", "a Sampo tree red on test_docs")
+        env = {"FM_POSTMERGE_CMD": "true", "FOREMAN_NO_BACKGROUND": "1"}
+        head = self.git("rev-parse", "HEAD")
+        worse = "import sys\nprint('  failed class: test_docs')\nprint('  failed class: test_run')\nsys.exit(1)\n"
+        bad = self.lane(1, os.path.join("plugin", "tests", "run.py"), worse)
+        r = self.train(bad, check=False, env=env)
+        self.assertNotEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertIn("test_run", r.stderr + r.stdout)
+        self.assertEqual(self.git("rev-parse", "HEAD"), head, "a new red class lands nothing")
+        ok = self.lane(2, "b.txt")
+        r = self.train(ok, check=False, env=env)
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertNotEqual(self.git("rev-parse", "HEAD"), head, "a batch red only where its base is red landed")
 
     def test_live_land_refuses_a_batch_whose_merged_tree_breaks_or_cuts_the_repo_shape_classes(self):
         # T-5590: red or cut on the merged tree lands nothing; green lands. Each lane's stand-in runner is its own change.
@@ -137,6 +200,114 @@ class Train(TrainCase):
                 else:
                     self.assertIn("was cut", out)
                     self.assertIn("SAMPO_SHAPE_BATCH_WALL_S", out)
+
+    def shape_trunk(self, red_when):
+        """T-5806: a live project whose trunk has a stand-in shape runner: red (class test_docs) when `red_when(files)` holds
+        of the data files present in its tree. Returns the file that counts each run."""
+        self.fm("lane", "mode", "live")
+        count = os.path.join(self.tmp, "shape-runs")
+        os.makedirs(os.path.join(self.repo, "plugin", "tests"))
+        with open(os.path.join(self.repo, "plugin", "tests", "run.py"), "w") as f:
+            f.write("import os, sys\n"
+                    f"open({count!r}, 'a').write(os.getcwd() + ' ' + ','.join(sorted(os.listdir('.'))) + '\\n')\n"
+                    f"if {red_when}:\n    print('  failed class: test_docs')\n    sys.exit(1)\n")
+        self.git("add", "plugin")
+        self.git("commit", "-qm", "a Sampo tree with its runner")
+        return count
+
+    def test_live_shape_bisect_parks_the_one_lane_that_adds_the_red_class_and_lands_the_rest(self):
+        # T-5806: a merged batch with one lane that adds a new repo-shape red stopped the whole land
+        count = self.shape_trunk("os.path.exists('RED.txt')")
+        a, bad, b = self.lane(1, "a.txt"), self.lane(2, "RED.txt"), self.lane(3, "b.txt")
+        r = self.train(a, bad, b, env={"FM_POSTMERGE_CMD": "true", "FOREMAN_NO_BACKGROUND": "1"})
+        out = r.stdout + r.stderr
+        for name in ("a.txt", "b.txt"):
+            self.assertTrue(os.path.exists(os.path.join(self.repo, name)), f"{name} landed: {out}")
+        self.assertFalse(os.path.exists(os.path.join(self.repo, "RED.txt")), "the culprit is not landed")
+        self.assertRegex(out, rf"left out {bad}: .*test_docs")
+        self.assertNotRegex(out, rf"left out ({a}|{b})")
+        with open(count) as f:  # a red run reruns its failures: so count the judged trees
+            trees = {line.split(" ", 1)[1] for line in f.read().splitlines()}
+        # the batch, the base (T-5805: once, for the red), then the bisect: 6 trees at most, never one twice
+        self.assertLessEqual(len(trees), 6, "a bisect of three lanes judges a few trees, each once: " + str(sorted(trees)))
+
+    def test_live_shape_pair_parks_both_lanes_of_a_red_that_needs_them_together_and_lands_the_third(self):
+        # T-5806: no lane is red alone: a lane-by-lane check would land both and turn trunk red
+        self.shape_trunk("os.path.exists('P1.txt') and os.path.exists('P2.txt')")
+        p1, c3, p2 = self.lane(1, "P1.txt"), self.lane(2, "c.txt"), self.lane(3, "P2.txt")
+        r = self.train(p1, c3, p2, env={"FM_POSTMERGE_CMD": "true", "FOREMAN_NO_BACKGROUND": "1"})
+        out = r.stdout + r.stderr
+        self.assertTrue(os.path.exists(os.path.join(self.repo, "c.txt")), out)
+        for name in ("P1.txt", "P2.txt"):
+            self.assertFalse(os.path.exists(os.path.join(self.repo, name)), f"{name} parked: {out}")
+        self.assertRegex(out, rf"left out {p1}: .*test_docs")
+        self.assertRegex(out, rf"left out {p2}: .*test_docs")
+        self.assertNotRegex(out, rf"left out {c3}")
+
+    def test_shape_cull_tries_the_lanes_the_red_classes_name_first_and_stops_on_a_cut(self):
+        # T-5806: the culprit-first split costs one run beyond the red one, and the batch's red is run once more (a rerun)
+        from sampo import train
+        red = lambda *names: train.ShapeVerdict("red", "test_docs") if set(names) & {"b"} else \
+            train.ShapeVerdict("green", "")  # noqa: E731
+        seen = []
+        got = train._shape_cull(["a", "b", "c"], lambda s, **kw: seen.append(list(s)) or red(*s), suspects={"b"})
+        self.assertEqual(list(got), ["b"])
+        self.assertEqual(seen, [["a", "c"], ["a", "b", "c"], ["a", "b", "c"]],
+                         "the rest of the batch first, then the suspect on it, then the batch's red once more")
+        self.assertIn("test_docs", got["b"][0])
+        self.assertEqual(got["b"][1], "test_docs")
+        cut = lambda s, **kw: train.ShapeVerdict("cut", "")  # noqa: E731
+        with self.assertRaises(c.PolicyError):
+            train._shape_cull(["a", "b"], cut)
+
+    def test_shape_cull_lands_a_batch_whose_red_no_prefix_reproduces_and_a_rerun_clears(self):
+        # T-5806 review: a transient red on the batch run (every prefix green) parked the last two lanes
+        from sampo import train
+        calls = []
+
+        def shape(sel, fresh=False):
+            calls.append((list(sel), fresh))
+            return train.ShapeVerdict("red", "test_docs") if len(sel) == 2 and not fresh else train.ShapeVerdict("green")
+        self.assertEqual(train._shape_cull(["a", "b"], shape), {}, "nothing parked: the batch is green on its rerun")
+        self.assertEqual(calls[-1], (["a", "b"], True), "the rerun is a fresh run, not the cached verdict")
+        whole = lambda s, fresh=False: train.ShapeVerdict("green" if fresh or len(s) < 3 else "red", "test_docs")  # noqa: E731
+        self.assertEqual(train._shape_cull(["a", "b", "c"], whole), {}, "three lanes, a transient red on the whole batch")
+        self.assertEqual(train._shape_cull(["a", "b", "c"], whole, suspects={"c"}), {}, "and with a suspect named")
+
+    def test_shape_cull_records_each_parked_lanes_own_classes(self):
+        # T-5806 review: the lane_train_red event named the batch's classes for every parked lane
+        from sampo import train
+        cls = {"a": "test_x", "c": "test_y"}
+
+        def shape(sel, fresh=False):
+            names = [cls[i] for i in sel if i in cls]
+            return train.ShapeVerdict("red", ", ".join(names)) if names else train.ShapeVerdict("green")
+        got = train._shape_cull(["a", "b", "c"], shape)
+        self.assertEqual({i: w[1] for i, w in got.items()}, {"a": "test_x", "c": "test_y"})
+
+    def test_shape_cull_caps_the_fresh_seconds_it_spends_and_counts_no_cache_hit(self):
+        # T-5806 review: 24 runs of a 1800 s wall held the train lock 12 h: the cap is summed fresh seconds
+        from sampo import train
+        every = lambda s, fresh=False: train.ShapeVerdict("red", "test_docs", secs=100.0)  # noqa: E731
+        with self.assertRaises(c.PolicyError) as e:
+            train._shape_cull(["a", "b", "c", "d", "e"], every, budget=250)
+        self.assertRegex(str(e.exception), r"no lane parked")
+        self.assertIn("250", str(e.exception))
+        cached = lambda s, fresh=False: train.ShapeVerdict("red" if "f" in s else "green", "test_docs")  # noqa: E731
+        got = train._shape_cull(list("abcdef"), cached, budget=1)
+        self.assertEqual(list(got), ["f"], "runs from the cache cost no seconds")
+
+    def test_live_shape_refuses_a_batch_when_the_base_has_no_shape_verdict_and_parks_no_lane(self):
+        # T-5806 review: a base cut says so (no lane is blamed for a class the base may carry), and names no wall it was not cut at
+        self.shape_trunk("os.path.exists('RED.txt') or (not os.path.exists('a.txt') and sys.exit(1))")  # the bare base: no class named
+        a, bad = self.lane(1, "a.txt"), self.lane(2, "RED.txt")
+        head = self.git("rev-parse", "HEAD")
+        r = self.train(a, bad, check=False, env={"FM_POSTMERGE_CMD": "true", "FOREMAN_NO_BACKGROUND": "1"})
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertEqual(self.git("rev-parse", "HEAD"), head, "nothing landed")
+        self.assertRegex(out, r"base .*no verdict")
+        self.assertNotRegex(out, rf"left out {bad}")
 
     def test_live_mode_is_a_project_switch_and_full_gate_forces_gated(self):
         from sampo import train
