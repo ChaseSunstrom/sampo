@@ -119,6 +119,29 @@ class Andon(ForemanTestCase):
         self.assertTrue(re.search(r"(?i)andon", read_text(os.path.join(AGENTS, "fm-builder.md"))))
 
 
+class LensPass(ForemanTestCase):
+    # T-5724: before its report the builder writes five lines about its own diff, as a LENSES close line the reviewer reads
+    EXTRA = len(" and LENSES".encode()) - 1  # the one word the cap rule's list gained
+
+    def test_lens_pass_is_in_the_contract_and_adds_at_most_450_bytes(self):
+        text = read_text(os.path.join(AGENTS, "fm-builder.md"))
+        bullet = re.search(r"(?ms)^- Lens pass:.*?(?=^- )", text).group(0)  # the size of the pass itself, not of the file
+        grown = len(bullet.encode()) + self.EXTRA
+        self.assertLessEqual(grown, 450, grown)
+        for part in ("LENSES:", "cost:", "error:", "races:", "test:", "input:", "fails closed", "~100 agents"):
+            self.assertIn(part, text, part)
+        from sampo import lanes
+        self.assertIn("LENSES:", lanes.contract("T-0001", "abc123", "/main"), "the brief's contract carries it")
+
+    def test_lens_pass_line_is_a_close_line_the_report_may_end_with(self):
+        from sampo import lanes
+        report = ("Done.\n\nCHANGELOG: Does a thing (T-0007).\nTITLE: Does a thing (T-0007)\nLESSON: a rule.\n"
+                  "NUMBERS: none: x\nDOCS: none: y\nLENSES: cost: one read per stop; error: a bad line is dropped, fail closed; "
+                  "races: none, one writer; test: test_x.test_y; input: a defanged line, no path\n\nNoticed: none\n")
+        self.assertEqual(lanes.close_fields(report, tail=True).get("id"), "T-0007")
+        self.assertIn("test_x.test_y", lanes.close_fields(report, tail=True).get("lenses", ""))
+
+
 class Lean(ForemanTestCase):
     # T-5681: a general-purpose launch carries the whole skill listing and tool text every turn (~56k chars); the lean
     # fixer and resolver types take only their own short contract, and delegate.md routes the two jobs to them

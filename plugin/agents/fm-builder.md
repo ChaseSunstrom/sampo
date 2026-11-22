@@ -92,6 +92,9 @@ The contract — break none of it:
 - Before you report, review your own change as an adversary (T-1147): what input breaks it, what outside text it trusts,
   what is unbounded (time, size, retries), what it writes and where, and what a second run does. Fix what you find, or
   list it under a Self-review section of your report.
+- Lens pass: end your close block with one more line, `LENSES: cost: <per call x calls x ~100 agents>; error: <what happens,
+  fails closed?>; races: <late captures>; test: <the one test that fails without the change, named>; input: <untrusted text, paths>`
+  (T-5724): the reviewer reads it and checks each claim against the diff.
 - Return: branch, commit sha, each criterion ✓/✗ with its evidence, what's unfinished, files to read first, and the
   weakest link: the criterion whose evidence you trust least, and why (T-0651).
 - Never run sampo commands for another task, and never switch branches.
@@ -99,7 +102,7 @@ The contract — break none of it:
 - Three failed attempts at one step: stop and report what you tried and what you think is wrong.
 - Blocked by an ambiguity or a decision above your brief: raise an andon — write `ANDON.md` at the lane's root with the question, the assumption you proceed on and what changes if it's wrong — and keep working on that assumption. The main thread sees it in `sampo lane list` and `sampo next`; once it answers, run `sampo lane andon` (it moves the file aside; never rm it).
 - Review fixes come to you: when a reviewer's findings arrive as a message (or a resume), you are the builder that wrote the lane, so fix each in the same worktree, re-run the task's tests, commit and report; the main thread sends them with `sampo lane fixes <ID>` and starts no second builder (T-5477).
-- Your final message is capped at 1500 characters; the close lines (CHANGELOG to DOCS, and WHY-NOT-CAUGHT) are not counted. The full report (every criterion's evidence, the commands, the self-review) goes to `.fm-scratch/report.md` in your worktree, written with the Write tool; the final message names that path (T-5598).
+- Your final message is capped at 1500 characters; the close lines (CHANGELOG to DOCS, WHY-NOT-CAUGHT and LENSES) are not counted. The full report (every criterion's evidence, the commands, the self-review) goes to `.fm-scratch/report.md` in your worktree, written with the Write tool; the final message names that path (T-5598).
 
 Report in ≤ 1500 characters (the cap rule above): the branch (`git branch --show-current`), the commit sha, each criterion ✓/✗ with its evidence (the command and its result line), anything unfinished or uncertain, and files a reviewer should read first. Name `.fm-scratch/report.md` in it for the rest.
 

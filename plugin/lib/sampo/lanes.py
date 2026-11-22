@@ -2481,8 +2481,8 @@ def reviewer_lenses(msg):
 
 
 CLOSE_FIELDS = "Close fields"  # T-3500: the brief section a builder's report lines land in
-CLOSE_KEYS = ("changelog", "title", "lesson", "numbers", "docs", "why_not_caught")  # T-4515: an M/L fix's why-not-caught
-_CLOSE_LINE = re.compile(r"(?m)^[ \t>*_`-]*(CHANGELOG|TITLE|LESSON|NUMBERS|DOCS|WHY-NOT-CAUGHT)[*_`]*[ \t]*:[*_`]*[ \t]*(\S.*?)[ \t*_`]*$")
+CLOSE_KEYS = ("changelog", "title", "lesson", "numbers", "docs", "why_not_caught", "lenses")  # T-4515: an M/L fix's why-not-caught; T-5724: the lens pass
+_CLOSE_LINE = re.compile(r"(?m)^[ \t>*_`-]*(CHANGELOG|TITLE|LESSON|NUMBERS|DOCS|WHY-NOT-CAUGHT|LENSES)[*_`]*[ \t]*:[*_`]*[ \t]*(\S.*?)[ \t*_`]*$")
 _NOTICED = re.compile(r"(?i)^[ \t>*_`-]*Noticed[*_`]*[ \t]*:")  # T-3920: a builder's trailing Noticed line
 _BULLET = re.compile(r"^\s*[-*]\s")
 
@@ -2528,7 +2528,8 @@ def tail_block(text):
 
 def close_fields(text, tail=False):
     """T-3500: {key: value} from 'CHANGELOG: …', 'TITLE: …', 'LESSON: …', 'NUMBERS: …', 'DOCS: …' lines (bold and list
-    marks tolerated, the last of each wins), plus 'why_not_caught' from 'WHY-NOT-CAUGHT: …' (T-4515), and 'id', the task
+    marks tolerated, the last of each wins), plus 'why_not_caught' from 'WHY-NOT-CAUGHT: …' (T-4515), 'lenses' from
+    'LENSES: …' (T-5724: the builder's lens pass, one line, read by audit prep), and 'id', the task
     its CHANGELOG or TITLE line ends with: (T-NNNN). Each
     value is one redacted line; one that reads like instructions (core.defang) is dropped, never published. `tail`:
     only the block of such lines that ends the text (a report's own close, not lines it quotes)."""

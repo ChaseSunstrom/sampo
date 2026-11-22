@@ -82,6 +82,13 @@ class StoredAtTheStop(LandCase):
         fields, _ = self.stop(tid, f"Done.\n\n{block}\nNoticed: a\nNoticed: b\n\n{POINTER}")
         self.assertIn(f"CHANGELOG: Does a thing ({tid}).", fields)
 
+    def test_a_lenses_line_at_the_end_of_the_block_is_stored_with_the_rest(self):  # T-5724
+        tid = self.lane(1, "a.txt")
+        block = BLOCK.replace("T-0007", tid) + "LENSES: cost: one read; error: fails closed; races: none; test: t.x; input: none\n"
+        fields, _ = self.stop(tid, f"Done.\n\n{block}\nNoticed: none\n")
+        self.assertIn("LENSES: cost: one read; error: fails closed", fields)
+        self.assertIn(f"CHANGELOG: Does a thing ({tid}).", fields)
+
     def test_a_fixer_or_resolver_report_is_stored_like_a_builders(self):  # T-5681 review: the same editing set
         for n, agent in ((1, "sampo:fm-fixer"), (2, "sampo:fm-resolver")):
             tid = self.lane(n, f"f{n}.txt")
