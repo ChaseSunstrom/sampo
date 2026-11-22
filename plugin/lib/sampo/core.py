@@ -9328,6 +9328,103 @@ def sensitive(files, diff=""):
     return why
 
 
+# T-5713: the process tiers, least process first. process_tier scores one change; ptier_of (below) reads a brief.
+PTIERS = ("trivial", "small", "normal", "risky")
+# Paths that run or gate Sampo itself: hooks, the guard, schemas, migrations, SQL, protocols and settings. A doc that
+# names one runs nothing, so docs are exempt (see process_tier); any code file under them is risky, test or not.
+_RISKY_PATH = lazy(r"(?i)(^|/)(hooks?/|migrations?/|sql/)|(^|/)[^/]*(guard|schema)[^/]*(/|$)|\.sql$|"
+                   r"(^|/)protocols\.json$|(^|/)settings[^/]*\.json$")
+_COMMENT_LINE = lazy(r"^\s*(#(\s|$)|//|/\*|\*/|<!--)")  # a bare "*" can open a continuation line: not a comment
+# a test is a file in a tests folder: a production file named test_*.py (test_runner.py) is code, not a test (T-5713)
+_TEST_DIR = lazy(r"(^|/)(tests?|__tests__|spec)/")
+
+
+def _changed_lines(diff):
+    """(path, "+" or "-", text) for each added or removed line of a unified diff (T-5713). A file's header, up to its
+    first hunk, is skipped, so a removed line that starts with "--" still counts."""
+    out, path, header = [], "", False
+    for line in (diff or "").splitlines():
+        if line.startswith("diff --git "):
+            m = re.match(r"diff --git a/.+? b/(.+)$", line)
+            path, header = (m.group(1) if m else ""), True
+        elif line.startswith("@@"):
+            header = False
+        elif not header and line[:1] in ("+", "-"):
+            out.append((path, line[0], line[1:]))
+    return out
+
+
+def process_tier(tier, type_, files, diff, tests_linked):
+    """T-5713: the process tier a change needs, as (ptier, why). Pure: no I/O, no git, no map (tests_linked maps each
+    changed file to the tests linked to it, map.tests_for per file). The claimed tier is the base. A floor is risky
+    whatever the diff says: claimed L or bigger, SECURITY, any sensitive() hit, a hook, guard, schema or migration path.
+    Trivial: a diff that is only docs or tests (test lines removed net of added at most 20), or only comments and
+    blanks under 60 changed lines. Small: a claimed S, or a claimed M of at most 3 files and 80 changed lines with a
+    linked test for each code file. Anything it can't measure stays at the claimed tier's own level."""
+    files = list(files or [])
+    changed = _changed_lines(diff)
+    n = len(changed)
+    floors = []
+    if at_least(tier, "L"):
+        floors.append(f"claimed {tier}")
+    if str(type_).upper() == "SECURITY":
+        floors.append("SECURITY")
+    hit = sensitive(files, diff or "")
+    if hit:
+        floors.append(f"sensitive: {joinmore(hit, 3)}")
+    path = [f for f in files if not DOC.search(f) and _RISKY_PATH.search(f)]
+    if path:
+        floors.append(f"hook, guard, schema or migration path: {joinmore(path, 3)}")
+    if floors:
+        return "risky", floors
+    if changed:
+        if files and all(DOC.search(f) or _TEST_DIR.search(f) for f in files):
+            test_net = sum(1 if sign == "-" else -1 for p, sign, _ in changed if _TEST_DIR.search(p))
+            if test_net <= 20:
+                kinds = {"docs" if DOC.search(f) else "tests" for f in files}
+                return "trivial", [f"{' and '.join(sorted(kinds))} only"]
+        if files and n < 60 and all(not text.strip() or _COMMENT_LINE.search(text) for _, _, text in changed):
+            return "trivial", ["comments and blanks only"]
+    if tier_rank(tier) == 0:  # S, or no tier at all (T-4220)
+        return "small", ["claimed S"]
+    code_files = [f for f in files if not DOC.search(f) and not _TEST_DIR.search(f)]
+    links = tests_linked or {}
+    if canonical_tier(tier) == "M" and files and changed and len(files) <= 3 and n <= 80 and all(
+            links.get(f) for f in code_files):
+        return "small", [f"M, {len(files)} file(s), {n} changed lines, linked tests"]
+    why = [f"claimed {canonical_tier(tier) or tier}"]
+    if not files:
+        why.append("no files to measure")
+    if not changed:
+        why.append("no diff to measure")
+    if len(files) > 3:
+        why.append(f"{len(files)} files")
+    if n > 80:
+        why.append(f"{n} changed lines")
+    missing = [f for f in code_files if not links.get(f)]
+    if missing:
+        why.append(f"no linked test for {joinmore(missing, 3)}")
+    return "normal", why
+
+
+def ptier_of(b, files=None, diff="", tests_linked=None):
+    """T-5713: the process tier of brief b as (ptier, why). The files default to the brief's scope globs: those have
+    no extension and read as code, so they stay at the claimed level. FOREMAN_PROCESS_TIER=off gives today's S, M
+    and L. A stored meta ptier is a floor, so the tier only ever goes up."""
+    if os.environ.get("FOREMAN_PROCESS_TIER", "").strip().lower() == "off":
+        base = "risky" if at_least(b.tier, "L") else "normal" if canonical_tier(b.tier) == "M" else "small"
+        why = ["FOREMAN_PROCESS_TIER=off"]
+    else:
+        if files is None:
+            scope = b.meta.get("scope") or []
+            files = [scope] if isinstance(scope, str) else list(scope)
+        base, why = process_tier(b.tier, b.type, files, diff, tests_linked or {})
+    stored = b.meta.get("ptier")
+    if isinstance(stored, str) and stored.strip() in PTIERS and PTIERS.index(stored.strip()) > PTIERS.index(base):
+        base, why = stored.strip(), why + [f"stored ptier {stored.strip()}"]
+    return base, why
+
+
 _UI_MORE = {".sass", ".less", ".astro", ".jinja", ".jinja2", ".hbs", ".njk", ".ejs", ".twig", ".liquid"}  # not linted
 _UI_TUI = lazy(r"(?:^|[/_-])[a-z]*tui(?:[/_-].*)?\.(py|go|rs|[jt]s)$")  # fmcodetui.py, tui/x.py; not intuition
 _UI_OTHER = lazy(r"^mods/[^/]+/hooks/.+\.ts$|(?:^|/)(?:subagent-)?statusline(?:\.\w+)?$")  # the pane, statuslines
