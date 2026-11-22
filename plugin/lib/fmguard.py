@@ -278,6 +278,8 @@ def findings(tool_name, tool_input, ctx):
     if tool_name == "Read":  # T-1224
         path, real = _walk(_expand(str(tool_input.get("file_path") or ""), ctx), ctx.cwd)
         return _judge(classify_read, path, real, ctx)
+    if tool_name in READ_TOOLS and READ_TOOLS[tool_name] in ("search", "read", "uri") or file_tool(tool_name):  # T-5987
+        return _search_findings(tool_name, tool_input, ctx)
     return []
 
 
@@ -723,6 +725,510 @@ def classify_read(path, ctx):
         if _home_credential(p, ctx):
             return ["credentials"]
     return []
+
+
+# ---------------------------------------------------------------- T-5987: the tools that read or list files by a path or a pattern
+
+# How the guard reads each Claude Code tool that takes a file path or a pattern. A tool of the class is a row here (guarded) or
+# a row of UNGUARDED (with its reason): test_guard holds every tool the plugin's agents name to one of the two.
+READ_TOOLS = {"Read": "read", "NotebookRead": "read", "LSP": "read", "LS": "read", "Grep": "search", "Glob": "search",
+              "ReadMcpResourceTool": "uri", "Write": "write", "Edit": "write", "MultiEdit": "write",
+              "NotebookEdit": "write", "Bash": "bash"}
+UNGUARDED = {
+    "WebFetch": "fetches a web page by its URL and answers from the page: it takes no path on this machine and lists no folder",
+    "ListMcpResourcesTool": "lists the resources an MCP server names (names and URIs it chose); reading one is ReadMcpResourceTool, guarded",
+    "BashOutput": "returns the output of a Bash command that was already judged as a command line when it started; no path or pattern",
+    "KillShell": "stops a background Bash job by its id; it reads no file and lists no folder",
+    "TaskOutput": "returns the output of a background task by its id; the command was judged as a command line when it started",
+    "TaskStop": "stops a background task by its id; it reads no file and lists no folder",
+    "EnterWorktree": "makes a git worktree for the session by a branch name, or leaves it; no file is read or listed, and each later call's paths are judged against the new cwd",
+    "ExitWorktree": "leaves the session's worktree (keeping or removing it); it reads no file and lists no folder",
+    "SlashCommand": "runs a slash command by its name: the command's own text becomes a prompt, whose tool calls are each judged here",
+    "PowerShell": "runs a PowerShell command on Windows, a shell Ward does not parse: a gap that stays open until it reads that syntax (listed as its own task)",
+}
+# an MCP tool whose name says it reads, lists or searches files (the filesystem servers, desktop-commander, git's file tools):
+# one pattern for hooks.json's matcher and the guard (JS-compatible: Claude Code's matcher is a JS regex)
+_MCP_KW = "|".join("".join(f"[{c.upper()}{c}]" for c in w) for w in (
+    "read", "list", "search", "find", "grep", "glob", "tree", "file", "dir", "folder", "cat", "view", "open",
+    "stat", "head", "tail", "ls", "get", "fetch", "load", "download", "dump"))  # T-5987: in any letter case
+MCP_FILE_TOOL = r"mcp__.+?__(?:(?!__).)*(?:" + _MCP_KW + r")(?:(?!__).)*"
+_MCP_SEARCH = lazy(r"search|find|grep|glob|tree|walk|recursive|code", re.I)
+_MCP_GLOB_KEYS = ("pattern", "patterns", "glob", "globs", "include", "includes", "query", "name")
+_BRACE_CAP, _GLOB_CAP, _FORM_CAP, _STRING_CAP, _PATH_CAP, _NEST_CAP = 256, 512, 512, 2000, 4096, 6
+_ANY, _PID, _PIDX = "\0any", "\0pid", "\0pidx"  # a /proc folder name: any, a pid, a pid or self and thread-self
+
+
+def file_tool(name):
+    """Whether an MCP tool's name says it reads, lists or searches files (its arguments are then read as paths)."""
+    return isinstance(name, str) and bool(re.fullmatch(MCP_FILE_TOOL, name))
+
+
+class _Unreadable(Exception):
+    """A call the guard can't read to the end: refused (system), as it would run unchecked."""
+
+
+def _first_brace(p):
+    """(open, close, alternatives) of the first {a,b} in a glob that closes, or None."""
+    i, n = 0, len(p)
+    while i < n:
+        if p[i] == "\\":
+            i += 2
+            continue
+        if p[i] == "{":
+            depth, j, start, parts = 0, i, i + 1, []
+            while j < n:
+                d = p[j]
+                if d == "\\":
+                    j += 2
+                    continue
+                if d == "{":
+                    depth += 1
+                elif d == "}":
+                    depth -= 1
+                    if depth == 0:
+                        return i, j, parts + [p[start:j]]
+                elif d == "," and depth == 1:
+                    parts.append(p[start:j])
+                    start = j + 1
+                j += 1
+        i += 1
+    return None
+
+
+def _braces(pat):
+    """Every alternative of a glob's {a,b} lists (nested ones too); more than _BRACE_CAP is unreadable."""
+    work, out = [pat], []
+    while work:
+        p = work.pop()
+        hit = _first_brace(p)
+        if hit is None:
+            out.append(p)
+        else:
+            a, b, parts = hit
+            work += [p[:a] + part + p[b + 1:] for part in parts]
+        if len(out) + len(work) > _BRACE_CAP:
+            raise _Unreadable(f"a glob with more than {_BRACE_CAP} brace alternatives")
+    return out
+
+
+def _seg_parts(seg):
+    """A glob segment as parts (kind, regex, sample): a literal, * (star), ? (any) or a [class]."""
+    parts, i, n = [], 0, len(seg)
+    while i < n:
+        ch = seg[i]
+        if ch == "\\" and i + 1 < n:
+            parts.append(("lit", re.escape(seg[i + 1]), seg[i + 1]))
+            i += 2
+        elif ch == "*":
+            while i < n and seg[i] == "*":
+                i += 1
+            parts.append(("star", ".*", ""))
+        elif ch == "?":
+            parts.append(("any", ".", "x"))
+            i += 1
+        elif ch == "[":
+            j = i + 1
+            if j < n and seg[j] in "!^":
+                j += 1
+            if j < n and seg[j] == "]":
+                j += 1
+            while j < n and seg[j] != "]":
+                j += 1
+            if j >= n:
+                parts.append(("lit", re.escape(ch), ch))
+                i += 1
+                continue
+            body = seg[i + 1:j]
+            neg = body[:1] in ("!", "^")
+            cls = "[" + ("^" if neg else "") + re.sub(r"[\\\[\]^]", lambda m: "\\" + m.group(), body[1:] if neg else body) + "]"
+            try:
+                re.compile(cls)
+            except re.error:
+                raise _Unreadable("a glob with a [class] it can't read")
+            sample = next((c for c in "x1aZ_-. " + "".join(map(chr, range(33, 127))) if re.fullmatch(cls, c, re.I | re.S)), "")
+            parts.append(("cls", cls, sample))
+            i = j + 1
+        else:
+            parts.append(("lit", re.escape(ch), ch))
+            i += 1
+    return parts
+
+
+class _Seg:
+    """One glob segment: its regex (any letter case) and a few names it matches (the witnesses), the shapes a * or ? can take."""
+    __slots__ = ("text", "star2", "rx", "wits")
+
+    def __init__(self, text):
+        self.text, self.star2 = text, text == "**"
+        parts = [] if self.star2 else _seg_parts(text)
+        self.rx = re.compile("".join(p[1] for p in parts), re.I | re.S)
+        stars = [i for i, p in enumerate(parts) if p[0] == "star"]
+
+        def build(star, anyc):
+            return "".join(star(i) if p[0] == "star" else anyc if p[0] == "any" else p[2] for i, p in enumerate(parts))
+
+        names = [build(lambda i, f=f: f, f or "x") for f in ("", "x", "1")]
+        names += [build(lambda i, s=s: "x" if i == s else "", "x") for s in stars[:8]]
+        self.wits = [] if self.star2 else [w for w in dict.fromkeys(names) if w and self.rx.fullmatch(w)]
+
+
+@functools.lru_cache(maxsize=1024)
+def _seg(text):
+    return _Seg(text)
+
+
+def _literal(seg):
+    return not re.search(r"[*?\[\\]", seg)
+
+
+def _glob_forms(globs, ctx):
+    """[(segments, also from the filesystem root)] of the inclusion globs of a call: split at spaces and commas, braces
+    expanded, ! exclusions dropped, ~ and $HOME read, a pattern with no / run at every depth (**/ before it). No inclusion
+    left means every file."""
+    forms = []
+    for g in globs:
+        if len(g) > _GLOB_CAP:
+            raise _Unreadable(f"a glob of more than {_GLOB_CAP} characters")
+        for tok in g.split():
+            for part in ([tok] if "{" in tok else tok.split(",")):
+                if not part or part.startswith("!"):
+                    continue
+                for alt in _braces(part):
+                    alt = _expand(alt, ctx)
+                    segs = [s for s in alt.split("/") if s not in ("", ".")]
+                    if "/" not in alt.rstrip("/") and ".." not in segs:
+                        segs.insert(0, "**")
+                    forms.append((tuple(segs), alt.startswith("/")))
+                    if len(forms) > _FORM_CAP:
+                        raise _Unreadable(f"a glob of more than {_FORM_CAP} patterns")
+    return list(dict.fromkeys(forms)) or [(("**",), False)]
+
+
+def _climb(base, gsegs):
+    """(folder, glob) after the .. in a glob: a leading one climbs the folder, one after a name drops that name, one
+    after a wildcard can't be read."""
+    base, out = list(base), []
+    for s in gsegs:
+        if s != "..":
+            out.append(s)
+        elif out:
+            if not _literal(out[-1]):
+                raise _Unreadable("a '..' after a wildcard in a glob")
+            out.pop()
+        elif base:
+            base.pop()
+    return base, out
+
+
+def _segs(path):
+    return [s for s in path.split("/") if s]
+
+
+def _search_targets(ctx):
+    """[(kind, segments)] of what a search must not reach: each credential folder and file of the home (as named and as
+    it really is) and another process's /proc secrets (kinds: dir, file)."""
+    out = []
+    for h in dict.fromkeys([ctx.home, os.path.realpath(ctx.home)]):
+        hs = _segs(h)
+        out += [("dir", tuple(hs + _segs(d))) for d in _CRED_DIRS] + [("file", tuple(hs + _segs(f))) for f in _CRED_FILES]
+    out += [("file", ("proc", _PIDX, "environ")), ("file", ("proc", _PIDX, "task", _ANY, "environ"))]
+    for leaf in ("mem", "maps", "smaps", "smaps_rollup"):
+        out += [("file", ("proc", _PID, leaf)), ("file", ("proc", _PID, "task", _ANY, leaf))]
+    for d in ("fd", "fdinfo"):
+        out += [("file", ("proc", _PID, d, _ANY)), ("file", ("proc", _PID, "task", _ANY, d, _ANY))]
+    return out
+
+
+def _seg_eq(name, t):
+    if t == _ANY:
+        return True
+    if t in (_PID, _PIDX):
+        return name.isascii() and name.isdigit() or t == _PIDX and name in ("self", "thread-self")
+    return name == t.lower()
+
+
+def _glob_seg_matches(g, t):
+    if t == _ANY:
+        return True
+    if t in (_PID, _PIDX):
+        return any(w.isascii() and w.isdigit() or t == _PIDX and w.lower() in ("self", "thread-self") for w in g.wits)
+    return bool(g.rx.fullmatch(t))
+
+
+def _rest_hits(rest, tpath, ctx):
+    """The glob's last segments are all that is left below a credential folder: a name they can match there that
+    classify_read refuses (a *.pub or known_hosts is public, id_* or * is not)."""
+    if all(g.star2 for g in rest):
+        return True
+    last = max(i for i, g in enumerate(rest) if not g.star2)
+    if any(not g.star2 and not g.wits for g in rest):
+        return False
+    for fill in (False, True):
+        head = [("z" if fill else None) if g.star2 else g.wits[0] for g in rest[:last]]
+        tail = [("z" if fill else None) if g.star2 else None for g in rest[last + 1:]]
+        for w in rest[last].wits:
+            names = [n for n in head + [w] + tail if n]
+            if classify_read(tpath + "/" + "/".join(names), ctx):
+                return True
+    return False
+
+
+def _reaches(rsegs, gsegs, targets, ctx):
+    """Whether the glob, run below the folder rsegs, can match a credential target that lies strictly below it."""
+    low = [s.lower() for s in rsegs]
+    for kind, t in targets:
+        n = len(low)
+        if n >= len(t) or not all(_seg_eq(a, b) for a, b in zip(low, t)):
+            continue
+        rest, memo = t[n:], {}
+
+        def go(gi, si, kind=kind, t=t, rest=rest, memo=memo):
+            if (gi, si) in memo:
+                return memo[gi, si]
+            if gi == len(gsegs):
+                r = True  # everything beneath a matched folder: the folder, a file in it
+            elif si == len(rest):
+                r = kind == "dir" and _rest_hits(gsegs[gi:], "/" + "/".join(t), ctx) or kind == "file" and all(
+                    g.star2 for g in gsegs[gi:])
+            elif gsegs[gi].star2:
+                r = go(gi + 1, si) or go(gi, si + 1)
+            else:
+                r = _glob_seg_matches(gsegs[gi], rest[si]) and go(gi + 1, si + 1)
+            memo[gi, si] = r
+            return r
+
+        if go(0, 0):
+            return True
+    return False
+
+
+def _glob_hits(base, gpat, targets, ctx):
+    """Whether the glob gpat (segments, .. read) below the folder base reaches a credential: through the folders it names
+    and through where its literal front part really goes (a link to the home)."""
+    segs = [_seg(s) for s in gpat]
+    if _reaches(base, segs, targets, ctx):
+        return True
+    lit = []
+    for s in gpat:
+        if not _literal(s):
+            break
+        lit.append(s)
+    if lit:
+        joined = "/" + "/".join(base + lit)
+        rest = segs[len(lit):]
+        if not rest:  # a glob with no wildcard names one path
+            return bool(classify_read(joined, ctx))
+        real = os.path.realpath(joined)
+        if real != joined and _from_real(real, rest, targets, ctx):  # the literal front is a link: the rest runs from where it goes
+            return True
+    root = os.path.realpath("/" + "/".join(base + lit))
+    return bool(segs[len(lit):]) and _link_hits(root, segs[len(lit):], targets, ctx)
+
+
+def _from_real(real, rest, targets, ctx):
+    """Whether the glob segments `rest`, run from the folder `real` (where a link went), reach a credential: below it, or
+    from inside a credential folder, a name the glob can match there that classify_read refuses."""
+    rs = _segs(real)
+    if _reaches(rs, rest, targets, ctx):
+        return True
+    low = [s.lower() for s in rs]
+    return any(kind == "dir" and len(t) <= len(rs) and all(_seg_eq(a, b) for a, b in zip(low, t))
+               for kind, t in targets) and _rest_hits(rest, real, ctx)
+
+
+# T-5987 review: a link under the folder a glob runs in, after a wildcard segment, goes where the glob's later segments
+# are read (the kernel follows it; a tool that does not follow links lists the link only). The walk reads at most
+# _LINK_SCAN entries and goes no deeper than the glob has segments (_LINK_DEPTH for a **): a link beyond is not followed.
+_LINK_DEPTH, _LINK_SCAN, _links_seen = 6, 4000, {}
+
+
+def _links_below(root, depth):
+    """[(names below root, where it really goes)] of each link at most `depth` folders below root (links are not entered)."""
+    if (root, depth) in _links_seen:
+        return _links_seen[root, depth]
+    out, seen, queue = [], 0, [((), root)]
+    while queue and seen <= _LINK_SCAN:
+        comps, d = queue.pop(0)
+        try:
+            with os.scandir(d) as it:
+                entries = list(it)
+        except (OSError, ValueError):
+            continue
+        for e in entries:
+            seen += 1
+            if seen > _LINK_SCAN:
+                break
+            try:
+                if e.is_symlink():
+                    out.append((comps + (e.name,), os.path.realpath(e.path)))
+                elif len(comps) + 1 < depth and e.is_dir(follow_symlinks=False):
+                    queue.append((comps + (e.name,), e.path))
+            except (OSError, ValueError):
+                continue
+    _links_seen[root, depth] = out
+    return out
+
+
+def _consume(gsegs, comps):
+    """The indexes into gsegs a glob can have reached once it has matched the folders `comps` (a ** matches none or more)."""
+    def close(states):
+        out = set(states)
+        for i in sorted(states):
+            while i < len(gsegs) and gsegs[i].star2:
+                i += 1
+                out.add(i)
+        return out
+    states = close({0})
+    for name in comps:
+        nxt = set()
+        for i in states:
+            if i < len(gsegs):
+                if gsegs[i].star2:
+                    nxt.add(i)
+                elif _glob_seg_matches(gsegs[i], name):
+                    nxt.add(i + 1)
+        states = close(nxt)
+    return states
+
+
+def _link_hits(root, rest, targets, ctx):
+    """Whether a link below the folder `root`, matched by the first segments of the glob `rest`, leads where the segments
+    left reach a credential (or is itself one a glob that ends there matches)."""
+    depth = _LINK_DEPTH if any(s.star2 for s in rest) else min(len(rest), _LINK_DEPTH)
+    for comps, real in _links_below(root, depth):
+        for gi in _consume(rest, comps):
+            left = rest[gi:]
+            if left and _from_real(real, left, targets, ctx) or not left and classify_read(real, ctx):
+                return True
+    return False
+
+
+def _read_judge(raw, ctx, base=None):
+    path, real = _walk(_expand(raw, ctx), base or ctx.cwd or "/")
+    return _judge(classify_read, path, real, ctx)
+
+
+def _server_bases(raw, ctx):
+    """The folders a relative path an MCP tool is given may run from: the session's, and the server's own (a process the
+    session did not start: its cwd is the home, or /). An absolute path or a ~ path has the one."""
+    if os.path.isabs(_expand(raw, ctx)):
+        return [ctx.cwd or "/"]
+    return list(dict.fromkeys([ctx.cwd or "/", ctx.home or "/", "/"]))
+
+
+_SCHEME = lazy(r"[A-Za-z][A-Za-z0-9+.-]+:")
+_FILE_URI = lazy(r"file:(?://[^/]*)?(.*)", re.I | re.S)
+_FORMS_CAP = 16
+
+
+def _path_forms(s, uri=False):
+    """T-5987 review: the paths a string can name, once the way a server reads it: as written, a file: URI's path (the
+    scheme in any letter case, an authority skipped, a ?query or #fragment cut and not cut), and each percent-decoding of
+    those (up to three: a server may decode what a client did). With uri=True a URI of another scheme names no path."""
+    from urllib.parse import unquote
+    out, todo = [], [s]
+    for _ in range(4):
+        nxt = []
+        for x in todo:
+            if x in out:
+                continue
+            out.append(x)
+            m = _FILE_URI.fullmatch(x)
+            if m:
+                nxt += [m[1], re.split(r"[?#]", m[1], maxsplit=1)[0]]
+            d = unquote(x)
+            if d != x:
+                nxt.append(d)
+        todo = nxt
+    if len(out) > _FORMS_CAP:
+        raise _Unreadable(f"a path that reads as more than {_FORMS_CAP} paths once decoded")
+    forms = [x for x in out if not _FILE_URI.fullmatch(x) and not (uri and _SCHEME.match(x))]
+    return [("/" + x.lstrip("/")) if x.startswith("//") else x for x in forms]
+
+
+def _search_check(tool, raw, globs, ctx, base=None):
+    """[(category, detail)] of a search rooted at `raw` (a folder, or a file) with these globs: the root itself as a read,
+    then the credential folders and files below it that the globs can match."""
+    _links_seen.clear()
+    path, real = _walk(_expand(raw, ctx), base or ctx.cwd or "/")
+    found = _judge(classify_read, path, real, ctx)
+    if found:
+        return found
+    forms = _glob_forms(globs, ctx)
+    targets = _search_targets(ctx)
+    roots = list(dict.fromkeys([path] + ([real] if real else []) + [os.path.realpath(path)]))
+    for r in roots:
+        try:
+            if not stat.S_ISDIR(os.stat(r).st_mode):
+                continue  # a file: its own read, judged above
+        except (OSError, ValueError):
+            pass  # not there: read as a folder (a link or a mount may appear)
+        for gsegs, also_abs in forms:
+            for base in ([_segs(r), []] if also_abs else [_segs(r)]):
+                b, g = _climb(base, gsegs)
+                if _glob_hits(b, g, targets, ctx):
+                    return [("credentials", f"{tool} of {raw or ctx.cwd} reaches the home's credential files")]
+    return []
+
+
+def _mcp_strings(v, out, depth=0):
+    if isinstance(v, str):
+        if len(out) >= _STRING_CAP:
+            raise _Unreadable(f"more than {_STRING_CAP} strings in its arguments")
+        out.append(v)
+    elif isinstance(v, (list, tuple, dict)):
+        if depth >= _NEST_CAP:
+            raise _Unreadable("arguments nested deeper than it reads")
+        for x in (list(v) + list(v.values())) if isinstance(v, dict) else v:
+            _mcp_strings(x, out, depth + 1)
+
+
+def _str_arg(ti, key):
+    v = ti.get(key)
+    if v is not None and (not isinstance(v, str) or "\0" in v):
+        raise _Unreadable(f"{key} is not text it can read")
+    return v
+
+
+def _search_findings(tool, ti, ctx):
+    """T-5987: [(category, detail)] of a Grep, Glob, LS, LSP, NotebookRead, ReadMcpResourceTool or filesystem MCP call:
+    each path it names is a read (classify_read), and a search's folder with its glob must not reach a credential."""
+    try:
+        if not isinstance(ti, dict):
+            raise _Unreadable("its input is not an object")
+        how = READ_TOOLS.get(tool)
+        if tool == "Grep":
+            raw, glob = _str_arg(ti, "path"), _str_arg(ti, "glob")
+            _str_arg(ti, "pattern")
+            return _search_check(tool, raw or ctx.cwd or "/", [glob] if glob else [], ctx)
+        if tool == "Glob":
+            pat = ti.get("pattern")
+            if not isinstance(pat, str) or "\0" in pat:
+                raise _Unreadable("pattern is not text it can read")
+            return _search_check(tool, _str_arg(ti, "path") or ctx.cwd or "/", [pat], ctx)
+        if how == "read":
+            key = {"LS": "path", "LSP": "filePath", "NotebookRead": "notebook_path", "Read": "file_path"}[tool]
+            raw = _str_arg(ti, key)
+            return _read_judge(raw or ctx.cwd or "/", ctx) if raw is not None or tool == "LS" else []
+        if how == "uri":
+            uri = _str_arg(ti, "uri")
+            return [f for p in (_path_forms(uri, True) if uri else ()) if p for b in _server_bases(p, ctx)
+                    for f in _read_judge(p, ctx, b)]
+        strings = []
+        _mcp_strings(ti, strings)
+        search = bool(_MCP_SEARCH.search(tool.split("__", 2)[-1]))
+        globs = [f for k in _MCP_GLOB_KEYS for v in (ti.get(k) if isinstance(ti.get(k), list) else [ti.get(k)])
+                 if isinstance(v, str) and "\0" not in v for f in _path_forms(v)]
+        found = []
+        for s in strings:
+            if not s or len(s) > _PATH_CAP or "\n" in s or "\0" in s:
+                continue
+            for p in _path_forms(s):  # the server decodes it, and resolves a relative path from its own folder
+                for b in _server_bases(p, ctx) if p else ():
+                    found += _search_check(tool, p, globs, ctx, b) if search else _read_judge(p, ctx, b)
+        return list(dict.fromkeys(found))
+    except (_Unreadable, OSError, ValueError, TypeError, RecursionError) as e:
+        return [("system", f"the guard can't read this {tool} call: {e}")]
 
 
 # T-1224: commands whose file arguments are read (a tool that only uses a key, ssh or ssh-add, is not a read of it)

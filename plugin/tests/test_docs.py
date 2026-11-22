@@ -546,8 +546,10 @@ class PluginFiles(unittest.TestCase):
             # third, for the tools that send content off the machine; T-0947: PostToolUse is sync for file writes
             # (their validators block, handler PostToolUseValidate) beside the async catch-all; T-3672: SubagentStart
             # has a sync half (SubagentStartContext, the profile's digest) beside the async bookkeeping; T-4747: a
-            # fourth PreToolUse entry for the MCP tools that type or schedule (stamped or denied before they run)
-            self.assertEqual(len(handlers), {"PreToolUse": 4, "PostToolUse": 2, "SubagentStart": 2}.get(event, 1), event)
+            # fourth PreToolUse entry for the MCP tools that type or schedule (stamped or denied before they run);
+            # T-5987: a fifth and sixth, for the tools that search or list files (Grep, Glob, LS, LSP, ...) and the
+            # filesystem MCP tools, which the credential guard reads as it reads Read
+            self.assertEqual(len(handlers), {"PreToolUse": 6, "PostToolUse": 2, "SubagentStart": 2}.get(event, 1), event)
             self.assertTrue(all(h["args"] in ([event], [event + "Validate"], [event + "Context"]) for h in handlers),
                             event)
 

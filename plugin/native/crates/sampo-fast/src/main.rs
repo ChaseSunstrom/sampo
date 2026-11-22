@@ -21,15 +21,47 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 include!(concat!(env!("OUT_DIR"), "/stamps.rs")); // WATCHED: (path under plugin/, size, mtime s, mtime ns)
 
 // hooks.py and budget.py constants (compared with Python's through --consts)
-const CRED_DIRS: [&str; 7] = [".ssh", ".aws", ".config/gcloud", ".kube", ".gnupg", ".config/gh", ".config/sampo"];
-const CRED_FILES: [&str; 6] =
-    [".netrc", ".npmrc", ".pypirc", ".git-credentials", ".claude/.credentials.json", ".docker/config.json"];
-const OUTWARD: [&str; 6] =
-    ["Artifact", "ArtifactComments", "ArtifactData", "PushNotification", "RemoteTrigger", "SendMessage"];
+const CRED_DIRS: [&str; 7] = [
+    ".ssh",
+    ".aws",
+    ".config/gcloud",
+    ".kube",
+    ".gnupg",
+    ".config/gh",
+    ".config/sampo",
+];
+const CRED_FILES: [&str; 6] = [
+    ".netrc",
+    ".npmrc",
+    ".pypirc",
+    ".git-credentials",
+    ".claude/.credentials.json",
+    ".docker/config.json",
+];
+const OUTWARD: [&str; 6] = [
+    "Artifact",
+    "ArtifactComments",
+    "ArtifactData",
+    "PushNotification",
+    "RemoteTrigger",
+    "SendMessage",
+];
 const SCHEDULERS: [&str; 3] = ["CronCreate", "RemoteTrigger", "ScheduleWakeup"];
 const OUTWARD_MCP: &str = "mcp__claude_ai_Claude_Docs__";
-const READS: [&str; 9] = ["export", "get", "guide", "list", "open", "profiles", "query", "quickstart", "read"];
-const DOCS_TOOLS: [&str; 8] = ["batch", "create", "delete", "export", "guide", "query", "read", "update"];
+const READS: [&str; 9] = [
+    "export",
+    "get",
+    "guide",
+    "list",
+    "open",
+    "profiles",
+    "query",
+    "quickstart",
+    "read",
+];
+const DOCS_TOOLS: [&str; 8] = [
+    "batch", "create", "delete", "export", "guide", "query", "read", "update",
+];
 const OUTLINE_LINES: u64 = 600;
 const READ_SHOWN: u64 = 250; // T-5597: hooks.READ_SHOWN
 const SUB_READ_BYTES: u64 = 8192; // T-5597: hooks.SUB_READ_BYTES
@@ -37,21 +69,40 @@ const SNAP_SPAN: f64 = 21600.0;
 const PACE_FLOOR: f64 = 75.0;
 const READ_STALE_S: f64 = 6.0 * 3600.0; // T-4669: budget.READ_STALE_S
 const MS_EPOCH: f64 = 1e11; // T-4669: budget.MS_EPOCH
-// sha1[:12] of each mirrored Python function's source (_run: less the other events' else branch; _pre_tool_use: up to
-// its GUARDED check; hooks/hook: its event parse and dispatch)
+                            // sha1[:12] of each mirrored Python function's source (_run: less the other events' else branch; _pre_tool_use: up to
+                            // its GUARDED check; hooks/hook: its event parse and dispatch)
 const MIRRORS: [(&str, &str); 31] = [
-    ("hooks.run", "e9a5910273f5"), ("hooks._run", "f17c9b9f44d8"), ("hooks._pre_tool_use", "fc44bade7843"),
-    ("hooks._credential_like", "a60da1d880d6"),
-    ("hooks._credential_read", "6ed174ed2226"), ("hooks._outline_first", "c2ddf4904e58"),
-    ("hooks._outward_denial", "051bba6801d7"), ("hooks._event", "6440afe94c6e"), ("hooks._rev", "7ee872410ee6"),
-    ("hooks._cwd", "5dfb7c01da10"), ("budget.check_subagent", "4575be89ca9a"),
-    ("budget.subagent_pause", "8ea366b833a0"), ("budget.rate_limits", "37cdc34daf37"),
-    ("budget._recent_snaps", "fa6247e38a3c"), ("core.mirror_env", "e3ea72852a4e"), ("core.state_dir", "097be350d697"),
-    ("core.foreman_home", "ba2f19682ef6"), ("core.state_fallbacks", "ec57b57bbbae"), ("core.gettempdir", "c30d095e6f0f"),
-    ("core._marker_default", "cb40c01d2be1"), ("core._private", "7cfbfb951235"), ("core._writable", "3b299266b366"),
-    ("core.now", "bde6d34a80ab"), ("core.clock", "6c9ac7951406"), ("core.host_load", "b2109cf9e763"),
-    ("core.append_line", "f4d2c835d3b8"), ("core.find_project", "10122dfacd1b"), ("core._project", "5f97218e3254"),
-    ("core.projects_dir", "576df9fb905e"), ("core.read_meta", "484af8e8f5ba"), ("hooks/hook", "66e8f167df00"),
+    ("hooks.run", "e9a5910273f5"),
+    ("hooks._run", "f17c9b9f44d8"),
+    ("hooks._pre_tool_use", "fc44bade7843"),
+    ("hooks._credential_like", "08fce2b10d8f"),
+    ("hooks._credential_read", "6ed174ed2226"),
+    ("hooks._outline_first", "c2ddf4904e58"),
+    ("hooks._outward_denial", "051bba6801d7"),
+    ("hooks._event", "6440afe94c6e"),
+    ("hooks._rev", "7ee872410ee6"),
+    ("hooks._cwd", "5dfb7c01da10"),
+    ("budget.check_subagent", "4575be89ca9a"),
+    ("budget.subagent_pause", "8ea366b833a0"),
+    ("budget.rate_limits", "37cdc34daf37"),
+    ("budget._recent_snaps", "fa6247e38a3c"),
+    ("core.mirror_env", "e3ea72852a4e"),
+    ("core.state_dir", "097be350d697"),
+    ("core.foreman_home", "ba2f19682ef6"),
+    ("core.state_fallbacks", "ec57b57bbbae"),
+    ("core.gettempdir", "c30d095e6f0f"),
+    ("core._marker_default", "cb40c01d2be1"),
+    ("core._private", "7cfbfb951235"),
+    ("core._writable", "3b299266b366"),
+    ("core.now", "bde6d34a80ab"),
+    ("core.clock", "6c9ac7951406"),
+    ("core.host_load", "b2109cf9e763"),
+    ("core.append_line", "f4d2c835d3b8"),
+    ("core.find_project", "10122dfacd1b"),
+    ("core._project", "5f97218e3254"),
+    ("core.projects_dir", "576df9fb905e"),
+    ("core.read_meta", "484af8e8f5ba"),
+    ("hooks/hook", "66e8f167df00"),
 ];
 
 type Obj = Map<String, Value>;
@@ -82,7 +133,10 @@ fn defer(hook: &Path, rest: &[OsString], raw: &[u8]) -> ! {
         Ok(stdin) => Command::new(hook).args(rest).stdin(stdin).exec(),
         Err(e) => e,
     };
-    eprintln!("sampo-fast: couldn't hand this call to {} ({err}); it was blocked", hook.display());
+    eprintln!(
+        "sampo-fast: couldn't hand this call to {} ({err}); it was blocked",
+        hook.display()
+    );
     exit(2)
 }
 
@@ -93,11 +147,19 @@ fn feed(raw: &[u8]) -> io::Result<Stdio> {
         w.write_all(raw)?;
         return Ok(r.into());
     }
-    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos());
     let mut last = io::Error::from(ErrorKind::NotFound);
     for dir in [std::env::temp_dir(), "/dev/shm".into(), "/tmp".into()] {
         let path = dir.join(format!("sampo-fast-{}-{nanos}", std::process::id()));
-        match OpenOptions::new().read(true).write(true).create_new(true).mode(0o600).open(&path) {
+        match OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+        {
             Ok(mut f) => {
                 let _ = fs::remove_file(&path);
                 f.write_all(raw)?;
@@ -115,21 +177,35 @@ fn allow(hook: &Path, rest: &[OsString], raw: &[u8], t0: Instant) -> bool {
     if rest.len() != 1 || rest[0] != "PreToolUse" || knobs() || !fresh(hook) {
         return false;
     }
-    let Some(pl) = std::str::from_utf8(raw).ok().and_then(|s| serde_json::from_str::<Value>(s).ok()) else {
+    let Some(pl) = std::str::from_utf8(raw)
+        .ok()
+        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+    else {
         return false;
     };
     let Value::Object(pl) = pl else { return false };
-    let Some(Value::String(tool)) = pl.get("tool_name") else { return false };
-    let Some(state) = state_dir() else { return false };
+    let Some(Value::String(tool)) = pl.get("tool_name") else {
+        return false;
+    };
+    let Some(state) = state_dir() else {
+        return false;
+    };
     let ok = match tool.as_str() {
         "Read" => read_ok(&pl),
         "Agent" | "Task" => agent_ok(&pl, &state),
         t if SCHEDULERS.contains(&t) => None,
         t if OUTWARD.contains(&t) => outward_ok(&pl, t, &state),
-        t if t.strip_prefix(OUTWARD_MCP).is_some_and(|s| DOCS_TOOLS.contains(&s)) => outward_ok(&pl, t, &state),
+        t if t
+            .strip_prefix(OUTWARD_MCP)
+            .is_some_and(|s| DOCS_TOOLS.contains(&s)) =>
+        {
+            outward_ok(&pl, t, &state)
+        }
         _ => None, // the guarded tools, and any tool this file doesn't know: Python's
     };
-    let Some(rev) = ok.and_then(|_| rev(hook)) else { return false };
+    let Some(rev) = ok.and_then(|_| rev(hook)) else {
+        return false;
+    };
     log(&state, tool, &rev, t0);
     true
 }
@@ -139,13 +215,25 @@ fn allow(hook: &Path, rest: &[OsString], raw: &[u8], t0: Instant) -> bool {
 fn knobs() -> bool {
     let set = |k: &str| fenv(k).is_some_and(|v| !v.is_empty());
     let raw = |k: &str| std::env::var_os(k).is_some_and(|v| v.to_str().is_none());
-    let names = ["FAST", "NOW", "HOST", "FAULT_LANE", "STATE", "HOME", "STATE_FALLBACK"];
+    let names = [
+        "FAST",
+        "NOW",
+        "HOST",
+        "FAULT_LANE",
+        "STATE",
+        "HOME",
+        "STATE_FALLBACK",
+    ];
     fenv("FAST").as_deref() == Some("0")
         || ["NOW", "HOST", "FAULT_LANE"].iter().any(|k| set(k))
         || std::env::var_os("SAMPO_HOOK_MODULES").is_some_and(|v| !v.is_empty())
         || std::env::var_os("PYTHON_CPU_COUNT").is_some()
-        || names.iter().any(|k| raw(&format!("SAMPO_{k}")) || raw(&format!("FOREMAN_{k}")))
-        || ["HOME", "XDG_STATE_HOME", "TMPDIR", "TEMP", "TMP"].iter().any(|k| raw(k))
+        || names
+            .iter()
+            .any(|k| raw(&format!("SAMPO_{k}")) || raw(&format!("FOREMAN_{k}")))
+        || ["HOME", "XDG_STATE_HOME", "TMPDIR", "TEMP", "TMP"]
+            .iter()
+            .any(|k| raw(k))
 }
 
 /// FOREMAN_<k>, with SAMPO_<k> winning when set at all (core.mirror_env); None when unset or not UTF-8.
@@ -158,11 +246,15 @@ fn fenv(k: &str) -> Option<String> {
 
 /// The mirrored sources are the ones this binary was built from (size and mtime, as the plugin resolves them).
 fn fresh(hook: &Path) -> bool {
-    let Some(plugin) = fs::canonicalize(hook).ok().and_then(|h| Some(h.parent()?.parent()?.to_path_buf())) else {
+    let Some(plugin) = fs::canonicalize(hook)
+        .ok()
+        .and_then(|h| Some(h.parent()?.parent()?.to_path_buf()))
+    else {
         return false;
     };
     WATCHED.iter().all(|(rel, size, s, ns)| {
-        fs::metadata(plugin.join(rel)).is_ok_and(|m| m.size() == *size && m.mtime() == *s && m.mtime_nsec() == *ns)
+        fs::metadata(plugin.join(rel))
+            .is_ok_and(|m| m.size() == *size && m.mtime() == *s && m.mtime_nsec() == *ns)
     })
 }
 
@@ -192,7 +284,10 @@ fn read_ok(pl: &Obj) -> Option<()> {
             return None;
         }
     }
-    if ["offset", "limit", "pages"].iter().any(|k| !matches!(ti.get(*k), None | Some(Value::Null))) {
+    if ["offset", "limit", "pages"]
+        .iter()
+        .any(|k| !matches!(ti.get(*k), None | Some(Value::Null)))
+    {
         return Some(());
     }
     let sid = text_or(pl.get("session_id"), "")?;
@@ -202,7 +297,9 @@ fn read_ok(pl: &Obj) -> Option<()> {
         (Some(true), Some(true)) => {}
         _ => return None,
     }
-    let Ok(m) = fs::metadata(path) else { return Some(()) };
+    let Ok(m) = fs::metadata(path) else {
+        return Some(());
+    };
     // T-5597: a subagent's whole Read over SUB_READ_BYTES may be Python's rewrite (a trailer, or a decline): defer it
     let sub = matches!(pl.get("agent_id"), Some(Value::String(s)) if !s.is_empty());
     let rewrite_due = sub && m.len() > SUB_READ_BYTES;
@@ -231,8 +328,16 @@ fn newlines(buf: &[u8]) -> usize {
 
 /// hooks._credential_like on one path string.
 fn cred_like(p: &str) -> bool {
+    let p = p.to_lowercase(); // T-5987: any letter case, as the guard's _home_credential
+    if p == "/proc" || p.starts_with("/proc/") {
+        return true; // another process's environ, mem, maps, fd: the guard decides
+    }
+    let p = p.as_str();
     let slashed = format!("{p}/");
-    CRED_DIRS.iter().any(|d| slashed.contains(&format!("/{d}/"))) || CRED_FILES.iter().any(|f| p.ends_with(&format!("/{f}")))
+    CRED_DIRS
+        .iter()
+        .any(|d| slashed.contains(&format!("/{d}/")))
+        || CRED_FILES.iter().any(|f| p.ends_with(&format!("/{f}")))
 }
 
 /// str(v or default) for a string, null or absent v; None (defer) for any other type.
@@ -250,7 +355,11 @@ fn word(s: &str) -> Option<bool> {
     if s.is_empty() || s.chars().any(|c| c.is_ascii() && !ascii_word(c)) {
         return Some(false);
     }
-    if s.is_ascii() { Some(s.len() <= 100) } else { None }
+    if s.is_ascii() {
+        Some(s.len() <= 100)
+    } else {
+        None
+    }
 }
 
 /// budget.check_subagent: no pause; a pace near the bar is Python's (weekly_lean needs the project).
@@ -276,7 +385,9 @@ fn agent_ok(pl: &Obj, state: &Path) -> Option<()> {
     }
     // T-5497: hooks.fit_flag adds a note to a call with no type, a blank or general-purpose one, or a Sampo type on Opus:
     // this file doesn't mirror the note, so only those launches go to Python; any other named type is native
-    let Some(Value::String(t)) = ti.get("subagent_type") else { return None };
+    let Some(Value::String(t)) = ti.get("subagent_type") else {
+        return None;
+    };
     let t = t.trim();
     if t.is_empty() || t.to_lowercase().contains("general-purpose") {
         return None;
@@ -308,12 +419,23 @@ fn agent_ok(pl: &Obj, state: &Path) -> Option<()> {
 /// budget._limits()[0]: (five_hour, seven_day, week_gone) of the newest snapshot that has any; None defers.
 /// T-4669: a reset above MS_EPOCH is milliseconds; a passed reset reads 0; a window whose snapshot is over READ_STALE_S old is unknown.
 fn rate_limits(state: &Path) -> Option<(Option<f64>, Option<f64>, Option<f64>)> {
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs_f64();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()?
+        .as_secs_f64();
     'snaps: for path in recent_snaps(state)? {
         let Ok(data) = fs::read(&path) else { continue };
-        let Some(read) = fs::metadata(&path).ok().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(UNIX_EPOCH).ok()) else { continue };
+        let Some(read) = fs::metadata(&path)
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        else {
+            continue;
+        };
         let read = read.as_secs_f64();
-        let Value::Object(top) = serde_json::from_slice::<Value>(&data).ok()? else { continue }; // NaN: Python's
+        let Value::Object(top) = serde_json::from_slice::<Value>(&data).ok()? else {
+            continue;
+        }; // NaN: Python's
         let rl = match top.get("rate_limits") {
             v if !truthy(v) => None,
             Some(Value::Object(m)) => Some(m),
@@ -326,7 +448,9 @@ fn rate_limits(state: &Path) -> Option<(Option<f64>, Option<f64>, Option<f64>)> 
                 Some(Value::Object(m)) => Some(m),
                 _ => continue 'snaps,
             };
-            let Some(Value::Number(used)) = w.and_then(|m| m.get("used_percentage")) else { continue };
+            let Some(Value::Number(used)) = w.and_then(|m| m.get("used_percentage")) else {
+                continue;
+            };
             let resets = match w.and_then(|m| m.get("resets_at")) {
                 Some(Value::Number(n)) => Some(n.as_f64()?),
                 Some(Value::Bool(b)) => Some(f64::from(u8::from(*b))), // a bool is an int to Python
@@ -356,7 +480,9 @@ fn rate_limits(state: &Path) -> Option<(Option<f64>, Option<f64>, Option<f64>)> 
 
 /// budget._recent_snaps: sessions/*.json by mtime, newest first, the last three within SNAP_SPAN of the newest.
 fn recent_snaps(state: &Path) -> Option<Vec<PathBuf>> {
-    let Ok(dir) = fs::read_dir(state.join("sessions")) else { return Some(vec![]) }; // glob: [] on any error
+    let Ok(dir) = fs::read_dir(state.join("sessions")) else {
+        return Some(vec![]);
+    }; // glob: [] on any error
     let mut snaps = vec![];
     for e in dir {
         let e = e.ok()?;
@@ -369,9 +495,17 @@ fn recent_snaps(state: &Path) -> Option<Vec<PathBuf>> {
         snaps.push((m.mtime() as f64 + m.mtime_nsec() as f64 * 1e-9, e.path()));
     }
     snaps.sort_by(|a, b| a.0.total_cmp(&b.0)); // stable, as sorted(): ties keep the listing's order
-    let Some(&(newest, _)) = snaps.last() else { return Some(vec![]) };
+    let Some(&(newest, _)) = snaps.last() else {
+        return Some(vec![]);
+    };
     let tail = &snaps[snaps.len().saturating_sub(3)..];
-    Some(tail.iter().rev().filter(|s| newest - s.0 <= SNAP_SPAN).map(|s| s.1.clone()).collect())
+    Some(
+        tail.iter()
+            .rev()
+            .filter(|s| newest - s.0 <= SNAP_SPAN)
+            .map(|s| s.1.clone())
+            .collect(),
+    )
 }
 
 /// hooks._outward_denial is None: a read action, or no project Python could find is sensitive (or unreadable).
@@ -383,7 +517,11 @@ fn outward_ok(pl: &Obj, tool: &str, state: &Path) -> Option<()> {
         },
         _ => "",
     };
-    if READS.contains(&action) || tool.strip_prefix(OUTWARD_MCP).is_some_and(|t| READS.contains(&t)) {
+    if READS.contains(&action)
+        || tool
+            .strip_prefix(OUTWARD_MCP)
+            .is_some_and(|t| READS.contains(&t))
+    {
         return Some(());
     }
     cwd(pl)?; // find_project(_cwd(pl)) raises on a cwd that isn't a string
@@ -395,7 +533,9 @@ fn outward_ok(pl: &Obj, tool: &str, state: &Path) -> Option<()> {
     for e in dir {
         match fs::read(e.ok()?.path().join("meta.json")) {
             Ok(data) => {
-                let Value::Object(meta) = serde_json::from_slice::<Value>(&data).ok()? else { return None };
+                let Value::Object(meta) = serde_json::from_slice::<Value>(&data).ok()? else {
+                    return None;
+                };
                 if truthy(meta.get("sensitive")) {
                     return None;
                 }
@@ -422,7 +562,11 @@ fn truthy(v: Option<&Value>) -> bool {
 fn cwd(pl: &Obj) -> Option<String> {
     match pl.get("cwd") {
         Some(Value::String(s)) if !s.is_empty() => (!s.contains('\0')).then(|| s.clone()),
-        None | Some(Value::Null) | Some(Value::String(_)) => std::env::current_dir().ok()?.into_os_string().into_string().ok(),
+        None | Some(Value::Null) | Some(Value::String(_)) => std::env::current_dir()
+            .ok()?
+            .into_os_string()
+            .into_string()
+            .ok(),
         _ => None,
     }
 }
@@ -454,18 +598,33 @@ fn state_dir() -> Option<PathBuf> {
             // no real folder (gone, or a link: symlink_metadata never follows it), else ~/.claude/foreman
             let new = Path::new(&home).join(".claude/sampo");
             let old = Path::new(&home).join(".claude/foreman");
-            let old_real = old.symlink_metadata().map(|m| m.file_type().is_dir()).unwrap_or(false);
-            if new.is_dir() && !old_real { new } else { old }
+            let old_real = old
+                .symlink_metadata()
+                .map(|m| m.file_type().is_dir())
+                .unwrap_or(false);
+            if new.is_dir() && !old_real {
+                new
+            } else {
+                old
+            }
         }
     };
     let default = fhome.join("state");
-    let xdg = std::env::var("XDG_STATE_HOME").ok().filter(|v| !v.is_empty());
+    let xdg = std::env::var("XDG_STATE_HOME")
+        .ok()
+        .filter(|v| !v.is_empty());
     let xdg = xdg.unwrap_or_else(|| format!("{home}/.local/state"));
     // core.state_fallbacks: sampo's names, then the foreman ones, a marker in any of them is Python's to follow
-    let mut alts = vec![Path::new(&xdg).join("sampo"), Path::new(&xdg).join("foreman")];
+    let mut alts = vec![
+        Path::new(&xdg).join("sampo"),
+        Path::new(&xdg).join("foreman"),
+    ];
     let uid = unsafe { getuid() };
     let mut temps = vec![];
-    for t in ["TMPDIR", "TEMP", "TMP"].iter().filter_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty())) {
+    for t in ["TMPDIR", "TEMP", "TMP"]
+        .iter()
+        .filter_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty()))
+    {
         if !t.starts_with('/') {
             return None; // core.gettempdir() (tempfile's candidates and test) would resolve it against the cwd
         }
@@ -498,7 +657,11 @@ fn abspath(p: &str) -> Option<PathBuf> {
     if p.starts_with('~') {
         return None;
     }
-    let full = if p.starts_with('/') { p.to_string() } else { py_join(std::env::current_dir().ok()?.to_str()?, p) };
+    let full = if p.starts_with('/') {
+        p.to_string()
+    } else {
+        py_join(std::env::current_dir().ok()?.to_str()?, p)
+    };
     if full.starts_with("//") && !full.starts_with("///") {
         return None;
     }
@@ -520,7 +683,9 @@ fn writable(p: &Path) -> bool {
     let mut p = p;
     loop {
         if p.exists() {
-            let Ok(c) = CString::new(p.as_os_str().as_bytes()) else { return false };
+            let Ok(c) = CString::new(p.as_os_str().as_bytes()) else {
+                return false;
+            };
             return unsafe { access(c.as_ptr(), 2) } == 0;
         }
         match p.parent() {
@@ -544,15 +709,27 @@ const SC_NPROCESSORS_ONLN: std::ffi::c_int = 58;
 
 /// hooks._rev: plugin.json's version where hooks/hook resolves; None (defer) for a value redact might touch.
 fn rev(hook: &Path) -> Option<String> {
-    let plugin = fs::canonicalize(hook).ok()?.parent()?.parent()?.to_path_buf();
-    let Ok(data) = fs::read(plugin.join(".claude-plugin/plugin.json")) else { return Some("?".into()) };
+    let plugin = fs::canonicalize(hook)
+        .ok()?
+        .parent()?
+        .parent()?
+        .to_path_buf();
+    let Ok(data) = fs::read(plugin.join(".claude-plugin/plugin.json")) else {
+        return Some("?".into());
+    };
     let v = match serde_json::from_slice::<Value>(&data).ok()? {
         Value::Object(m) => m.get("version").cloned(),
         _ => return Some("?".into()),
     };
     match v {
         v if !truthy(v.as_ref()) => Some("?".into()),
-        Some(Value::String(s)) if s.split('.').count() <= 3 && s.split('.').all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())) => Some(s),
+        Some(Value::String(s))
+            if s.split('.').count() <= 3
+                && s.split('.')
+                    .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())) =>
+        {
+            Some(s)
+        }
         _ => None,
     }
 }
@@ -570,12 +747,17 @@ fn log(state: &Path, tool: &str, rev: &str, t0: Instant) {
         line += &format!(", \"load\": {}", pyround(la[0] / cpus, 2));
     }
     line += ", \"fast\": true}\n";
-    let _ = fs::create_dir_all(state).and_then(|_| append(&state.join("events.jsonl"), line.as_bytes()));
+    let _ = fs::create_dir_all(state)
+        .and_then(|_| append(&state.join("events.jsonl"), line.as_bytes()));
 }
 
 /// core.append_line: one write; a torn last line gets its newline first.
 fn append(path: &Path, data: &[u8]) -> io::Result<()> {
-    let mut f = OpenOptions::new().read(true).append(true).create(true).open(path)?;
+    let mut f = OpenOptions::new()
+        .read(true)
+        .append(true)
+        .create(true)
+        .open(path)?;
     let size = f.metadata()?.len();
     let mut last = *b"\n";
     if size > 0 {
@@ -589,12 +771,18 @@ fn append(path: &Path, data: &[u8]) -> io::Result<()> {
 fn pyround(x: f64, n: usize) -> String {
     let r: f64 = format!("{x:.n$}").parse().unwrap_or(0.0);
     let s = format!("{r}");
-    if s.contains('.') { s } else { format!("{s}.0") }
+    if s.contains('.') {
+        s
+    } else {
+        format!("{s}.0")
+    }
 }
 
 /// core.now(): UTC, to the second.
 fn now() -> String {
-    let secs = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs()) as i64;
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs()) as i64;
     let (days, rem) = (secs.div_euclid(86400), secs.rem_euclid(86400));
     let z = days + 719468; // civil_from_days (H. Hinnant)
     let era = z.div_euclid(146097);
@@ -605,12 +793,20 @@ fn now() -> String {
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = yoe + era * 400 + i64::from(m <= 2);
-    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z", rem / 3600, rem % 3600 / 60, rem % 60)
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        rem / 3600,
+        rem % 3600 / 60,
+        rem % 60
+    )
 }
 
 fn consts() {
     let list = |xs: &[&str]| Value::from(xs.iter().map(|s| Value::from(*s)).collect::<Vec<_>>());
-    let mirrors: Obj = MIRRORS.iter().map(|(k, v)| (k.to_string(), Value::from(*v))).collect();
+    let mirrors: Obj = MIRRORS
+        .iter()
+        .map(|(k, v)| (k.to_string(), Value::from(*v)))
+        .collect();
     let out = serde_json::json!({
         "cred_dirs": list(&CRED_DIRS), "cred_files": list(&CRED_FILES), "outward": list(&OUTWARD),
         "schedulers": list(&SCHEDULERS), "outward_mcp": OUTWARD_MCP, "reads": list(&READS),

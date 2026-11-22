@@ -3465,8 +3465,10 @@ class Robustness(GuardCase):
         self.assertBlocked(self.bash("rm -rf ~ 'unterminated"), "rm-outside")
 
     def test_other_tools_are_ignored(self):
-        # (Read of a credential is refused since T-1224: CredentialReads)
-        self.assertIsNone(g.check("Glob", {"pattern": self.sub("{home}/.ssh/id_rsa")}, self.ctx()))
+        # (Read of a credential is refused since T-1224: CredentialReads; Grep, Glob and the other tools that read files
+        # since T-5987: CredentialTools)
+        self.assertIsNone(g.check("WebFetch", {"url": self.sub("file://{home}/.ssh/id_rsa")}, self.ctx()))
+        self.assertIsNone(g.check("TodoWrite", {"todos": []}, self.ctx()))
 
     def test_malformed_input_raises(self):
         with self.assertRaises(Exception):
@@ -3972,6 +3974,477 @@ class CredentialReadHook(ForemanTestCase):
     def test_the_hooks_credential_markers_follow_the_guards_lists(self):
         from sampo import hooks
         self.assertEqual((set(hooks._CRED_DIRS), set(hooks._CRED_FILES)), (set(g._CRED_DIRS), set(g._CRED_FILES)))
+
+
+class CredentialTools(GuardCase):
+    """T-5987: Grep and Glob (and every other tool that reads or lists files by a path or a pattern) over the home's
+    credential folders and files are the guard's, as Read is: the call's path, its glob or pattern, and the folders the
+    two reach together. Every input is built here from the guard's own list (g._CRED_DIRS, g._CRED_FILES): a path
+    written out in this file would be a credential read in the commands that edit it."""
+    PROC = ("/proc/1/environ", "/proc/1/mem", "/proc/1/maps", "/proc/1/fd", "/proc/1/fd/3", "/proc/self/environ",
+            "/proc/1/task/1/environ", "/proc", "/proc/1", "/proc/self", "/proc/1/task")
+
+    def targets(self):
+        """(absolute path, is a folder, home-relative path, name) of each credential folder and file."""
+        return [(os.path.join(self.home, rel), rel in g._CRED_DIRS, rel, os.path.basename(rel))
+                for rel in g._CRED_DIRS + g._CRED_FILES]
+
+    def grep(self, path=None, glob=None, allow=(), cwd=None, **more):
+        ti = dict({"pattern": "TODO"}, **more)
+        if path is not None:
+            ti["path"] = path
+        if glob is not None:
+            ti["glob"] = glob
+        return g.check("Grep", ti, self.ctx(allow=allow, cwd=cwd))
+
+    def glob(self, pattern, path=None, allow=(), cwd=None):
+        ti = {"pattern": pattern}
+        if path is not None:
+            ti["path"] = path
+        return g.check("Glob", ti, self.ctx(allow=allow, cwd=cwd))
+
+    def blocked_rows(self):
+        """(label, tool, input) of every call that reaches a credential."""
+        h, rows = self.home, []
+        for t, is_dir, rel, name in self.targets():
+            rows += [(f"Grep path={rel}", "Grep", {"path": t}),
+                     (f"Grep ~/{rel}", "Grep", {"path": "~/" + rel}),
+                     (f"Grep upper-case {rel}", "Grep", {"path": t.upper().replace(h.upper(), h)}),
+                     (f"Grep home", "Grep", {"path": h}),
+                     (f"Grep root", "Grep", {"path": "/"}),
+                     (f"Grep root, name {name}", "Grep", {"path": "/", "glob": name}),
+                     (f"Grep home, name {name}", "Grep", {"path": h, "glob": name}),
+                     (f"Grep home, **/{rel}", "Grep", {"path": h, "glob": "**/" + rel}),
+                     (f"Grep home, {rel} anchored", "Grep", {"path": h, "glob": "/" + rel}),
+                     (f"Grep root, {rel} from the root", "Grep", {"path": "/", "glob": h.lstrip("/") + "/" + rel}),
+                     (f"Grep parent of {rel}", "Grep", {"path": os.path.dirname(t), "glob": name}),
+                     (f"Grep home, braces round {rel}", "Grep", {"path": h, "glob": "{" + rel + ",nothing}"}),
+                     (f"Grep home, listed with {rel}", "Grep", {"path": h, "glob": "*.nothing " + name}),
+                     (f"Grep home, only exclusions", "Grep", {"path": h, "glob": "!node_modules"}),
+                     (f"Grep home, escaped {rel}", "Grep", {"path": h, "glob": name.replace(".", "\\.")}),
+                     (f"Grep from the project, {rel}", "Grep", {"path": self.repo, "glob": "../home/" + rel}),
+                     (f"Glob {rel}", "Glob", {"pattern": t}),
+                     (f"Glob ~/{rel}", "Glob", {"pattern": "~/" + rel}),
+                     (f"Glob home, {rel}", "Glob", {"pattern": rel, "path": h}),
+                     (f"Glob home, **/{rel}", "Glob", {"pattern": "**/" + rel, "path": h}),
+                     (f"Glob root, **/{name}", "Glob", {"pattern": "**/" + name, "path": "/"}),
+                     (f"Glob root, {rel} from the root", "Glob", {"pattern": h.lstrip("/") + "/" + rel, "path": "/"}),
+                     (f"Glob from the project, {rel}", "Glob", {"pattern": "../home/" + rel}),
+                     (f"Glob braces round {rel}", "Glob", {"pattern": "{" + t + ",/nothing}"}),
+                     (f"Glob home, every file", "Glob", {"pattern": "**/*", "path": h}),
+                     (f"Glob root, every file", "Glob", {"pattern": "**", "path": "/"}),
+                     (f"Glob wildcarded home, {rel}", "Glob",
+                      {"pattern": "/" + "/".join(s[:1] + "*" for s in h.strip("/").split("/")) + "/" + rel}),
+                     (f"Glob ?-wildcarded home, {rel}", "Glob",
+                      {"pattern": "/" + "/".join("?" * len(s) for s in h.strip("/").split("/")) + "/" + rel}),
+                     (f"Grep [class]-wildcarded home, {rel}", "Grep",
+                      {"path": "/", "glob": "/" + "/".join("[" + s[0] + "]" + s[1:] for s in h.strip("/").split("/")) + "/" + rel}),
+                     (f"LS {rel}", "LS", {"path": t}),
+                     (f"LSP {rel}", "LSP", {"operation": "documentSymbol", "filePath": t, "line": 1, "character": 1}),
+                     (f"NotebookRead {rel}", "NotebookRead", {"notebook_path": t}),
+                     (f"ReadMcpResourceTool {rel}", "ReadMcpResourceTool", {"server": "fs", "uri": "file://" + t})]
+            if is_dir:
+                leaf = os.path.join(t, "any-file")
+                rows += [(f"Grep inside {rel}", "Grep", {"path": leaf}),
+                         (f"Grep {rel}, a glob that names none", "Grep", {"path": t, "glob": "*.nothing"}),
+                         (f"Grep home, any name under {rel}", "Grep", {"path": h, "glob": "*.nothing"}),
+                         (f"Glob {rel}/*", "Glob", {"pattern": t + "/*"}),
+                         (f"Glob in {rel}", "Glob", {"pattern": "*", "path": t}),
+                         (f"Glob home, {rel}/**", "Glob", {"pattern": rel + "/**", "path": h}),
+                         (f"Glob inside {rel}", "Glob", {"pattern": leaf}),
+                         (f"LS in {rel}", "LS", {"path": leaf}),
+                         (f"mcp read_file in {rel}", "mcp__fs__read_file", {"path": leaf}),
+                         (f"mcp read_multiple_files in {rel}", "mcp__fs__read_multiple_files", {"paths": ["/nothing", leaf]}),
+                         (f"mcp list_directory {rel}", "mcp__fs__list_directory", {"path": t}),
+                         (f"mcp search_files from home, {rel}", "mcp__fs__search_files", {"path": h, "pattern": "x"})]
+            else:
+                rows += [(f"mcp get_file_info {rel}", "mcp__fs__get_file_info", {"path": t}),
+                         (f"mcp read_text_file {rel}", "mcp__fs__read_text_file", {"path": t})]
+        rows += [(f"{tool} {p}", tool, {"path": p, "glob": "*"} if tool == "Grep" else {"pattern": "*", "path": p})
+                 for p in self.PROC if p not in ("/proc/1/environ",) for tool in ("Grep", "Glob")]
+        rows += [("Grep /proc/1/environ", "Grep", {"path": "/proc/1/environ"}),
+                 ("Glob /proc/*/environ", "Glob", {"pattern": "/proc/*/environ"}),
+                 ("Glob /proc, */environ", "Glob", {"pattern": "*/environ", "path": "/proc"}),
+                 ("Grep /proc, environ", "Grep", {"path": "/proc", "glob": "environ"}),
+                 ("Grep root, **/fd/*", "Grep", {"path": "/", "glob": "proc/**/fd/*"})]
+        return rows
+
+    def test_grep_glob_and_the_other_reading_tools_over_a_credential_are_refused(self):
+        for label, tool, ti in self.blocked_rows():
+            with self.subTest(call=label):
+                ti = dict({"pattern": "TODO"}, **ti) if tool == "Grep" else ti
+                self.assertBlocked(g.check(tool, ti, self.ctx()), "credentials", label)
+
+    def test_a_search_that_cannot_reach_a_credential_is_not_refused(self):
+        h, repo = self.home, self.repo
+        rows = [("Grep", {"path": repo}), ("Grep", {"path": repo, "glob": "*.py"}), ("Grep", {}),
+                ("Grep", {"path": os.path.join(repo, "README.md")}), ("Grep", {"path": "src", "glob": "**/*.{ts,tsx}"}),
+                ("Grep", {"path": os.path.join(h, "proj"), "glob": "*.md"}),
+                ("Grep", {"path": os.path.join(h, ".claude", "projects")}),
+                ("Grep", {"path": os.path.join(h, ".claude"), "glob": "*.md"}),  # the one file there is .credentials.json
+                ("Grep", {"path": os.path.join(h, ".claude"), "glob": "projects/**"}),
+                ("Grep", {"path": os.path.join(h, ".config"), "glob": "sampo-other/**"}),
+                ("Grep", {"path": os.path.join(h, ".config", "sampo-other")}),
+                ("Grep", {"path": h, "glob": "proj/**/*.py"}), ("Grep", {"path": h, "glob": "/proj/*.md"}),
+                ("Glob", {"pattern": "**/*.py", "path": repo}), ("Glob", {"pattern": "**/*"}),
+                ("Glob", {"pattern": "src/*.md"}), ("Glob", {"pattern": os.path.join(repo, "**", "*.py")}),
+                ("Glob", {"pattern": "projects/**/*.jsonl", "path": os.path.join(h, ".claude")}),
+                ("Glob", {"pattern": "proj/**", "path": h}), ("Glob", {"pattern": "*.md", "path": h + "/proj"}),
+                ("LS", {"path": repo}), ("LSP", {"operation": "hover", "filePath": os.path.join(repo, "a.py")}),
+                ("NotebookRead", {"notebook_path": os.path.join(repo, "n.ipynb")}),
+                ("ReadMcpResourceTool", {"server": "docs", "uri": "https://example.com/x"}),
+                ("mcp__fs__read_file", {"path": os.path.join(repo, "a.txt")}),
+                ("mcp__fs__list_directory", {"path": h}), ("mcp__fs__search_files", {"path": repo, "pattern": "x"}),
+                ("mcp__github__get_file_contents", {"owner": "o", "repo": "r", "path": "src/main.rs"}),
+                # /proc: another process's own folder holds what a search of it reads; the rest of it does not
+                ("Grep", {"path": "/proc/cpuinfo"}), ("Grep", {"path": "/proc/self/status"}),
+                ("Glob", {"pattern": "/proc/*/status"}), ("Glob", {"pattern": "*/cmdline", "path": "/proc"}),
+                ("Grep", {"path": "/proc/self/cmdline"}), ("Grep", {"path": "/proc/self/maps"})]
+        for tool, ti in rows:
+            with self.subTest(call=f"{tool} {ti}"):
+                ti = dict({"pattern": "TODO"}, **ti) if tool == "Grep" else ti
+                self.assertIsNone(g.check(tool, ti, self.ctx()), f"{tool} {ti}")
+
+    def test_the_public_files_t_1224_allows_are_not_refused(self):
+        h = self.home
+        public = [os.path.join(h, ".ssh", n) for n in ("id_ed25519.pub", "known_hosts", "known_hosts.old", "authorized_keys",
+                                                      "config")] + [os.path.join(h, ".aws", "config")]
+        for p in public:
+            for tool, ti in (("Grep", {"pattern": "x", "path": p}), ("Glob", {"pattern": p}), ("LS", {"path": p}),
+                             ("LSP", {"operation": "hover", "filePath": p}),
+                             ("Glob", {"pattern": "~/" + os.path.relpath(p, h)}),
+                             ("Glob", {"pattern": os.path.relpath(p, h), "path": h})):
+                with self.subTest(call=f"{tool} {ti}"):
+                    self.assertIsNone(g.check(tool, ti, self.ctx()), f"{tool} {ti}")
+        for pat in ("*.pub", "**/*.pub", ".ssh/known_hosts", ".ssh/*.pub", ".aws/config", ".ssh/authorized_keys"):
+            with self.subTest(pattern=pat):  # a glob whose every match is a public file, from home
+                self.assertIsNone(g.check("Glob", {"pattern": pat, "path": h}, self.ctx()), pat)
+                self.assertIsNone(g.check("Grep", {"pattern": "x", "path": h, "glob": pat}, self.ctx()), pat)
+        for pat in ("*", "*.pub*", "id_*", "*.pubkey", "known_hosts*", "**/*.pub/**"):
+            with self.subTest(pattern=pat):  # one that also matches a secret is not
+                self.assertBlocked(g.check("Glob", {"pattern": pat, "path": h}, self.ctx()), "credentials", pat)
+
+    def test_a_grant_lets_a_search_through(self):
+        h = self.home
+        self.assertBlocked(self.grep(h), "credentials")
+        self.assertIsNone(self.grep(h, allow={"credentials"}))
+        self.assertIsNone(self.glob("**/*", path="/", allow={"credentials"}))
+
+    def test_a_pathological_glob_is_answered_in_bounded_time(self):
+        import time
+        for glob in ("/".join(["*"] * 150), "**/" * 150 + "x", "{a,b}/" * 8 + "*", "/".join(["**", "?*?*?*?*?"] * 40),
+                     ("*/" * 60 + "*.py ") * 6):
+            with self.subTest(glob=glob[:40]):
+                t0 = time.monotonic()
+                for tool, ti in (("Glob", {"pattern": glob, "path": "/"}), ("Grep", {"pattern": "x", "path": "/", "glob": glob})):
+                    got = g.check(tool, ti, self.ctx())
+                    self.assertTrue(got is None or got.category in ("credentials", "system"), got)
+                self.assertLess(time.monotonic() - t0, 5.0, glob)
+
+    def test_a_call_the_guard_cannot_read_is_refused(self):
+        for tool, ti in (("Grep", {"pattern": "x", "path": 7}), ("Grep", {"pattern": "x", "glob": ["a"]}),
+                         ("Glob", {"pattern": None}), ("Glob", {"pattern": "*", "path": ["/"]}),
+                         ("Grep", {"pattern": "x", "path": "/", "glob": "{a,b}" * 20}),  # 2^20 alternatives
+                         ("Grep", {"pattern": "x", "path": self.repo, "glob": "x" * 5000}),
+                         ("Glob", {"pattern": "a\0b"}), ("Grep", "not an object"), ("LSP", {"filePath": 3})):
+            with self.subTest(call=f"{tool} {str(ti)[:40]}"):
+                self.assertBlocked(g.check(tool, ti, self.ctx()), "system")
+
+    def test_a_link_to_a_folder_above_a_credential_is_read_where_it_goes(self):
+        link = os.path.join(os.path.dirname(self.home), "link-to-home")
+        if not os.path.lexists(link):
+            os.symlink(self.home, link)
+        self.assertBlocked(self.grep(link), "credentials")
+        self.assertBlocked(self.glob(".ssh/*", path=link), "credentials")
+        self.assertBlocked(self.grep(os.path.join(link, ".ssh")), "credentials")
+        self.assertIsNone(self.grep(os.path.join(link, "proj")))
+
+    @staticmethod
+    def enc(s):
+        """Every character percent-encoded."""
+        return "".join("%%%02X" % b for b in s.encode())
+
+    def uri_rows(self):
+        """(label, tool, input) of calls that name a credential in a URI: scheme in any case, percent-encoded, twice."""
+        out = []
+        for t, is_dir, rel, name in self.targets():
+            leaf = os.path.join(t, "any-file") if is_dir else t
+            forms = {"FILE:// upper scheme": "FILE://" + leaf, "File: mixed scheme": "File:" + leaf,
+                     "encoded path": "file:///" + self.enc(leaf.lstrip("/")),
+                     "encoded once, plain": self.enc(leaf), "encoded twice": "file:///" + self.enc(self.enc(leaf.lstrip("/"))),
+                     "host and encoded dot": "file://localhost" + leaf.replace("/.", "/%2E"),
+                     "plain, encoded name": leaf.replace("/.", "/%2e")}
+            for how, uri in forms.items():
+                out += [(f"ReadMcpResourceTool {how} {rel}", "ReadMcpResourceTool", {"server": "fs", "uri": uri}),
+                        (f"mcp read_file {how} {rel}", "mcp__fs__read_file", {"path": uri}),
+                        (f"mcp read_file uri {how} {rel}", "mcp__fs__read_file", {"uri": uri})]
+        return out
+
+    def test_a_uri_is_read_in_any_scheme_case_and_percent_decoded(self):
+        """T-5987 review: file: matched in lower case only and the path was never decoded for a plain string."""
+        for label, tool, ti in self.uri_rows():
+            with self.subTest(call=label):
+                self.assertBlocked(g.check(tool, ti, self.ctx()), "credentials", label)
+
+    def server_rows(self):
+        """(label, tool, input): an MCP tool's relative path is the server's to resolve (its cwd: the home, or /)."""
+        out = []
+        for t, is_dir, rel, name in self.targets():
+            out += [(f"mcp read_file relative {rel}", "mcp__fs__read_file", {"path": rel}),
+                    (f"mcp read_file ./{rel}", "mcp__fs__read_file", {"path": "./" + rel}),
+                    (f"mcp read_file from the root {rel}", "mcp__fs__read_file", {"path": self.home.lstrip("/") + "/" + rel}),
+                    (f"mcp read_file encoded relative {rel}", "mcp__fs__read_file", {"path": self.enc(rel)}),
+                    (f"mcp list_directory relative {rel}", "mcp__fs__list_directory", {"path": rel})]
+            if is_dir:
+                out += [(f"mcp search_files relative {rel}", "mcp__fs__search_files", {"path": rel, "pattern": "x"})]
+        out += [("mcp read_file ../ from home", "mcp__fs__read_file", {"path": "../" + os.path.basename(self.home) + "/" + g._CRED_FILES[0]})]
+        return out
+
+    def test_an_mcp_relative_path_is_also_read_from_the_home_and_the_root(self):
+        for label, tool, ti in self.server_rows():
+            with self.subTest(call=label):
+                self.assertBlocked(g.check(tool, ti, self.ctx()), "credentials", label)
+        for tool, ti in (("mcp__fs__read_file", {"path": "src/main.rs"}), ("mcp__fs__read_file", {"path": "README.md"}),
+                         ("mcp__fs__list_directory", {"path": "src"}),
+                         ("mcp__github__get_file_contents", {"owner": "o", "repo": "r", "path": "src/main.rs"}),
+                         ("mcp__fs__read_file", {"path": os.path.join(self.repo, "a.txt")})):
+            with self.subTest(call=f"{tool} {ti}"):
+                self.assertIsNone(g.check(tool, ti, self.ctx()), f"{tool} {ti}")
+
+    def make_links(self):
+        """Folders of the project holding links to the home: ({root: what it holds}) for the symlink rows."""
+        lroot = os.path.join(os.path.dirname(self.home), "linkroot")  # not the repo: the class shares it between tests
+        a, b, c = (os.path.join(lroot, n) for n in ("linked", "deep-linked", "kind-linked"))
+        os.makedirs(os.path.join(b, "deep"), exist_ok=True)
+        os.makedirs(c, exist_ok=True)
+        os.makedirs(os.path.join(a, "own"), exist_ok=True)
+        for link, to in ((os.path.join(a, "hl"), self.home), (os.path.join(b, "deep", "hl"), self.home),
+                         (os.path.join(c, "ok"), os.path.join(self.home, "proj"))):
+            if not os.path.lexists(link):
+                os.makedirs(to, exist_ok=True)
+                os.symlink(to, link)
+        return a, b, c
+
+    def link_rows(self):
+        """(label, tool, input) of wildcard globs whose later segments reach a credential through a link they match."""
+        a, b, _c = self.make_links()
+        out = []
+        for t, is_dir, rel, name in self.targets():
+            out += [(f"Glob */{rel}", "Glob", {"pattern": "*/" + rel, "path": a}),
+                    (f"Glob **/{rel}", "Glob", {"pattern": "**/" + rel, "path": a}),
+                    (f"Glob */*/{rel} deeper", "Glob", {"pattern": "*/*/" + rel, "path": b}),
+                    (f"Grep */{rel}", "Grep", {"pattern": "x", "path": a, "glob": "*/" + rel}),
+                    (f"mcp search_files */{rel}", "mcp__fs__search_files", {"path": a, "pattern": "*/" + rel})]
+        out += [("Glob */*/*", "Glob", {"pattern": "*/*/*", "path": b}), ("Glob ??/*", "Glob", {"pattern": "??/*", "path": a}),
+                ("Glob hl/*", "Glob", {"pattern": "hl/*", "path": a}),
+                ("Glob **/*.py over a link to home", "Glob", {"pattern": "**/*.py", "path": a})]  # a .py in a credential folder is read
+        return out
+
+    def test_a_link_after_a_wildcard_segment_is_followed_to_where_it_goes(self):
+        for label, tool, ti in self.link_rows():
+            with self.subTest(call=label):
+                self.assertBlocked(g.check(tool, ti, self.ctx()), "credentials", label)
+        a, b, c = self.make_links()
+        for tool, ti in (("Glob", {"pattern": "*/*.md", "path": c}), ("Glob", {"pattern": "**/*.py", "path": c}),
+                         ("Grep", {"pattern": "x", "path": c, "glob": "*/*.md"}),
+                         ("Grep", {"pattern": "x", "path": a, "glob": "*/*.md"}),  # the link's home holds no credential *.md
+                         ("Glob", {"pattern": "own/*.py", "path": a}),  # a literal front: no link in it
+                         ("Glob", {"pattern": "*/" + g._CRED_FILES[0], "path": c}),  # the link there goes to proj
+                         ("Glob", {"pattern": "*/proj/*.md", "path": a}),  # through the link to the home's proj folder
+                         ("Glob", {"pattern": "*.py", "path": os.path.join(a, "own")}),
+                         ("Glob", {"pattern": "hl/proj/*.md", "path": a})):  # a literal link is followed by name, to proj
+            with self.subTest(call=f"{tool} {ti}"):
+                self.assertIsNone(g.check(tool, ti, self.ctx()), f"{tool} {ti}")
+        deeper = os.path.join(os.path.dirname(self.home), "linkroot", "only-deep")  # the link is two folders down: a one-segment glob never gets there
+        os.makedirs(os.path.join(deeper, "d"), exist_ok=True)
+        if not os.path.lexists(os.path.join(deeper, "d", "hl")):
+            os.symlink(self.home, os.path.join(deeper, "d", "hl"))
+        self.assertIsNone(g.check("Glob", {"pattern": "*/" + g._CRED_FILES[0], "path": deeper}, self.ctx()))
+
+    def test_the_hooks_prefilter_passes_a_uri_a_relative_path_and_a_link_the_guard_refuses(self):
+        from sampo import hooks
+        saved = os.environ.get("HOME")
+        os.environ["HOME"] = self.home
+        try:
+            rows = self.uri_rows() + self.server_rows() + self.link_rows()
+            miss = [label for label, tool, ti in rows
+                    if not hooks._search_like({"tool_name": tool, "tool_input": ti, "cwd": self.repo})]
+            self.assertEqual(miss, [], "the prefilter lets these through")
+            for tool, ti, want in (("ReadMcpResourceTool", {"uri": "https://example.com/a"}, True),  # any other scheme
+                                   ("ReadMcpResourceTool", {"uri": "vscode-remote://host/a"}, True),
+                                   ("ReadMcpResourceTool", {"uri": "FILE://" + os.path.join(self.repo, "a.txt")}, False),
+                                   ("ReadMcpResourceTool", {"uri": "file:" + os.path.join(self.repo, "a%20b.txt")}, True),
+                                   ("mcp__fs__read_file", {"path": os.path.join(self.repo, "100%.txt")}, True),
+                                   ("mcp__fs__read_file", {"path": "src/main.rs"}, False),
+                                   ("mcp__fs__read_file", {"path": os.path.join(self.repo, "a.txt")}, False),
+                                   ("Glob", {"pattern": "**/*.py", "path": os.path.join(self.repo, "own-only")}, False)):
+                with self.subTest(call=f"{tool} {ti}"):
+                    self.assertEqual(hooks._search_like({"tool_name": tool, "tool_input": ti, "cwd": self.repo}), want)
+        finally:
+            if saved is None:
+                os.environ.pop("HOME", None)
+            else:
+                os.environ["HOME"] = saved
+
+    def test_every_tool_that_reads_files_by_a_path_or_a_pattern_is_guarded_or_allowlisted(self):
+        """T-5987: the class, not the two tools. A Claude Code tool that takes a path or a pattern is a row of
+        fmguard.READ_TOOLS (how the guard reads its call) or fmguard.UNGUARDED (the reason it needs no reading); a
+        plugin agent's tools: line naming one that is neither fails here, so a new tool is decided, not forgotten."""
+        no_path = {"WebSearch", "Agent", "Task", "TodoWrite", "AskUserQuestion", "Skill", "ExitPlanMode", "EnterPlanMode",
+                   "SendMessage", "Monitor", "Workflow"}  # takes a name, a query, a prompt or a command, never a file
+        known = {"Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "NotebookRead", "Grep", "Glob", "LS", "LSP", "Bash",
+                 "WebFetch", "ListMcpResourcesTool", "ReadMcpResourceTool", "BashOutput", "KillShell"}
+        # T-5987 review: Claude Code's whole tool set, not only the tools the plugin's agents name; a tool it adds later is
+        # added here with a decision (a READ_TOOLS row, an UNGUARDED reason, or no path)
+        claude_code = known | no_path | {"TaskOutput", "TaskStop", "EnterWorktree", "ExitWorktree", "PowerShell", "SlashCommand",
+                                         "TaskCreate", "TaskGet", "TaskList", "TaskUpdate", "ToolSearch", "CronCreate",
+                                         "CronDelete", "CronList", "ScheduleWakeup"}
+        no_path |= {"TaskCreate", "TaskGet", "TaskList", "TaskUpdate", "ToolSearch", "CronCreate", "CronDelete", "CronList",
+                    "ScheduleWakeup"}
+        self.assertFalse(set(g.READ_TOOLS) & set(g.UNGUARDED), "a tool is guarded or allowlisted, not both")
+        self.assertTrue(known <= set(g.READ_TOOLS) | set(g.UNGUARDED), sorted(known - set(g.READ_TOOLS) - set(g.UNGUARDED)))
+        self.assertEqual(sorted(claude_code - set(g.READ_TOOLS) - set(g.UNGUARDED) - no_path), [], "a Claude Code tool nobody decided on")
+        for tool in ("TaskOutput", "TaskStop", "EnterWorktree", "ExitWorktree", "PowerShell", "SlashCommand"):
+            self.assertIn(tool, set(g.READ_TOOLS) | set(g.UNGUARDED), tool)
+        for tool, why in g.UNGUARDED.items():
+            self.assertGreater(len(why), 30, f"{tool}: the allowlist gives a reason")
+        agents = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(g.__file__))), "agents")
+        used = set()
+        for name in os.listdir(agents) if os.path.isdir(agents) else ():
+            with open(os.path.join(agents, name), encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("tools:"):
+                        used |= {t.strip() for t in line.split(":", 1)[1].split(",") if t.strip()}
+        self.assertTrue(used, "the plugin's agents name their tools")
+        self.assertEqual(sorted(used - known - no_path), [], "an agent tool nobody decided on")
+        # each guarded tool's own call is refused on a credential, by the key the table names
+        cred = os.path.join(self.home, g._CRED_DIRS[0], "any-file")
+        for tool, how in g.READ_TOOLS.items():
+            with self.subTest(tool=tool):
+                ti = {"Read": {"file_path": cred}, "NotebookRead": {"notebook_path": cred},
+                      "LSP": {"operation": "hover", "filePath": cred}, "Grep": {"pattern": "x", "path": cred},
+                      "Glob": {"pattern": cred}, "LS": {"path": cred}, "ReadMcpResourceTool": {"uri": "file://" + cred},
+                      "Write": {"file_path": cred, "content": "x"}, "Edit": {"file_path": cred, "old_string": "a", "new_string": "b"},
+                      "MultiEdit": {"file_path": cred, "edits": []}, "NotebookEdit": {"notebook_path": cred, "new_source": "x"},
+                      "Bash": {"command": "cat " + cred}}[tool]
+                self.assertBlocked(g.check(tool, ti, self.ctx()), "credentials", f"{tool}: {how}")
+
+    def test_a_filesystem_server_tool_is_read_by_name_and_arguments(self):
+        for name in ("mcp__filesystem__read_file", "mcp__fs__list_directory", "mcp__files__search", "mcp__x__directory_tree",
+                     "mcp__desktop-commander__read_file", "mcp__git__git_show_file",
+                     # T-5987 review: any letter case, and the verbs a file server also names its reads by
+                     "mcp__fs__READ_FILE", "mcp__fs__Read_File", "mcp__fs__LIST_DIRECTORY", "mcp__x__SEARCH", "mcp__x__stat",
+                     "mcp__x__head", "mcp__x__tail", "mcp__x__ls", "mcp__x__get", "mcp__x__Fetch", "mcp__x__load",
+                     "mcp__x__download", "mcp__x__dump", "mcp__github__get_contents", "mcp__x__DUMP_ALL"):
+            with self.subTest(tool=name):
+                self.assertTrue(g.file_tool(name), name)
+        for name in ("mcp__claude_ai_Gmail__send", "mcp__browser__click", "Skill", "TodoWrite", "mcp__x__navigate"):
+            with self.subTest(tool=name):
+                self.assertFalse(g.file_tool(name), name)
+        cred = os.path.join(self.home, g._CRED_FILES[0])
+        for key in ("path", "paths", "file_path", "filepath", "source", "directory", "uri", "files"):
+            with self.subTest(key=key):
+                val = ["file://" + cred] if key in ("paths", "files") else "file://" + cred if key == "uri" else cred
+                self.assertBlocked(g.check("mcp__fs__read_file", {key: val}, self.ctx()), "credentials")
+        self.assertBlocked(g.check("mcp__fs__read_file", {"options": {"deep": [cred]}}, self.ctx()), "credentials")
+
+    def test_the_hooks_matchers_route_every_guarded_tool_to_the_guard(self):
+        here = os.path.dirname(os.path.dirname(os.path.abspath(g.__file__)))
+        with open(os.path.join(here, "hooks", "hooks.json"), encoding="utf-8") as f:
+            entries = json.load(f)["hooks"]["PreToolUse"]
+        names = [t for t, how in g.READ_TOOLS.items() if how not in ("bash",)] + [
+            "mcp__fs__read_file", "mcp__x__directory_tree", "mcp__fs__READ_FILE", "mcp__x__Stat", "mcp__x__DOWNLOAD"]
+        for tool in names:
+            with self.subTest(tool=tool):
+                hit = [e for e in entries if re.fullmatch(e["matcher"], tool)]
+                self.assertTrue(hit, f"{tool} is routed to a hook")
+                for e in hit:
+                    for h in e["hooks"]:
+                        self.assertTrue(h["command"].endswith("hooks/fast") and h.get("onFailure") == "block", e)
+        self.assertIn(g.MCP_FILE_TOOL, [e["matcher"] for e in entries])
+        from sampo import hooks
+        self.assertEqual(hooks._MCP_FILE, g.MCP_FILE_TOOL)
+        self.assertEqual(set(hooks._SEARCH_TOOLS), {t for t, how in g.READ_TOOLS.items() if how in ("search", "read", "uri")} - {"Read"})
+
+    def test_the_hooks_prefilter_passes_every_call_the_guard_refuses(self):
+        """An ordinary Grep never imports the guard (hooks._search_like); it must be a superset of what the guard refuses."""
+        from sampo import hooks
+        saved = os.environ.get("HOME")
+        os.environ["HOME"] = self.home
+        try:
+            miss = []
+            for label, tool, ti in self.blocked_rows():
+                ti = dict({"pattern": "TODO"}, **ti) if tool == "Grep" else ti
+                if not hooks._search_like({"tool_name": tool, "tool_input": ti, "cwd": self.repo}):
+                    miss.append(label)
+            self.assertEqual(miss, [], "the prefilter lets these through")
+            for tool, ti in (("Grep", {"pattern": "x", "path": self.repo}), ("Grep", {"pattern": "x", "glob": "*.py"}),
+                             ("Glob", {"pattern": "**/*.py"}), ("Glob", {"pattern": "src/*.rs", "path": self.repo}),
+                             ("LSP", {"operation": "hover", "filePath": os.path.join(self.repo, "a.py")})):
+                with self.subTest(call=f"{tool} {ti}"):
+                    self.assertFalse(hooks._search_like({"tool_name": tool, "tool_input": ti, "cwd": self.repo}))
+        finally:
+            if saved is None:
+                os.environ.pop("HOME", None)
+            else:
+                os.environ["HOME"] = saved
+
+
+class CredentialToolsHook(ForemanTestCase):
+    """T-5987: the hook answers a Grep or Glob over a credential with a denial (fail-closed on that check), passes an
+    ordinary one without importing the guard, and `fm guard try --tool Grep` gives the same verdict."""
+    def deny(self, tool, ti, home):
+        p = self.hook("PreToolUse", {"tool_name": tool, "tool_input": ti}, env={"HOME": home})
+        out = json.loads(p.stdout or "{}").get("hookSpecificOutput") or {}
+        return out.get("permissionDecision"), out.get("permissionDecisionReason", ""), p
+
+    def test_the_hook_refuses_a_search_over_a_credential_and_passes_a_project_one(self):
+        home = os.path.join(self.tmp, "userhome")
+        os.makedirs(os.path.join(home, g._CRED_DIRS[1]))
+        cred = os.path.join(home, g._CRED_DIRS[1])
+        for tool, ti in (("Grep", {"pattern": "x", "path": cred}), ("Grep", {"pattern": "x", "path": home}),
+                         ("Grep", {"pattern": "x", "path": "/"}), ("Glob", {"pattern": "*", "path": cred}),
+                         ("Glob", {"pattern": "**/*", "path": home}), ("LS", {"path": cred}),
+                         ("mcp__fs__read_file", {"path": os.path.join(cred, "credentials")})):
+            with self.subTest(call=f"{tool} {ti}"):
+                decision, why, p = self.deny(tool, ti, home)
+                self.assertEqual(decision, "deny", p.stdout + p.stderr)
+                self.assertIn("credentials", why)
+        for tool, ti in (("Grep", {"pattern": "x", "path": self.repo}), ("Grep", {"pattern": "x"}),
+                         ("Glob", {"pattern": "**/*.py"}), ("Glob", {"pattern": "*.md", "path": self.repo})):
+            with self.subTest(call=f"{tool} {ti}"):
+                decision, why, p = self.deny(tool, ti, home)
+                self.assertIsNone(decision, p.stdout + p.stderr)
+
+    def test_guard_try_gives_the_same_verdict(self):
+        home = os.path.join(self.tmp, "userhome")
+        os.makedirs(home, exist_ok=True)
+        cred = os.path.join(home, g._CRED_FILES[0])
+        for tool, path, want in (("Grep", home, "deny"), ("Grep", self.repo, "allow"), ("Glob", home, "deny"),
+                                 ("LS", self.repo, "allow"),
+                                 # T-5987 review: the two tools --tool did not offer, by the key each reads
+                                 ("NotebookRead", cred, "deny"), ("NotebookRead", os.path.join(self.repo, "n.ipynb"), "allow"),
+                                 ("ReadMcpResourceTool", cred, "deny"), ("ReadMcpResourceTool", "file://" + cred, "deny"),
+                                 ("ReadMcpResourceTool", "FILE://" + cred, "deny"),
+                                 ("ReadMcpResourceTool", os.path.join(self.repo, "a.txt"), "allow")):
+            with self.subTest(tool=tool, path=path):
+                got = json.loads(self.fm("guard", "try", "--tool", tool, "--path", path, "--json", env={"HOME": home}).stdout)
+                self.assertEqual(got["decision"], want, got)
+                if want == "deny":
+                    self.assertEqual(got["category"], "credentials")
+
+    def test_a_broken_guard_never_refuses_an_ordinary_search(self):
+        from sampo import hooks
+        home = os.path.expanduser("~")
+        pl = {"tool_name": "Grep", "cwd": self.repo, "tool_input": {"pattern": "x", "path": home}}
+        plain = dict(pl, tool_input={"pattern": "x", "path": self.repo})
+        with mock.patch.dict(sys.modules, {"fmguard": None}):
+            self.assertIsNone(hooks._credential_search(plain))
+            with mock.patch.object(hooks, "_committed", return_value=g):  # the committed guard (this tree's, once landed)
+                self.assertIn("credentials", hooks._credential_search(pl) or "")
+            with mock.patch.object(hooks, "_committed", return_value=None):
+                self.assertIsNone(hooks._credential_search(plain))
+                self.assertTrue(hooks._credential_search(pl))
 
 
 class LaneAutoFocus(ForemanTestCase):

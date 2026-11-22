@@ -59,6 +59,34 @@
         ]
       },
       {
+        "matcher": "Grep|Glob|LS|LSP|NotebookRead|ReadMcpResourceTool",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/fast",
+            "args": [
+              "PreToolUse"
+            ],
+            "timeout": 20,
+            "onFailure": "block"
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__.+?__(?:(?!__).)*(?:[Rr][Ee][Aa][Dd]|[Ll][Ii][Ss][Tt]|[Ss][Ee][Aa][Rr][Cc][Hh]|[Ff][Ii][Nn][Dd]|[Gg][Rr][Ee][Pp]|[Gg][Ll][Oo][Bb]|[Tt][Rr][Ee][Ee]|[Ff][Ii][Ll][Ee]|[Dd][Ii][Rr]|[Ff][Oo][Ll][Dd][Ee][Rr]|[Cc][Aa][Tt]|[Vv][Ii][Ee][Ww]|[Oo][Pp][Ee][Nn]|[Ss][Tt][Aa][Tt]|[Hh][Ee][Aa][Dd]|[Tt][Aa][Ii][Ll]|[Ll][Ss]|[Gg][Ee][Tt]|[Ff][Ee][Tt][Cc][Hh]|[Ll][Oo][Aa][Dd]|[Dd][Oo][Ww][Nn][Ll][Oo][Aa][Dd]|[Dd][Uu][Mm][Pp])(?:(?!__).)*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/fast",
+            "args": [
+              "PreToolUse"
+            ],
+            "timeout": 20,
+            "onFailure": "block"
+          }
+        ]
+      },
+      {
         "matcher": "mcp__.*(computer|keyboard|terminal|tmux|type|key|press|schedul|cron|trigger|wake|remind|later|delay|timer).*",
         "hooks": [
           {

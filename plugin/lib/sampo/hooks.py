@@ -3559,8 +3559,11 @@ _CRED_FILES = [".netrc", ".npmrc", ".pypirc", ".git-credentials", ".claude/.cred
 
 def _credential_like(path):
     """A cheap superset of the guard's credential read: a credential folder or file's name anywhere in the path or
-    where it really is."""
+    where it really is (in any letter case), or anything under /proc (T-5987: another process's environ, mem, maps, fd)."""
     for p in {path, os.path.realpath(path)}:
+        p = p.lower()
+        if p == "/proc" or p.startswith("/proc/"):
+            return True
         if any(f"/{d}/" in p + "/" for d in _CRED_DIRS) or any(p.endswith("/" + f) for f in _CRED_FILES):
             return True
     return False
@@ -3582,6 +3585,146 @@ def _credential_read(pl):
         if guard is None:
             return (f"Ward: {raw} looks like a credential and the guard can't load (sampo doctor shows the "
                     "error), so the read is refused until it works again.")
+        ctx, _p, _act, _found, block = _guard_decision(pl, guard)
+    return guard.message(block, ctx) if block else None
+
+
+# T-5987: the tools that read or list files by a path or a pattern, beside Read: fmguard.READ_TOOLS names them (a test keeps
+# the two in step), and fmguard.MCP_FILE_TOOL is the filesystem MCP tools' name pattern, also in hooks.json's matcher
+_SEARCH_TOOLS = ("Grep", "Glob", "LS", "LSP", "NotebookRead", "ReadMcpResourceTool")
+_MCP_FILE = (r"mcp__.+?__(?:(?!__).)*(?:" + "|".join("".join(f"[{c.upper()}{c}]" for c in w) for w in (
+    "read", "list", "search", "find", "grep", "glob", "tree", "file", "dir", "folder", "cat", "view", "open",
+    "stat", "head", "tail", "ls", "get", "fetch", "load", "download", "dump")) + r")(?:(?!__).)*")  # any letter case
+_MCP_FILE_RX = re.compile(_MCP_FILE)
+_GLOB_ESCAPES = re.compile(r"[$~\\%]|\.\.|^/|\s/|,/|\{[/.~$]")  # a glob that can leave the folder it runs in, or be decoded
+_SEARCH_KEYS = {"LS": "path", "LSP": "filePath", "NotebookRead": "notebook_path", "ReadMcpResourceTool": "uri"}
+_SCHEME_RX = re.compile(r"[A-Za-z][A-Za-z0-9+.-]+:")
+_GLOBBY = re.compile(r"[*?\[{]")
+_LINK_DEPTH, _LINK_SCAN = 6, 4000  # fmguard's: a link the guard would follow is a link seen here
+
+
+def _glob_depth(glob):
+    """How many folders deep below its root a glob can go (fmguard._link_hits' bound)."""
+    return _LINK_DEPTH if "**" in glob else min(glob.count("/") + 1, _LINK_DEPTH)
+
+
+def _dir_links(root, depth):
+    """Whether a link that leads to a folder or a credential-like path lies at most `depth` folders below root (reads
+    at most _LINK_SCAN entries and enters no link): a glob over such a root may be followed out of it by the guard."""
+    queue, seen = [(root, 1)], 0
+    while queue:
+        d, n = queue.pop(0)
+        try:
+            with os.scandir(d) as it:
+                for e in it:
+                    seen += 1
+                    if seen > _LINK_SCAN:
+                        return False
+                    if e.is_symlink():
+                        if e.is_dir() or _credential_like(e.path):
+                            return True
+                    elif n < depth and e.is_dir(follow_symlinks=False):
+                        queue.append((e.path, n + 1))
+        except (OSError, ValueError):
+            continue
+    return False
+
+
+def _search_like(pl):
+    """A cheap superset of the guard's refusals of a search or listing: a call whose folder is, or holds, or is below a
+    credential folder or file of the home or a /proc entry, or whose glob can leave its folder (.., /, ~, $, a \\ escape,
+    a {/x} alternative). Anything it can't read counts. An ordinary Grep of a project never imports the guard."""
+    tool, ti = pl.get("tool_name", ""), pl.get("tool_input")
+    if not isinstance(ti, dict):
+        return True
+    cwd, home = _cwd(pl), os.path.expanduser("~")
+    creds = [h.lower() + "/" + r for h in {home, os.path.realpath(home)} for r in _CRED_DIRS + _CRED_FILES]
+
+    scanned = {}
+
+    def linked(root, glob):  # a wildcard glob over a root that holds a link the guard may follow out of it
+        if not _GLOBBY.search(glob):
+            return False
+        key = (root, _glob_depth(glob))
+        if key not in scanned:
+            scanned[key] = _dir_links(*key)
+        return scanned[key]
+
+    def rooted(raw, base=cwd):  # the folder or file named is, holds or is inside a credential
+        # T-5987 review: a %, or a URI of another scheme, is for the guard to decode and read; file: in any letter case
+        if "$" in raw or "\0" in raw or "%" in raw:
+            return True
+        m = _SCHEME_RX.match(raw)
+        if m:
+            if m.group(0).lower() != "file:":
+                return True
+            raw = re.sub(r"^file:(//[^/]*)?", "", raw, flags=re.I)
+            if "?" in raw or "#" in raw:
+                return True
+        p = os.path.join(base, os.path.expanduser(raw))
+        for q in {p.lower(), os.path.realpath(p).lower()}:
+            low = q.rstrip("/") + "/"
+            if low.startswith("/proc/") or _credential_like(q) or any(x + "/" == low or x.startswith(low) for x in creds):
+                return True
+        return False
+
+    def globbed(base, glob):  # a glob that leaves its folder, or whose literal front goes through a link to a credential
+        if _GLOB_ESCAPES.search(glob):
+            return True
+        front = re.split(r"[*?\[{]", glob, maxsplit=1)[0]
+        front = front if front == glob else front.rpartition("/")[0]
+        return bool(front) and rooted(os.path.join(base, front)) or linked(base, glob)
+
+    if tool == "Grep" or tool == "Glob":
+        root, glob = ti.get("path"), ti.get("glob" if tool == "Grep" else "pattern")
+        if any(v is not None and not isinstance(v, str) for v in (root, glob, ti.get("pattern"))) or (
+                tool == "Glob" and glob is None):
+            return True
+        return rooted(root or cwd) or bool(glob) and globbed(os.path.join(cwd, os.path.expanduser(root or "")), glob)
+    if tool in _SEARCH_KEYS:
+        raw = ti.get(_SEARCH_KEYS[tool])
+        return not isinstance(raw, str) and (raw is not None or tool == "LS") or isinstance(raw, str) and rooted(raw)
+    strings, work = [], [(ti, 0)]  # a filesystem MCP tool: every string in its arguments, as a folder and as a glob
+    while work:
+        v, depth = work.pop()
+        if isinstance(v, str):
+            strings.append(v)
+        elif isinstance(v, (list, tuple, dict)):
+            if depth >= 6:
+                return True
+            work += [(x, depth + 1) for x in (list(v) + list(v.values()) if isinstance(v, dict) else v)]
+        if len(strings) > 2000:
+            return True
+    # the server resolves a relative path from its own folder: the home, or /, as well as the session's
+    strings = [s for s in strings if s and len(s) <= 4096 and "\n" not in s]
+    bases = (cwd, home, "/")
+    if any(rooted(s, b) for s in strings for b in bases if b == cwd or not s.startswith(("/", "~"))):
+        return True
+    if any(globbed(cwd, s) for s in strings if _GLOBBY.search(s) or "\\" in s):  # a plain path is rooted()'s alone
+        return True
+    wild = [s for s in strings if _GLOBBY.search(s)]  # a glob in the arguments: over each folder they name, a link
+    if wild:
+        roots = {os.path.join(b, s) for s in strings for b in bases if os.path.isdir(os.path.join(b, os.path.expanduser(s)))}
+        return len(roots) > 16 or any(linked(r, w) for r in roots | {cwd} for w in wild)
+    return False
+
+
+def _credential_search(pl):
+    """T-5987: the guard's refusal of a Grep, Glob, LS, LSP, NotebookRead, ReadMcpResourceTool or filesystem MCP call that
+    reaches a credential, or None. Only a call that could (_search_like) imports the guard and looks the task up, so a
+    guard broken mid-edit never stops an ordinary search; for such a call a broken guard falls back to the committed
+    one, and with neither the call is refused."""
+    if not _search_like(pl):
+        return None
+    try:
+        import fmguard as guard
+        ctx, _p, _act, _found, block = _guard_decision(pl, guard)
+    except Exception:
+        log_error("PreToolUse", "the working copy of fmguard failed; using the committed guard:\n" + _tb())
+        guard = _committed("fmguard")
+        if guard is None:
+            return (f"Ward: this {pl.get('tool_name')} call could reach a credential and the guard can't load (sampo "
+                    "doctor shows the error), so it is refused until it works again.")
         ctx, _p, _act, _found, block = _guard_decision(pl, guard)
     return guard.message(block, ctx) if block else None
 
@@ -3613,11 +3756,16 @@ def cmd_guard_try(args):
         return replay.cmd_mine(args, cli)
     if args.action != "try":
         raise cli.UsageError("sampo guard: the actions are try, wrong and mine")
-    key = {"Bash": "command", "NotebookEdit": "notebook_path"}.get(args.tool, "file_path")
+    key = {"Bash": "command", "NotebookEdit": "notebook_path", "NotebookRead": "notebook_path",
+           "ReadMcpResourceTool": "uri"}.get(args.tool, "file_path")
     target = args.text if args.tool == "Bash" else args.path
     if not target:
         raise cli.UsageError("sampo guard try needs a command" if args.tool == "Bash" else f"--tool {args.tool} needs --path")
-    pl = {"tool_name": args.tool, "tool_input": {key: target}, "cwd": os.path.abspath(args.cwd or os.getcwd()),
+    tin = {key: target}
+    if args.tool in _SEARCH_TOOLS:  # T-5987: the folder a search runs in (every file in it), or the path a tool reads
+        tin = {"Grep": {"pattern": "x", "path": target}, "Glob": {"pattern": "**/*", "path": target},
+               "LS": {"path": target}, "LSP": {"operation": "hover", "filePath": target}}.get(args.tool, {key: target})
+    pl = {"tool_name": args.tool, "tool_input": tin, "cwd": os.path.abspath(args.cwd or os.getcwd()),
           "session_id": c.session_id()}
     ctx, _p, _act, _found, block = _guard_decision(pl, g, inline=True)
     msg = g.message(block, ctx) if block else None
@@ -3924,6 +4072,17 @@ def _pre_tool_use(raw):
                                                          "permissionDecisionReason": why}}))
             return 0
         if tool not in GUARDED:
+            if tool in _SEARCH_TOOLS or _MCP_FILE_RX.fullmatch(tool):  # T-5987: Read's check, for the tools that search
+                try:
+                    d = _credential_search(pl)
+                except Exception:
+                    log_error("PreToolUse", _tb())
+                    d = ("Ward: the credential-search check failed (sampo doctor shows the error), so this call is "
+                         "refused until that check works again.")
+                if d:
+                    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                                             "permissionDecisionReason": d}}))
+                return 0
             if tool != "Workflow":
                 return 0
             return 0 if _workflow_held(pl) else _workflow_stages(pl)  # T-5680: a Workflow's stages name a type or model

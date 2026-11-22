@@ -409,6 +409,18 @@
 ],
 1
 ],
+"sampo/hooks.py::_search_like": [
+[
+"expanduser"
+],
+3
+],
+"sampo/hooks.py::_search_like.rooted": [
+[
+"expanduser"
+],
+1
+],
 "sampo/hooks.py::_guard_ctx": [
 [
 "expanduser"

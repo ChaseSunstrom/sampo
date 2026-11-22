@@ -344,6 +344,29 @@ class Reads(Base):
             ("a state path that isn't UTF-8", read(file_path=small), False, {"FOREMAN_STATE": "{home}/st\udcff"}),
         ])
 
+    def test_proc_and_letter_case_reads_go_to_the_guard(self):
+        """T-5987: /proc/<pid>/environ|mem|maps|fd/N reports length 0, so a native read let it through; and a credential
+        folder or file in another letter case (~/.SSH, .NETRC) matched neither prefilter. Both defer, both agree."""
+        vault = os.path.join(self.tmp, "vault")
+        paths = [f"/proc/{os.getpid()}/{n}" for n in ("environ", "mem", "maps", "smaps", "fd/0", "fdinfo/0")]
+        paths += ["/proc/self/environ", "/PROC/1/environ", "/proc"]
+        for d in hooks._CRED_DIRS:
+            for variant in (d.upper(), d.swapcase()):
+                os.makedirs(os.path.join(vault, variant), exist_ok=True)
+                with open(os.path.join(vault, variant, "key"), "w") as f:
+                    f.write("small\n")
+                paths.append(os.path.join(vault, variant, "key"))
+        for n in hooks._CRED_FILES:
+            os.makedirs(os.path.dirname(os.path.join(vault, n.upper())), exist_ok=True)
+            with open(os.path.join(vault, n.upper()), "w") as f:
+                f.write("small\n")
+            paths.append(os.path.join(vault, n.upper()))
+        for p in paths:
+            with self.subTest(p=p):
+                self.assertTrue(hooks._credential_like(p), "the Python prefilter lets it by")
+                self.assertFalse(self.pair({"tool_name": "Read", "tool_input": {"file_path": p}}),
+                                 "sampo-fast decided a read the guard has to judge")
+
     def test_state_named_by_env(self):
         read = {"tool_name": "Read", "tool_input": {"file_path": HOOK}}
         for var in ("FOREMAN_STATE", "SAMPO_STATE"):  # SAMPO_X is FOREMAN_X's new name (core.mirror_env)
