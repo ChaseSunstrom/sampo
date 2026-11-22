@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- A land's closes now take a post-merge green suite as proof of `run.py` criteria (plain test modules only, never a record green through an excusal or a narrowed cover, on an unmoved trunk), hold the train lock only around their commit, write the owed-commit mark with the done so a crash leaves it swept, and wait for a running post-merge verify before taking the land lock (T-5368).
 - Art-card fill harness: `sampo.artfill.fill_slots` fills an art card's slots from a one-line brief, refuses bad JSON or out-of-range slots, retries twice on the refusal text, then falls back to defaults, with a 20-brief fixture (T-4994).
 - The live page's first frame arrives at once from the last built or kept frame, marked stale, with one shared builder per view (T-5549).
 - `CHANGELOG: \`sampo task show\` and \`sampo task ls\` take several task ids at once, with a missing id named and the rest still printed (T-5599).

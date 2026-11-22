@@ -1825,7 +1825,9 @@ def _task_finish(p, args):
                 print(f"gates: no reusable full pass: {why[0]}")
             guard_stored(p, b, cmd)  # T-0901
             t0 = time.monotonic()
-            runs[cmd] = c.run_command(p.root, cmd, c.load_scaled(args.timeout))
+            # T-5792: a close from the main checkout is landing work every lane waits on: its runs take freed test slots
+            # ahead of builder runs, as the gates do (a land's closes waited up to 73% of their verify wall for a slot)
+            runs[cmd] = c.run_command(p.root, cmd, c.load_scaled(args.timeout), priority=not p.lane)
             args.timings.append((cmd, time.monotonic() - t0))
         return runs[cmd]
     # T-0142: an open step whose evidence is already recorded (fm task evidence --step) just closes; --run is only for
