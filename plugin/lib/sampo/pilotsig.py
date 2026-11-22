@@ -349,8 +349,23 @@ def _name(f):
     return c.defang(c.fit(" ".join(re.sub(r"[\x00-\x1f\x7f-\x9f]", " ", str(f)).split()), NAME_MAX))
 
 
-def _plugin_dir():
-    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # plugin/lib/sampo -> plugin
+def _plugin_dir(own=None):
+    """The plugin the headless claude loads (--plugin-dir): this one (plugin/lib/sampo -> plugin), or, when this pilot runs from
+    a lane's own copy (a bare `sampo` in a lane runs the lane's plugin: py.lane_reexec), the main checkout's same folder.
+    T-5868: Claude Code refuses an Edit or Write of any file under a --plugin-dir root as "a sensitive file" (the plugin's code
+    runs as hooks and commands) and with -p nobody approves it, so a lane's plugin/ held its own resolver's conflicted files
+    out of reach; the lane's plugin also holds the very modules and hooks the conflict broke. The main checkout's is the
+    installed one. No main checkout, or none with that folder: the pilot's own."""
+    own = own or os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    try:
+        root = c.git_root(own)
+        main = c.main_worktree(root) if root else None
+        if not main:
+            return own
+        cand = os.path.join(main, os.path.relpath(os.path.realpath(own), os.path.realpath(root)))
+        return cand if os.path.isfile(os.path.join(cand, ".claude-plugin", "plugin.json")) else own
+    except Exception:  # any doubt (git gone, a timeout, a path that is not under its root): the pilot's own, as before
+        return own
 
 
 def _conflict_prompt(p, b, lane, main):
@@ -528,13 +543,24 @@ def _clean(lane):
     return not lanes._git(lane, "status", "--porcelain", "--untracked-files=no", timeout=30).stdout.strip()
 
 
-def _claude_env():
+def _unmerged(lane):
+    """Whether the lane's index holds unmerged paths (a merge or rebase stopped on a conflict)."""
+    from sampo import lanes
+    return bool(lane and lanes._git(lane, "ls-files", "--unmerged", timeout=30).stdout.strip())
+
+
+def _claude_env(lane=None, agent=""):
     """The headless agent's environment: the pilot's, as its own main session (the pilot's session id is not its), marked
-    (core.HEADLESS_ENV) so the hooks confine that main session to the lane as they do a subagent builder."""
+    (core.HEADLESS_ENV) so the hooks confine that main session to the lane as they do a subagent builder. T-5868: for the
+    resolver, and for any agent while the lane has unmerged paths, its `sampo` runs the main install's plugin
+    (SAMPO_LANE_CHILD ends py.lane_reexec's hand-over to the lane's own), which imports modules and cards that still hold
+    conflict markers and fails. (The resolver's own `git merge` makes the conflict after it starts: the lane may be clean now.)"""
     env = c.scrubbed_env(os.environ)
     for k in ("CLAUDE_CODE_SESSION_ID", "FOREMAN_SESSION_ID", "FOREMAN_PILOT"):
         env.pop(k, None)
     env[c.HEADLESS_ENV] = "1"
+    if agent in c.ns_names("fm-resolver") or _unmerged(lane):
+        env["SAMPO_LANE_CHILD"] = "1"
     return env
 
 
@@ -578,7 +604,7 @@ def _headless(p, tid, lane, agent, prompt, left):
     with tempfile.TemporaryFile() as out:
         try:
             proc = subprocess.Popen(argv, cwd=lane, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
-                                    start_new_session=True, env=_claude_env())
+                                    start_new_session=True, env=_claude_env(lane, agent))
         except OSError as e:
             _note_claude(p, tid, None)
             print(f"pilot resolve: claude could not start: {e}")
