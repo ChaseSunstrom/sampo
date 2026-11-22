@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- The Approach plan gap in a refusal names 'fails if' and 'likely outcome' again, so the short line teaches the form the parser accepts (T-5904).
 - The guard no longer refuses a loop whose echo string holds a $var after a $( … ) pipeline (a for over a glob with du/ls substitutions): a $var after a stray ) in a substitution's tail read is text, not a command word; $v serve and $X $Y still refuse (T-5867).
 - A builder's sampo lane start takes its task's scope leases and SubagentStop drops them, so a builder opens with its one call and takes no lease by hand (T-5594).
 - The lane pilot starts one detached headless resolver for a lane the land parked for a conflict, or a headless builder for one stopped before its merge, at most twice per lane and then reports it; SAMPO_LANE_PILOT=off starts nothing (T-5766).
