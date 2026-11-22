@@ -194,6 +194,14 @@ class FullRefusalRecord(ForemanTestCase):
         line, _ = self.refusal("", rec)
         self.assertLess(len(line), 400, line)
 
+    def test_a_secret_split_by_a_zero_width_character_is_redacted_in_the_exception(self):
+        """T-5046: plain() strips zero-width characters, so a token split by one must be redacted after plain() joins it."""
+        token = "ghp_abcdefghij​klmnopqrstuvwxyz0123"
+        rec = {"ok": False, "failed": [{"class": "test_a.A", "test": "t", "first": f"ValueError: token {token} leaked"}]}
+        line, _ = self.refusal("", rec)
+        self.assertNotIn("abcdefghijklmnopqrstuvwxyz0123", line)
+        self.assertIn("[REDACTED]", line)
+
     def test_a_subtest_failing_three_times_is_one_test_on_the_block_path_and_the_record_path(self):
         blocks = "".join(f"FAIL: test_it (m.C.test_it) (i={i})\n----------\nAssertionError: bad {i}\n\n" for i in (1, 2, 3))
         tail = blocks + "Ran 1 test in 1.0s\n\nFAILED (1 class)\n  failed class: m.C\n"

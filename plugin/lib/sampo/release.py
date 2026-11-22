@@ -828,7 +828,7 @@ def _tests_clause(tests, room=None):
         more = len(tests) - n
         tail = f" (+{more} more)" if more > 0 else ""
         for width in range(EXC_WIDTH, 29, -10):
-            shown = [(f"{k}.{t}" if t else k) + (f": {c.fit(c.plain(c.redact(e)), width)}" if e else "") for k, t, e in tests[:n]]
+            shown = [(f"{k}.{t}" if t else k) + (f": {c.fit(c.redact(c.plain(e)), width)}" if e else "") for k, t, e in tests[:n]]  # plain first: it joins a token a zero-width character split
             text = "first failures: " + "; ".join(shown) + tail
             if room is None or len(text) <= room:
                 return text
