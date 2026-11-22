@@ -15,6 +15,12 @@ from sampo import place
 KEYS = {"where", "target", "reason", "backend", "probability"}
 
 
+def booked_rule(rule, prompt):
+    """What models.decide returns when no model answers: the rule's own answer, booked as backend 'rule', not cleared."""
+    verb, pr = rule(prompt)
+    return {"choice": verb, "probability": pr, "backend": "rule", "cleared": False, "tried": []}
+
+
 class Stub:
     """models.decide's stand-in: answers (choice, probability, cleared); counts the questions and keeps the last."""
 
@@ -27,7 +33,7 @@ class Stub:
         if self.fail:
             raise RuntimeError("backend down")
         if self.choice is None:
-            return None
+            return booked_rule(rule, prompt)
         return {"choice": self.choice, "probability": self.probability, "backend": self.backend,
                 "cleared": self.probability >= bar, "tried": []}
 
@@ -145,7 +151,7 @@ class Place(ForemanTestCase):
         def slow(kind, prompt, choices, rule=None, bar=0.8, timeout=None, **kw):
             seen.append(timeout)
             clock[0] += 5
-            return None
+            return booked_rule(rule, prompt)
         bs = [{"name": n, "profile": {}, "local": True} for n in "abc"]
         with mock.patch.object(models, "decide", slow), mock.patch.object(place.time, "monotonic", lambda: clock[0]):
             place.place_capture(self.p, "Add the parser cache layer", "FEATURE", (), backends=bs)
@@ -160,6 +166,7 @@ class Place(ForemanTestCase):
 
         def rec(kind, prompt, choices, rule=None, bar=0.8, backends=None, **kw):
             asked.extend(b["name"] for b in backends)
+            return booked_rule(rule, prompt)
         with mock.patch.object(models, "registry", return_value=reg), mock.patch.object(models, "decide", rec):
             place.place_capture(self.p, "Add the parser cache layer", "FEATURE", ())
         self.assertEqual(asked, ["loop", "mine"])
@@ -184,3 +191,14 @@ class Place(ForemanTestCase):
         self.assertEqual(self.place("")["where"], "new")
         a = self.place("Add the parser cache layer")
         self.assertEqual(a, self.place("Add the parser cache layer"))
+
+    def test_a_missing_text_is_new_not_a_crash(self):
+        self.assertEqual(self.place(None)["where"], "new")
+
+    def test_a_backend_that_is_down_leaves_the_rule_through_the_real_decide(self):
+        prof = {"name": "local-a", "profile": {"kind": "chat"}, "local": True}
+        with mock.patch.object(models, "complete", side_effect=models.ModelError("local-a: refused")), \
+                mock.patch.object(models, "live", return_value=True):
+            got = place.place_capture(self.p, "Add the parser cache layer", "FEATURE", (), backends=[prof])
+        self.assertEqual((got["where"], got["target"], got["backend"]), ("merge", "T-0001", "rule"))
+        self.assertIn("T-0001", got["reason"])

@@ -85,11 +85,12 @@ def place_capture(p, text, type_=None, scope=(), backends=None, timeout=TIMEOUT)
     number in [0, 1]. The rule's answer is under BAR, so the models are asked (backends: the user's own, or the ones
     given) whenever there is a task to land on; a model's answer counts only when it clears BAR and names a verb that has
     a task. Any failure of a model leaves the rule's verdict."""
+    text = str(text or "")  # a missing capture is empty text: the title helpers below take a str
     cands = candidates(p, text, type_, scope)
     verb, why = _rule(cands)
     out = {"where": verb, "target": cands[verb][0] if verb in cands else None, "reason": why, "backend": "rule",
            "probability": RULE_P[verb]}
-    if not cands or not str(text or "").strip():
+    if not cands or not text.strip():
         return out
     from sampo import models
     choices = {v: WHERE[v] for v in ("new", *cands)}
@@ -108,7 +109,7 @@ def place_capture(p, text, type_=None, scope=(), backends=None, timeout=TIMEOUT)
                 break
     except Exception:  # a model is advice: a refusal, a timeout or a broken backend never costs the capture its placement
         return out
-    if not got or got["backend"] == "rule":
+    if got["backend"] == "rule":  # decide returns the rule's booked answer when no model gave one
         return out
     pr = round(float(got["probability"]), 3)
     if not got["cleared"]:
