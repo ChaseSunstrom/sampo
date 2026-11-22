@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- sampo cost --per-lane prints each landed lane's input, cache read, cache write and output tokens split by lead, builder, reviewer and fixer with a median per role, shows runs that fit no lane, and --save-baseline/--compare-baseline track the change per role (T-5950).
 - Review briefs now name the touched-function bodies and stack-card checklists by file path instead of inlining them, so a fixture lane's brief drops from 10,250 to 6,244 characters (T-5964).
 - A live train now lands past repo-shape classes already red on its base, files one express trunk-red FIX for them, and still refuses a class the merge itself turns red (T-5805).
 - A live land trains the express lanes and the ordinary ready lanes as one train, express first, up to an explicit --batch (the default does not cap it), so express arrivals and restarts on new code no longer starve the ordinary queue; gated mode keeps express lanes alone; supersedes T-5857 (T-5932).
