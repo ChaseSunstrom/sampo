@@ -2706,7 +2706,37 @@ WHICH_HINT = 'Unsure which skill fits: sampo which "<the task>"'  # T-1699
 _NAMES_SKILL = c.lazy(r"/[\w-]+:[\w-]+|\bskills?\b|\bplaybooks?\b|\b(?:fm|sampo) which\b", re.I)  # a request naming its own
 
 
-def _user_grants(p, pl, text, sid, hc, program):
+def _not_the_users(pl, hc, program, memo=None):
+    """T-5938: True when this prompt may not be the user's own typing in the main session: a program sent it (claude -p),
+    a subagent, a claude inside another claude, or a terminal typer ran before it (c.typed_refuse). The one predicate for
+    what a prompt may grant (_user_grants) and for the `headless` flag on the signed prompt event (a quote of the user's
+    words must not come from it). An unidentified process counts as not theirs (fails closed). memo, a dict one hook call
+    shares, keeps the answer: the /proc walk and the directory listing run once per call."""
+    if memo is not None and "answer" in memo:
+        return memo["answer"]
+    try:
+        answer = bool(program or pl.get("agent_id") or not hc or _nested_claude(hc) or c.typed_refuse())
+    except Exception:
+        log_error("UserPromptSubmit", _tb())
+        answer = True
+    if memo is not None:
+        memo["answer"] = answer
+    return answer
+
+
+def _could_be_quoted(*texts):
+    """T-5938 review: whether any of these words (the prompt as typed, and as the ledger keeps it) read as an ask of a
+    guarded verb: the only prompts whose `headless` flag matters (a quote is found through userwords.find of the stored
+    text), so every other prompt skips the process walk. Fails closed: an error reads as an ask."""
+    try:
+        from sampo import userwords
+        return any(userwords.find(t) for t in texts)
+    except Exception:
+        log_error("UserPromptSubmit", _tb())
+        return True
+
+
+def _user_grants(p, pl, text, sid, hc, program, memo=None):
     """T-5897: what the user's own words ask of a guarded verb (sampo.userwords), done here because the guard keeps the
     command the user's: the lines to add to the turn's note. Only a person's prompt in the main session counts: not one a
     program sent (claude -p), a subagent's, a claude run inside another claude, nor one typed after a terminal typer ran
@@ -2715,7 +2745,7 @@ def _user_grants(p, pl, text, sid, hc, program):
         from sampo import userwords
         if program or pl.get("agent_id") or not hc or not userwords.find(text):  # most prompts match nothing: no /proc walk
             return []
-        if _nested_claude(hc) or c.typed_refuse():
+        if _not_the_users(pl, hc, program, memo):
             return []
         return userwords.apply(p, text, session=sid)
     except Exception:
@@ -2779,15 +2809,29 @@ def user_prompt_submit(pl):
         veto_notes = _veto_turn(p, text, bool(_CORRECTION.match(text)), judge=not _headless())
     except Exception:
         log_error("UserPromptSubmit", _tb())
-    logged = False
+    hc = None
+    try:
+        hc = _hook_claude()
+        program, claude = _sent_by_program(hc), _claude_id(hc)
+    except Exception:  # unknown: no approval from this prompt (the permission dialog still grants)
+        log_error("UserPromptSubmit", _tb())
+        program, claude = True, None
+    logged, walked = False, {}  # walked: _not_the_users' answer, once per call
     try:  # T-0957: the user's words, for reflection and the court; redacted, capped, never in a sensitive project
         if not c.read_meta(p).get("sensitive"):
             logged = True
             seal, why = c.prompt_sealer()  # T-4844: the key is read before the ledger lock; signed here and nowhere else
             if why:  # an unusable key leaves the event unmarked: say why, once a minute, for what refuses an unmarked one
                 log_error("UserPromptSubmit", why)
-            c.log_event(p, "prompt", data={"text": c.redact(c.plain_lines(text))[:2000],
-                                           "mode": pl.get("permission_mode")}, session=sid, seal=seal)
+            # T-5938: a prompt _user_grants would refuse is no quote of the user's: flagged, under the MAC. Only a prompt
+            # that reads as an ask needs it, as typed or as the ledger keeps it (redact(plain_lines(text)) can read as an
+            # ask the raw text never matched): the rest skip the process walk; _not_the_users fails closed
+            stored = c.redact(c.plain_lines(text))[:2000]
+            # (the flag is written, True or False, on every prompt: the MAC covers it, and a quote is trusted only with False.
+            # False on a prompt that reads as no ask means "not checked": no quote can be made of it)
+            sent = {"headless": bool(_headless() or p.lane or (
+                _could_be_quoted(text, stored) and _not_the_users(pl, hc, program, walked)))}
+            c.log_event(p, "prompt", data={"text": stored, "mode": pl.get("permission_mode"), **sent}, session=sid, seal=seal)
     except Exception:
         log_error("UserPromptSubmit", _tb())
     if logged and not r.overrides:  # T-3126: a message that points something out is a miss, filed with its class
@@ -2797,13 +2841,6 @@ def user_prompt_submit(pl):
             selfaware.catch(p, text)
         except Exception:
             log_error("UserPromptSubmit", _tb())
-    hc = None
-    try:
-        hc = _hook_claude()
-        program, claude = _sent_by_program(hc), _claude_id(hc)
-    except Exception:  # unknown: no approval from this prompt (the permission dialog still grants)
-        log_error("UserPromptSubmit", _tb())
-        program, claude = True, None
     # T-2625: a steer-shaped message is expanded into a standing rule in the background, never in the hook's time; not
     # a prompt a program sent (fm run, a lane, an exam session), nor one from a worker
     if logged and not (hc and program) and not os.environ.get("FOREMAN_NO_BACKGROUND") \
@@ -2818,7 +2855,7 @@ def user_prompt_submit(pl):
                                  stderr=subprocess.DEVNULL, start_new_session=True)
         except Exception:  # an expansion that can't start never costs the message
             log_error("UserPromptSubmit", _tb())
-    words = _user_grants(p, pl, text, sid, hc, program)
+    words = _user_grants(p, pl, text, sid, hc, program, walked)
     asks = _asks(text)
     try:
         hashes = _pin_hashes(a.get("pin") for a in c.read_meta(p).get("pending_approvals") or [] if isinstance(a, dict))

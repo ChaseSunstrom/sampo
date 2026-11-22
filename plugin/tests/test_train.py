@@ -1110,6 +1110,304 @@ class BehindAffected(PmCase):
         self.assertFalse(self.rec(sha).get("partial"))
 
 
+class StandingShip(AcceptCase):
+    """T-5938: `sampo ship auto on` is a standing publish grant: with no task holding one, the land's ship still runs, on
+    a grant that is never spent; a task's own publish grant wins and is spent as before. Nothing here starts a process:
+    the ship's command is stubbed, so no pid of a stub reaches os.kill."""
+    SHIPPED = "shipped 1 commit to origin main at " + "ab" * 20 + " (the publish grant is spent)."
+
+    def on(self, why="the user: keep pushing to main"):
+        from sampo import core
+        core.update_meta(self.p, standing_ship={"on": True, "by": "test-session", "why": why, "at": core.now()})
+
+    def run_ship(self, keep=False):
+        with mock.patch.object(train, "_sampo", return_value=(0, self.SHIPPED, "")) as ran:
+            got = train._ship(self.p, keep, self.repo)
+        return got, ran
+
+    def spent(self, tid):
+        return "publish" not in (self.brief(tid).meta.get("allow") or [])
+
+    def test_off_there_is_no_grant_and_no_ship(self):
+        self.assertIsNone(train._grant_of(self.p))
+        got, ran = self.run_ship()
+        self.assertIsNone(got)
+        ran.assert_not_called()
+
+    def test_on_a_standing_grant_is_given_when_no_task_holds_one(self):
+        from sampo import core
+        self.on()
+        g = train._grant_of(self.p)
+        self.assertEqual(g.id, core.STANDING_SHIP)
+        self.assertNotIn("publish", g.meta.get("allow") or [], "it is no task's grant: nothing for a spend to clear")
+
+    def test_the_standing_grant_is_never_spent_by_a_ship_of_either_kind(self):
+        from sampo import core, release
+        self.on()
+        for keep in (True, False):
+            got, ran = self.run_ship(keep)
+            self.assertEqual(got[0], core.STANDING_SHIP)
+            self.assertEqual(ran.call_args[0][0], ["ship", "--task", core.STANDING_SHIP])
+            self.assertEqual(train._grant_of(self.p).id, core.STANDING_SHIP, "still given after the ship")
+        train._settle(self.p, core.STANDING_SHIP, 0, self.SHIPPED, {"final": True})
+        train._settle(self.p, core.STANDING_SHIP, 0, self.SHIPPED, {"final": False, "land_pid": os.getpid()})
+        self.assertFalse(train._give_back(self.p, core.STANDING_SHIP))
+        release._spend(self.p, core.STANDING_SHIP, "test")  # the push's own spend: a no-op
+        self.assertTrue(core.read_meta(self.p)["standing_ship"]["on"])
+        self.assertEqual(train._grant_of(self.p).id, core.STANDING_SHIP)
+
+    def test_the_ship_names_the_standing_grant_only_while_it_is_on(self):
+        from sampo import core, release
+        with self.assertRaises(Exception):
+            release._named_grant(self.p, core.STANDING_SHIP, land=True)
+        self.on()
+        self.assertEqual(release._named_grant(self.p, core.STANDING_SHIP, land=True).id, core.STANDING_SHIP)
+        self.fm("ship", "auto", "off")
+        with self.assertRaises(Exception):
+            release._named_grant(self.p, core.STANDING_SHIP, land=True)
+
+    def test_only_the_lands_own_ship_may_name_the_standing_grant(self):
+        """Round 2: any caller naming it (an agent's `sampo ship --task standing-ship`) is refused: the grant is the land's."""
+        from sampo import core, release
+        self.on()
+        with self.assertRaises(Exception) as e:
+            release._named_grant(self.p, core.STANDING_SHIP)
+        self.assertIn("land's own ship", str(e.exception))
+        r = self.fm("ship", "--task", core.STANDING_SHIP, check=False)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("land's own ship", r.stderr + r.stdout)
+
+    def test_a_standing_ship_takes_no_test_or_remote_override(self):
+        from sampo import core
+        self.on()
+        for extra in (["--test", "true"], ["--remote", "/elsewhere"]):
+            with self.subTest(extra=extra):
+                r = self.fm("ship", "--task", core.STANDING_SHIP, *extra, env={core.LAND_SHIP_ENV: "land"}, check=False)
+                self.assertNotEqual(r.returncode, 0)
+                self.assertIn("takes no --test or --remote", r.stderr + r.stdout)
+        r = self.fm("ship", "--task", core.STANDING_SHIP, env={core.LAND_SHIP_ENV: "land"}, check=False)
+        self.assertNotIn("land's own ship", r.stderr + r.stdout, "the land's marker is honoured")
+        self.assertNotIn("takes no --test", r.stderr + r.stdout)
+
+    def test_the_lands_ship_carries_the_marker_for_the_standing_grant_alone(self):
+        """In line and detached: the env the land gives its ship says the land runs it (a task's own grant needs none)."""
+        import sys
+        from sampo import core
+        self.on()
+        got, ran = self.run_ship(keep=False)
+        self.assertEqual(ran.call_args.kwargs["env"].get(core.LAND_SHIP_ENV), "land")
+        probe = [sys.executable, "-c", f"import os; print('marker=' + os.environ.get({core.LAND_SHIP_ENV!r}, 'none'))"]
+        rc, out = train._ship_run(self.repo, core.STANDING_SHIP, "a" * 40, argv=probe)  # a real child: no stubbed pid
+        self.assertEqual(rc, 0)
+        self.assertIn("marker=land", out)
+        rc, out = train._ship_run(self.repo, "T-1", "a" * 40, argv=probe)
+        self.assertIn("marker=none", out)
+        b = self.brief(self.a_lane(1))
+        b.meta["allow"] = ["publish"]
+        core.save_brief(self.p, b)
+        got, ran = self.run_ship(keep=False)
+        self.assertEqual(got[0], b.id)
+        self.assertNotIn(core.LAND_SHIP_ENV, ran.call_args.kwargs.get("env") or {})
+
+    def test_the_marker_is_taken_in_both_spellings_and_never_reaches_a_task_grants_ship_in_line(self):
+        """T-5938 review: FOREMAN_ and its SAMPO_ mirror. release.ship pops both (the short-circuit popped one); the in-line
+        ship hands a task's grant's ship neither."""
+        from sampo import core, release
+        both = {core.LAND_SHIP_ENV: "land", "SAMPO_" + core.LAND_SHIP_ENV.partition("_")[2]: "land"}
+        with mock.patch.dict(os.environ, both):
+            self.assertTrue(release._land_marker())
+            self.assertFalse([k for k in both if k in os.environ], "both spellings are gone from the ship's own env")
+            self.assertFalse(release._land_marker())
+        with mock.patch.dict(os.environ, {"SAMPO_" + core.LAND_SHIP_ENV.partition("_")[2]: "land"}):
+            self.assertTrue(release._land_marker(), "the SAMPO_ spelling alone is the marker too")
+        b = self.brief(self.a_lane(1))
+        b.meta["allow"] = ["publish"]
+        core.save_brief(self.p, b)
+        with mock.patch.dict(os.environ, both):
+            got, ran = self.run_ship(keep=False)
+        self.assertEqual(got[0], b.id)
+        sent = ran.call_args.kwargs.get("env") or {}
+        self.assertFalse([k for k in both if k in sent], "a task grant's ship carries no marker: " + str(sent.keys() & both.keys()))
+
+    def test_auto_is_the_subcommand_only_for_exactly_auto_on_off_or_status(self):
+        """Round 2: a branch named auto still ships."""
+        import types
+        from sampo import cli, release
+        for commits, is_auto in ((["auto", "on"], True), (["auto", "off"], True), (["auto", "status"], True),
+                                 (["auto"], False), (["auto", "x"], False), (["auto", "on", "extra"], False),
+                                 (["x", "auto", "on"], False), ([], False)):
+            with self.subTest(commits=commits), mock.patch.object(cli, "cmd_ship_auto") as auto, \
+                    mock.patch.object(release, "ship") as ship, mock.patch.object(cli, "resolve"):
+                release.cmd_ship(types.SimpleNamespace(commits=commits, why=None))
+                self.assertEqual((auto.called, ship.called), (is_auto, not is_auto))
+
+    def say(self, text, session="s-1"):
+        """The user's prompt as the prompt hook records it: a signed ledger event (the existing record of their words)."""
+        from sampo import core
+        core.log_event(self.p, "prompt", data={"text": text, "mode": "default", "headless": False}, session=session,
+                       seal=core.prompt_sealer()[0])
+
+    def test_a_prompt_with_no_flag_is_a_quote_only_when_it_was_logged_before_the_hook_wrote_one(self):
+        """T-5938 review: the old shape (no `headless`) is accepted for a prompt older than PROMPT_FLAG_FROM alone: a
+        flag-less prompt logged now (an older plugin copy, a hand-built call) is no quote, signed or not."""
+        from sampo import core
+        core.log_event(self.p, "prompt", data={"text": self.QUOTE, "mode": "default"}, session="s-1", seal=core.prompt_sealer()[0])
+        self.assertTrue(self.ship_auto("on", why=self.QUOTE)[0])
+        self.assertIsNone(core.standing_ship(self.p))
+        with mock.patch.object(core, "PROMPT_FLAG_FROM", "2999-01-01T00:00:00Z"):  # as if the event predates the change
+            err, _ = self.ship_auto("on", why=self.QUOTE)
+        self.assertEqual(err, "")
+        self.assertTrue(core.standing_ship(self.p))
+
+    QUOTE = "make sure to keep pushing to main"
+
+    def ship_auto(self, *words, why=None, p=None):
+        """`sampo ship auto WORDS --why WHY` run in this process (the signed prompts are verified under this test's own key
+        file, which a child process never has): (the refusal's text or "", what it printed)."""
+        import argparse
+        import contextlib
+        from sampo import cli
+        buf = io.StringIO()
+        args = argparse.Namespace(commits=["auto", *words], why=why, json=False, project=None)
+        with mock.patch.object(cli, "resolve", return_value=p or self.p), contextlib.redirect_stdout(buf):
+            try:
+                cli.cmd_ship_auto(args)
+                return "", buf.getvalue()
+            except cli.UsageError as e:
+                return str(e), buf.getvalue()
+
+    def test_on_needs_a_verbatim_quote_of_the_users_words_and_keeps_it(self):
+        from sampo import core
+        for why in (None, "keep pushing to main now", "make sure to keep pushing to main"):  # none; not said; not said
+            with self.subTest(why=why):
+                err, _ = self.ship_auto("on", why=why)
+                self.assertIn("--why", err)
+                self.assertIsNone(core.standing_ship(self.p))
+        self.assertIn("prompt", err, "it names where it looked: the prompts on the ledger")
+        self.say("and can you make sure to keep pushing to main?")  # a question is no ask: it is not a quote either
+        self.assertTrue(self.ship_auto("on", why="can you make sure to keep pushing to main")[0])
+        self.assertIsNone(core.standing_ship(self.p))
+        self.say("please make sure to keep pushing to main")
+        for why in ("keep pushing", "the user said hi there friend"):  # under four words; not in their words
+            self.assertTrue(self.ship_auto("on", why=why)[0], why)
+        err, _ = self.ship_auto("on", why="make sure  to keep pushing to main")
+        self.assertEqual(err, "")  # whitespace and case don't matter, the words do
+        self.assertEqual(core.standing_ship(self.p)["why"], "make sure to keep pushing to main")
+        self.assertTrue(core.standing_ship(self.p)["by"])
+
+    def test_the_quote_must_be_about_the_push_not_any_four_words_the_user_said(self):
+        from sampo import core
+        self.say("please make sure to keep pushing to main")
+        self.assertTrue(self.ship_auto("on", why="please make sure")[0])
+        self.assertIsNone(core.standing_ship(self.p))
+
+    def test_an_earlier_phrase_with_push_or_main_in_it_is_no_keep_pushing_ask(self):
+        """Round 3: the quote is found in a prompt that itself asks to keep main pushed, not in any prompt that holds the words."""
+        from sampo import core
+        for said in ("what does the push to main do for this task", "we should not push to main yet, ok", "never keep pushing to main",
+                     "is it fine to keep pushing to main?", "keep pushing to main branches only"):
+            self.say(said)
+            for why in (said.rstrip("?"), "push to main for this task", "keep pushing to main", "to main yet, ok"):
+                self.assertTrue(self.ship_auto("on", why=why)[0], (said, why))
+        self.assertIsNone(core.standing_ship(self.p))
+
+    def test_a_prompt_the_lane_pilot_sent_is_no_quote(self):
+        from sampo import core
+        core.log_event(self.p, "prompt", data={"text": "keep pushing to main", "mode": "default", "headless": True},
+                       session="s-9", seal=core.prompt_sealer()[0])
+        self.assertTrue(self.ship_auto("on", why="keep pushing to main")[0])
+        self.assertIsNone(core.standing_ship(self.p))
+
+    def test_a_quote_from_a_machine_text_or_an_unsigned_line_is_no_quote(self):
+        from sampo import core
+        core.log_event(self.p, "prompt", data={"text": "please always " + self.QUOTE}, session="s-1")  # no seal: not genuine
+        self.assertTrue(self.ship_auto("on", why=self.QUOTE)[0])
+        self.assertIsNone(core.standing_ship(self.p))
+
+    def test_why_is_refused_on_anything_but_auto_on(self):
+        self.say(self.QUOTE)
+        for args in (["ship", "auto", "off"], ["ship", "auto", "status"], ["ship"], ["ship", "HEAD"], ["ship", "--check"]):
+            with self.subTest(args=args):
+                r = self.fm(*args, "--why", self.QUOTE, check=False)
+                self.assertNotEqual(r.returncode, 0)
+                self.assertIn("--why is for", r.stderr + r.stdout)
+
+    def test_on_and_off_are_refused_in_a_lane_and_for_the_headless_pilot(self):
+        from sampo import core
+        self.say(self.QUOTE)
+        self.a_lane(1)
+        lane = os.path.join(self.tmp, "lane1")
+        lane_p = core.find_project(lane, create=False)
+        self.assertTrue(getattr(lane_p, "lane", None), "the lane's own project says it is a lane")
+        err, _ = self.ship_auto("on", why=self.QUOTE, p=lane_p)
+        self.assertIn("main checkout", err)
+        with mock.patch.dict(os.environ, {"FOREMAN_PILOT_HEADLESS": "1"}):
+            err, _ = self.ship_auto("on", why=self.QUOTE)
+        self.assertIn("main checkout", err)
+        self.assertIsNone(core.standing_ship(self.p))
+        self.assertEqual(self.ship_auto("on", why=self.QUOTE)[0], "", "the main session may")
+        self.assertIn("main checkout", self.ship_auto("off", p=lane_p)[0], "round 3: off is the main session's too")
+        with mock.patch.dict(os.environ, {"FOREMAN_PILOT_HEADLESS": "1"}):
+            self.assertIn("main checkout", self.ship_auto("off")[0])
+        self.assertTrue(core.standing_ship(self.p), "still on: a lane's off did nothing")
+        self.assertEqual(self.ship_auto("status", p=lane_p)[0], "", "status stays open to any session")
+        self.assertEqual(self.ship_auto("off")[0], "", "the main session may")
+
+    def test_the_prompt_hook_turns_it_on_from_plain_words(self):
+        """1c: 'keep pushing to main' in the user's own short sentence, like the other plain-word verbs."""
+        for words in ("keep pushing to main", "Keep main pushed.", "please keep shipping to main"):
+            self.assertEqual((self.find_ship_verb(words) or {}).get("on"), True, words)
+        for words in ("don't keep pushing to main", "should we keep pushing to main?", "keep pushing to main branches only",
+                      "keep pushing to main if CI is green", "do not keep main pushed", "set the budget to unlimited",
+                      "```keep pushing to main```", "and can you make sure to keep pushing to main?"):
+            self.assertIsNone(self.find_ship_verb(words), words)
+
+    def find_ship_verb(self, words):
+        from sampo import userwords
+        for v, args in userwords.find(words):
+            if v.name == "standing-ship":
+                return args
+        return None
+
+    def test_the_hook_verb_records_the_users_words_as_the_quote(self):
+        from sampo import core, userwords
+        self.say("keep pushing to main")
+        lines = userwords.apply(self.p, "keep pushing to main", session="s-1")
+        self.assertTrue(any("standing ship" in x for x in lines), lines)
+        rec = core.standing_ship(self.p)
+        self.assertEqual(rec["why"], "keep pushing to main")
+        self.assertIn("prompt hook", rec["by"])
+
+    def test_a_tasks_own_grant_wins_and_is_spent_as_today(self):
+        self.on()
+        tid = self.a_lane(1)
+        b = self.brief(tid)
+        b.meta["allow"] = ["publish"]
+        from sampo import core
+        core.save_brief(self.p, b)
+        self.assertEqual(train._grant_of(self.p).id, tid)
+        got, ran = self.run_ship(keep=False)
+        self.assertEqual(got[0], tid)
+        self.assertEqual(ran.call_args[0][0], ["ship", "--task", tid])
+        self.assertTrue(self.spent(tid), "the task's own grant is spent by its last ship")
+        self.assertEqual(train._grant_of(self.p).id, core.STANDING_SHIP, "the task's grant is gone: the standing one remains")
+
+    def test_cli_on_records_who_and_why_and_off_and_status_follow(self):
+        from sampo import core
+        self.say("please keep pushing to main now")
+        err, text = self.ship_auto("on", why="keep pushing to main")
+        self.assertEqual(err, "")
+        self.assertIn("on", text)
+        rec = core.read_meta(self.p)["standing_ship"]
+        self.assertTrue(rec["on"])
+        self.assertEqual(rec["why"], "keep pushing to main")
+        self.assertTrue(rec["by"] and rec["at"])
+        self.assertIn("keep pushing to main", self.ship_auto("status")[1])
+        self.ship_auto("off")
+        self.assertIsNone(train._grant_of(self.p))
+        self.assertIn("off", self.ship_auto("status")[1])
+
+
 class SlimGate(TrainCase):
     """T-5935: the live front gate does only what the train's changed files call for: the hook bench runs when a lane
     changes a file the hooks load, the repo-shape run takes the classes whose inputs changed, the base bench runs once

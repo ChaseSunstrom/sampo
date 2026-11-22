@@ -93,7 +93,7 @@ OPERATOR_SWITCHES.add("SHAPE_BATCH_WALL_S")  # T-5380: a shape batch's wall in s
 OPERATOR_SWITCHES.add("BENCH_MIN_FREE_GB")  # T-3747: the operator's disk budget for bench builds; the low-disk test sets its own
 OPERATOR_SWITCHES.add("NO_COVERED")  # T-4288: the "Already covered?" note's switch; helpers set the tests' default, Covered its own
 # T-4239: a land's ship pin, caps and line stamp are the land's (its gate runs these tests inside it), never a test's
-OPERATOR_SWITCHES.update({"SHIP_AT", "SHIP_TIMEOUT_S", "LAND_SHIP_WAIT_S", "LAND_STAMP"})
+OPERATOR_SWITCHES.update({"SHIP_AT", "SHIP_TIMEOUT_S", "LAND_SHIP_WAIT_S", "LAND_STAMP", "LAND_STANDING_SHIP"})  # T-5938: the last is the land's marker on its standing ship
 OPERATOR_SWITCHES.add("BIG_HOLD_S")  # T-4223: an operator's turn budget for a big task; a hold test sets its own
 OPERATOR_SWITCHES.update({"WAIT_LIMIT_S", "WAIT_SETTLE_S", "WAIT_TRAIN_POLL_S"})  # T-4525, T-4692: the wait timer's limits; its tests set their own
 OPERATOR_SWITCHES.add("LANE_CHECKS")  # T-4491: how many lane checks run at once; an accept test sets its own

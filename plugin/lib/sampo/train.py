@@ -28,6 +28,7 @@ import tempfile
 import textwrap
 import threading
 import time
+import types
 import typing
 
 from sampo import core as c
@@ -3046,12 +3047,19 @@ COVERED = re.compile(r"^nothing to ship here: .* already carries every commit", 
 
 
 def _grant_of(p):
-    """The task holding a publish grant, or None."""
-    return next((b for b in c.load_briefs(p) if "publish" in (b.meta.get("allow") or [])), None)
+    """The task holding a publish grant, or None. T-5938: with none, and `sampo ship auto on` holding, the project's standing
+    grant (id c.STANDING_SHIP, no "allow" in its meta: nothing for a spend to clear): the land ships after every train that
+    merged, and the grant stays. A task's own grant wins and is spent as before."""
+    own = next((b for b in c.load_briefs(p) if "publish" in (b.meta.get("allow") or [])), None)
+    if own or not c.standing_ship(p):
+        return own
+    return types.SimpleNamespace(id=c.STANDING_SHIP, meta={"standing": True})
 
 
 def _give_back(p, tid):
     """The grant a ship spent, held again for the land's next ship (a Log line says so); True when it was re-added."""
+    if tid == c.STANDING_SHIP:  # T-5938: never spent, so nothing to give back
+        return False
     with c.lock(p.dir):
         b = c.find_brief(p, tid)
         if b is None or "publish" in (b.meta.get("allow") or []):
@@ -3106,6 +3114,7 @@ def _ship(p, keep, main=None):
     grant = _grant_of(p)
     if not grant:
         return None
+    _ship_reap(p)  # T-5938: a dead ship's marker is cleared with a line, then nothing waits on it
     running = _ship_alive(p)
     if running:  # review: never beside a detached ship (two pushes of one grant, a spent grant given back): join it, bounded
         secs = float(os.environ.get("FOREMAN_LAND_SHIP_WAIT_S") or 1800)
@@ -3120,8 +3129,9 @@ def _ship(p, keep, main=None):
     head, t0 = (c._git(main, "rev-parse", "HEAD", timeout=10).strip() if main else ""), time.time()
     _ship_log(p, f"{_hms()} ship of {head[:9]} on {grant.id}'s publish grant (in line, from the land)\n")  # T-4739
     try:
+        env = _ship_env(grant.id, head)  # T-4289: its gate's tests take no test override; T-5938: the marker, standing alone
         rc, out, err = _sampo(["ship", "--task", grant.id],  # T-4289: its gate's tests never take a test override
-                              env=c.scrubbed_env(dict(os.environ, FOREMAN_SHIP_AT=head)) if head else None)
+                              env=env)
     except Exception as e:  # noqa: BLE001 — a failed ship is said, never stops the land
         rc, out, err = 1, "", f"{type(e).__name__}: {e}"
     line = (out.strip().splitlines() or ["shipped"])[-1] if not rc else "refused: " + _why(err or out, REFUSAL_ROOM)
@@ -3193,6 +3203,40 @@ def _ship_alive(p):
         return None
 
 
+def _gone_line(pid, grant, started, what):
+    """T-5938: the ship.log line for a ship that ended with no line of its own (SIGKILL, a machine restart): who, when it
+    started, and that nothing waits on it. `what` names how it is known to have ended."""
+    at = time.strftime("%H:%M:%S", time.localtime(float(started))) if isinstance(started, (int, float)) else "?"
+    pid, grant = (c.fit(c.plain(str(x)), 40) for x in (pid, grant or "a"))  # the marker is a file: bounded, one line
+    return (f"{_hms()} ship pid {pid} (on {grant}'s grant, started {at}) is {what}: it wrote no end line; "
+            f"its record is cleared and the next ship goes ahead\n")
+
+
+def _ship_reap(p):
+    """T-5938: a ship's marker whose process is gone (killed, or the machine restarted) is cleared with a line in ship.log
+    and a ship-last record (so sampo status says how it ended): the marker, or None when no ship is gone. A dead ship never
+    blocked the next (_ship_alive reads it as no ship); until now it left no trace, and a land's wait on it read as a hang."""
+    if _ship_alive(p) or not _read_marker(p):  # a cheap look first: the common case takes no lock
+        return None
+    path = _ship_marker(p)
+    with c.lock(os.path.dirname(path), timeout=30):
+        m = _read_marker(p)
+        if not m or _ship_alive(p):
+            return None
+        with contextlib.suppress(OSError):
+            os.remove(path)
+    now = time.time()
+    started = m.get("started") if isinstance(m.get("started"), (int, float)) else now
+    line = _gone_line(m.get("pid"), m.get("grant"), started, "gone")
+    _ship_log(p, line)
+    with contextlib.suppress(Exception):  # a record that can't be written never stops the ship that goes ahead
+        data = {"head": str(m.get("ship_head") or m.get("want") or ""), "sha": "", "seconds": round(now - started, 1),
+                "exit": 137, "start": round(started, 1), "end": round(now, 1), "red": [], "grant": m.get("grant") or "",
+                "seen": False, "line": c.fit(c.plain(line.split(" ", 1)[1].strip()), REFUSAL_LINE)}
+        c.write_atomic(os.path.join(p.dir, "ship-last.json"), json.dumps(data))
+    return m
+
+
 def ship_last(p):
     """The record of the newest finished land ship (head, sha, seconds, exit, end, line, seen), or None."""
     try:
@@ -3211,6 +3255,7 @@ def _ship_request(p, main, final):
     head = c._git(main, "rev-parse", "HEAD", timeout=10).strip()
     path = _ship_marker(p)
     me = {"land_pid": os.getpid(), "land_ticks": _ticks(os.getpid())}  # the newest asker: the ship gives the grant back only while it lives
+    _ship_reap(p)  # T-5938: a ship that died with no line leaves one (before the lock: the reap takes it)
     with c.lock(os.path.dirname(path), timeout=30):
         m = _ship_alive(p)
         if m:  # no grant check: the running ship spent it, and gives it back when it ends
@@ -3244,23 +3289,31 @@ def _hms():
     return time.strftime("%H:%M:%S")
 
 
+def _ship_env(grant, head=""):
+    """The environment of one `sampo ship --task GRANT`, the land's own (detached and in line): the snapshot it pins
+    (FOREMAN_SHIP_AT), no test override (T-4289), and T-5938: the marker that says the land runs it, for the standing
+    grant alone. Neither spelling of the marker (FOREMAN_ and its SAMPO_ mirror) comes through from the land's own
+    environment: a task's grant gets none, the standing grant gets the one."""
+    env = dict(os.environ, FOREMAN_SHIP_AT=head) if head else dict(os.environ)
+    env.pop(c.LAND_SHIP_ENV, None)
+    env.pop("SAMPO_" + c.LAND_SHIP_ENV.partition("_")[2], None)
+    if grant == c.STANDING_SHIP:  # only the land's own ship may name the standing grant; the marker says so
+        env[c.LAND_SHIP_ENV] = "land"
+    return c.scrubbed_env(env)
+
+
 def _ship_run(main, grant, head, argv=None):
     """(exit code, output) of one `sampo ship --task GRANT` pinned to `head` (SAMPO_SHIP_AT: it tests and pushes that
     snapshot), every output line stamped into this process's own log; ended after SAMPO_SHIP_TIMEOUT_S (7200).
     Review: the output goes to a file, never a pipe: a process that left the group and holds a pipe's write end keeps
     the read loop waiting for an EOF that never comes (T-2255), so the cap would never fire. The deadline is
     wait(timeout) then a group kill; whoever still holds the file writes into an unlinked file."""
-    env = c.scrubbed_env(dict(os.environ, FOREMAN_SHIP_AT=head))  # T-4289: the ship's tests take no test override
+    env = _ship_env(grant, head)
     limit = float(os.environ.get("FOREMAN_SHIP_TIMEOUT_S") or 7200)  # SAMPO_SHIP_TIMEOUT_S, mirrored by core
     fd, path = tempfile.mkstemp(prefix="ship-run-", suffix=".log")
-    out, part, capped = [], "", False
+    out, part, capped, proc = [], "", False, None
     try:
         with os.fdopen(fd, "ab") as w, open(path, encoding="utf-8", errors="replace") as r:
-            proc = subprocess.Popen(argv or [sys.executable, os.path.join(c.PLUGIN_ROOT, "bin", "sampo"), "ship",
-                                             "--task", grant],
-                                    cwd=main, env=env, stdin=subprocess.DEVNULL, stdout=w, stderr=subprocess.STDOUT,
-                                    start_new_session=True)
-
             def drain(last=False):
                 nonlocal part
                 part += r.read()
@@ -3272,19 +3325,35 @@ def _ship_run(main, grant, head, argv=None):
                     out.append(ln + "\n")
                     del out[:-5000]
                     print(f"{_hms()} {ln.rstrip()}", flush=True)
-            deadline = time.monotonic() + limit
-            rc = None
-            while rc is None:
-                try:
-                    rc = proc.wait(timeout=max(0.0, min(0.4, deadline - time.monotonic())))
-                except subprocess.TimeoutExpired:
-                    if time.monotonic() >= deadline:
-                        capped = True
-                        with contextlib.suppress(OSError):
-                            killsafe.killpg(proc.pid, signal.SIGKILL)
-                        rc = proc.wait()
-                drain()
-            drain(last=True)
+            try:
+                proc = subprocess.Popen(argv or [sys.executable, os.path.join(c.PLUGIN_ROOT, "bin", "sampo"), "ship",
+                                                 "--task", grant],
+                                        cwd=main, env=env, stdin=subprocess.DEVNULL, stdout=w, stderr=subprocess.STDOUT,
+                                        start_new_session=True)
+                deadline = time.monotonic() + limit
+                rc = None
+                while rc is None:
+                    try:
+                        rc = proc.wait(timeout=max(0.0, min(0.4, deadline - time.monotonic())))
+                    except subprocess.TimeoutExpired:
+                        if time.monotonic() >= deadline:
+                            capped = True
+                            with contextlib.suppress(OSError):
+                                killsafe.killpg(proc.pid, signal.SIGKILL)
+                            rc = proc.wait()
+                    drain()
+                drain(last=True)
+            except BaseException as e:  # T-5938: this process is being ended (SIGTERM), or the loop broke: the ship it
+                # runs goes with it, never on alone. Its group is killed whether or not the leader was already reaped
+                # (it may have left a push running in the group); killsafe refuses a pid that is not a plain int above 1
+                if proc is not None:
+                    with contextlib.suppress(OSError):
+                        killsafe.killpg(proc.pid, signal.SIGKILL)
+                    with contextlib.suppress(Exception):  # what it printed up to its end: the caller reads it for a push
+                        proc.wait(timeout=10)
+                        drain(last=True)
+                e.ship_out = "".join(out)
+                raise
     finally:
         with contextlib.suppress(OSError):
             os.remove(path)
@@ -3319,6 +3388,41 @@ def _settle(p, grant, rc, out, m):
         _give_back(p, grant)
 
 
+class _ShipTerm(BaseException):
+    """T-5938: the detached ship was asked to end (SIGTERM, SIGHUP); args[0] is the signal. A BaseException: no `except
+    Exception` of the ship's loop swallows it."""
+
+
+def _ship_term(signum, frame):
+    """The first end signal raises _ShipTerm; both are ignored from then on, so a second one can't cut the unwinding (the
+    ship's group is killed, the line is written, the marker removed) short."""
+    for s in (signal.SIGTERM, signal.SIGHUP):
+        with contextlib.suppress(ValueError, OSError):
+            signal.signal(s, signal.SIG_IGN)
+    raise _ShipTerm(signum)
+
+
+def _term_grant(p, grant, ran, seen):
+    """T-5938 review: what became of `grant` when its ship was ended by a signal, as the clause the ship's log line ends
+    with (and the grant given back when that is the truth). A ship killed after its push spent a task's grant
+    (release._push_main spends first) and before the push landed leaves it spent, and the killed ship can't give it back:
+    it is given back here, unless the ship's own output shows its push landed ("main at <sha>", printed after the push).
+    The standing grant is never spent. A signal that came while no ship ran (`ran` False: the ship had ended and was
+    being settled) says what is not known and touches nothing."""
+    if grant == c.STANDING_SHIP:
+        return "the standing ship stays on and the next ship goes ahead"
+    if not ran:
+        return "the grant is as its last ship left it and the next ship goes ahead"
+    if SHIPPED_AT.search(seen or ""):
+        return "its push had landed, so the grant stays spent and the next ship goes ahead"
+    try:
+        gave = _give_back(p, grant)
+    except Exception as e:  # noqa: BLE001 — the line says it didn't, never an exception out of the ship's end
+        return f"the grant could not be given back ({type(e).__name__}) and the next ship goes ahead"
+    return ("nothing was pushed: the spent grant is given back" if gave else
+            "nothing was pushed and the grant was not spent") + " and the next ship goes ahead"
+
+
 def _ship_child(a):
     """T-4239: the detached ship process (python -m sampo.train {"ship": ...}): ships the head the marker wants, writes
     the ship_done event, settles the grant, and goes again when a later train asked, else clears the marker. The grant
@@ -3327,6 +3431,12 @@ def _ship_child(a):
     p = c.Project(*a["project"])
     main, grant = a["main"], a["grant"]
     path = _ship_marker(p)
+    t_start, old, running = time.time(), {}, False  # running: a ship of ours is between its start and its end
+    try:  # T-5938: SIGTERM/SIGHUP end this ship with a line, never silently (SIGKILL can't: the next ship's reap says it)
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            old[sig] = signal.signal(sig, _ship_term)
+    except ValueError:  # not the main thread (a test calling this in line): no handler, as before
+        pass
     try:
         while True:
             with c.lock(os.path.dirname(path), timeout=30):
@@ -3336,10 +3446,13 @@ def _ship_child(a):
                 c.write_atomic(path, json.dumps(m))
             print(f"{_hms()} ship of {head[:9]} on {grant}'s publish grant", flush=True)
             t0 = time.time()
+            running = True
             try:
                 rc, out = _ship_run(main, grant, head)
             except Exception as e:  # noqa: BLE001 — never an exception out of the loop
-                rc, out = 1, f"{type(e).__name__}: {e}"
+                # the ship's group was killed with it (_ship_run): a grant its push spent is given back, as for a signal
+                rc, out = 1, f"{type(e).__name__}: {e}; {_term_grant(p, grant, True, getattr(e, 'ship_out', ''))}"
+            running = False
             line, _ = _ship_end(p, grant, head, rc, out, t0, time.time())
             print(f"{_hms()} {c.fit(c.plain(line), REFUSAL_LINE)}", flush=True)
             def said(e):  # a failure here is a timed line in the log, never the loss of a queued ship
@@ -3361,11 +3474,33 @@ def _ship_child(a):
                 said(e)
                 if not (_read_marker(p) or {}).get("again"):
                     return 0  # the finally clears the marker
+    except _ShipTerm as e:
+        sig = int(e.args[0])
+        for s in old:  # a second signal while this is written ends nothing: the line comes first
+            signal.signal(s, signal.SIG_IGN)
+        name = signal.Signals(sig).name
+        what = "the grant could not be looked at and the next ship goes ahead"
+        with contextlib.suppress(Exception):  # the grant first (a spent one is given back), then what became of it is said
+            what = _term_grant(p, grant, running, getattr(e, "ship_out", ""))
+        print(f"{_hms()} ship pid {os.getpid()} on {grant}'s grant ended by {name}: {what}", flush=True)
+        _ship_end(p, grant, str((_read_marker(p) or {}).get("ship_head") or ""), 128 + sig,
+                  f"sampo: ship ended by {name}", t_start, time.time())
+        return 128 + sig
     finally:
-        m = _read_marker(p)
-        if m and m.get("pid") == os.getpid():  # an escaped exception: the marker never outlives its ship
-            with contextlib.suppress(OSError):
-                os.remove(path)
+        # no signal cuts the cleanup short: ignored first, the handlers come back last (a SIGTERM that lands between the
+        # restore and the marker's removal would otherwise end this process with the marker left)
+        for s in old:
+            with contextlib.suppress(ValueError, OSError):
+                signal.signal(s, signal.SIG_IGN)
+        try:
+            m = _read_marker(p)
+            if m and m.get("pid") == os.getpid():  # an escaped exception: the marker never outlives its ship
+                with contextlib.suppress(OSError):
+                    os.remove(path)
+        finally:
+            for s, h in old.items():
+                with contextlib.suppress(ValueError, TypeError):
+                    signal.signal(s, h)
 
 
 def _accepted(b):

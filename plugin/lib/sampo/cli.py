@@ -9490,6 +9490,42 @@ def cmd_autonomy(args):
         f"{p.slug}: autonomy {args.level}" + (" and the standing autonomy of new projects" if args.standing else "") + ".")
 
 
+def cmd_ship_auto(args):
+    """T-5938: sampo ship auto on --why "<the user's words>" | off | status. On: the project's standing ship: a land ships
+    trunk to the remote's main after every train that merged, on a grant no push spends (a task's own publish grant still
+    wins). `on` needs --why to quote (four words or more) what the user said, found in their prompts on the ledger, and is
+    refused from a lane or the headless pilot; the record in meta (standing_ship: on, by, why, at) keeps the quote."""
+    p = resolve(args)
+    rest = args.commits[1:]
+    if len(rest) != 1 or rest[0] not in ("on", "off", "status"):
+        raise UsageError("sampo ship auto on --why \"<the user's words>\" | off | status: keep the remote's main pushed after "
+                         "every land's train")
+    mode = rest[0]
+    if mode == "status":
+        rec = c.read_meta(p).get("standing_ship") or {}
+        if rec.get("on") is True:
+            text = (f"{p.slug}: standing ship on since {rec.get('at') or '?'} by {rec.get('by') or '?'}"
+                    + (f": {rec['why']}" if rec.get("why") else "") + ".")
+        else:
+            text = f"{p.slug}: standing ship off (sampo ship auto on turns it on)."
+        return out(args, {"standing_ship": rec if rec.get("on") is True else None}, text)
+    who = session() or os.environ.get("USER") or "the command line"  # no Claude session: a hand run
+    why = ""
+    # round 2 (round 3: off too): a builder lane or the lane pilot's headless claude never turns it on or off
+    if getattr(p, "lane", None) or c.headless_pilot():
+        raise UsageError(f"sampo ship auto {mode} is the main session's, in the project's main checkout: a lane or a headless "
+                         "pilot never turns the standing ship on or off (the user asks for it in their own words)")
+    if mode == "on":
+        # any other session turns it on only on the user's own words: --why quotes them, and the quote is found in the
+        # prompts Sampo recorded of them
+        why, bad = c.standing_ship_quote(p, args.why)
+        if bad:
+            raise UsageError(f"sampo ship auto on --why \"<the user's words>\": {bad}")
+    rec = c.set_standing_ship(p, mode == "on", why, who)
+    out(args, {"standing_ship": rec if mode == "on" else None},
+        f"{p.slug}: standing ship {mode}" + (": a land ships trunk to the remote's main after every train that merged." if mode == "on" else "."))
+
+
 def lazy(module, func):
     def run(args):
         __import__(module)  # T-2748: a dotted name (sampo.risk) returns its package, so read the module itself
@@ -10822,7 +10858,10 @@ def _build_parser(only=None):
                  "grant; run it in the background (T-1943). Without commits it ships up to the newest commit whose tree "
                  "the post-merge verify passed in full, reusing that run (T-3666)")
     s.add_argument("commits", nargs="*", metavar="COMMIT", help="default: HEAD's commits main lacks (git cherry), or the branch's "
-                   "own steps since the last ship while main still matches it")
+                   "own steps since the last ship while main still matches it; `auto on|off|status`: the standing ship, "
+                   "a land ships after every train that merged on a grant no push spends (T-5938)")
+    s.add_argument("--why", metavar="QUOTE", help="`auto on` only: a verbatim quote (four words or more) of the user's own words "
+                   "asking to keep main pushed, found in their recorded prompts; kept in meta beside who turned it on (T-5938)")
     s.add_argument("--remote", metavar="URL", help="push to this remote instead of origin")
     s.add_argument("--test", metavar="CMD", help="the check to run in the scratch tree (default: the last --test given here, else sampo check)")
     s.add_argument("--watch", action="store_true", help="then watch CI on the pushed commit and exit with its result (T-1946)")

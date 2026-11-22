@@ -1298,6 +1298,58 @@ class ScriptBudgetEnv(GuardCase):  # T-4824
             self.assertIs(signal.getsignal(signal.SIGPROF), before, f"{val!r}: the SIGPROF handler was left installed")
 
 
+class StandingShipConfine(GuardCase):
+    """T-5938 round 2: a builder lane or the lane pilot's headless claude (both carry a confine) never turns on the
+    project's standing ship (sampo ship auto on): the user says so in words, and the main session runs it."""
+
+    def confined(self):
+        lane = os.path.join(self.repo, ".claude", "worktrees", "agent-ship")
+        os.makedirs(lane, exist_ok=True)
+        return g.Ctx(cwd=lane, project_root=lane, home=self.home, foreman_home=self.fhome, scratch=["/tmp"],
+                     allow=set(), task_id="T-0007", confine=(lane, self.repo))
+
+    def test_ship_auto_on_is_refused_to_a_confined_session(self):
+        for cmd in ("sampo ship auto on --why 'make sure to keep pushing to main'", "sampo ship --why 'x y z w' auto on",
+                    "sampo -p x ship auto on", "python3 plugin/bin/sampo ship auto on", "sampo ship auto --why x on",
+                    "sampo ship $V on", "sampo ship a\\uto on", "sampo ship $(echo auto) on",
+                    "sampo ship auto off", "sampo ship --why x auto off", "sampo -p x ship auto off"):  # round 3: off too
+            with self.subTest(cmd=cmd):
+                r = g.check("Bash", {"command": cmd}, self.confined())
+                self.assertBlocked(r, "confine")
+                self.assertIn("standing ship", g.message(r, self.confined()))
+
+    def test_the_main_session_and_the_confined_ones_other_ship_calls_pass(self):
+        main = self.ctx()
+        self.assertIsNone(g.check("Bash", {"command": "sampo ship auto on --why 'make sure to keep pushing to main'"}, main))
+        self.assertIsNone(g.check("Bash", {"command": "sampo ship auto off"}, main))
+        for cmd in ("sampo ship auto status", "sampo ship --check", "sampo ship",
+                    "sampo ship --task T-0007 --test true", "sampo ship auto"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(g.check("Bash", {"command": cmd}, self.confined()))
+
+    def test_a_ship_on_a_task_named_by_a_variable_passes_but_an_auto_word_after_a_filled_in_word_does_not(self):
+        """T-5938 review: only `auto` as the first positional word is the subcommand, so `sampo ship --task "$TID"` (the
+        grant's id is an option's value) passes for a confined session; an expansion anywhere a positional word could be
+        (or in the value of an option that is not --task) still reads as either word."""
+        for cmd in ('sampo ship --task "$TID"', "sampo ship --task=$TID --test true", 'sampo ship --task "$TID" --head',
+                    "sampo ship --head --test 'sampo check' --task T-0007", "sampo ship foo auto on"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(g.check("Bash", {"command": cmd}, self.confined()))
+        for cmd in ("sampo ship --task T-0007 auto on", 'sampo ship --task "$TID" auto on', "sampo ship --why x --task $T auto off",
+                    "sampo ship --chance $X", "sampo ship --remote $R auto", 'sampo ship $A "$TID"', "sampo ship --$O auto on",
+                    "sampo ship --tas=T-1 auto on"):
+            with self.subTest(cmd=cmd):
+                self.assertBlocked(g.check("Bash", {"command": cmd}, self.confined()), "confine")
+
+    def test_the_lands_ship_marker_is_the_lands_alone(self):
+        for cmd in ("FOREMAN_LAND_STANDING_SHIP=land sampo ship --task standing-ship",
+                    "export FOREMAN_LAND_STANDING_SHIP=land; sampo ship --task standing-ship"):
+            with self.subTest(cmd=cmd):
+                names = g.state_env_run(cmd, self.repo)  # the user is asked first: the name is a protected one (Rule A)
+                self.assertIn("FOREMAN_LAND_STANDING_SHIP", names)
+        self.assertIn("SAMPO_LAND_STANDING_SHIP", g.state_env_run("SAMPO_LAND_STANDING_SHIP=land sampo ship", self.repo))
+
+
 class BuilderCheckConfine(GuardCase):
     """T-4785 (a): a builder session never changes the project's gates (sampo check rm|add|paths|…): the main thread
     sets them, and a lane that removes the gate lands unproven."""

@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import types
 
 if __name__ == "__main__":  # the canary worker runs this file: lib/sampo first on the path would shadow the stdlib (secrets)
     _here = os.path.dirname(os.path.realpath(__file__))
@@ -78,14 +79,32 @@ def _grant(p):
     return b if b and "publish" in (b.meta.get("allow") or []) else None
 
 
-def _named_grant(p, tid):
-    """T-2007: fm ship --task ID: that task (closed or active) when it holds the publish grant."""
+def _land_marker():
+    """T-5938: whether the land's marker (core.LAND_SHIP_ENV, or its SAMPO_ mirror) is set; both spellings are taken out of
+    this process's environment either way (a plain `or` popped only the first that was set), so the ship's own test run
+    inherits no claim to the land's standing grant."""
+    got = [os.environ.pop(name, "") for name in (c.LAND_SHIP_ENV, "SAMPO_" + c.LAND_SHIP_ENV.partition("_")[2])]
+    return any(got)
+
+
+def _named_grant(p, tid, land=False):
+    """T-2007: fm ship --task ID: that task (closed or active) when it holds the publish grant. T-5938: the standing
+    ship's id (sampo ship auto on: a grant no push spends) only for the land's own ship (`land`: the marker the land puts
+    on its detached and in-line ship, core.LAND_SHIP_ENV) and only while it is on; any other caller naming it is refused."""
+    if tid == c.STANDING_SHIP:
+        if not land:
+            _err("the standing ship is the land's own ship's: it ships trunk after a train that merged, and no other "
+                 "caller names it (a task's publish grant ships by sampo ship --task ID); nothing was pushed")
+        return types.SimpleNamespace(id=tid, meta={"standing": True}) if c.standing_ship(p) else _err(
+            "the standing ship is off (sampo ship auto on); nothing was pushed")
     b = c.find_brief(p, tid) or _err(f"no task {tid.upper()}; nothing was pushed")
     return b if "publish" in (b.meta.get("allow") or []) else _err(
         f"{b.id} has no publish grant (fm task set {b.id} --allow publish); nothing was pushed")
 
 
 def _spend(p, tid, by):
+    if tid == c.STANDING_SHIP:  # T-5938: a standing ship is never spent (sampo ship auto off ends it)
+        return
     with c.lock(p.dir):
         b = c.find_brief(p, tid)
         if "publish" not in (b.meta.get("allow") or []):  # another release spent it since _grant looked
@@ -581,6 +600,16 @@ def private_lines(root, tip, files, cap=5):
     return out
 
 
+def _push_landed(p, remote, sha):
+    """T-5938 review: whether `remote`'s main is at `sha` now (git ls-remote, 15s). False when it is not; True too when it
+    can't be told (an unreachable remote): after an interrupted push the grant is then left spent, never doubled."""
+    try:
+        got = c._git(p.root, "ls-remote", remote, "refs/heads/main", timeout=15, proc=True)
+        return got.returncode != 0 or got.stdout.split()[:1] == [sha]
+    except Exception:  # noqa: BLE001 — unknown reads as landed: the spent grant stays spent
+        return True
+
+
 def _push_main(p, tid, sha, remote, by):
     """Push sha to remote's main from the repo (a relative remote URL resolves there). The grant is spent first, so one
     yes is one push even for two racing callers, and given back if git push fails (T-1943).
@@ -588,7 +617,11 @@ def _push_main(p, tid, sha, remote, by):
     _spend(p, tid, by)
     try:
         _git(p.root, "push", "-q", remote, f"{sha}:refs/heads/main")
-    except Exception:
+    except BaseException as e:  # T-5938 review: an interrupt (Ctrl-C) between the spend and the push ends here too
+        if tid == c.STANDING_SHIP:  # T-5938: nothing was spent
+            raise
+        if not isinstance(e, Exception) and _push_landed(p, remote, sha):  # an interrupt can come after the push: one yes, one push
+            raise
         with c.lock(p.dir):
             b = c.find_brief(p, tid)
             b.meta["allow"] = [*(b.meta.get("allow") or []), "publish"]
@@ -1144,6 +1177,8 @@ def _ship_claim(p, at, picks, task):
         held = meta.get("ship_claim")
         if held and held.get("pid") != os.getpid() and _claim_alive(held):
             return held
+        if held and held.get("pid") != os.getpid():  # T-5938: a ship that died holding its claim leaves a line, then this goes ahead
+            train._ship_log(p, train._gone_line(held.get("pid"), held.get("task"), held.get("started"), "gone"))
         meta["ship_claim"] = {"pid": os.getpid(), "ticks": train._ticks(os.getpid()), "started": round(time.time(), 1),
                               "at": c.now(), "head": at, "picks": list(picks), "task": task}
         c.write_meta(p, meta)
@@ -1214,6 +1249,14 @@ def ship(p, args):
             _err(f"--chance: {e}")
     if remote.startswith("-"):
         _err(f"--remote {remote!r} reads as a git option; name a remote or a URL")
+    # T-5938 round 2: the marker is read once and gone from the env (the ship's own test run inherits no claim to it); the
+    # standing ship's refusals come before anything is fetched: a caller other than the land's own ship, and an override
+    land = _land_marker()
+    if getattr(args, "task", None) == c.STANDING_SHIP:
+        _named_grant(p, c.STANDING_SHIP, land=land)  # refuses a caller that isn't the land's, and a ship that is off
+        if args.test or args.remote:
+            _err("a standing ship takes no --test or --remote: the land's ship tests with the project's own check and pushes "
+                 "to origin; nothing was pushed")
     # T-4239: the head this ship reads is fixed once (SAMPO_SHIP_AT: the head a land's detached ship was started on, else
     # HEAD now): a land goes on merging while its ship runs, and every pick, ancestry and tree below reads this sha, so the
     # ship tests and pushes the snapshot at it (a cherry-picked scratch tree), never a newer head
@@ -1268,7 +1311,7 @@ def ship(p, args):
         if not missing:
             print(f"{remote} main has the changes of {', '.join(x[:8] for x in picks)}")
         return 1 if missing else 0
-    b = (_named_grant(p, args.task) if getattr(args, "task", None)
+    b = (_named_grant(p, args.task, land=land) if getattr(args, "task", None)
          else _grant(p) or _err(_NEED_GRANT.replace("--push", "fm ship", 1) + "; nothing was pushed"))
     if args.test:  # T-1950: remembered per repo, so the oldest runtime's suite isn't retyped each ship
         _git(root, "config", "--local", "foreman.shiptest", args.test, ok=True)
@@ -1285,6 +1328,8 @@ def ship(p, args):
         return 0
     if gate == "waited":  # the other ship ended: plan again from the moved main (it may carry these commits by now)
         os.environ["FOREMAN_SHIP_AT"] = at
+        if land:
+            os.environ[c.LAND_SHIP_ENV] = "land"  # the replan is still the land's own ship
         return ship(p, args)
     with _Claimed(p), c.scratch_dir("sampo-ship-", root) as tmp:  # T-4735
         wt = os.path.join(tmp, "ship")
@@ -1410,7 +1455,8 @@ def ship(p, args):
                 print(f"warning: couldn't move {SHIPPED_TIP} to {tip[:8]}; fm ci-watch --last-ship would watch an older ship")
         finally:
             _git(root, "worktree", "remove", "--force", wt, ok=True)
-    print(f"shipped {n} to {remote} main at {tip} (the publish grant is spent)."
+    spent = "the standing ship stays on" if b.id == c.STANDING_SHIP else "the publish grant is spent"  # T-5938
+    print(f"shipped {n} to {remote} main at {tip} ({spent})."
           + ("" if args.watch else f" Watch CI in the background: fm ci-watch --commit {tip}"), flush=True)
     if chance is not None:  # T-2496: the bet is booked once the commit is on main
         from sampo import outcomes
@@ -1429,6 +1475,13 @@ def ship(p, args):
 
 def cmd_ship(args):
     from sampo import cli
+    commits = list(args.commits or [])
+    # T-5938: `auto` is the subcommand only as exactly `auto on|off|status`; a branch named auto still ships
+    auto = len(commits) == 2 and commits[0] == "auto" and commits[1] in ("on", "off", "status")
+    if getattr(args, "why", None) and commits != ["auto", "on"]:
+        _err("--why is for `sampo ship auto on` alone (the user's own words that turn the standing ship on); nothing was pushed")
+    if auto:
+        return cli.cmd_ship_auto(args)
     return ship(cli.resolve(args), args)
 
 

@@ -3233,6 +3233,64 @@ def write_meta(p, meta):
     write_atomic(os.path.join(p.dir, "meta.json"), json.dumps(meta, indent=2, sort_keys=True) + "\n")
 
 
+STANDING_SHIP = "standing-ship"  # T-5938: the id a standing ship's grant goes by (no task brief carries it)
+
+
+def standing_ship(p):
+    """T-5938: meta's standing_ship record ({on, by, why, at}) while `sampo ship auto on` holds, else None; an unreadable
+    meta reads as off (a land never stops on it)."""
+    try:
+        rec = read_meta(p).get("standing_ship")
+    except (OSError, CorruptState):
+        return None
+    return rec if isinstance(rec, dict) and rec.get("on") is True else None
+
+
+# T-5938 round 2: the env name the land sets on its own ship (in line or detached) when it ships on the standing grant:
+# only a ship run that way may name STANDING_SHIP. The guard keeps the name out of an agent's own commands (_SAMPO_NAMES).
+LAND_SHIP_ENV = "FOREMAN_LAND_STANDING_SHIP"
+_PUSH_WORDS = lazy(r"\b(?:push\w*|ship\w*|main|remote|origin|land\w*)\b", re.I)
+
+
+def standing_ship_quote(p, why):
+    """T-5938 round 2: (the quote, "") when `why` is at least four words, about the push, and found verbatim (case and
+    spacing aside) in one of the user's own prompts on the ledger (genuine_prompts: the signed ones the prompt hook
+    records, the one store of the user's words); else ("", the reason, naming where it looked). The quote comes back
+    with its spacing collapsed and its quote marks trimmed, capped at 300."""
+    quote = " ".join(str(why or "").split()).strip("\"'“”`")
+    if len(quote.split()) < 4:
+        return "", "--why must quote at least four words of the user's own request to keep main pushed"
+    if not _PUSH_WORDS.search(quote):
+        return "", "--why must quote the user's words about pushing (push, ship, main or the remote), not other words of theirs"
+    from sampo import userwords
+    want = quote.lower()
+    for e in genuine_prompts(p):
+        data = e.get("data") or {}
+        text = data.get("text")
+        flag = data.get("headless")
+        if not isinstance(text, str) or flag is True:  # a program's or a lane's prompt is not the user's words
+            continue
+        if flag is not False and not str(e.get("ts") or "") < PROMPT_FLAG_FROM:  # the old shape (no flag) is trusted only for a prompt logged before the hook wrote one
+            continue
+        # round 3: the prompt must itself be a plain ask to keep main pushed (a question, a negation, a quoted or
+        # machine text, a long message is not), and the quote sits inside that ask's own words
+        for verb, args in userwords.find(text):
+            if verb.name == "standing-ship" and want in " ".join(args["why"].split()).lower():
+                return quote[:300], ""
+    return "", (f"--why must quote the user's own words asking to keep main pushed, and no prompt of theirs holds that text: "
+                f"I looked in the signed `prompt` events on {p.slug}'s ledger (what the prompt hook records of the user's messages)")
+
+
+def set_standing_ship(p, on, why="", by=""):
+    """T-5938: turn the project's standing ship on or off: meta's standing_ship record ({on, by, why, at}) and a
+    `standing_ship` ledger event. The one writer: the command and the prompt hook's verb both end here."""
+    rec = {"on": True, "by": by, "why": str(why or "")[:300], "at": now()} if on else {"on": False, "by": by, "at": now()}
+    update_meta(p, standing_ship=rec)
+    with lock(p.dir):
+        log_event(p, "standing_ship", data={"on": bool(on), "why": rec.get("why", "")})
+    return rec
+
+
 def update_meta(p, **changes):
     with lock(p.dir):
         meta = read_meta(p)
@@ -3935,10 +3993,16 @@ def prompt_sealer():
     return (lambda rec: selfgate._mac(key, _prompt_body(rec))), ""
 
 
+PROMPT_FLAG_FROM = "2026-11-22T20:45:00Z"  # T-5938: the prompt hook records `headless` (True or False) on every prompt it logs from here
+
+
 def _prompt_body(rec):
     d = rec.get("data")
-    return {"text": d.get("text") if isinstance(d, dict) else None, "session": rec.get("session_id"),
+    body = {"text": d.get("text") if isinstance(d, dict) else None, "session": rec.get("session_id"),
             "project": rec.get("project"), "ts": rec.get("ts")}
+    if isinstance(d, dict) and isinstance(d.get("headless"), bool):  # T-5938: a program's or a lane's prompt says so inside the MAC, and the user's own says it is not; an event with no flag verifies as before (standing_ship_quote trusts that old shape only before PROMPT_FLAG_FROM)
+        body["headless"] = d["headless"]
+    return body
 
 
 def genuine_prompts(p, since=""):

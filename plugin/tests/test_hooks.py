@@ -221,8 +221,10 @@ class PromptMac(ForemanTestCase):  # T-4844: the prompt event carries an HMAC un
         p, e = self.prompt()
         mac = e["data"].get("mac")
         self.assertTrue(isinstance(mac, str) and len(mac) == 64, e)
-        want = g._mac(g._secret(), {"text": e["data"]["text"], "session": "sess-mac", "project": p.slug, "ts": e["ts"]})
-        self.assertEqual(mac, want)
+        body = {"text": e["data"]["text"], "session": "sess-mac", "project": p.slug, "ts": e["ts"]}
+        self.assertIsInstance(e["data"].get("headless"), bool)  # T-5938: written on every prompt, under the MAC
+        body["headless"] = e["data"]["headless"]
+        self.assertEqual(mac, g._mac(g._secret(), body))
         self.assertEqual([x["data"]["text"] for x in c.genuine_prompts(p)], ["please add a flag"])
 
     def test_prompt_mac_changes_with_each_of_text_session_and_time(self):
@@ -256,6 +258,109 @@ class PromptMac(ForemanTestCase):  # T-4844: the prompt event carries an HMAC un
             hooks.user_prompt_submit({"session_id": "s", "cwd": self.repo, "prompt": "no key please"})
         e = c.ledger_events(c.find_project(self.repo), ["prompt"])[-1]
         self.assertNotIn("mac", e["data"])
+
+    # T-5938 round 4: a prompt a program, a nested claude or a terminal typer may have sent carries `headless`, under the MAC
+    ASK = "please keep pushing to main now"
+
+    def sent(self, *, hc="hc", program=False, nested=False, typed=None, agent_id=None, text=None):
+        from sampo import hooks
+        os.environ.pop("FOREMAN_NO_PROMPT_MAC", None)
+        pl = {"session_id": "sess-sent", "cwd": self.repo, "prompt": text or self.ASK}
+        if agent_id:
+            pl["agent_id"] = agent_id
+        with mock.patch.object(hooks, "_hook_claude", return_value=hc), \
+                mock.patch.object(hooks, "_sent_by_program", return_value=program), \
+                mock.patch.object(hooks, "_claude_id", return_value="cid"), \
+                mock.patch.object(hooks, "_nested_claude", return_value=nested), \
+                mock.patch.object(c, "typed_refuse", return_value=typed):
+            hooks.user_prompt_submit(pl)
+        p = c.find_project(self.repo)
+        return p, [e for e in c.ledger_events(p, ["prompt"]) if (e.get("data") or {}).get("text")][-1]
+
+    def test_a_prompt_the_user_typed_in_the_main_session_is_not_flagged(self):
+        p, e = self.sent()
+        self.assertIs(e["data"].get("headless"), False)  # written explicitly: standing_ship_quote trusts only that after PROMPT_FLAG_FROM
+        self.assertEqual([x["data"]["text"] for x in c.genuine_prompts(p)], [self.ASK])
+
+    def test_a_prompt_the_user_grants_would_refuse_is_flagged_and_still_signed(self):
+        for kw in ({"program": True}, {"nested": True}, {"typed": "a typer ran"}, {"agent_id": "sub-1"}, {"hc": None}):
+            with self.subTest(kw):
+                p, e = self.sent(**kw)
+                self.assertIs(e["data"].get("headless"), True, kw)
+                self.assertTrue(e["data"].get("mac"), kw)
+
+    def test_a_process_that_cannot_be_walked_fails_closed(self):
+        from sampo import hooks
+        os.environ.pop("FOREMAN_NO_PROMPT_MAC", None)
+        with mock.patch.object(hooks, "_hook_claude", side_effect=RuntimeError("no /proc")):
+            hooks.user_prompt_submit({"session_id": "sess-sent", "cwd": self.repo, "prompt": self.ASK})
+        p = c.find_project(self.repo)
+        e = [x for x in c.ledger_events(p, ["prompt"]) if (x.get("data") or {}).get("text")][-1]
+        self.assertIs(e["data"].get("headless"), True)
+
+    def test_a_prompt_that_matches_nothing_never_walks_the_processes(self):
+        # review: _nested_claude (a /proc walk) and typed_refuse (a directory listing) ran on every logged prompt; only an
+        # ask a quote could be made of needs the flag (standing_ship_quote reads userwords.find of the stored text)
+        from sampo import hooks
+        os.environ.pop("FOREMAN_NO_PROMPT_MAC", None)
+        with mock.patch.object(hooks, "_hook_claude", return_value="hc"), \
+                mock.patch.object(hooks, "_sent_by_program", return_value=False), \
+                mock.patch.object(hooks, "_claude_id", return_value="cid"), \
+                mock.patch.object(hooks, "_nested_claude", return_value=False) as walk, \
+                mock.patch.object(c, "typed_refuse", return_value="a typer ran") as typed:
+            hooks.user_prompt_submit({"session_id": "sess-sent", "cwd": self.repo, "prompt": "fix the bug in the parser"})
+            walk.assert_not_called()
+            typed.assert_not_called()
+            hooks.user_prompt_submit({"session_id": "sess-sent", "cwd": self.repo, "prompt": self.ASK})
+            walk.assert_called_once()  # one walk serves the flag and the grants check
+            typed.assert_called_once()
+        p = c.find_project(self.repo)
+        rows = [x for x in c.ledger_events(p, ["prompt"]) if (x.get("data") or {}).get("text")]
+        self.assertIs(rows[0]["data"].get("headless"), False)
+        self.assertIs(rows[1]["data"].get("headless"), True)
+
+    def test_what_is_stored_never_differs_from_what_was_matched(self):
+        # round 5: the flag used to run userwords.find on the raw text, but the ledger keeps plain_lines(redact(text)): a
+        # prompt whose stored form reads as an ask the raw text never matched is flagged all the same
+        p, e = self.sent(text="please keep pu​shing to main now", nested=True)
+        self.assertIs(e["data"].get("headless"), True)
+        p, e = self.sent(text="fix the bug in the parser again", nested=True)
+        self.assertIs(e["data"].get("headless"), False)  # reads as no ask: nothing to quote, no walk
+
+    def test_a_zero_width_split_ask_from_a_nested_claude_is_flagged_and_no_quote(self):
+        p, e = self.sent(text="please keep pu​shing to main now", nested=True)
+        self.assertIs(e["data"].get("headless"), True)
+        self.assertIn("keep pushing to main", e["data"]["text"])  # the stored text reads as a plain ask
+        quote, why = c.standing_ship_quote(p, "keep pushing to main now")
+        self.assertEqual(quote, "")
+        self.assertIn("no prompt of theirs", why)
+
+    def test_the_flag_is_under_the_mac_so_stripping_it_fails_verification(self):
+        p, e = self.sent(program=True)
+        self.assertEqual(len(c.genuine_prompts(p)), 1)
+        self.assertNotEqual(c._prompt_body(e), c._prompt_body({**e, "data": {k: v for k, v in e["data"].items() if k != "headless"}}))
+        path = os.path.join(p.dir, "ledger.jsonl")
+        with open(path, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+        out = []
+        for ln in lines:
+            row = json.loads(ln) if ln.strip() else None
+            if row and row.get("event") == "prompt" and (row.get("data") or {}).get("headless"):
+                del row["data"]["headless"]
+                ln = json.dumps(row)
+            out.append(ln)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(out) + "\n")
+        self.assertEqual(c.genuine_prompts(p), [])
+
+    def test_an_old_unflagged_event_still_verifies(self):
+        p, e = self.sent()
+        self.assertEqual(c._prompt_body(e), {"text": e["data"]["text"], "session": "sess-sent", "project": p.slug, "ts": e["ts"],
+                                             "headless": False})  # the user's own prompt says so under the MAC
+        c.log_event(p, "prompt", data={"text": "old words", "mode": "x"}, session="sess-old", seal=c.prompt_sealer()[0])
+        old = [x for x in c.ledger_events(p, ["prompt"]) if x["data"].get("text") == "old words"][0]
+        self.assertEqual(c._prompt_body(old), {"text": "old words", "session": "sess-old", "project": p.slug, "ts": old["ts"]})
+        self.assertEqual(len(c.genuine_prompts(p)), 2)  # it verifies; standing_ship_quote trusts it only before PROMPT_FLAG_FROM
 
 
 class HookCase(ForemanTestCase):

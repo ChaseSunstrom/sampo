@@ -104,6 +104,22 @@ class Tight(unittest.TestCase):
                 self.assertEqual(asked(said), [("triggers-budget", every)])
 
 
+class KeepPushedQuote(unittest.TestCase):
+    """T-5938 review: the sentence the verb stores as the standing ship's quote is the sentence that asks, not the message."""
+
+    def why(self, said):
+        found = [a for v, a in uw.find(said) if v.name == "standing-ship"]
+        return found[0]["why"] if found else None
+
+    def test_the_quote_is_the_asking_sentence_alone(self):
+        self.assertEqual(self.why("The train is slow today. Please keep pushing to main! Then rest."), "Please keep pushing to main!")
+        self.assertEqual(self.why("Thanks for the fix; keep main pushed. Next, the docs."), "keep main pushed.")
+        self.assertEqual(self.why("keep pushing to main"), "keep pushing to main")
+
+    def test_a_dot_inside_a_word_does_not_end_the_sentence(self):
+        self.assertEqual(self.why("on v1.2 keep pushing to origin/main"), "on v1.2 keep pushing to origin/main")
+
+
 class OneUse(ForemanTestCase):
     def setUp(self):
         super().setUp()

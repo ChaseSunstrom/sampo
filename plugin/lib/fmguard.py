@@ -465,6 +465,9 @@ def _message(block, ctx):
         return (f"Ward: blocked self-authorize: {detail}. Protected core (Sampo code, rules, evals, "
                 f"BUILD_PROMPT.md, settings) and remote sessions need the user's approval, which an agent can't grant: "
                 + _ASK.format(id=tid, cat="<" + "|".join(sorted(USER_ONLY)) + ">") + ".")
+    if cat == "confine" and str(detail).startswith("sampo ship auto"):  # T-5938
+        return ("Ward: blocked confine: sampo ship auto on|off. A builder or a headless pilot never turns the project's standing "
+                "ship on or off (it pushes trunk after every land): the user says so in their own words, and the main session runs it.")
     if cat == "confine" and str(detail).startswith("sampo check"):  # T-4785
         return (f"Ward: blocked confine: {detail}. A builder runs the gates (sampo check, check list, check office) but "
                 f"never changes them: report the gate change you need to the main thread, which sets the project's gates.")
@@ -6768,7 +6771,7 @@ def _may_set(text):
         text = re.sub(r"[\"'\\]", "", text)
     return any(h in text for h in _STATE_HINTS)
 _SAMPO_PROGS = ("sampo", "fm")
-_SAMPO_NAMES = "FOREMAN_STATE|FOREMAN_HOME|SAMPO_HOME|FOREMAN_PILOT_CLAUDE|FOREMAN_PILOT_VERB|FOREMAN_PILOT_HEADLESS|FOREMAN_PILOT_LANE"  # T-5766 (T-5889: the lane too): the programs the lane pilot runs detached, unseen by this guard
+_SAMPO_NAMES = "FOREMAN_STATE|FOREMAN_HOME|SAMPO_HOME|FOREMAN_PILOT_CLAUDE|FOREMAN_PILOT_VERB|FOREMAN_PILOT_HEADLESS|FOREMAN_PILOT_LANE|FOREMAN_LAND_STANDING_SHIP|SAMPO_LAND_STANDING_SHIP"  # T-5938: the land's ship marker is the land's alone. T-5766 (T-5889: the lane too): the programs the lane pilot runs detached, unseen by this guard
 _SAMPO_LIST = tuple(_SAMPO_NAMES.split("|"))
 _GEN_NAMES = r"HOME|TMPDIR|TMP|TEMP|XDG_\w+"
 _STATE_UNQUOTE = lazy(r"\\\n|[\"'\\]")  # the shell joins FOREMAN_"STATE" and FOREMAN_\STATE into one word
@@ -9170,6 +9173,9 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
                     "verb it is)")):
                 found.append(("confine", why))  # T-4785: a builder never changes the project's gates
                 confined = True  # its own reason says more than the general one below
+            elif getattr(ctx, "confine", None) and tsub == "ship" and _ship_auto_on(trest):
+                found.append(("confine", "sampo ship auto on|off"))  # T-5938: a builder or headless pilot never turns on the project's standing ship
+                confined = True
             else:
                 confined = False
             # T-4785 round 7: and the verb chain is read as typed for every session (no credited value), so the shell
@@ -11731,6 +11737,42 @@ def _builder_check(rest):
     if verb not in BUILDER_CHECK_READ or (verb == "affected" and (len(words) > 1 or {"--clear", "--for"} & flags)):
         return f"sampo check {verb} changes the project's gates"
     return ""
+
+
+_SHIP_FLAGS = ("--watch", "--check", "--head")
+_SHIP_VALUED = ("--why", "--remote", "--test", "--chance", "--task")
+
+
+def _ship_filled(w):
+    return _unliteral(w) or _unresolvable(w) or bool(re.search(r"[*?\[]|[<>]\(", w))
+
+
+def _ship_auto_on(rest):
+    """T-5938: whether `sampo ship <rest>` may turn the standing ship on or off: `auto` as the FIRST positional word (the
+    command reads it as the subcommand only there; the options' values are not positional words) followed by a word `on`
+    or `off`, or a word the shell fills in or splits where a positional word could be (it could be either). An option's
+    value the shell fills in is free for --task alone (`--task "$TID"`: the grant's id). Only the confined caller's rule
+    (a builder, the lane pilot's headless claude): the command itself refuses the same two in a lane."""
+    pos, i = [], 0
+    while i < len(rest):
+        w = rest[i]
+        i += 1
+        if w.startswith("-") and w != "-":
+            opt, eq, val = w.partition("=")
+            if _ship_filled(opt):
+                return True  # the option's own name is filled in at run time
+            hits = [o for o in _SHIP_FLAGS + _SHIP_VALUED if o.startswith(opt)] if opt.startswith("--") else []
+            if not any(h in _SHIP_VALUED for h in hits):
+                continue
+            if not eq and i < len(rest):
+                val, i = rest[i], i + 1
+            if _ship_filled(val) and set(hits) != {"--task"}:
+                return True
+            continue
+        if _ship_filled(w):
+            return True
+        pos.append(w)
+    return pos[:1] == ["auto"] and any(w in ("on", "off") for w in pos[1:])  # round 3: off too
 
 
 def _fm_stored(sub, rest, fm_args):

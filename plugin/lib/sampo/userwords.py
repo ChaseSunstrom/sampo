@@ -101,7 +101,37 @@ def run_budget(p, args):
     return f"Trigger budget set from your words: {', '.join(args['triggers'])} now have {what}."
 
 
-VERBS = (Verb("triggers-budget", find_budget, run_budget),)
+# ---------------------------------------------------------------- verb: keep main pushed (T-5938)
+
+# "keep pushing to main", "keep main pushed", "make sure to keep pushing main": a plain, whole-sentence ask to ship trunk
+# to the remote's main after each train. The sentence is the quote the standing ship stores.
+_KEEP_PUSH = (re.compile(rf"\bkeep\s+(?:on\s+)?(?:pushing|shipping)(?:\s+(?:it|trunk|everything|this))?\s+(?:to\s+)?(?:origin(?:/|\s+)|the\s+remote'?s?\s+)?main\b{_TAIL}", re.I),
+              re.compile(rf"\bkeep\s+(?:origin(?:/|\s+))?main\s+(?:pushed|shipped|up\s+to\s+date){_TAIL}", re.I))
+
+
+def find_keep_pushed(clean):
+    """{"why": the sentence} for a plain ask to keep main pushed, else None: the one sentence (cut at a . ! or ; followed
+    by a space or the end) the ask is in, capped at 300, never the rest of the message."""
+    if _NEGATED.search(clean):
+        return None
+    for rx in _KEEP_PUSH:
+        m = rx.search(clean)
+        if m:
+            ends = [e.end() for e in re.finditer(r"[.!;]+(?=\s|$)", clean)]
+            start = max([e for e in ends if e <= m.start()], default=0)
+            end = min([e for e in ends if e >= m.end()], default=len(clean))
+            return {"on": True, "why": clean[start:end].strip()[:300]}
+    return None
+
+
+def run_keep_pushed(p, args):
+    if getattr(p, "lane", None):  # the hook runs in the user's session; a lane's project never turns it on
+        return "Standing ship not turned on: this is a builder lane."
+    c.set_standing_ship(p, True, args["why"], "the prompt hook")
+    return "Keep main pushed, from your words: the standing ship is on, so the land now ships trunk to the remote's main after each train that merged."
+
+
+VERBS = (Verb("triggers-budget", find_budget, run_budget), Verb("standing-ship", find_keep_pushed, run_keep_pushed))
 
 
 # ---------------------------------------------------------------- the hook's entry

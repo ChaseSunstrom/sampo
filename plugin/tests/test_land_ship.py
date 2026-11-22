@@ -264,7 +264,8 @@ class Sha(ShipCase):
             return got
         with mock.patch.object(train, "_ship_request", side_effect=request):
             out = self.land_here()
-        self.assertRegex(out, r"(?m)^Ship ended without a result.*next land")
+        # T-5938: the killed ship's marker is read (and cleared) with a line of its own, which the summary now carries
+        self.assertRegex(out, r"(?m)^(Ship ended without a result.*next land|Ship \(.*\): ship pid \d+ .* is gone: )")
         self.assertNotIn("STALE", out)
 
     def test_sha_the_ship_pushes_the_head_it_read_while_later_trains_land(self):
@@ -349,6 +350,194 @@ class Sha(ShipCase):
         until(lambda: not train._ship_alive(self.p), 10, "the killed ship to read dead")
 
 
+class Died(ShipCase):
+    """T-5938: a ship that dies or is killed leaves a line in ship.log (the project's one place to read what a ship did) and
+    the next ship goes ahead: nothing waits on its dead pid. On 2026-11-22 the log held no line for a ship that was gone."""
+
+    def log(self):
+        try:
+            with open(os.path.join(self.p.dir, "ship.log"), encoding="utf-8") as f:
+                return f.read()
+        except OSError:
+            return ""
+
+    def dead_marker(self, grant="T-0001"):
+        gone = subprocess.Popen(["true"])  # a real pid that has ended and been reaped: never a stub's
+        gone.wait()
+        os.makedirs(os.path.dirname(train._ship_marker(self.p)), exist_ok=True)
+        with open(train._ship_marker(self.p), "w") as f:
+            json.dump({"pid": gone.pid, "ticks": 4242, "started": time.time() - 90, "want": "x", "ship_head": "x",
+                       "grant": grant, "final": True, "log": "x"}, f)
+        return gone.pid
+
+    def test_died_a_marker_whose_ship_is_gone_leaves_one_line_and_is_cleared(self):
+        pid = self.dead_marker()
+        got = train._ship_reap(self.p)
+        self.assertEqual(got["pid"], pid)
+        self.assertIn(f"pid {pid}", self.log())
+        self.assertRegex(self.log(), r"(?m)^\d\d:\d\d:\d\d ship pid \d+ .*gone")
+        self.assertFalse(os.path.exists(train._ship_marker(self.p)), "the dead ship's marker is cleared")
+        self.assertIsNone(train._ship_reap(self.p), "a second look finds nothing and says nothing more")
+        self.assertEqual(self.log().count(f"pid {pid}"), 1)
+        rec = train.ship_last(self.p)
+        self.assertTrue(rec and rec["exit"] and not rec["seen"], "sampo status tells how it ended")
+
+    def test_died_a_running_ship_is_never_reaped(self):
+        sleeper = subprocess.Popen(["sleep", "30"])
+        self.addCleanup(sleeper.wait)
+        self.addCleanup(sleeper.kill)
+        os.makedirs(os.path.dirname(train._ship_marker(self.p)), exist_ok=True)
+        with open(train._ship_marker(self.p), "w") as f:
+            json.dump({"pid": sleeper.pid, "ticks": train._ticks(sleeper.pid), "started": time.time(), "want": "x",
+                       "ship_head": "x"}, f)
+        self.assertIsNone(train._ship_reap(self.p))
+        self.assertEqual(self.log(), "")
+        self.assertTrue(os.path.exists(train._ship_marker(self.p)))
+        os.remove(train._ship_marker(self.p))
+
+    def test_died_the_next_ship_starts_at_once_and_the_log_says_why_it_did_not_wait(self):
+        self.lanes_ready(1)
+        self.open(9)
+        pid = self.dead_marker()
+        got = train._ship_request(self.p, self.repo, True)
+        self.assertEqual(got[0], "started", got)
+        self.assertIn(f"ship pid {pid}", self.log())
+        until(lambda: not train._ship_alive(self.p), 90, "the fresh ship to end")
+
+    def test_died_an_in_line_ship_goes_ahead_beside_a_dead_marker_and_says_so(self):
+        from unittest import mock
+        self.lanes_ready(1)
+        pid = self.dead_marker()
+        t0 = time.monotonic()
+        with mock.patch.dict(os.environ, {"FOREMAN_LAND_SHIP_WAIT_S": "600"}), \
+                mock.patch.object(train, "_sampo", return_value=(0, "nothing to ship", "")) as ran:
+            train._ship(self.p, True, self.repo)
+        ran.assert_called_once()
+        self.assertLess(time.monotonic() - t0, 30, "no wait on a pid that is gone")
+        self.assertIn(f"ship pid {pid}", self.log())
+
+    @staticmethod
+    def zombie(pid):
+        """True when pid is dead but not yet reaped (or gone): read from /proc, nothing is signalled."""
+        try:
+            with open(f"/proc/{pid}/stat") as f:
+                return f.read().rpartition(")")[2].split()[0] == "Z"
+        except OSError:
+            return True
+
+    @staticmethod
+    def group(pgid):
+        """The live (not zombie) processes of process group pgid, read from /proc: nothing is signalled."""
+        out = []
+        for d in os.listdir("/proc"):
+            if not d.isdigit():
+                continue
+            try:
+                with open(f"/proc/{d}/stat") as f:
+                    rest = f.read().rpartition(")")[2].split()
+            except OSError:
+                continue
+            if rest and rest[0] != "Z" and int(rest[2]) == pgid:
+                out.append(int(d))
+        return out
+
+    def children_of(self, pid):
+        out = []
+        for d in os.listdir("/proc"):
+            try:
+                with open(f"/proc/{d}/stat") as f:
+                    if d.isdigit() and int(f.read().rpartition(")")[2].split()[1]) == pid:
+                        out.append(int(d))
+            except (OSError, ValueError, IndexError):
+                continue
+        return out
+
+    def test_died_a_ship_killed_by_sigterm_says_so_clears_its_marker_and_takes_its_ship_with_it(self):
+        ids = self.lanes_ready(1)
+        self.fm("lane", "land", env={"SAMPO_LAND_SHIP_WAIT_S": "2"}, timeout=240)
+        m = until(lambda: train._ship_alive(self.p), 30, "the ship to run")
+        until(lambda: re.search(r"ship of [0-9a-f]{9} on ", self.log()), 60, "the ship to say it started")
+        until(lambda: self.pushes(), 60, "the ship to reach its push (held by the origin: the grant is spent)")
+        kids = until(lambda: self.children_of(m["pid"]), 30, "the ship's own process")
+        mine = [k for k in kids if self.group(k)]
+        self.assertTrue(mine, "the ship runs in a group of its own")
+        self.assertNotIn("publish", self.brief(ids[0]).meta.get("allow") or [], "the push spent the grant")
+        os.kill(m["pid"], signal.SIGTERM)
+        until(lambda: not train._ship_alive(self.p), 30, "the ship to end")
+        self.assertRegex(self.log(), r"(?m)^\d\d:\d\d:\d\d ship pid \d+ .*SIGTERM")
+        self.assertFalse(os.path.exists(train._ship_marker(self.p)), "its marker never outlives it")
+        rec = train.ship_last(self.p)
+        self.assertTrue(rec and rec["exit"] == 128 + signal.SIGTERM, rec)
+        for k in mine:  # the ship it ran, and the push it held, never go on without it
+            until(lambda k=k: not self.group(k), 15, f"the ship's process group {k} to be gone")
+        self.assertEqual(self.files() & {"a.txt"}, set(), "nothing was pushed")
+        self.assertIn("publish", self.brief(ids[0]).meta.get("allow") or [], "its push never landed: the grant is back")
+        self.assertRegex(self.log(), r"(?m)^\d\d:\d\d:\d\d ship pid \d+ .*SIGTERM.*given back")
+        self.assertNotIn("untouched", self.log())
+
+    def term_child(self, out, tid=None):
+        """_ship_child here over a marker of this process: its ship mock raises the ship's end by SIGTERM carrying `out`
+        (what the ship had printed). (the lane's id, what the child printed, its return)."""
+        import contextlib
+        import io
+        from unittest import mock
+        from sampo import release
+        tid = tid or self.lanes_ready(1)[0]
+        if tid != c.STANDING_SHIP:  # the standing grant is never spent
+            release._spend(self.p, tid, "a ship")
+            self.assertNotIn("publish", self.brief(tid).meta.get("allow") or [])
+        path = train._ship_marker(self.p)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            json.dump({"pid": os.getpid(), "ticks": train._ticks(os.getpid()), "started": time.time(), "want": "a" * 40,
+                       "ship_head": "", "again": False, "final": True}, f)
+        err = train._ShipTerm(signal.SIGTERM)
+        err.ship_out = out
+
+        buf = io.StringIO()
+        with mock.patch.object(train, "_ship_run", side_effect=err), contextlib.redirect_stdout(buf):
+            rc = train._ship_child({"project": [self.p.slug, self.p.root, self.p.dir, self.p.lane], "main": self.repo,
+                                    "grant": tid})
+        return tid, buf.getvalue(), rc
+
+    def test_died_a_signal_before_the_push_landed_gives_the_spent_grant_back_and_says_so(self):
+        tid, out, rc = self.term_child("tests passed\n")
+        self.assertEqual(rc, 128 + signal.SIGTERM)
+        self.assertIn("publish", self.brief(tid).meta.get("allow") or [], "no push was seen to land: the grant is held again")
+        self.assertRegex(out, r"SIGTERM.*given back")
+        self.assertNotIn("untouched", out)
+
+    def test_died_a_signal_after_the_push_landed_leaves_the_grant_spent_and_says_so(self):
+        tid, out, rc = self.term_child(f"shipped 1 to origin main at {'c' * 40} (the publish grant is spent).\n")
+        self.assertNotIn("publish", self.brief(tid).meta.get("allow") or [], "its push landed: one yes is one push")
+        self.assertRegex(out, r"SIGTERM.*push (landed|had landed).*spent")
+        self.assertNotIn("given back", out)
+
+    def test_died_a_signal_for_the_standing_grant_says_it_stays_on(self):
+        c.set_standing_ship(self.p, True, "keep pushing to main", "test")
+        tid, out, rc = self.term_child("tests passed\n", tid=c.STANDING_SHIP)
+        self.assertEqual(rc, 128 + signal.SIGTERM)
+        self.assertRegex(out, r"SIGTERM.*standing ship.*(stays on|never spent)")
+        self.assertNotIn("given back", out)
+
+    def test_died_a_hand_ships_claim_whose_pid_is_gone_is_taken_over_with_a_line(self):
+        from sampo import release
+        gone = subprocess.Popen(["true"])
+        gone.wait()
+        with c.lock(self.p.dir):
+            meta = c.read_meta(self.p)
+            meta["ship_claim"] = {"pid": gone.pid, "ticks": 4242, "started": round(time.time(), 1), "at": "", "head": "h",
+                                  "picks": [], "task": "T-0007"}
+            c.write_meta(self.p, meta)
+        self.assertIsNone(release._ship_claim(self.p, "h2", [], "T-0008"), "the dead claim never holds the next ship")
+        self.assertRegex(self.log(), rf"ship pid {gone.pid} .*T-0007.*gone")
+        self.assertEqual(c.read_meta(self.p)["ship_claim"]["task"], "T-0008")
+        with c.lock(self.p.dir):  # leave no claim behind for the teardown
+            meta = c.read_meta(self.p)
+            meta.pop("ship_claim")
+            c.write_meta(self.p, meta)
+
+
 class Cap(unittest.TestCase):
     def test_cap_a_grandchild_holding_the_output_never_outlives_the_ships_time_limit(self):
         # review: `for ln in proc.stdout` on a pipe never saw EOF while a process that left the group held it, so the cap
@@ -366,6 +555,41 @@ class Cap(unittest.TestCase):
         self.assertLess(took, 15, "the cap ended the ship at its limit, not when the grandchild let go of the output")
         self.assertIn("started", out, "what the ship printed before the cap is kept")
         self.assertIn("timed out", out)
+
+    def test_cap_a_signal_after_the_ship_exited_still_ends_what_it_left_in_its_group(self):
+        """T-5938 review: the ship's own process was reaped, a process it left running in its group was not: the signal
+        that ends the land's ship ends that too (the group is killed whether or not the leader is still there)."""
+        import tempfile
+        from unittest import mock
+        calls = []
+
+        def once(*a):  # the signal lands while the output is read, after the ship was waited for
+            calls.append(1)
+            if len(calls) == 1:
+                raise train._ShipTerm(signal.SIGTERM)
+            return "00:00:00"
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(train, "_hms", side_effect=once), \
+                mock.patch("sys.stdout", new=open(os.devnull, "w")):
+            with self.assertRaises(train._ShipTerm) as got:
+                train._ship_run(tmp, "T-0001", "0" * 40, argv=["sh", "-c", "sleep 41 & echo $!"])
+        pid = int(got.exception.ship_out.split()[0])  # a real pid: the one the script printed
+        self.addCleanup(lambda: subprocess.run(["kill", "-9", str(pid)], capture_output=True))
+        end = time.monotonic() + 10
+        while time.monotonic() < end and os.path.exists(f"/proc/{pid}") and not Died.zombie(pid):
+            time.sleep(0.1)
+        self.assertTrue(not os.path.exists(f"/proc/{pid}") or Died.zombie(pid), "the process the ship left behind is gone")
+
+    def test_cap_the_ships_environment_carries_neither_spelling_of_the_land_marker_for_a_task_grant(self):
+        import tempfile
+        from unittest import mock
+        names = (c.LAND_SHIP_ENV, "SAMPO_" + c.LAND_SHIP_ENV.partition("_")[2])
+        probe = [sys.executable, "-c", f"import os; print('seen=' + ','.join(k for k in {names!r} if os.environ.get(k)))"]
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {k: "land" for k in names}), \
+                mock.patch("sys.stdout", new=open(os.devnull, "w")):
+            rc, out = train._ship_run(tmp, "T-0001", "0" * 40, argv=probe)
+            self.assertEqual((rc, out.strip()), (0, "seen="), "a task's grant gets no marker, in either spelling")
+            rc, out = train._ship_run(tmp, c.STANDING_SHIP, "0" * 40, argv=probe)
+            self.assertIn(c.LAND_SHIP_ENV, out, "the standing grant gets the marker")
 
 
 class Grant(ShipCase):
@@ -393,6 +617,22 @@ class Grant(ShipCase):
         train._settle(self.p, tid, 0, self.SHIPPED, {"final": False, "land_pid": os.getpid(),
                                                      "land_ticks": train._ticks(os.getpid())})
         self.assertTrue(self.held(tid), "its own push spent it and a later train will ask again")
+
+    def test_grant_a_push_cut_short_by_an_interrupt_gives_the_spent_grant_back_unless_the_remote_has_it(self):
+        """T-5938 review: the grant is spent before the push; a Ctrl-C between them skipped the give-back (it sat in an
+        `except Exception`), leaving the grant spent for a push that never happened."""
+        from unittest import mock
+        from sampo import release
+        tid = self.lanes_ready(1)[0]
+        with mock.patch.object(release, "_git", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                release._push_main(self.p, tid, "b" * 40, "origin", "a hand ship")
+        self.assertTrue(self.held(tid), "nothing reached origin's main: the grant is back")
+        tip = subprocess.run(["git", "-C", self.origin, "rev-parse", "main"], capture_output=True, text=True).stdout.strip()
+        with mock.patch.object(release, "_git", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                release._push_main(self.p, tid, tip, "origin", "a hand ship")
+        self.assertFalse(self.held(tid), "origin's main is at the sha: the push landed, one yes is one push")
 
     def test_grant_a_refused_ship_gives_nothing_back(self):
         tid = self.spent()
