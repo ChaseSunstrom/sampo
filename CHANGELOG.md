@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- A lane that changes the lane pipeline's own modules is express and trains first, a parked one leads sampo next, the verify pass and the watch follow take new code at their next unit, and sampo status shows the median filed-to-in-use time of pipeline fixes, flagged above an hour (T-5735).
 - Lane brief and task plan print every plan gap at once with a PLANS.json skeleton, lane brief starts the cold rival read itself, and --why works for every reason verb (T-5728).
 - A closed task's follow-ups are drained in one pass: each is filed as before, and up to six small ones (trivial or small by the paths they name) become one batch host for a haiku builder, from the land settle and from sampo task follow ID --drain (T-5717).
 - The lead's context is kept down: an idle lead over 60% at a task boundary is typed /compact and a one-line focus from sampo resume (tmux, once per 30 minutes, never over typed text or a dialog), or shown the line by the Stop hook without tmux; sampo cost --lead measures cache-read tokens per turn (T-5769).
