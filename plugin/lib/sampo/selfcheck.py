@@ -218,8 +218,37 @@ def wait_turns(p, briefs, now):
             "or work on something else")
 
 
+STUCK_CALL_S = 12 * 60  # T-5045: a Bash call may run 10 min at most (its own timeout cap); two more and it is hung
+
+
+def stuck_agent_calls(p, briefs, now):
+    """T-5045: a subagent's foreground Bash call running past STUCK_CALL_S (the PreToolUse stamp, core.stamp_call; a Post or
+    the agent's end clears it) is named with agent, command and age, and what to do about it. This project's calls only:
+    the stamp's cwd is under the project's root (a lane's worktree is), so another project's builder isn't named here.
+    Any tool counts, bar Agent/Task/Monitor (they wait on others by design). A parent thread waits on it silently, so
+    nothing else would say it: besides the Stop sweep and the timer, any subagent's next call ticks this check (hooks._stuck_tick). Read uncached: a few small files."""
+    from sampo import lanes
+    real = os.path.realpath
+    main = real(p.root or "")
+    try:  # a tick from a builder in a lane has a project rooted at that lane: scan the main checkout's homes, siblings too
+        main = c.main_worktree(main) or main
+    except Exception:  # noqa: BLE001 — git unreadable: this root's own homes
+        pass
+    homes = (main, *lanes._lane_homes(main))  # the repo, <repo>.lanes/ and <repo>/.claude/worktrees/, real paths
+    rows = [r for r in c.stuck_calls(STUCK_CALL_S, now)
+            if not r["cwd"] or any(real(r["cwd"]) == h or real(r["cwd"]).startswith(h + os.sep) for h in homes)]
+    if not rows:
+        return None
+    # the command is the agent's text: a secret in it never reaches the alert, the log, the desktop or the user's command
+    what = lambda r: c.fit(" ".join(c.plain(c.redact(r["cmd"])).split()), 80) if r["cmd"] else (r.get("tool") or "a tool call")
+    shown = [f"agent {r['agent']} has run `{what(r)}` for {_age(now - r['at'])}" for r in rows[:2]]
+    more = f" (+{len(rows) - 2} more)" if len(rows) > 2 else ""
+    return Hit("; ".join(shown) + more + " → message it (SendMessage) to see where it waits, or stop it (TaskStop)",
+               tell=True, level=int(rows[-1]["at"]))  # each new hang tells again, the same one once
+
+
 CHECKS += (slow_jobs, repeats)
-LIVE = (wait_turns,)  # cheap reads, run past the cache: a wait shows on the next turn, not 5 minutes on
+LIVE = (wait_turns, stuck_agent_calls)  # cheap reads, run past the cache: a wait shows on the next turn, not 5 minutes on
 
 
 WAIT_MIN, RATE_H = 5, 2  # T-3478: lanes waiting before the rate is worth a line; the window it is measured over
@@ -610,6 +639,11 @@ def notify(p, text):
         c.append_line(os.path.join(p.dir, "alerts.jsonl"), json.dumps({"at": c.now(), "text": c.plain(text)}) + "\n")
     except OSError:
         pass
+    deliver(p, text)
+
+
+def deliver(p, text):
+    """notify's slow half: the user's notify command (30 s) or notify-send (10 s), no alerts.jsonl row."""
     if c.read_meta(p).get("notify"):
         from sampo import serve
         serve._notify(p, text)
@@ -636,6 +670,22 @@ def _spawn(p, argv):
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True).pid
     except OSError:
         return None
+
+
+_DELIVER_PY = ("import sys; sys.path.insert(0, sys.argv[1]); from sampo import core as c, selfcheck; "
+               "p = c.find_project(sys.argv[2]); p and selfcheck.deliver(p, sys.argv[3])")
+
+
+def notify_detached(p, text):
+    """notify for a caller that must not wait (a hook): the alerts.jsonl row now, the desktop or the user's command (up to
+    30 s) from a detached child at nice 19. No child where _spawn starts none (FOREMAN_NO_BACKGROUND): the row is it."""
+    try:
+        c.append_line(os.path.join(p.dir, "alerts.jsonl"), json.dumps({"at": c.now(), "text": c.plain(text)}) + "\n")
+    except OSError:
+        pass
+    import sys
+    lib = os.path.dirname(os.path.dirname(os.path.abspath(c.__file__)))
+    _spawn(p, [sys.executable, "-I", "-c", _DELIVER_PY, lib, p.root, c.plain(text)[:300]])
 
 
 def act(p, briefs=None, now=None, checks=None, spawn=_spawn, tell=notify):

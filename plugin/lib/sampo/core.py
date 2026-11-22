@@ -1044,6 +1044,82 @@ def unstamp_typed(key):
         pass
 
 
+CALL_KEEP = 86400  # a call stamp whose end never came (a crash) is dropped after this: housekeeping, not a rule
+CALL_CMD = 400     # characters of the command a call stamp keeps
+
+
+def calls_dir():
+    return os.path.join(state_dir(), "calls")
+
+
+def stamp_call(key, session=None, agent=None, command="", cwd="", tool=""):
+    """T-5045: a subagent's foreground tool call (PreToolUse) leaves one small file, `key` its tool_use_id: who (agent,
+    session), what (command, cut to CALL_CMD), where (cwd), when (at) and the boot. PostToolUse removes it (call_done),
+    the agent's end removes what no Post reported (calls_end); stuck_calls reads it. Apart from the typing stamps on
+    purpose: those refuse a switch while they run, these only let a hung call be named. A lost write reads as no stamp,
+    so the hook that stamps logs the error. Files past CALL_KEEP go here, so the folder stays small."""
+    d = calls_dir()
+    os.makedirs(d, exist_ok=True)
+    t = time.time()
+    for n in os.listdir(d):
+        try:
+            if t - os.stat(os.path.join(d, n)).st_mtime > CALL_KEEP:
+                os.remove(os.path.join(d, n))
+        except OSError:
+            pass
+    rec = {"at": t, "agent": str(agent or ""), "session": str(session or ""), "cmd": plain(redact(str(command or "")))[:CALL_CMD],  # redacted before the cut: a token cut in half would slip past
+           "cwd": str(cwd or ""), "tool": str(tool or "")[:80], "boot": _boot()}
+    write_atomic(os.path.join(d, _typed_name(key)), json.dumps(rec))
+
+
+def call_done(key):
+    """The call `key` is over (a Post, or the guard refused it). Gone already counts as done."""
+    try:
+        os.remove(os.path.join(calls_dir(), _typed_name(key)))
+    except OSError:
+        pass
+
+
+def calls_end(session=None, agent=None):
+    """A thread ended: SubagentStop (`agent`) clears that agent's calls, SessionEnd (`session`) all of that session's."""
+    d = calls_dir()
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return
+    for n in names:
+        rec = _call_read(os.path.join(d, n))
+        if rec and ((agent and rec["agent"] == agent) or (session and not agent and rec["session"] == session)):
+            call_done(n)
+
+
+def _call_read(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            rec = json.load(f)
+        at = rec["at"]
+        if not isinstance(at, (int, float)) or isinstance(at, bool):
+            return None
+        s = lambda k: rec.get(k) if isinstance(rec.get(k), str) else ""
+        return {"at": at, "agent": s("agent"), "session": s("session"), "cmd": s("cmd"), "cwd": s("cwd"), "tool": s("tool"), "boot": s("boot")}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+
+
+def stuck_calls(older_than, now=None):
+    """T-5045: the subagent calls begun more than `older_than` seconds before `now` and not reported over, oldest first.
+    A stamp from another boot (a reboot ended its call) or unreadable is skipped, never raised."""
+    d, boot = calls_dir(), _boot()
+    now = time.time() if now is None else now
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return []
+    out = [r for n in names if (r := _call_read(os.path.join(d, n))) and now - r["at"] > older_than
+           and (not r["boot"] or not boot or r["boot"] == boot)]
+    return sorted(out, key=lambda r: r["at"])
+
+
 def typed_refuse():
     """T-4747: None when a /fm-risk or /fm-trust prompt may pass, else (running, until): the one rule, for every session on
     this machine (a pane can be typed into from any of them). Refused while a stamp is younger than its own quiet time

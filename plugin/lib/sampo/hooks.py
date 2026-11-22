@@ -2301,6 +2301,7 @@ def _typed_done(raw, event="PostToolUse"):
             key = f"{json.loads(raw).get('session_id')}.noid"
         else:
             return
+        c.call_done(key)  # T-5045: a subagent's call is over (one failed unlink when it left no stamp)
         rec = c.typed_rec(key)
         if rec is None:
             return
@@ -2319,7 +2320,7 @@ def _typed_end(raw, event):
     interrupted turn leaves a stamp "running" for good otherwise). Each becomes finished now, its quiet time still
     follows. Nothing on disk to clear: nothing parsed."""
     try:
-        if not os.path.isdir(c.typed_dir()):
+        if not os.path.isdir(c.typed_dir()) and not os.path.isdir(c.calls_dir()):
             return
         pl = json.loads(raw) if raw.strip() else {}
         sid = pl.get("session_id") if isinstance(pl, dict) else None
@@ -2327,8 +2328,10 @@ def _typed_end(raw, event):
             return
         if event == "SessionEnd":
             c.typed_end(sid, all_=True)
+            c.calls_end(session=sid)  # T-5045
         elif event == "SubagentStop" and pl.get("agent_id"):
             c.typed_end(sid, agent=pl.get("agent_id"))
+            c.calls_end(agent=pl.get("agent_id"))  # T-5045
         elif event == "Stop":
             c.typed_end(sid)
     except Exception:
@@ -2340,7 +2343,9 @@ def _pre_typed(raw):
     that types into a terminal (_typing_call) is stamped as running before the guard looks at it; when the guard denies
     it (it never runs, so it types nothing) the stamp goes again. The stamp is logged as an event with the names matched
     (never the command). A broken stamp is logged and the guard's answer stands."""
-    key = None
+    key = ckey = None
+    if '"agent_id"' in raw:
+        ckey = _stamp_call(raw)
     if '"Bash"' in raw or '"Monitor"' in raw or "mcp__" in raw or any(f'"{t}"' in raw for t in _TYPING_WRITES):
         try:
             pl = json.loads(raw)
@@ -2358,7 +2363,7 @@ def _pre_typed(raw):
         except Exception:  # no stamp reads as no typing: log it; the guard's own answer still stands
             log_error("PreToolUse", _tb())
             key = None
-    if key is None:
+    if key is None and ckey is None:
         return _pre_tool_use(raw)
     import io
     out, real = io.StringIO(), sys.stdout
@@ -2373,10 +2378,58 @@ def _pre_typed(raw):
     sys.stdout.write(text)
     if code == 2 or '"permissionDecision": "deny"' in text:
         try:
-            c.unstamp_typed(key)
+            if key is not None:
+                c.unstamp_typed(key)
+            if ckey is not None:
+                c.call_done(ckey)  # T-5045: a refused call never runs, so no Post will clear it
         except Exception:
             log_error("PreToolUse", _tb())
     return code
+
+
+_CALL_UNSTAMPED = ("Agent", "Task", "Monitor")  # these wait on others or run on by design: no 12-minute limit fits
+
+
+def _stuck_tick(pl):
+    """T-5045: a subagent's call is a moment a parent may be waiting with no Stop to come: at most once a minute per
+    project, the stuck_agent_calls check runs (a stat and a few small files) and a hung call is told. Never raises."""
+    try:
+        p = c.find_project(_cwd(pl))
+        if not p:
+            return
+        stamp = os.path.join(p.dir, "stuck.tick")
+        try:
+            if time.time() - os.path.getmtime(stamp) < 60:
+                return
+        except OSError:
+            pass
+        open(stamp, "w").close()
+        from sampo import selfcheck
+        selfcheck.act(p, [], checks=(selfcheck.stuck_agent_calls,), tell=selfcheck.notify_detached)  # never wait on a notifier here
+    except Exception:
+        log_error("PreToolUse", _tb())
+
+
+def _stamp_call(raw):
+    """T-5045: a subagent's foreground Bash call leaves a call stamp (core.stamp_call: agent, command, start) so a call that
+    hangs is named by the stuck_agent_calls self-check. The main thread's calls (no agent_id), background calls (they
+    return at once) and calls without a tool_use_id (nothing to clear them by) leave none. The key, or None; a broken
+    stamp is logged and the guard's answer stands."""
+    try:
+        pl = json.loads(raw)
+        ti = pl.get("tool_input") if isinstance(pl, dict) and isinstance(pl.get("tool_input"), dict) else {}
+        tid = pl.get("tool_use_id") if isinstance(pl, dict) else None
+        tool = pl.get("tool_name")
+        if not isinstance(tool, str) or tool in _CALL_UNSTAMPED or not pl.get("agent_id") or not isinstance(tid, str) \
+                or not tid or ti.get("run_in_background"):
+            return None
+        c.stamp_call(tid, session=pl.get("session_id"), agent=pl.get("agent_id"), command=ti.get("command"),
+                     cwd=_cwd(pl), tool=tool)
+        _stuck_tick(pl)
+        return tid
+    except Exception:
+        log_error("PreToolUse", _tb())
+        return None
 
 
 def _nested_claude(hc):
