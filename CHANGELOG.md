@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- `sampo next` and the self-check now name finished lanes nobody accepted for a day (the oldest, with accept or rm), and `sampo lane brief` holds a new builder while more than two trains of lanes wait to land unless `--why` gives a reason (T-4938).
 - Cache report lists the classes that rerun on every change, costliest first, with the cause run.py now keeps for each (T-5484).
 - A lane check's repo-shape stage runs once for the lanes waiting on it, on one merged scratch tree, marking each member green at its tip; a red or cut batch runs each lane alone (T-5380).
 - A capture naming a file in an open task's scope no longer appends onto a task whose lane has merged or is held by a builder; it files as its own task, so the close gate isn't left refusing a follow-up no builder saw (T-5363).
