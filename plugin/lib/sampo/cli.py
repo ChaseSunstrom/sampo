@@ -8823,7 +8823,8 @@ _REVIEW_OUT = ("Verify each finding by reading the code (cite file:line). Output
                "category (kebab-case), verdict (CONFIRMED|PLAUSIBLE, optional); most severe first.")
 
 
-_FINDING = re.compile(r"(?m)^[ \t]*(?:[-*]|\d+[.)]?)?[ \t]*(?:\*\*|#+[ \t]*)?\[?(?:CRIT(?:ICAL)?|HIGH|MED(?:IUM)?)\b[\s*:—–\]-]*(.+)$")
+_FINDING = re.compile(r"(?mi)^[ \t]*(?:[-*]|\d+[.)]?)?[ \t]*(?:\*\*|#+[ \t]*)?\[?(?:" + c.BLOCKING_WORDS
+                      + r")\b[\s*:—–\]-]*(.+)$")  # T-5706: the one severity set (core), any case; LOW is no past finding
 PAST_FINDINGS = 6  # per lens, newest reviews first
 
 
@@ -12399,11 +12400,17 @@ def _build_parser(only=None):
                                                        "recover --all: every lane stopped before its merge, one launch line each (T-3922)")
     s.add_argument("action", choices=["new", "list", "rm", "brief", "merge", "max", "resume", "recover", "race", "pick",
                                       "stats", "verify", "train", "precheck", "land", "andon", "accept", "mode", "start",
-                                      "classify", "fixes", "local", "say"])  # say: sampo lane say ID delta|fix|merge-trunk [steer], the round message built from state, no model (T-5953); local: the headless run of a --model local brief (T-5884); fixes: the review's findings for the lane's builder (T-5477); classify: the detached pass a builder brief starts (T-5723), not typed
+                                      "classify", "fixes", "local", "say",  # say: sampo lane say ID delta|fix|merge-trunk [steer], the round message built from state, no model (T-5953); local: the headless run of a --model local brief (T-5884); fixes: the review's findings for the lane's builder (T-5477); classify: the detached pass a builder brief starts (T-5723), not typed
+                                      "pilot"])  # pilot: a returned lane's headless review and accept (T-5706)
     s.add_argument("--all", action="store_true", help="list: every lane's row, or in a builder's lane its own row and a "
                                                       "count of the others (T-5687); recover: every lane stopped before its "
                                                       "merge, one launch line each or the reason it's left (T-3922); merge: "
-                                                      "every finished lane (T-3119)")
+                                                      "every finished lane (T-3119); "
+                                                      "pilot: every returned lane with no reviewed tip (T-5706)")
+    s.add_argument("--dry", action="store_true", help="pilot: print each lane's plan (lenses, model) or why it would stop, "
+                                                      "and run no reviewer and no accept (T-5706)")
+    s.add_argument("--max", type=int, default=None, metavar="N", help="pilot --all: at most N returned lanes this run "
+                                                                       "(T-5706)")
     s.add_argument("--audit", nargs=3, action="append", metavar=("LENS", "HOW", "RESULT"),
                    help="accept: one audit of the lane, three values: LENS HOW RESULT (its lens, how it was done, the result); "
                         "repeat the whole --audit LENS HOW RESULT per lens, never two values (T-3922, T-4391)")

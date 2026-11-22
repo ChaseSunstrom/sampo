@@ -80,7 +80,7 @@ def child_cmd(model, system, system_file=None):
     """The prompt goes in on stdin and a big system text in a file (system_file): packs can exceed the per-argument
     size limit."""
     c.refuse_if_paused()  # T-0591: fm relate's child comes through here too
-    return ["claude", "-p", "--model", model, "--no-session-persistence", "--output-format", "json", *NO_TOOLS,
+    return ["claude", *READ_ONLY_FLAGS, "-p", "--model", model, "--no-session-persistence", "--output-format", "json", *NO_TOOLS,
             "--max-budget-usd", f"{budget.effective()[0]['run']:g}",  # T-0776: a hard stop at the per-command cap
             *(["--append-system-prompt-file", system_file] if system_file else ["--append-system-prompt", system])]
 
@@ -100,31 +100,148 @@ def _tail(s, n):
     return s if len(s) <= n else "…" + s[1 - n:]
 
 
-def _child_dir():
-    """T-0856: the one private folder every tool-less child runs in. Claude Code makes a ~/.claude/projects folder
-    per working directory, so a fresh temp dir per child left 564 of them. OSError when it isn't ours to use."""
+READ_ONLY_FLAGS = ("--disable-slash-commands",)  # T-5706 round 6: no skill or slash command from any folder (an --add-dir lane's too)
+
+
+def harden(argv):
+    """argv with READ_ONLY_FLAGS after `claude -p`'s name when it is a claude launch and lacks them: whatever built a
+    read-only child's argv, the launcher adds what keeps a lane's skills and commands out. Any other argv is returned as is."""
+    argv = list(argv)
+    if argv and os.path.basename(str(argv[0])) == "claude":
+        argv[1:1] = [f for f in READ_ONLY_FLAGS if f not in argv]
+    return argv
+
+
+MEMORY_ENV = "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD"  # T-5706 round 4: makes claude load CLAUDE.md from --add-dir
+
+
+# T-5706 round 6: what Claude Code loads from the cwd and every parent of it: memory, rules, settings, skills, commands,
+# agents and output styles (all under .claude), and MCP servers
+MEMORY_NAMES = ("CLAUDE.md", "CLAUDE.local.md", ".claude", ".mcp.json")
+
+
+def _ours(st):
+    """True for a path we own that no one else can write (an lstat result, never a link)."""
     import stat
-    d = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir(), f"fm-children-{os.getuid()}")
-    try:
-        os.mkdir(d, 0o700)
-    except FileExistsError:
-        pass
-    st = os.lstat(d)  # never a link or someone else's folder (a shared /tmp)
-    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid() or stat.S_IMODE(st.st_mode) != 0o700:
-        raise OSError(f"{d} isn't a private folder of ours")
-    return d
+    return st.st_uid == os.getuid() and not stat.S_ISLNK(st.st_mode) and not st.st_mode & 0o022
 
 
-def _child_cwd(feature):
-    import contextlib
+def _unsafe_ancestor(path, st_of=os.lstat):
+    """T-5706 round 6: the first folder from path up to / that someone other than us could have swapped after we checked it,
+    as a path, else ''. path itself must be ours; each parent ours or root's. A folder that group or others can write
+    (a sticky /tmp too), another user's, a link or one we cannot read is unsafe: fail closed. st_of is os.lstat (a test's
+    stand-in for a tree it cannot own)."""
+    import stat
+    d, first = os.path.realpath(path), True
+    while True:
+        try:
+            st = st_of(d)
+        except OSError:
+            return d
+        owner_ok = st.st_uid == os.getuid() if first else st.st_uid in (os.getuid(), 0)
+        if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode) or not owner_ok or st.st_mode & 0o022:
+            return d
+        up = os.path.dirname(d)
+        if up == d:
+            return ""
+        d, first = up, False
+
+
+def safe_root():
+    """T-5706 round 6: the folder fresh child folders are made in: XDG_RUNTIME_DIR when it is absolute, ours, and nothing
+    from it up to / can be written by group or others or belongs to another user, else ~/.cache/sampo/children (made 0700)
+    on the same terms. Never /tmp: anyone who can write a parent can plant a CLAUDE.md that every child under it reads, or
+    swap a folder after the check. OSError when neither qualifies."""
+    run, tried = os.environ.get("XDG_RUNTIME_DIR") or "", []
+    root = os.path.join(os.path.expanduser("~"), ".cache", "sampo", "children")
+    for d in (run if os.path.isabs(run) else "", root):
+        if not d:
+            continue
+        try:
+            if d == root:
+                os.makedirs(d, mode=0o700, exist_ok=True)
+            bad = "" if _ours(os.lstat(d)) else d
+            bad = bad or _unsafe_ancestor(d)
+        except OSError:
+            bad = d
+        if not bad:
+            return os.path.realpath(d)
+        tried.append(bad)
+    raise OSError(f"no folder of ours to run children in ({', '.join(tried)} can be written by someone else or is not ours)")
+
+
+def config_dir_problem():
+    """T-5706 round 6: CLAUDE_CONFIG_DIR when it is set and is not a folder of ours with a safe chain above it (the child
+    would read its settings, hooks and credentials), else ''. Unset is the user's own ~/.claude: no problem."""
+    d = os.environ.get("CLAUDE_CONFIG_DIR") or ""
+    if not d:
+        return ""
     try:
-        return contextlib.nullcontext(_child_dir())
+        return d if not os.path.isabs(d) or not _ours(os.lstat(d)) or _unsafe_ancestor(d) else ""
     except OSError:
-        return tempfile.TemporaryDirectory(prefix=f"fm-{feature}-", dir=os.environ.get("XDG_RUNTIME_DIR") or None)
+        return d
 
 
-def _child_env():
-    return dict(os.environ, FOREMAN_NO_BACKGROUND="1")  # a child never starts Foreman's own background reviews
+def _memory_in_chain(cwd):
+    """The first CLAUDE.md, CLAUDE.local.md, .claude/ or .mcp.json in cwd or a parent of it that we did not make (not ours,
+    or one others can write), as a path, else ''. Claude Code reads them from every parent of its cwd. The user's own
+    ~/.claude and CLAUDE.md (theirs, mode 0644 or tighter) pass."""
+    d = os.path.realpath(cwd)
+    while True:
+        for name in MEMORY_NAMES:
+            try:
+                st = os.lstat(os.path.join(d, name))
+            except OSError:
+                continue
+            if not _ours(st):  # a link, another user's, or one others can write: anyone could have planted its text
+                return os.path.join(d, name)
+        up = os.path.dirname(d)
+        if up == d:
+            return ""
+        d = up
+
+
+def fresh_cwd(feature):
+    """T-5706 rounds 5 and 6: a context manager for one headless run's cwd: a new 0700 folder made under safe_root, removed
+    when the run ends. OSError (nothing started) when there is no safe root or the folder or a parent of it holds
+    configuration we did not make."""
+    import contextlib
+    import shutil
+
+    @contextlib.contextmanager
+    def made():
+        d = tempfile.mkdtemp(prefix=f"fm-{feature}-", dir=safe_root())
+        try:
+            os.chmod(d, 0o700)
+            bad = _memory_in_chain(d)
+            if bad:
+                raise OSError(f"{bad} would load as configuration in a child's folder: refusing to start (remove it)")
+            yield d
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+    return made()
+
+
+def sanitize_env(env, read_only=True):
+    """env with what a lane or a model could use to steer a headless claude removed: the switch that loads CLAUDE.md from
+    an --add-dir folder (any CLAUDE_CODE_*ADDITIONAL_DIRECTORIES* name). A read-only child also gets the switches that turn
+    off CLAUDE.md loading and customizations altogether (Claude Code 2.1.330: CLAUDE_CODE_DISABLE_CLAUDE_MDS,
+    CLAUDE_CODE_SAFE_MODE; a claude that does not know them ignores them)."""
+    for k in [k for k in env if k.startswith("CLAUDE_CODE_") and "ADDITIONAL_DIRECTORIES" in k]:
+        del env[k]
+    if read_only:
+        env["CLAUDE_CODE_DISABLE_CLAUDE_MDS"] = "1"
+        env["CLAUDE_CODE_SAFE_MODE"] = "1"
+    return env
+
+
+def child_env(read_only=True):
+    """A headless child's environment: Sampo's own, with FOREMAN_NO_BACKGROUND (it starts no background reviews of its own)
+    and sanitize_env. OSError when CLAUDE_CONFIG_DIR names a folder that is not ours to trust (config_dir_problem)."""
+    bad = config_dir_problem()
+    if bad:
+        raise OSError(f"CLAUDE_CONFIG_DIR {bad} can be written by someone else or is not ours: refusing to start")
+    return sanitize_env(dict(os.environ, FOREMAN_NO_BACKGROUND="1"), read_only)
 
 
 def _registry(pid=""):
@@ -258,10 +375,15 @@ def run_child(feature, system, prompt, model, timeout, project=None, detail="", 
         budget.check(feature, budget.estimate(feature, 1, fallback))
     except budget.BudgetError as e:
         raise ValueError(str(e))
-    with _child_cwd(feature) as cwd:
+    import contextlib
+    with contextlib.ExitStack() as stack:
+        try:  # T-5706 round 6: a fresh private folder per child (never a shared one or /tmp) and a sanitized env
+            cwd, env = stack.enter_context(fresh_cwd(feature)), child_env()
+        except OSError as e:
+            raise ValueError(f"the {feature} child didn't run: {e}")
         try:
-            pr = _popen(child_cmd(model, system), timeout, cwd=cwd, text=True, stdin=subprocess.PIPE,
-                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=_child_env())
+            pr = _popen(harden(child_cmd(model, system)), timeout, cwd=cwd, text=True, stdin=subprocess.PIPE,
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
         except OSError as e:
             raise ValueError(f"the {feature} child didn't run: {e} (is `claude` on PATH and logged in?)")
         try:
@@ -296,24 +418,25 @@ def _usage_row(so, usd):
     return row
 
 
-def run_children(jobs, timeout, feature, cwd=None, warm=0, cache=None, usage=None):
+def run_children(jobs, timeout, feature, warm=0, cache=None, usage=None):
     """T-0295: [(argv, stdin, detail)] run in parallel in one scratch folder under one deadline, each recorded:
     [(text or None, error)]; both set is a partial answer (T-0959). OSError when one can't start (the started ones are
-    stopped). cwd: run there instead (T-1186: reviewers read the project). warm (T-1265): the first runs alone until it
+    stopped). Always a fresh private folder (T-5706 round 6: no caller names a cwd), the hardened argv and a sanitized env. warm (T-1265): the first runs alone until it
     ends or `warm` s pass, so what the jobs share is in the prompt cache for the rest; cache: a dict the prompt-cache
     tokens read and written are added to; usage (T-5842): a list that gets one _usage_row per job, in job order."""
     import contextlib
-    with (contextlib.nullcontext(cwd) if cwd else _child_cwd(feature)) as cwd:
+    with contextlib.ExitStack() as stack:
         procs, started = [], False
         try:
+            cwd, env = stack.enter_context(fresh_cwd(feature)), child_env()  # T-5706 round 5: fresh per run, never shared
             for i, (argv, stdin, detail) in enumerate(jobs):
                 if i == 1 and warm > 0:
                     try:
                         procs[0][0].wait(timeout=warm)
                     except subprocess.TimeoutExpired:
                         pass
-                pr = _popen(argv, timeout, cwd=cwd, text=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, env=_child_env())
+                pr = _popen(harden(argv), timeout, cwd=cwd, text=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, env=env)
                 procs.append((pr, detail))
                 try:
                     pr.stdin.write(stdin)

@@ -103,11 +103,19 @@ class Crossbreed(Base):
 
 
 class ChildFolder(ForemanTestCase):
-    def test_children_share_one_private_folder(self):
-        # T-0856: a fresh temp dir per child gave Claude Code a new ~/.claude/projects shell each time (564 of them)
+    def test_each_child_runs_in_its_own_fresh_private_folder_that_is_removed(self):
+        # T-5706 round 6: no shared persistent folder (T-0856's) and no /tmp fallback: a shared folder is a place a plant
+        # survives in; the cost, a ~/.claude/projects shell per run, is a fair price for no state between runs
         import stat
-        a, b = sideas._child_dir(), sideas._child_dir()
-        self.assertEqual(a, b)
-        st = os.lstat(a)
-        self.assertTrue(stat.S_ISDIR(st.st_mode))
-        self.assertEqual((st.st_uid, stat.S_IMODE(st.st_mode)), (os.getuid(), 0o700))
+        from unittest import mock
+        root = os.path.join(self.tmp, "root")
+        os.makedirs(root, mode=0o700)
+        with mock.patch.object(sideas, "safe_root", return_value=root):
+            with sideas.fresh_cwd("ideas") as a, sideas.fresh_cwd("ideas") as b:
+                self.assertNotEqual(a, b)
+                for d in (a, b):
+                    st = os.lstat(d)
+                    self.assertTrue(stat.S_ISDIR(st.st_mode))
+                    self.assertEqual((st.st_uid, stat.S_IMODE(st.st_mode), os.path.dirname(d)), (os.getuid(), 0o700, root))
+            self.assertEqual(os.listdir(root), [], "removed after the run")
+        self.assertFalse(hasattr(sideas, "_child_dir"), "the shared folder is gone")

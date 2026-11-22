@@ -1052,6 +1052,9 @@ def cmd_lane(args):
         from sampo import train
         args.id = " ".join(ids)
         return train.cmd(p, args, main, close=True)  # T-4596: what the train lands closes too (the close a land makes)
+    if args.action == "pilot":  # T-5706: a returned lane reviewed headless and accepted, with no lead turn
+        from sampo import lanepilot
+        return lanepilot.cmd(p, args, main)
     if not args.id:
         raise cli.UsageError(f"fm lane {args.action} needs a task id")
     if p.lane:  # T-0234 review: a lane (a builder's above all) doesn't hand itself back or start others
@@ -2871,7 +2874,12 @@ DEFECT_CLASSES = [
 # word ("## Self-review", "## Edge-cases"; T-5516 round 2). Group 2 is the suffix: the one shape for every reader of
 # lens headings (a looser copy recorded audits for "## Edge cases").
 _LENS_HEAD = re.compile(r"(?i)^#+\s*(?:lens:\s*)?(" + "|".join(c.AUDIT_LENSES) + r")(?:\s*[:—–]\s*|\s+-\s+|\s+-$|$)(.*)$")
-_FINDING =re.compile(r"(?i)^(?:[-*]|\d+[.)])\s*(CRITICAL|HIGH|MEDIUM|LOW)\s*[—–-]+\s*(\S+?)\s*[—–-]+\s*(.+)$")
+_FINDING = re.compile(r"(?i)^(?:[-*]|\d+[.)])\s*(" + c.SEVERITY_WORDS + r")\s*[—–-]+\s*(\S+?)\s*[—–-]+\s*(.+)$")
+
+
+def _severity(word):
+    """T-5706: the one severity a finding word names (CRIT is CRITICAL, MED is MEDIUM; core's definition)."""
+    return c.SEVERITY_ALIAS.get(word.upper(), word.upper())
 
 
 def _report_lines(msg):
@@ -2907,7 +2915,7 @@ def reviewer_findings(msg, cap=30, fixes=False):
             continue
         m = _FINDING.match(line)
         if m and len(out) < cap:
-            row = (lens, m.group(1).upper(), m.group(2)[:200], c.redact(m.group(3)).split(" — ")[0][:300])
+            row = (lens, _severity(m.group(1)), m.group(2)[:200], c.redact(m.group(3)).split(" — ")[0][:300])
             out.append(row + (_fix_of(m.group(3)),) if fixes else row)
     return out
 
@@ -3018,7 +3026,7 @@ _VERDICT = re.compile(r"(?i)^verdict\s*[—–:-]+\s*(.+)$")
 _VERDICT_APPROVE = ("approve", "approve with nits")  # T-5516: the only verdict words that record audits
 _VERDICT_CHANGES = ("changes needed", "changes-needed")  # the only words that mark the task for the builder
 _CLEAN_SUFFIX = re.compile(r"approve|approve with nits|ok|clean|pass|met|(?:no|\d+) findings?(?::.*)?")
-_BLOCKING = ("HIGH", "CRITICAL")  # a finding this severe keeps its lens from being recorded as clean
+_BLOCKING = c.BLOCKING_SEVERITIES  # T-5706: a finding this severe or worse (MEDIUM up) keeps its lens from being recorded as clean
 _OMITTED = re.compile(r"(?i)^(?:[-*]\s*)?\+\d+ more omitted\b")  # T-5598: a reviewer's "+N more omitted" under a heading
 
 
@@ -3058,9 +3066,9 @@ def review_tree(p, b):
 
 def reviewer_lenses(msg):
     """T-5516: {lens: finding count} for each '## lens: X' heading of a reviewer's report that is clean enough to record:
-    a heading whose suffix does not say it passed (round 2: an allowlist, see _clean_suffix), or a lens with a HIGH or
-    CRITICAL finding, is left out for the lead to record by hand. Only headings count (text before the first heading is
-    no lens), so a report with none gives {}."""
+    a heading whose suffix does not say it passed (round 2: an allowlist, see _clean_suffix), or a lens with a MEDIUM,
+    HIGH or CRITICAL finding (T-5706), is left out for the lead to record by hand. Only headings count (text before the
+    first heading is no lens), so a report with none gives {}."""
     counts, lens, unclean = {}, None, set()
     for line, h in _report_lines(msg):
         if h:
@@ -3075,7 +3083,7 @@ def reviewer_lenses(msg):
         m = _FINDING.match(line)
         if lens and m:
             counts[lens] += 1
-            if m.group(1).upper() in _BLOCKING:
+            if _severity(m.group(1)) in _BLOCKING:
                 unclean.add(lens)
     return {k: v for k, v in counts.items() if k not in unclean}
 

@@ -495,6 +495,8 @@ def _routed(p, b, models, args):
 def _claude_cmd(p, b, args, models):
     model = models.get(b.tier)
     from sampo import contract
+    # T-5706 round 6: not routed through ideas.fresh_cwd / child_env: `fm run` builds in the owner's own project (the
+    # cwd), with its CLAUDE.md, hooks and guard, as the owner would by hand; it is not a read-only child of a lane
     return ["claude", "-p", _prompt(p, b)] + (["--output-format", "json"] if getattr(args, "max_usd", None) is not None
                                               or getattr(args, "stall_usd", None) is not None
                                               or contract.tracks_usd(p)

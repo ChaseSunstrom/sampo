@@ -4507,6 +4507,52 @@ _TS_TAIL = lazy(r"\((\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)\)\s*$")
 DEFAULT_LENSES = ("intent", "adversary", "edge", "operator", "maintainer")  # what M/L reviews run by default
 # design (T-1501): advisory, never required; fm audit prep adds it only when the diff touches UI (ui_paths)
 AUDIT_LENSES = ("self",) + DEFAULT_LENSES + ("design",)
+# T-5706: the one severity definition. cli (past findings), lanes (reviewer_lenses) and auditrun (the pilot's verdict)
+# read these; a MEDIUM or worse finding keeps its lens from being recorded as clean.
+SEVERITIES = ("CRITICAL", "HIGH", "MEDIUM", "LOW")
+BLOCKING_SEVERITIES = ("CRITICAL", "HIGH", "MEDIUM")
+SEVERITY_ALIAS = {"CRIT": "CRITICAL", "MED": "MEDIUM"}
+SEVERITY_WORDS = "|".join(sorted(set(SEVERITIES) | set(SEVERITY_ALIAS), key=len, reverse=True))  # a regex alternation
+# the words a past finding is listed by (cli): a MEDIUM or worse one; a LOW one is no weak spot to start from
+BLOCKING_WORDS = "|".join(sorted(set(BLOCKING_SEVERITIES) | {a for a, s in SEVERITY_ALIAS.items()
+                                                             if s in BLOCKING_SEVERITIES}, key=len, reverse=True))
+# T-5706 round 2: a count line is the count and nothing else to the end of the line ('HIGH: 0', 'High: none',
+# 'HIGH: no findings', '- HIGH: 0 issues'). 'HIGH: no auth check on the route' is a finding and stays one.
+_COUNT_TAIL = r"\s*[:=]\s*(?:0|none|zero|no)(?:\s+(?:findings?|issues?))?\.?\s*$"
+# T-5706 round 3: a heading ('### HIGH — a.py:3 — x') and a numbered finding ('Finding 1 (HIGH)', 'Finding 2: HIGH') count
+_SEVERITY_LINE = re.compile(r"^(?:#+\s*)?(?:[-+*]|\d+[.)])?\s*(?:finding\s*\d*\s*[:.)-]?\s*\(?\s*)?"
+                            r"(?:severity\s*[:=-]?\s*)?(critical|crit|high|medium|med|low)\b"
+                            r"(?!" + _COUNT_TAIL + r")")
+
+
+# T-5706 round 3: the backstop's token: an upper-case severity word standing alone ('— HIGH —', '(MEDIUM)'), not a word
+# inside 'HIGH-risk' or 'HIGHLY', and not a count ('HIGH: 0')
+_SEVERITY_TOKEN = re.compile(r"(?<![\w-])(CRITICAL|CRIT|HIGH|MEDIUM|MED|LOW)(?![\w-])(?!" + _COUNT_TAIL + r")")
+
+
+def finding_severity_anywhere(line):
+    """T-5706 round 3: the worst severity a line names as a delimited upper-case token anywhere in it ('- a.py:3 — HIGH —
+    x', 'Finding 1 — HIGH: x'), or None. The backstop behind finding_severity, which reads a line's start: it scans a reply
+    whole, so a finding in a form or a section the start rule does not read still keeps a lens from being clean."""
+    text = re.sub(r"[`*\[\]]", " ", str(line))
+    found = [SEVERITY_ALIAS.get(m.group(1), m.group(1)) for m in _SEVERITY_TOKEN.finditer(text)]
+    return min(found, key=SEVERITIES.index) if found else None
+
+
+def finding_severity(line):
+    """T-5706: the severity a reviewer's finding line names (CRITICAL, HIGH, MEDIUM or LOW), or None. Case, markup
+    (backticks, bold, brackets), a 'Severity:' label and a table cell all count. A count line ('- HIGH: 0') is no
+    finding, and a severity word that is not at the start of a bullet, a number or a cell is none either."""
+    text = str(line)
+    if "|" in text:  # a table row: a cell that is just the severity word
+        for cell in text.split("|"):
+            word = cell.strip(" `*[]_").upper()
+            if word in SEVERITIES or word in SEVERITY_ALIAS:
+                return SEVERITY_ALIAS.get(word, word)
+    flat = " ".join(re.sub(r"[`*\[\]]", " ", text).split()).lower()
+    m = _SEVERITY_LINE.match(flat)
+    return SEVERITY_ALIAS.get(m.group(1).upper(), m.group(1).upper()) if m else None
+
 # Per tier: each set is satisfied by one audit with any lens in it (skills/intake/references/audit.md).
 # T-4220: the tiers, one list every reader takes. XL, HUGE and GIANT are big: a builder never takes one, its children do.
 TIERS = ("S", "M", "L", "XL", "HUGE", "GIANT")

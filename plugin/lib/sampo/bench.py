@@ -598,6 +598,8 @@ def _turn(wt, env, plugins, prompt, model, budget, timeout, resume=None, keep=Fa
     smodels.gate_here("a bench turn (claude -p)")  # T-5584: every claude -p start is gated, here too
     if not plugins and not settings:
         raise ValueError("a bypass-mode session needs the guard: a plugin with it, or its hook as --settings")
+    # T-5706 round 6: not routed through ideas.fresh_cwd / child_env: the cwd is the bench's own worktree of the owner's
+    # checkout, whose CLAUDE.md, settings and plugins are what a replay measures, and the guard finds its project there
     cmd = ["claude", "-p", prompt, *[x for d in plugins for x in ("--plugin-dir", d)],
            *(["--settings", settings] if settings else []), "--setting-sources",
            "project,local", "--output-format", "json", "--permission-mode", "bypassPermissions"] \

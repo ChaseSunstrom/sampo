@@ -176,7 +176,7 @@ def _run(event, raw):
     if event == "PostToolUse" and _lite(raw):  # lite: only the grant an approved fm ask dialog gives
         try:
             pl = json.loads(raw) if raw.strip() else {}
-            p = c.find_project(_cwd(pl))
+            p = c.find_project(_project_cwd(pl))
             if p and pl.get("tool_name") == "Bash":
                 _grant_prompted(pl, p)
         except Exception:
@@ -623,7 +623,7 @@ def _skill_named(pl, text, typed=False):
         m = _TYPED.match(str(text)) if typed else None
         names = ([m.group(1)] if m else []) if typed else sorted(set(_NAMED.findall(str(text))))
         if names:
-            p = c.find_project(_cwd(pl))
+            p = c.find_project(_project_cwd(pl))
             _event({"kind": "slash" if typed else "skill_named", "session_id": pl.get("session_id"),
                     "project": p.slug if p else None, "skills": names[:20]})
     except Exception:
@@ -647,6 +647,15 @@ def _event(rec):
 
 def _cwd(pl):
     return pl.get("cwd") or os.getcwd()
+
+
+def _project_cwd(pl):
+    """T-5706 round 6: the folder a call's project is found from. The lane pilot's headless claude runs in a scratch folder
+    outside every repo (so no CLAUDE.md of a lane or the repo loads), which would make every project-scoped check (the
+    train hold, the task's grants, the project root) find no project and fail open: under core.HEADLESS_ENV the project is
+    the lane's (core.headless_lane, from the pilot's own environment), whatever the cwd. Paths still resolve against _cwd."""
+    lane = c.headless_lane() if c.headless_pilot() else None
+    return lane or _cwd(pl)
 
 
 def _clean(s, limit=120):
@@ -944,7 +953,7 @@ def _agent_line(p):
 def _subagent_start(pl):
     """T-5685: a subagent's compaction gets the one line and no session side effects: the one-shot notes stay, and no
     holder mark or view is made. Its ledger row keeps the payload's key names, so the next real signal can be read back."""
-    p = c.find_project(_cwd(pl))
+    p = c.find_project(_project_cwd(pl))
     if not p:
         return None
     c.log_event(p, "session_start", data={"source": "compact", "root": c.PLUGIN_ROOT, "subagent": True,
@@ -996,7 +1005,7 @@ def session_start(pl):
     if pl.get("source") in (None, "startup", "resume"):  # T-4988: a new process may sit in a new scope; idle priority,
         from sampo import cpu                             # so its tests and builds leave the user's programs the CPU
         cpu.idle_at_start(_claude_pid())
-    p = c.find_project(_cwd(pl), create=not os.environ.get("FOREMAN_WORKER_OF"))  # T-1438: a worker sets up nothing
+    p = c.find_project(_project_cwd(pl), create=not os.environ.get("FOREMAN_WORKER_OF"))  # T-1438: a worker sets up nothing
     if not p:  # T-3672: a folder Sampo never set up still starts knowing the user, and how to register it
         note = "" if os.environ.get("FOREMAN_WORKER_OF") or _oneoff() else _profile_note(sid, new_folder=True)
         return {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": note}} if note else None
@@ -2608,7 +2617,7 @@ def _stuck_tick(pl):
     """T-5045: a subagent's call is a moment a parent may be waiting with no Stop to come: at most once a minute per
     project, the stuck_agent_calls check runs (a stat and a few small files) and a hung call is told. Never raises."""
     try:
-        p = c.find_project(_cwd(pl))
+        p = c.find_project(_project_cwd(pl))
         if not p:
             return
         stamp = os.path.join(p.dir, "stuck.tick")
@@ -2755,7 +2764,7 @@ def _user_grants(p, pl, text, sid, hc, program, memo=None):
 
 def user_prompt_submit(pl):
     sid = pl.get("session_id")
-    p = c.find_project(_cwd(pl), create=not os.environ.get("FOREMAN_WORKER_OF"))  # T-1438: a worker sets up nothing
+    p = c.find_project(_project_cwd(pl), create=not os.environ.get("FOREMAN_WORKER_OF"))  # T-1438: a worker sets up nothing
     if not p:
         return None
     if _oneoff():  # T-0775: the prompt is a question, not intake
@@ -3536,7 +3545,7 @@ def _outward_denial(pl):
     action = str(ti.get("action") or "") if isinstance(ti, dict) else ""
     if action in _READS or tool.startswith(OUTWARD_MCP) and tool[len(OUTWARD_MCP):] in _READS:
         return None
-    p = c.find_project(_cwd(pl))
+    p = c.find_project(_project_cwd(pl))
     if not p or not c.read_meta(p).get("sensitive"):
         return None
     return (f"Sampo: this repo is marked sensitive (sampo sensitive on), so {tool} can't send its content off the machine "
@@ -3623,7 +3632,7 @@ def _lane_fault(pl):
     mark = os.environ.get("FOREMAN_FAULT_LANE") or ""
     if not mark or os.path.exists(mark):
         return None
-    p = c.find_project(_cwd(pl))
+    p = c.find_project(_project_cwd(pl))
     if not p or not p.lane or not c._git(p.lane, "status", "--porcelain", fail="").strip():
         return None
     c.write_atomic(mark, json.dumps({"lane": p.lane, "at": c.now()}))
@@ -3733,7 +3742,7 @@ def _subagent_route(pl):
     its input rewritten (model haiku). At most budget.HELD_AGENTS run at once in the session; a fork and a Workflow run on
     the session's model, so they wait. No hold: no output."""
     from sampo import budget as sbudget
-    held = sbudget.subagent_pause(c.find_project(_cwd(pl)))  # the payload's project: its pace-off steer applies, not the hook's cwd
+    held = sbudget.subagent_pause(c.find_project(_project_cwd(pl)))  # the payload's project: its pace-off steer applies, not the hook's cwd
     if not held:
         return None  # T-5837: no hold decides nothing: the spawn table's rule and T-5497's fit note go on (0 means "answered")
     ti = pl.get("tool_input")
@@ -3764,7 +3773,7 @@ def _workflow_held(pl):
     denial is printed, False with no hold). A budget that fails to read never holds."""
     try:
         from sampo import budget as sbudget
-        held = sbudget.subagent_pause(c.find_project(_cwd(pl)))
+        held = sbudget.subagent_pause(c.find_project(_project_cwd(pl)))
     except Exception:
         log_error("PreToolUse", _tb())
         return False
@@ -4747,16 +4756,17 @@ def _guard_ctx(pl, fmguard, lanes=()):
     """T-4340: lanes are lane folders whose one open task is active there (just read or focused): the main session's
     edits strictly inside them are briefed (fmguard.Ctx.briefed_lanes); nothing else about the call changes."""
     cwd, home = _cwd(pl), os.path.expanduser("~")
+    pcwd = _project_cwd(pl)  # T-5706 round 6: the lane under the pilot's headless claude, else the cwd
     p = act = None
     try:
-        p = c.find_project(cwd)
+        p = c.find_project(pcwd)
         act = c.active_brief_fast(p, p.lane) if p else None
     except Exception:
         log_error("PreToolUse", "the working copy of sampo.core failed to read the task; trying the committed one "
                                 "(fix plugin/lib/sampo/core.py):\n" + _tb())
         try:  # a bug in the library mustn't hide the active task's grants (the fix itself would be refused)
             cc = _committed("sampo.core")
-            p = cc.find_project(cwd) if cc else None
+            p = cc.find_project(pcwd) if cc else None
             lane = getattr(p, "lane", None)  # a committed copy from before lanes only finds main checkouts
             act = (cc.active_brief(cc.load_briefs(p), lane) if lane else cc.active_brief(cc.load_briefs(p))) if p else None
         except Exception:
@@ -4766,7 +4776,7 @@ def _guard_ctx(pl, fmguard, lanes=()):
         meta = c.read_meta(p) if p else {}
     except Exception:
         meta = {}  # unreadable: no standing yes or trust, the guard asks as before
-    ctx = fmguard.Ctx(cwd=cwd, project_root=fmguard.project_root_for(cwd, home), home=home,
+    ctx = fmguard.Ctx(cwd=cwd, project_root=fmguard.project_root_for(pcwd, home), home=home,
                       foreman_home=c.foreman_home(), state_dir=c.state_dir(),
                       state_fallbacks=c.state_fallbacks(), scratch=scratch,
                       allow=set(act.meta.get("allow") or []) if act else set(), task_id=act.id if act else None,
@@ -5417,14 +5427,14 @@ def permission_request(pl):
     import fmguard
     cmd = (pl.get("tool_input") or {}).get("command") or "" if pl.get("tool_name") == "Bash" else ""
     if cmd and fmguard.read_only(cmd, _cwd(pl)):  # T-5916: a git part checks the repo the call runs in
-        p = c.find_project(_cwd(pl))
+        p = c.find_project(_project_cwd(pl))
         if p and c.read_meta(p).get("approve_reads"):
             c.log_event(p, "read_approved", data={"cmd": c.fit(cmd, 200)}, session=pl.get("session_id"))
             return {"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": {"behavior": "allow"}}}
     from sampo import anergy  # T-2563: a prompt a person sees; one answered above was never theirs
     anergy.record("ask", pl)
     args = fmguard.lone_fm_ask(cmd) if cmd else None
-    p = c.find_project(_cwd(pl)) if args else None
+    p = c.find_project(_project_cwd(pl)) if args else None
     if not p or not pl.get("session_id"):
         return None
     task, cats, _, _, pin, _, later = _ask_target(args)
@@ -5817,7 +5827,7 @@ def _post_tool_use(pl, ok=True):
             c.take_pause_stamp(pl.get("session_id"))
         except OSError:
             log_error("PostToolUse", _tb())
-    p = c.find_project(_cwd(pl))
+    p = c.find_project(_project_cwd(pl))
     if p:  # T-3422: a subagent's calls carry its parent's session_id and keep that session alive: no agent_id skip
         _touch_seen(p, pl.get("session_id"))
     rec = {"session_id": pl.get("session_id"), "kind": "tool" if ok else "tool_fail", "tool": tool,
@@ -6116,7 +6126,7 @@ def post_tool_validate(pl):
     beside the async catch-all that records every tool: a block needs a sync hook, and a plain matcher keeps every
     other tool's recording on the catch-all (a lookahead matcher could be rejected by some Claude Code surface)."""
     tool, ti = pl.get("tool_name", ""), pl.get("tool_input") or {}
-    p = c.find_project(_cwd(pl))
+    p = c.find_project(_project_cwd(pl))
     if p and (tool in ("WebFetch", "WebSearch") or tool.startswith("mcp__")):
         _outbound(pl, p, tool, ti)
         return _injection_note(pl, p, tool)
@@ -6408,7 +6418,7 @@ def _tool_miss(pl):
         name, kind = os.path.splitext(str(ti.get("file_path") or ""))[1][1:].lower(), "extension"
     else:
         return None
-    p = c.find_project(_cwd(pl))
+    p = c.find_project(_project_cwd(pl))
     return _capability_miss(p, pl.get("session_id"), err, name=name, kind=kind) if p else None
 
 
@@ -6450,7 +6460,7 @@ def post_tool_use_failure(pl):
     p = None
     try:  # T-1032: a known fix first, in any folder (this machine's fixes need no Foreman project)
         from sampo import fixes
-        p = c.find_project(_cwd(pl))
+        p = c.find_project(_project_cwd(pl))
         fix = fixes.on_failure(p, pl.get("session_id"), (pl.get("tool_input") or {}).get("command"), err)
     except Exception:
         log_error("PostToolUseFailure", _tb())
@@ -6501,7 +6511,7 @@ def pre_compact(pl):
         modelup.on_compact(pl)
     except Exception:
         log_error("PreCompact", _tb())
-    p = c.find_project(_cwd(pl))
+    p = c.find_project(_project_cwd(pl))
     if p:
         with c.lock(p.dir, timeout=LOCK_SLOW):
             c.checkpoint(p, auto=True, session=pl.get("session_id"))
@@ -6635,7 +6645,7 @@ def _stop(pl):
             mail = None
         if mail:
             return {"decision": "block", "reason": mail}
-    p = c.find_project(_cwd(pl))
+    p = c.find_project(_project_cwd(pl))
     if not p:
         return None
     try:  # T-1810: the session-start sweep's caches (CI, setup, usage burn), refreshed detached for every project
@@ -6956,7 +6966,7 @@ def wait_timer(raw):
     t0 = time.time()
     try:
         pl = json.loads(raw)
-        sid, p = str(pl.get("session_id") or ""), c.find_project(_cwd(pl))
+        sid, p = str(pl.get("session_id") or ""), c.find_project(_project_cwd(pl))
     except Exception:
         return 0
     if not sid or not p:
@@ -8201,7 +8211,7 @@ def task_completed(pl):
     m = re.search(r"\b(T-\d{4,})\s+step\s+(\d+)", pl.get("task_subject") or "")
     if not m:
         return None
-    p = c.find_project(_cwd(pl))
+    p = c.find_project(_project_cwd(pl))
     b = c.find_brief(p, m.group(1)) if p else None
     n = int(m.group(2))
     if b and not b.has_evidence(step=n):
@@ -8273,7 +8283,7 @@ def _mark_builder(pl, returned):
             else:
                 b.meta.pop("builder_returned", None)
     try:
-        p = c.find_project(_cwd(pl))
+        p = c.find_project(_project_cwd(pl))
         if not p:
             return
         # T-3535: scanned unlocked (each builder start and stop held the lock across every brief, mostly to match
@@ -8343,7 +8353,7 @@ def _close_fields(pl):
             _close_refused(pl, who)
         return
     try:
-        p = c.find_project(_cwd(pl))
+        p = c.find_project(_project_cwd(pl))
         b = c.find_brief(p, got["id"]) if p else None
         lane = str(b.meta.get("lane") or "") if b else ""
         if not lane or b.status in c.CLOSED or not os.path.isdir(lane):
@@ -8377,7 +8387,7 @@ def _close_refused(pl, who):
     if not tid:
         return
     try:
-        p = c.find_project(_cwd(pl))
+        p = c.find_project(_project_cwd(pl))
         b = c.find_brief(p, tid) if p else None
         if not b or b.status in c.CLOSED or not os.path.isdir(str(b.meta.get("lane") or "")):
             return
@@ -8626,7 +8636,7 @@ def subagent_stop(pl):
         pilotsig.returned(pl)
     except Exception:
         log_error("lane pilot", _tb())
-    p = c.find_project(_cwd(pl))
+    p = c.find_project(_project_cwd(pl))
     if p and pl.get("agent_type"):
         act = c.active_brief_fast(p, p.lane)
         c.log_event(p, "subagent", task=act.id if act else None,
@@ -8689,13 +8699,13 @@ def message_display(pl):
 
 
 def notification(pl):
-    p = c.find_project(_cwd(pl))
+    p = c.find_project(_project_cwd(pl))
     sd = c.state_dict(p) if p else None
     return {"terminalSequence": _notify_seq(pl.get("message") or "Claude Code needs your attention") + _title_seq(sd)}
 
 
 def session_end(pl):
-    p = c.find_project(_cwd(pl))
+    p = c.find_project(_project_cwd(pl))
     if p:
         sid = pl.get("session_id")
 

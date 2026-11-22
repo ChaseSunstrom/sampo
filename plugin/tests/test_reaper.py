@@ -15,7 +15,9 @@ from helpers import ForemanTestCase
 # its first argument): fast answers at once; orphan leaves without waiting; escape's grandchild leaves the group
 # (setsid) holding the pipes.
 STUB = r'''#!/bin/sh
-mode=${STUB_MODE:-$1}
+mode=${STUB_MODE:-}
+# T-5706 round 6: the launcher puts flags (--disable-slash-commands) before the stub's own first argument
+for a in "$@"; do case "$a" in -*) ;; *) mode=${STUB_MODE:-$a}; break;; esac; done
 if [ "$mode" = fast ]; then cat >/dev/null; echo '{"result": "ok", "total_cost_usd": 0.01}'; exit 0; fi
 if [ "$mode" = escape ]; then setsid sleep 20 & echo $! >> "$STUB_PIDFILE"; wait; exit; fi
 sleep 300 </dev/null >/dev/null 2>&1 &

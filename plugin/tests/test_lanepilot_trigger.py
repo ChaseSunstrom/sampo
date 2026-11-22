@@ -39,7 +39,8 @@ CLAUDE_STUB = (  # T-5766: a headless `claude -p`, stubbed: it logs its argv, cw
     "    'headless': os.environ.get('FOREMAN_PILOT_HEADLESS'), 'brief': open(os.environ['STUB_BRIEF']).read()\n"
     "    if os.environ.get('STUB_BRIEF') else ''}) + '\\n')\n"
     "if os.environ.get('STUB_COMMIT'):\n"
-    "    subprocess.run(['git', 'commit', '--allow-empty', '-qm', 'resolved'], check=True)\n"
+    "    lane = sys.argv[sys.argv.index('--add-dir') + 1]\n"  # T-5706: its cwd is a scratch folder, the lane is --add-dir
+    "    subprocess.run(['git', '-C', lane, 'commit', '--allow-empty', '-qm', 'resolved'], check=True)\n"
     "print('{\"result\": \"done\"}')\n"
 )
 
@@ -58,6 +59,10 @@ class LanePilot(ForemanTestCase):
         patch = mock.patch.dict(os.environ)  # the spawn tests need the background on; restored after each test
         patch.start()
         self.addCleanup(patch.stop)
+        from sampo import ideas  # T-5706 round 6: the headless run's root is checked up to /, and a test's tmp is under /tmp
+        walk = mock.patch.object(ideas, "_unsafe_ancestor", return_value="")
+        walk.start()
+        self.addCleanup(walk.stop)
         self.stub_bin = os.path.join(self.tmp, "stub_sampo.py")
         with open(self.stub_bin, "w", encoding="utf-8") as f:
             f.write(STUB)
@@ -448,8 +453,9 @@ class LanePilot(ForemanTestCase):
         self.assertEqual(res["outcome"], "returned", res)
         calls = self.claude_calls()
         self.assertEqual(len(calls), 1)
-        self.assertEqual(os.path.realpath(calls[0]["cwd"]), os.path.realpath(lane), "it runs in the lane's own worktree")
         argv = calls[0]["argv"]
+        self.assertEqual(os.path.realpath(argv[argv.index("--add-dir") + 1]), os.path.realpath(lane), "the lane's own worktree is --add-dir")
+        self.assertNotEqual(os.path.realpath(calls[0]["cwd"]), os.path.realpath(lane), "its cwd is a private scratch folder (T-5970)")
         self.assertEqual(argv[0], "-p")
         self.assertEqual(argv[argv.index("--agent") + 1], "sampo:fm-resolver")
         self.assertIn("--plugin-dir", argv, "the headless agent must load this plugin's agents")
