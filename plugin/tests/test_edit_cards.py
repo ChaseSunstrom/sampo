@@ -279,8 +279,11 @@ class ImportCards(_CardCase):
         self.assertTrue(os.path.exists(path), brief.stdout + brief.stderr)
         with open(path, encoding="utf-8") as f:
             text = f.read()
-        self.assertIn("Stack card checklists", text)
-        self.assertIn("react", text)
+        self.assertIn(f"{self.tid}.checklists.md", text, "T-5964: the brief names the checklists file, not the text")
+        with open(os.path.join(self.project().dir, "audits", f"{self.tid}.checklists.md"), encoding="utf-8") as f:
+            checklists = f.read()
+        self.assertIn("Stack card checklists", checklists)
+        self.assertIn("react", checklists)
 
     def test_fm_lib_stats_counts_injections_per_card(self):
         self.map([card("typescript", "lang", 5, "ext:.ts", "ext:.tsx"), card("react", "web", 3, "dep:react")])
@@ -314,7 +317,8 @@ class ImportCards(_CardCase):
         self.edit("Big.tsx")
         r = self.fm("audit", "prep", tid, check=False)
         self.assertEqual(r.returncode, 0, r.stderr[-500:])
-        self.assertIn("Stack card checklists", open(os.path.join(self.project().dir, "audits", f"{tid}.review.md")).read())
+        with open(os.path.join(self.project().dir, "audits", f"{tid}.checklists.md"), encoding="utf-8") as f:
+            self.assertIn("Stack card checklists", f.read())  # T-5964: the cards' checklists sit in the checklists file
 
     def test_review_cards_already_used_never_crowd_out_the_rest(self):
         # T-1036 review: the cap of two came before the already-injected filter, so later cards never fired

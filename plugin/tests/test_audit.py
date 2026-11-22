@@ -225,13 +225,17 @@ class DesignLens(HookCase):
         self.prep()
         self.write("m.py", body.replace("return 1", "return 2") + big.replace("    x = 0\n", "    x = 5\n"))
         text = self.brief()[1]
-        self.assertIn("Touched functions", text)
-        self.assertIn("def f():\n    return 2", text, "the body as the new tree has it")
-        self.assertIn("def h():\n    x = 5", text)
-        self.assertNotIn("def g():", text, "a function the diff didn't touch is not carried")
-        self.assertIn("cut", text, "the long one is cut at its cap")
-        block = text.split("Touched functions")[1].split("\n## ")[0]  # the head's block, up to the lens sections
-        self.assertLessEqual(len(block.encode()), lanes.TOUCHED_MAX + 400, "the block stays under its cap")
+        # T-5964: the bodies are read from their file on demand; the brief names that file and carries none of them
+        bodies_path = os.path.join(c.find_project(self.repo).dir, "audits", f"{self.tid}.touched.md")
+        self.assertIn(bodies_path, text)
+        self.assertNotIn("def f():", text, "a body is not inlined in the brief")
+        with open(bodies_path, encoding="utf-8") as f:
+            bodies = f.read()
+        self.assertIn("def f():\n    return 2", bodies, "the body as the new tree has it")
+        self.assertIn("def h():\n    x = 5", bodies)
+        self.assertNotIn("def g():", bodies, "a function the diff didn't touch is not carried")
+        self.assertIn("cut", bodies, "the long one is cut at its cap")
+        self.assertLessEqual(len(bodies.encode()), lanes.TOUCHED_MAX + 400, "the file stays under its cap")
 
     def test_hunk_header_text_is_plain_and_bounded(self):  # T-2312: repo text is data
         from sampo import lanes
@@ -856,3 +860,46 @@ class RiskDepthFull(_Env):
         os.environ["SAMPO_REVIEW_DEPTH"] = "full"
         got = self.depth(_task("S"), [SRC], _patch(SRC))
         self.assertEqual((got["full"], got["scored"], got["lenses"]), (True, "small", FIVE))
+
+
+class BriefSize(HookCase):
+    """T-5964: a review brief is under 8,000 characters: it names the diff, the tests and the checklists by path and
+    carries every lens's instructions; the diff, the tests and the checklists are read on demand, not inlined."""
+
+    def write(self, rel, text):
+        path = os.path.join(self.repo, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(text)
+
+    def test_a_fixture_lane_brief_is_under_8000_chars_names_its_files_and_keeps_every_lens(self):
+        self.fm("init")
+        body = "".join(f"    total += step_{k}(x)\n" for k in range(25))
+        base = "".join(f"def handle_{i}(x):\n    total = 0\n{body}    return total\n\n\n" for i in range(6))
+        self.write(SRC, base)
+        subprocess.run(["git", "-C", self.repo, "add", "-A"], check=True)
+        subprocess.run(["git", "-C", self.repo, "commit", "-qm", "base"], check=True)
+        tid = self.task(tier="M", scope=[SRC])
+        with open(os.path.join(c.find_project(self.repo).dir, "cards.json"), "w") as f:  # the task used a stack card
+            json.dump({tid: ["dynamodb"]}, f)
+        self.write(SRC, base.replace("total = 0", "total = 1").replace("return total", "return total + 1"))
+        self.write(SRC_TEST, "def test_handle_0():\n    assert handle_0(1) == 1\n\n\ndef test_handle_1():\n    assert True\n")
+        data = json.loads(self.fm("audit", "prep", tid, "--json", env={"SAMPO_REVIEW_DEPTH": "full"}).stdout)
+        with open(data["brief"]) as f:
+            brief = f.read()
+        self.assertLess(len(brief), 8000, f"the brief is {len(brief)} characters")
+        self.assertIn(data["review"], brief)
+        self.assertIn(data["tests"], brief)
+        self.assertIn(f"{tid}.checklists.md", brief)
+        with open(os.path.join(c.find_project(self.repo).dir, "audits", f"{tid}.checklists.md"), encoding="utf-8") as f:
+            checklists = f.read()
+        self.assertIn("### dynamodb", checklists, "the stack card's checklist is read on demand, from the checklists file")
+        self.assertNotIn("Stack card checklists", brief)
+        with open(os.path.join(c.PLUGIN_ROOT, "skills", "intake", "references", "audit.md"), encoding="utf-8") as f:
+            templates = {m.group(1): (m.group(2), m.group(3)) for m in cli._LENS_TPL.finditer(f.read())}
+        lenses = [x for x in data["lenses"] if x != "self"]
+        self.assertTrue(lenses, data["lenses"])
+        for lens in lenses:
+            context, prompt = templates[lens]
+            self.assertIn(f"## {lens}\nContext: {context}", brief)
+            self.assertIn(prompt, brief, f"the {lens} lens's instructions")
