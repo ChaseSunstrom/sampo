@@ -358,6 +358,94 @@ class HookMs(HookCase):
         self.assertNotIn("tool", ss)
 
 
+class PreToolTimeout(unittest.TestCase):  # T-5533: at load 50-65 on 16 cores the Python guard passed the 5 s limit, and
+    # Claude Code refused the call as a block (onFailure). Every PreToolUse entry gets 20 s and stays fail-closed.
+    def test_pretool_timeout_every_entry_is_twenty_seconds_and_still_fails_closed(self):
+        with open(os.path.join(os.path.dirname(HOOK), "hooks.json"), encoding="utf-8") as f:
+            entries = json.load(f)["hooks"]["PreToolUse"]
+        entry_hooks = [h for e in entries for h in e["hooks"]]
+        self.assertTrue(entry_hooks)
+        for h in entry_hooks:
+            self.assertEqual(h.get("timeout"), 20, h["command"])
+            self.assertEqual(h.get("onFailure"), "block", h["command"])
+
+
+class HookSlow(HookCase):  # T-5533: a PreToolUse call over 2 s logs a hook_slow event naming the tool and the slowest phase
+    def call(self, took, sid="sess-1", tool="Bash"):
+        """A PreToolUse call of `took` s: its guard stage ends 0.1 s before the end (the clock as stage_start leaves it),
+        then _stage_done runs as the atexit hook would run it at the process's end."""
+        from sampo import hooks
+        now = hooks._now()
+        hooks.STAGES.clear()
+        hooks.STAGES.update(t0=now, event="PreToolUse", imports=now + 0.05, sid=sid, tool=tool)
+        hooks.STAGES["guard"] = now + took - 0.1
+        try:
+            with mock.patch.object(hooks, "_born", return_value=now), \
+                    mock.patch.object(hooks.time, "clock_gettime", return_value=now + took):
+                hooks._stage_done()
+        finally:
+            hooks.STAGES.clear()
+
+    def rows(self):
+        path = os.path.join(self.home, "state", "events.jsonl")
+        if not os.path.exists(path):
+            return []
+        with open(path, encoding="utf-8") as f:
+            return [r for r in (json.loads(l) for l in f) if r.get("kind") == "hook_slow"]
+
+    def test_hook_slow_is_not_logged_under_two_seconds(self):
+        self.fm("init")
+        self.call(1.5)
+        self.assertEqual(self.rows(), [])
+
+    def test_hook_slow_names_the_tool_the_slowest_phase_and_its_time(self):
+        self.fm("init")
+        self.call(2.5, tool="Edit")
+        [row] = self.rows()
+        self.assertEqual((row["event"], row["tool"], row["phase"], row["session_id"]), ("PreToolUse", "Edit", "guard", "sess-1"))
+        self.assertGreaterEqual(row["ms"], 2000)
+        self.assertGreater(row["phase_ms"], 2000)
+
+    def test_hook_slow_is_logged_at_most_once_per_session_in_thirty_seconds(self):
+        self.fm("init")
+        from sampo import hooks
+        t = time.time()
+        with mock.patch.object(hooks.time, "time", return_value=t):
+            self.call(2.5, sid="sess-1")
+            self.call(2.5, sid="sess-1")  # the same session, at once: no second row
+            self.call(2.5, sid="sess-2")  # another session has its own row
+        with mock.patch.object(hooks.time, "time", return_value=t + 29):
+            self.call(2.5, sid="sess-1")  # 29 s after its row: still none
+        with mock.patch.object(hooks.time, "time", return_value=t + 31):
+            self.call(2.5, sid="sess-1")  # past 30 s: logged again
+        self.assertEqual([r["session_id"] for r in self.rows()], ["sess-1", "sess-2", "sess-1"])
+
+    def test_hook_slow_is_set_by_a_real_guard_call_that_stalls_in_its_guard(self):
+        """No primed clock but the guard's own: the stub stalls 2.2 s in front of the real guard and marks the stage."""
+        self.fm("init")
+        import contextlib
+        import io
+        from sampo import hooks
+        real = hooks._pre_typed
+
+        def stalled(raw):
+            time.sleep(2.2)
+            hooks.mark("guard")
+            return real(raw)
+        now = hooks._now()
+        hooks.STAGES.clear()
+        self.addCleanup(hooks.STAGES.clear)
+        hooks.STAGES.update(t0=now, event="PreToolUse", imports=now)
+        payload = json.dumps({"session_id": "sess-9", "cwd": self.repo, "hook_event_name": "PreToolUse",
+                              "tool_name": "Bash", "tool_input": {"command": "echo hi"}})
+        with mock.patch.object(hooks, "_born", return_value=now), mock.patch.object(hooks, "_pre_typed", stalled), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            hooks.run("PreToolUse", payload)
+            hooks._stage_done()
+        [row] = self.rows()
+        self.assertEqual((row["tool"], row["session_id"], row["phase"]), ("Bash", "sess-9", "guard"))
+
+
 class HookDeadline(HookCase):
     """T-5076: under load (19 to 60 on 16 cores) the PreToolUse hook passed Claude Code's 5 s timeout and the call was
     refused, with guard_ms 10 to 40 on the slow calls: the time was the start-up, the snapshot and the note builders.

@@ -185,7 +185,12 @@ def _run(event, raw):
             _TIMING["origin"] = _hook_origin()  # T-5076: one deadline for the whole call, start-up counted
         except Exception:
             _TIMING.pop("origin", None)  # no clock: no deadline (the guard needs none); the parts run as before
+        if STAGES:  # T-5533: the session and the tool that a slow call's hook_slow row names
+            m = _SID.search(raw[:4096])
+            STAGES["sid"] = m.group(1) if m else None
         code = _pre_typed(raw)
+        if STAGES:
+            STAGES["tool"] = _TIMING.get("tool", "")
     else:
         code, state = 0, ({} if event in UNBREAKABLE else breaker().get(event) or {})
         if state.get("until", 0) > time.time():
@@ -268,7 +273,9 @@ def _run(event, raw):
 
 _REV = None
 _TIMING = {}  # T-3352: the PreToolUse call's tool name and the instant the guard had decided
-SLOW_HOOK_MS = 1000  # T-4780: a call over this logs its stages (one line); the harness kills a hook at 5 s
+SLOW_HOOK_MS = 1000  # T-4780: a call over this logs its stages (one line); the harness kills a hook at 20 s (T-5533: was 5)
+HOOK_SLOW_MS = 2000  # T-5533: a PreToolUse call over this logs one hook_slow event (tool, slowest phase, load)
+HOOK_SLOW_GAP_S = 30  # T-5533: at most one hook_slow per session in this many seconds (logs/hook-slow.json)
 HOOK_DEADLINE_S = 3.5  # T-5076: of the harness's 5 s kill, from the process's birth: past it the optional parts give way
 SNAPSHOT_MIN_S = 0.05  # T-5076: less than this is left for a save: it can't finish, so it is skipped and said
 
@@ -448,8 +455,51 @@ def _stage_done():
             load = f"{hl[0] / hl[1]:.1f}" if hl and hl[1] > 0 else "?"
             shown = " ".join(f"{k} {v:g}" for k, v in ms.items() if not (k.startswith("note.") and v < 1))  # T-4932
             log_error(str(STAGES.get("event") or "hook"), f"slow hook (ms): {shown}; load per cpu {load}")
+        if STAGES.get("event") in ("PreToolUse", "BeforeTool") and ms["total"] >= HOOK_SLOW_MS:
+            _hook_slow(ms)  # T-5533: a slow guard call names its tool and its slowest phase in events.jsonl
     except Exception:
         pass  # a stage clock is only a record
+
+
+def _hook_slow(ms):
+    """T-5533: a PreToolUse call of HOOK_SLOW_MS or more logs one hook_slow event: its tool, its total, the phase that took
+    longest and that phase's time, and the host's load per CPU. At most one per session in HOOK_SLOW_GAP_S (_hook_slow_due),
+    so a box under load writes a few rows, not one per call. A record only: it never changes the answer."""
+    sid = STAGES.get("sid")
+    if not _hook_slow_due(sid, time.time()):
+        return
+    phases = {k: v for k, v in ms.items() if k != "total"}
+    phase = max(phases, key=phases.get) if phases else ""
+    hl = c.host_load()
+    _event({"kind": "hook_slow", "event": STAGES.get("event"), "tool": STAGES.get("tool") or "", "session_id": sid,
+            "ms": ms["total"], "phase": phase, "phase_ms": phases.get(phase, 0.0),
+            "load": round(hl[0] / hl[1], 2) if hl and hl[1] > 0 else None})
+
+
+def _hook_slow_due(sid, now):
+    """T-5533: True when session `sid` has no hook_slow row in the last HOOK_SLOW_GAP_S s; its stamp is then `now` in
+    logs/hook-slow.json (the other sessions' stamps are kept while they are recent). An unreadable file counts as none.
+    ponytail: an unlocked read-modify-write, so two slow calls at the same instant can both log."""
+    path = os.path.join(c.state_dir(), "logs", "hook-slow.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            last = json.load(f)
+    except (OSError, ValueError):
+        last = {}
+    if not isinstance(last, dict):
+        last = {}
+    key = str(sid or "")
+    stamp = last.get(key)
+    if isinstance(stamp, (int, float)) and now - stamp < HOOK_SLOW_GAP_S:
+        return False
+    last = {k: v for k, v in last.items() if isinstance(v, (int, float)) and now - v < HOOK_SLOW_GAP_S}
+    last[key] = now
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        c.write_atomic(path, json.dumps(last), durable=False)
+    except OSError:
+        pass
+    return True
 
 
 def _rev():

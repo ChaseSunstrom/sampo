@@ -39,7 +39,7 @@
             "args": [
               "PreToolUse"
             ],
-            "timeout": 5,
+            "timeout": 20,
             "onFailure": "block"
           }
         ]
@@ -53,7 +53,7 @@
             "args": [
               "PreToolUse"
             ],
-            "timeout": 5,
+            "timeout": 20,
             "onFailure": "block"
           }
         ]
@@ -67,7 +67,7 @@
             "args": [
               "PreToolUse"
             ],
-            "timeout": 5,
+            "timeout": 20,
             "onFailure": "block"
           }
         ]
@@ -81,7 +81,7 @@
             "args": [
               "PreToolUse"
             ],
-            "timeout": 5,
+            "timeout": 20,
             "onFailure": "block"
           }
         ]
