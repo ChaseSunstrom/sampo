@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- run.py takes file::Class ids and check --affected names the classes the run cache saw reach a change, and a lane's named run no longer resamples 1 in 10 of its cache hits (T-5588).
 - The guard test walks sampo's real argparse tree and requires every option or positional that takes a command (by name, help or a CMD metavar) to be refused when it carries a dangerous one, or exempted with a reason that fails when stale; the guard now reads about 20 more stored-command flags (task --bench/--probe, capture --signal, readme --cmd, ship --test, goal --done-when, exam --tes… (T-5345).
 - A new inventory test walks plugin/lib with ast and fails for any real-home derivation (expanduser, Path.home, HOME, the passwd entry) not on a reviewed read, mixed or write list, naming the open gaps in setup.paths and codex_newest (T-5036).
 - sampo lane say ID fix|delta|merge-trunk [steer] prints the builder's or reviewer's round message from the lane tip, the review's findings (now with their fix), the brief's tests and the standing safety line, with no model call (T-5953).
