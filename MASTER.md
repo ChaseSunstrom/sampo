@@ -216,7 +216,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmmapmerge` (T-5472: the key-aware three-way merge driver `sampo-map` for MASTER.md and docs/map) [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmmarks`… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmmcp` (`sampo mcp`: read-only MCP tools over stdio) T-2378: `which`… [→ files-lib-3](docs/map/files-lib-3.md)
-- `fmmeasure` (T-5005: `sampo measure NAME [--max N|--min N] [--window DAYS]`, a named ledger number held to a bound; T-5843 review-cost… [→ files-lib-3](docs/map/files-lib-3.md)
+- `fmmeasure` (T-5005: `sampo measure NAME [--max N|--min N] [--window DAYS]`, a named ledger number held to a bound; T-5843 review-cost; T-5735: `pipeline-in-use`, a pipeline fix's filed to in-use time, in `sampo status`… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmmigrate` (`sampo prove --migration [PATH] [--yes-run] [--json]`, T-2386, the… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmmiss` (T-2369: the open capability misses of a task — `open_misses`, `gaps`… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmmission` (`sampo mission`: the mission, surfaces, lenses and pack for an… [→ files-lib-3](docs/map/files-lib-3.md)

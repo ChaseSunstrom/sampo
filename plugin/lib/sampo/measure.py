@@ -5,6 +5,8 @@ ship_done events the land writes (train.py) and need no other slice:
 
   accept-to-live    a land_train's `at` minus the epoch each of its lanes was accepted: the merge's own record
   accept-to-pushed  the end of the first ship_done with exit 0 that started at or after the train's `at`, minus the accept
+  pipeline-in-use   (T-5735) a pipeline lane's first-used time minus its filed time, from the pipeline_used events the
+                    land and the verify pass write; `sampo status` shows its median and flags one above an hour
 
 The verb prints the median (minutes), the count and a verdict; it exits 1 when the median misses --max or --min.
 
@@ -12,6 +14,8 @@ review-cost (T-5843) is the second kind, named in DAILY: its reader takes the re
 T-5842) and returns per-UTC-day rows (lanes, lenses, tokens, dollars and the estimated saving against the five-lens
 default), printed as rows with a total, exit 0, and no --max or --min (a bound on a sum is refused)."""
 import calendar
+import contextlib
+import json
 import math
 import os
 import statistics
@@ -97,9 +101,100 @@ def review_cost(evs, since):
     return rows
 
 
-MEASURES = {"accept-to-live": accept_to_live, "accept-to-pushed": accept_to_pushed, "review-cost": review_cost}
 DAILY = {"review-cost"}  # the measures that return per-day rows, not seconds per lane: no median, no bound
-KINDS = {"review-cost": ["review_cost"]}  # the ledger kinds a measure reads; the default is the land's two
+KINDS = {"review-cost": ["review_cost"]}  # the ledger kinds a measure reads; the default is the land's two and the pipeline's
+
+
+def pipeline_in_use(evs, since):
+    """T-5735: for each pipeline lane (one whose diff touches the lane pipeline's own modules) first used at or after
+    `since`, its first-used time minus its filed time: how long a fix to the pipeline took to be the code running."""
+    out = []
+    for e in evs:
+        d = e.get("data") if isinstance(e, dict) and e.get("event") == "pipeline_used" else None
+        if not isinstance(d, dict):
+            continue
+        filed, used = train.finite_num(d.get("filed")), train.finite_num(d.get("used"))
+        if filed is not None and used is not None and used >= since and used >= filed:
+            out.append(used - filed)
+    return out
+
+
+MEASURES = {"accept-to-live": accept_to_live, "accept-to-pushed": accept_to_pushed, "review-cost": review_cost,
+            "pipeline-in-use": pipeline_in_use}
+
+PIPE_OPEN = "pipeline-open.json"  # lanes merged and not yet used: {task: {"filed": epoch, "merged": epoch}}
+IN_USE_BOUND_MIN = 60.0  # a pipeline fix should be the running code within this
+PIPE_WINDOW_DAYS = 30
+
+
+def _open_path(p):
+    return os.path.join(p.dir, PIPE_OPEN)
+
+
+def _open_read(path):
+    try:
+        with open(path) as f:
+            got = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return got if isinstance(got, dict) else {}
+
+
+def _open_lock(p):
+    """The lock over the open file's read-modify-write: its own folder, so it never waits on the state's other locks."""
+    return c.lock(os.path.join(p.dir, "pipeline-open.lock"), timeout=5.0)
+
+
+def note_pipeline_merged(p, b):
+    """T-5735: a pipeline lane (brief `b`) just merged: its filed (brief created) and merged times stay open until the
+    first process that starts on the merged code (note_pipeline_used) writes the one ledger row. Locked: two merges
+    at once (two lands, a land and a hand merge) never drop each other's record. Never raises: a record that can't be
+    written never stops a land."""
+    try:
+        ts = c.parse_ts(str(b.meta.get("created") or ""))
+        if ts is None:
+            return
+        with _open_lock(p):
+            got = _open_read(_open_path(p))
+            got[b.id] = {"filed": ts.timestamp(), "merged": round(time.time(), 3)}
+            c.write_atomic(_open_path(p), json.dumps(got))
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def note_pipeline_used(p):
+    """T-5735: a process on the merged code starts (a land, the verify pass): every open pipeline lane is first-used now,
+    one pipeline_used event each. The open file is read and removed under the lock, so of two processes starting
+    together only one records, and nothing but the one file is ever on disk. Never raises."""
+    try:
+        path = _open_path(p)
+        if not os.path.exists(path):
+            return
+        with _open_lock(p):
+            got = _open_read(path)
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(path)
+        used = round(time.time(), 3)
+        for tid, r in sorted(got.items()):
+            if isinstance(r, dict):
+                c.log_event(p, "pipeline_used", task=tid, data={"filed": r.get("filed"), "merged": r.get("merged"),
+                                                                "used": used})
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def pipeline_line(p, window_days=PIPE_WINDOW_DAYS, now=None):
+    """T-5735: the line `sampo status` shows: the median filed-to-in-use time of the pipeline lanes first used in the
+    window, flagged above an hour; '' when none was. One bounded ledger read."""
+    since = (time.time() if now is None else now) - window_days * DAY
+    secs = pipeline_in_use(c.ledger_tail(p, TAIL, ["pipeline_used"]), since)
+    if not secs:
+        return ""
+    med = statistics.median(secs) / 60
+    flag = (f" — ABOVE {IN_USE_BOUND_MIN:g} min: fixes to the pipeline wait too long to be in use"
+            if med > IN_USE_BOUND_MIN else " (within the hour)")
+    return (f"Pipeline fixes: median {med:.0f} min from filed to in use over {len(secs)} lane"
+            f"{'s' if len(secs) != 1 else ''} in {window_days:g} days{flag}")
 
 
 def _line_count(p):
@@ -128,7 +223,7 @@ def read(p, name, window_days, now=None):
     total = _line_count(p)
     n, note = min(TAIL, MAXTAIL, total) or 1, ""
     while True:
-        evs = c.ledger_tail(p, n, KINDS.get(name, ["land_train", "ship_done"]))
+        evs = c.ledger_tail(p, n, KINDS.get(name, ["land_train", "ship_done", "pipeline_used"]))
         if n >= total:
             break
         oldest = min((x for x in (_epoch(e.get("ts")) for e in evs) if x is not None), default=None)

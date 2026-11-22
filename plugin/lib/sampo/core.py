@@ -8072,8 +8072,8 @@ def next_for(p, briefs=None, checks=True, concerns=None):
         except Exception:
             pass
         action = merge + " · " + action if idle_now else action + " · " + merge
-    if recovery:
-        action = recovery + " · " + action if idle_now else action + " · " + recovery
+    if recovery:  # T-5735: a parked pipeline lane leads whatever is under way: every fix behind it waits on it
+        action = recovery + " · " + action if idle_now or recovery.startswith(slanes.PIPELINE_LEAD) else action + " · " + recovery
     raised = andons(briefs)  # T-0648: a lane stopped to ask
     if raised:
         tid, text = raised[0]

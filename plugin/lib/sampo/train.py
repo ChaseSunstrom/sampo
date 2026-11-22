@@ -3348,19 +3348,78 @@ def _restart_carry(p, ready=None, alone=()):
     return {k: [t for t in got[k] if isinstance(t, str)] if isinstance(got.get(k), list) else [] for k in ("ready", "alone")}
 
 
-def land_key(b):
+# T-5735: the files the lane pipeline itself runs on (a path ending in / is a folder). A lane whose diff touches one is a
+# fix to the pipeline: it trains first, so the next land (and every loop that re-execs at a unit boundary) runs it.
+# The land and train, lane brief/accept/start/recover (train, lanes and their helpers), the ship and the affected
+# selection (release), the check gates the merge runs (selfgate, hooksmoke), the hot hooks and guard (hooks.py, the
+# hooks/ entries and hooks.json), the test runner (tests/run.py) and the bin entries.
+PIPELINE_PATHS = tuple("plugin/lib/sampo/" + f for f in (
+    "train.py", "lanes.py", "landlock.py", "lane_overlap.py", "lane_preview.py", "mapmerge.py", "bisecthunk.py",
+    "recover.py", "reverify.py", "greenref.py", "pilotsig.py", "ahead.py", "release.py", "selfgate.py", "hooksmoke.py",
+    "hooks.py")) + ("plugin/hooks/", "plugin/tests/run.py", "plugin/bin/")
+# cli.py (12k lines) and core.py (10k) are touched by most lanes: a whole-file match would make nearly every lane express.
+# Only a change inside one of these top-level functions counts: the close/finish and check paths, and `sampo next`.
+PIPELINE_FUNCS = {
+    "plugin/lib/sampo/cli.py": ("task_finish", "_close_affected", "_finish_gaps", "affected", "_check_affected", "cmd_check",
+                                "_affected_why"),
+    "plugin/lib/sampo/core.py": ("next_for", "lock", "scratch_tree"),
+}
+_PIPE_TIPS = {}  # tip -> whether its diff touches the pipeline: a lane's tip never changes its diff, so asked once
+
+
+def touches_pipeline(files):
+    """T-5735: whether any of these repo paths is one of PIPELINE_PATHS (a file of PIPELINE_FUNCS is not: pipeline_lane
+    reads which functions changed)."""
+    return any(f in PIPELINE_PATHS or any(f.startswith(x) for x in PIPELINE_PATHS if x.endswith("/")) for f in files)
+
+
+def _touches_pipeline_funcs(main, tip, files):
+    """T-5735: whether the lane's diff in a PIPELINE_FUNCS file lies in one of its named functions: git's hunk header
+    (-U0) names the top-level def a change sits under, and a def the change adds or removes is named by its own line."""
+    for f in (f for f in files if f in PIPELINE_FUNCS):
+        r = _git(main, "diff", "-U0", f"HEAD...{tip}", "--", f, timeout=30)
+        if r.returncode:
+            continue
+        names = set(PIPELINE_FUNCS[f])
+        for ln in r.stdout.split("\n"):
+            m = (re.match(r"@@ [^@]*@@ (?:async )?def (\w+)", ln) if ln.startswith("@@")
+                 else re.match(r"[+-](?:async )?def (\w+)", ln))
+            if m and m.group(1) in names:
+                return True
+    return False
+
+
+def pipeline_lane(main, tip):
+    """T-5735: whether the lane at `tip` changes a pipeline file or function (its diff from where it left trunk). Cached
+    per tip: a land asks again at every sort, readmit and recheck, and an unchanged lane costs no git process. A tip
+    git could not diff is no pipeline lane, and not cached (the next ask tries again)."""
+    if not tip:
+        return False
+    if tip not in _PIPE_TIPS:
+        r = _git(main, "diff", "--name-only", f"HEAD...{tip}", timeout=30)
+        if r.returncode:
+            return False
+        if len(_PIPE_TIPS) > 4000:
+            _PIPE_TIPS.clear()
+        files = r.stdout.split("\n")
+        _PIPE_TIPS[tip] = touches_pipeline(files) or _touches_pipeline_funcs(main, tip, files)
+    return _PIPE_TIPS[tip]
+
+
+def land_key(b, pipe=False):
     """T-3796: the order lanes train in: urgent, then performance and security fixes, then the user's own asks, then
-    the rest (discovered work, follow-ups), oldest first in each."""
+    the rest (discovered work, follow-ups), oldest first in each. T-5735: a pipeline lane (`pipe`) leads them all."""
     kind = 0 if b.type in ("PERFORMANCE", "SECURITY") else 1 if b.meta.get("source") == "user" else 2
-    return (b.priority != "urgent", kind, c.id_num(b.id))
+    return (not pipe, b.priority != "urgent", kind, c.id_num(b.id))
 
 
-def is_express(b):
+def is_express(b, pipe=False):
     """T-5023: a performance fix, a security fix or an urgent lane (the ones land_key sorts first): named --first, it
     trains next and alone, a batch of one, so no ordinary lane's gate holds it back. The gate itself is never skipped.
     T-5726: in live mode the express lanes at the head train together instead (one train; T-5848: all of them, an explicit --batch aside).
-    Several express lanes train in the order they were named --first (FIFO), not re-sorted by land_key."""
-    return b.type in ("PERFORMANCE", "SECURITY") or b.priority == "urgent"
+    Several express lanes train in the order they were named --first (FIFO), not re-sorted by land_key.
+    T-5735: a lane that touches the pipeline (`pipe`, from pipeline_lane) is express whatever its type, named or not."""
+    return pipe or b.type in ("PERFORMANCE", "SECURITY") or b.priority == "urgent"
 
 
 def _stale_affected(b, sha, main):
@@ -3425,6 +3484,69 @@ def _code_stamp():
     d = os.path.join(c.PLUGIN_ROOT, "lib", "sampo")
     return tuple((f, s.st_mtime_ns, s.st_size) for f in sorted(os.listdir(d)) if f.endswith(".py")
                  for s in [os.stat(os.path.join(d, f))])
+
+
+class CodeWatch:
+    """T-5735: the code stamp a long-running loop started on, asked at each unit boundary whether Sampo's modules changed
+    since. A stamp that can't be read (a module mid-rename) is no change: the next boundary asks again."""
+
+    def __init__(self, stamp=None):
+        self.stamp = stamp if stamp is not None else self._read()
+
+    @staticmethod
+    def _read():
+        try:
+            return _code_stamp()
+        except OSError:
+            return None
+
+    def changed(self):
+        now = self._read()
+        return now is not None and self.stamp is not None and now != self.stamp
+
+
+_BOOT_STAMP = CodeWatch._read()  # the code on disk when this process loaded train.py (what it runs, bar what it imports later)
+
+
+def process_watch():
+    """T-5735: the watch of a long-running loop: the stamp taken when train.py was imported, not when the loop began, so
+    a merge that landed during the process's own start-up (imports, a first scan) is seen at the first boundary."""
+    return CodeWatch(_BOOT_STAMP)
+
+
+def reexec_on_new_code(watch, execv=None):
+    """T-5735: at a unit boundary (never inside one), replace this process by a fresh run of the same command when Sampo's
+    own modules changed since `watch` was taken: a pipeline fix lands and the loops already running (the verify pass,
+    a watch follow) take it up at their next unit instead of running the old code for hours. The pid stays, so a record
+    naming it still finds it alive; the new process takes its own stamp. Returns False (nothing done) when the code
+    is unchanged, SAMPO_NO_REEXEC is set, the command can't be rebuilt or the exec fails (an OSError: said once on stderr;
+    the watch takes the new stamp, so the loop goes on on the old code and is not retried until the code changes again);
+    it only returns True from a stubbed execv."""
+    if os.environ.get("SAMPO_NO_REEXEC") or not watch.changed():
+        return False
+    argv = list(getattr(sys, "orig_argv", None) or [sys.executable, *sys.argv])[1:]  # python's own name first: ours below
+    if not argv:
+        return False
+    for f in (sys.stdout, sys.stderr):
+        try:
+            f.flush()
+        except (OSError, ValueError):
+            pass
+    try:
+        (execv or os.execv)(sys.executable, [sys.executable, *argv])
+    except OSError as e:  # a refused exec leaves this process running: on the old code, and asking once, not every round
+        watch.stamp = watch._read()
+        print(f"sampo: could not restart on new code ({c.fit(c.plain(str(e)), 160)}): going on with the code this "
+              f"process started on", file=sys.stderr)
+        return False
+    return True
+
+
+def unit_boundary(watch, hold=False):
+    """T-5735: the one call a long-running loop makes between its units (the verify pass between records, the watch
+    follow between rounds): take up new Sampo code by re-exec, unless `hold` (the loop holds state a restart would lose
+    and redo work for). True only from a stubbed exec."""
+    return False if hold else reexec_on_new_code(watch)
 
 
 def start_verify(p, main, owed):
@@ -3567,7 +3689,9 @@ def _land_trains(p, main, batch, owed, closer=None):
     closer = closer or _Closer()
     asked_batch = batch  # T-5848: the --batch the user gave (None: the default, which never caps a live express train)
     batch = batch or c.TRAIN_BATCH
-    stamp = _code_stamp()  # the code this process loaded
+    code = CodeWatch()  # the code this land started on: T-5735 asked at each train boundary like the loops' unit boundaries
+    from sampo import measure
+    measure.note_pipeline_used(p)  # T-5735: this land runs on every pipeline fix merged before it started
     briefs = c.load_briefs(p)
     branch = _git(main, "symbolic-ref", "--short", "-q", "HEAD").stdout.strip() or "HEAD"
 
@@ -3585,6 +3709,7 @@ def _land_trains(p, main, batch, owed, closer=None):
     closed, hand, shipped = [], [], None
     settled = []  # T-5535: the closes that settled a gap of their own (the summary's "N settled")
     by, tested = {}, {}  # T-3994: each lane's brief, and the tip each verdict judged (a park holds only that tip)
+    pipes = set()  # T-5735: the sorted lanes whose diff touches the pipeline (express, whatever their type)
     times, background, asked = [], not os.environ.get("FOREMAN_NO_BACKGROUND") and not c.panicked(), False
     ship_failed = None  # the newest request's failure to start a ship (None once a later one started or joined)
     land_id = f"{os.getpid()}-{int(time.time())}"
@@ -3724,13 +3849,16 @@ def _land_trains(p, main, batch, owed, closer=None):
         return why
 
     def sort(bs):  # a conflict never costs a criteria or gate run (an old git without merge-tree: no check)
-        for b in sorted(bs, key=land_key):
+        for b in sorted(bs, key=lambda x: land_key(x, pipeline_lane(main, tip(x)))):  # T-5735: a pipeline fix leads
             if why := hold(b):  # T-4286: its check is running, red or cut off at this tip: left out; T-4767: no passing check at the tip at all; T-5561: a stale lane's check is started
                 print(f"sampo lane land: {b.id}: {why}", file=sys.stderr, flush=True)
                 held.add(b.id)
                 continue
             held.discard(b.id)
             by[b.id], tested[b.id] = b, tip(b)
+            pipes.discard(b.id)
+            if pipeline_lane(main, tested[b.id]):
+                pipes.add(b.id)
             r = _git(main, "merge-tree", "--write-tree", "--name-only", "--no-messages", "HEAD", tested[b.id] or "HEAD")
             files = [f for f in r.stdout.splitlines()[1:] if f] if r.returncode == 1 else []
             if r.returncode == 1 and not _map_only(files):  # T-4375: a map-only clash is the train's to merge
@@ -3839,7 +3967,7 @@ def _land_trains(p, main, batch, owed, closer=None):
             front = [t for t in jump if t in ready]
             # T-5023: express lanes lead the queue and train alone; a restart's queue (first iteration only) carries
             # the lanes that were express then, and no ordinary-by-name lane turns express because it waited there
-            fast = [t for t in front if is_express(by[t]) and (t not in carried["ready"] or t in carried["alone"])]
+            fast = [t for t in front if is_express(by[t], t in pipes) and (t not in carried["ready"] or t in carried["alone"])]
             for t in fast:
                 if t not in alone:
                     print(f"sampo lane land: {t} is express (performance, security or urgent): it trains next, "
@@ -3853,6 +3981,10 @@ def _land_trains(p, main, batch, owed, closer=None):
                 why = next((w for i, w in parked if i == t), "")
                 print(f"sampo lane land: --first {t}: " + _first_state(by_id.get(t), t, why, landed),
                       file=sys.stderr, flush=True)
+        for t in (t for t in ready if t in pipes and t not in alone):  # T-5735: named or not, a pipeline fix is express
+            alone.add(t)
+            print(f"sampo lane land: {t} touches the pipeline (its own modules): it trains first, "
+                  + ("with the other express lanes" if live_mode(p) else "alone"), file=sys.stderr, flush=True)
         ready.sort(key=lambda t: t not in alone)  # T-5023: stable; a held express lane sorted back in leads again
         if ready and trains:  # T-4767: a lane waits out the trains before it: its check is read again at this one's start
             ready = recheck(ready)
@@ -3911,6 +4043,9 @@ def _land_trains(p, main, batch, owed, closer=None):
         if got.get("kept"):  # T-4007: the main checkout's local changes the fast-forward set aside
             print(f"sampo lane land: {got['kept']}", file=sys.stderr, flush=True)
         trains += 1
+        for t in got["merged"]:
+            if t in pipes:  # T-5735: filed and merged times of a pipeline lane; its first use comes with the next process
+                measure.note_pipeline_merged(p, by[t])
         landed += got["merged"]
         parked += got["left_out"]
         times.append(_train_times(p, land_id, trains, got, by, time.monotonic() - t_train))
@@ -3932,7 +4067,7 @@ def _land_trains(p, main, batch, owed, closer=None):
                     start_verify(p, main, owed)
         elif not ready:
             start_verify(p, main, owed)  # a red merge's revert pass owed by a train that landed nothing
-        if ready and _code_stamp() != stamp:  # T-3973: the train changed Sampo itself: the rest runs on the new code
+        if ready and code.changed():  # T-3973: the train changed Sampo itself: the rest runs on the new code
             restart = True
             first_ids(p, ready)  # the restarted land trains them in this order, not re-sorted
             _restart_carry(p, ready, alone)

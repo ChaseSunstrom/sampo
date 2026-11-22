@@ -4,11 +4,16 @@ was 0 bytes (T-4147, T-4139, T-4189), and a check cut off at its deadline (60 of
 read. Now the check's lines are written to that stdout as they arrive, the result is still read from the same text, and
 a hold for a cut-off check names the log."""
 # map-links: plugin/lib/sampo/train.py
+import io
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
+import unittest
+from unittest import mock
 
 from test_accept_check import AcceptCase, stub
 from test_express_lane import ExpressBase
@@ -116,6 +121,282 @@ class CheckLog(AcceptCase):
         self.child(tid, 1, [sys.executable, "-c", "print('boom')"], tries=2)
         said = [x for x in self.brief(tid).section("Log").splitlines() if "no result" in x]
         self.assertTrue(said and os.path.join(self.tmp, "check.log") in said[-1], said)
+
+
+PIPE_FILE = "plugin/lib/sampo/train.py"
+
+
+class PipelineLanesTrainFirst(ExpressBase):
+    """T-5735: a lane whose diff touches the pipeline's own files (train.py, lanes.py ...) is express whatever its type
+    and trains ahead of the others with no --first, so a fix to the pipeline is in use within the hour."""
+
+    def made_with_pipeline(self, n=4, type_=None):
+        """n ordinary lanes, then one that writes a pipeline file (valid python: the live land compiles the tree)."""
+        ids = [self.lane(i, f"{i}.txt", when="2026-01-01T00:00:00") for i in range(1, n + 1)]
+        pid = self.lane(n + 1, PIPE_FILE, text="x = 1\n", when="2026-01-01T00:00:00")
+        self.audited(*ids, pid)
+        for tid in (*ids, pid):
+            self.returned(tid, f"Lane {tid}")
+        if type_:
+            self.fm("task", "set", pid, f"type={type_}")
+        return ids, pid
+
+    def test_pipeline_lane_among_20_feature_lanes_trains_first_when_live(self):
+        ids, pid = self.made_with_pipeline(20)
+        self.fm("lane", "mode", "live")
+        r = self.land("--batch", "10")
+        self.assertEqual(self.trains(r)[0], pid, r.stderr)
+        self.assertEqual([self.brief(t).status for t in (*ids, pid)], ["done"] * 21, r.stdout + r.stderr)
+        self.assertIn(f"{pid} touches the pipeline", r.stderr)
+
+    def test_the_land_restarts_on_what_the_shared_code_watch_reports(self):
+        # T-5735: the land's own restart (T-3973) asks the same CodeWatch the verify pass and the follow ask
+        from sampo import core as c
+        ids, pid = self.made_with_pipeline(2)
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(self.repo)
+        p = c.find_project(self.repo)
+        with mock.patch.object(train.CodeWatch, "changed", lambda self: True), mock.patch.object(sys, "stderr", io.StringIO()):
+            got = train.land(p, self.repo, 1)
+        self.assertTrue(got["restart"])
+        self.assertEqual(got["trains"], 1, "restarted at the first boundary, the rest left for the new code")
+
+    def test_pipeline_lane_merge_and_first_use_reach_the_ledger_through_the_real_land(self):
+        from sampo import core as c
+        ids, pid = self.made_with_pipeline(1)
+        r = self.land("--batch", "2")
+        self.assertEqual(self.trains(r)[0], pid, r.stderr)
+        p = c.find_project(self.repo)
+        self.assertEqual(c.ledger_tail(p, 50, ["pipeline_used"]), [], "merged, not yet on a process that started after it")
+        self.land("--batch", "2")  # the next land starts on the merged code: the fix is first in use
+        used = c.ledger_tail(p, 50, ["pipeline_used"])
+        self.assertEqual([e["task"] for e in used], [pid], used)
+        self.assertEqual(sorted(used[0]["data"]), ["filed", "merged", "used"])
+
+    def test_pipeline_lane_of_feature_type_trains_alone_ahead_of_the_rest_when_gated(self):
+        ids, pid = self.made_with_pipeline(3)
+        self.assertEqual(self.brief(pid).type, "FEATURE")
+        r = self.land("--batch", "4")
+        self.assertEqual(self.trains(r), [pid, ", ".join(ids)], r.stderr)
+
+    def test_pipeline_lanes_live_train_together_capped_at_the_batch(self):
+        ids, pid = self.made_with_pipeline(3)
+        second = self.lane(9, "plugin/lib/sampo/lanes.py", text="y = 2\n", when="2026-01-01T00:00:00")
+        self.audited(second)
+        self.returned(second, "Lane lanes")
+        self.fm("lane", "mode", "live")
+        r = self.land("--batch", "5")
+        self.assertEqual(self.trains(r), [f"{pid}, {second}", ", ".join(ids)], r.stderr)
+
+    def test_pipeline_files_cover_the_train_ship_gates_hooks_and_test_runner_and_no_others(self):
+        for f in (PIPE_FILE, "plugin/lib/sampo/lanes.py", "plugin/bin/sampo", "plugin/lib/sampo/release.py",
+                  "plugin/lib/sampo/hooks.py", "plugin/hooks/hooks.json", "plugin/hooks/hook", "plugin/tests/run.py",
+                  "plugin/lib/sampo/selfgate.py", "plugin/lib/sampo/hooksmoke.py"):
+            self.assertTrue(train.touches_pipeline(["README.md", f]), f)
+        # cli.py and core.py are monoliths every verb touches: only their named pipeline functions count (PIPELINE_FUNCS)
+        self.assertFalse(train.touches_pipeline(["README.md", "plugin/lib/sampo/cli.py", "plugin/lib/sampo/core.py",
+                                                 "plugin/tests/test_train.py", "plugin/lib/sampo/measure.py"]))
+        self.assertFalse(train.touches_pipeline([]))
+
+    def test_pipeline_paths_and_functions_name_files_and_functions_that_exist(self):
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(train.__file__)))))
+        for f in train.PIPELINE_PATHS:
+            self.assertTrue(os.path.exists(os.path.join(root, f)), f"{f} is named in PIPELINE_PATHS and is not there")
+        for f, names in train.PIPELINE_FUNCS.items():
+            with open(os.path.join(root, f), encoding="utf-8") as fh:
+                text = fh.read()
+            for n in names:
+                self.assertRegex(text, rf"(?m)^def {n}\(", f"{f} has no top-level def {n}")
+
+    def test_pipeline_lane_by_function_a_change_in_a_named_cli_function_counts_and_another_does_not(self):
+        base = "def alpha(x):\n    return 1\n\n\ndef task_finish(p, args):\n    return 1\n"
+        cli = os.path.join(self.repo, "plugin", "lib", "sampo", "cli.py")
+        os.makedirs(os.path.dirname(cli), exist_ok=True)
+        with open(cli, "w") as fh:
+            fh.write(base)
+        self.git("add", "plugin")
+        self.git("commit", "-qm", "base cli")
+        close = self.lane(1, "plugin/lib/sampo/cli.py", text=base.replace("(p, args):\n    return 1",
+                                                                           "(p, args):\n    return 2"))
+        other = self.lane(2, "plugin/lib/sampo/cli.py", text=base.replace("def alpha(x):\n    return 1",
+                                                                           "def alpha(x):\n    return 5"))
+        added = self.lane(3, "plugin/lib/sampo/cli.py", text=base + "\n\ndef _check_affected(p, args):\n    return 0\n")
+        train._PIPE_TIPS.clear()
+        tips = {n: self.git("rev-parse", f"foreman/lane{n}") for n in (1, 2, 3)}
+        self.assertTrue(train.pipeline_lane(self.repo, tips[1]), "task_finish changed")
+        self.assertFalse(train.pipeline_lane(self.repo, tips[2]), "alpha changed: not a pipeline function")
+        self.assertTrue(train.pipeline_lane(self.repo, tips[3]), "a named function added")
+        self.assertTrue(close and other and added)
+
+    def test_pipeline_lane_is_judged_once_per_tip(self):
+        from unittest import mock
+        tid = self.lane(1, PIPE_FILE, text="x = 1\n")
+        tip = self.git("rev-parse", "foreman/lane1")
+        train._PIPE_TIPS.clear()
+        real = train._git
+        calls = []
+
+        def counting(cwd, *a, **kw):
+            calls.append(a)
+            return real(cwd, *a, **kw)
+        with mock.patch.object(train, "_git", counting):
+            self.assertTrue(train.pipeline_lane(self.repo, tip))
+            self.assertTrue(train.pipeline_lane(self.repo, tip))
+            self.assertEqual(len(calls), 1, "the second ask for the same tip ran no git process")
+            self.git("commit", "--allow-empty", "-qm", "again", cwd=os.path.join(self.tmp, "lane1"))
+            new = self.git("rev-parse", "foreman/lane1")
+            self.assertNotEqual(new, tip)
+            self.assertTrue(train.pipeline_lane(self.repo, new))
+            self.assertEqual(len(calls), 2, "a new tip is judged again")
+        self.assertFalse(train.pipeline_lane(self.repo, ""), "no tip, no pipeline lane")
+        self.assertTrue(tid)
+
+    def test_pipeline_flag_makes_any_type_express_and_sorts_it_first(self):
+        from test_express_lane import brief
+        self.assertTrue(train.is_express(brief(), True))
+        self.assertFalse(train.is_express(brief(), False))
+        urgent, plain = brief(priority="urgent", id="T-1"), brief(id="T-2")
+        plain_pipe = brief(id="T-9")
+        self.assertLess(train.land_key(plain_pipe, True), train.land_key(urgent))
+        self.assertLess(train.land_key(urgent), train.land_key(plain))
+
+
+class CodeStampReexec(unittest.TestCase):
+    """T-5735: a long-running loop (the verify pass, the watch follow) takes up new Sampo code at its next unit
+    boundary: the code stamp it started on is compared there, and a changed one re-executes the same command."""
+
+    def lib(self):
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root, True)
+        os.makedirs(os.path.join(root, "lib", "sampo"))
+        path = os.path.join(root, "lib", "sampo", "mod.py")
+        with open(path, "w") as f:
+            f.write("x = 1\n")
+        return root, path
+
+    def test_code_stamp_changes_when_a_module_changes(self):
+        root, path = self.lib()
+        with mock.patch.object(train.c, "PLUGIN_ROOT", root):
+            watch = train.CodeWatch()
+            self.assertFalse(watch.changed())
+            with open(path, "w") as f:
+                f.write("x = 22\n")
+            self.assertTrue(watch.changed())
+            self.assertFalse(train.CodeWatch().changed(), "a process started after the change has the new stamp")
+
+    def test_code_stamp_reexec_runs_the_same_command_only_when_the_code_changed(self):
+        root, path = self.lib()
+        seen = []
+        with mock.patch.object(train.c, "PLUGIN_ROOT", root), mock.patch.dict(os.environ, {"SAMPO_NO_REEXEC": ""}):
+            watch = train.CodeWatch()
+            self.assertFalse(train.reexec_on_new_code(watch, lambda *a: seen.append(a)))
+            self.assertEqual(seen, [], "unchanged code: the loop goes on as it is")
+            with open(path, "w") as f:
+                f.write("x = 22\n")
+            self.assertTrue(train.reexec_on_new_code(watch, lambda *a: seen.append(a)))
+        self.assertEqual(len(seen), 1)
+        exe, argv = seen[0]
+        self.assertEqual(exe, sys.executable)
+        self.assertEqual(argv[0], sys.executable)
+        self.assertEqual(argv[1:], list(sys.orig_argv[1:]))
+
+    def test_code_stamp_reexec_can_be_switched_off_and_a_missing_module_dir_is_no_change(self):
+        root, path = self.lib()
+        with mock.patch.object(train.c, "PLUGIN_ROOT", root):
+            watch = train.CodeWatch()
+            with open(path, "w") as f:
+                f.write("x = 22\n")
+            with mock.patch.dict(os.environ, {"SAMPO_NO_REEXEC": "1"}):
+                self.assertFalse(train.reexec_on_new_code(watch, lambda *a: self.fail("exec while switched off")))
+            shutil.rmtree(os.path.join(root, "lib"))
+            self.assertFalse(watch.changed(), "a stamp that cannot be read is no change")
+
+    def test_code_stamp_a_failing_execv_is_logged_once_and_the_loop_goes_on_on_the_old_code(self):
+        root, path = self.lib()
+        err, calls = io.StringIO(), []
+
+        def boom(*a):
+            calls.append(a)
+            raise OSError(8, "Exec format error")
+        with mock.patch.object(train.c, "PLUGIN_ROOT", root), mock.patch.dict(os.environ, {"SAMPO_NO_REEXEC": ""}), \
+                mock.patch.object(sys, "stderr", err):
+            watch = train.CodeWatch()
+            with open(path, "w") as f:
+                f.write("x = 22\n")
+            self.assertFalse(train.reexec_on_new_code(watch, boom), "a refused exec is no re-exec")
+            self.assertFalse(train.reexec_on_new_code(watch, boom), "and is not tried again at every boundary")
+            self.assertEqual(len(calls), 1)
+            self.assertIn("could not restart on new code", err.getvalue())
+            self.assertIn("Exec format error", err.getvalue())
+            with open(path, "w") as f:
+                f.write("x = 333\n")  # a later change is a new reason to try
+            self.assertFalse(train.reexec_on_new_code(watch, boom))
+            self.assertEqual(len(calls), 2)
+
+    def test_code_stamp_the_stamp_is_taken_at_import_so_a_change_during_start_up_is_seen(self):
+        root, path = self.lib()
+        with mock.patch.object(train.c, "PLUGIN_ROOT", root):
+            at_import = train.CodeWatch._read()
+            with open(path, "w") as f:
+                f.write("x = 22\n")
+            self.assertTrue(train.CodeWatch(at_import).changed(), "the code on disk moved after this process loaded")
+        self.assertIsNotNone(train._BOOT_STAMP, "taken when train.py was imported")
+
+    def _pm_run_with_probe(self, merges):
+        """pm_run over `merges` pending merges (two or more: a HEAD probe is made) with the code changed all along and
+        execv stubbed: how many times it exec'd."""
+        from sampo import lanes
+        execs = []
+        pending = {f"m{i}": {"state": "pending"} for i in range(merges)}
+        answers = iter([pending, pending, {}, {}, {}])
+        probe = True
+        with mock.patch.object(train.CodeWatch, "changed", lambda self: True), \
+                mock.patch.dict(os.environ, {"SAMPO_NO_REEXEC": ""}), \
+                mock.patch.object(train.os, "execv", lambda *a: execs.append(a)), \
+                mock.patch.object(lanes, "pm_records", lambda p: next(answers)), \
+                mock.patch.object(lanes, "_pm_settle", lambda *a: None), \
+                mock.patch.object(lanes, "ship_yield", lambda *a: 0), \
+                mock.patch.object(lanes, "_git", lambda *a, **k: mock.Mock(stdout="abc\n")), \
+                mock.patch.object(lanes, "_pm_claim", lambda *a: probe), \
+                mock.patch.object(lanes, "_pm_green_at", lambda *a, **k: False), \
+                mock.patch.object(lanes, "pm_rerun_cmd", lambda *a: ""), \
+                mock.patch.object(lanes, "pm_set", lambda *a, **k: None), \
+                mock.patch.object(lanes, "pm_verify", lambda *a: True), \
+                mock.patch("sampo.measure.note_pipeline_used", lambda p: None):
+            lanes.pm_run(None, "main")
+        return len(execs)
+
+    def test_code_stamp_a_verify_pass_with_a_head_probe_behind_it_does_not_re_exec(self):
+        # probed (the red HEAD runs already made) is lost on exec: a re-exec would rerun that full suite
+        self.assertEqual(self._pm_run_with_probe(2), 1, "the boundary before the probe may exec; none after it")
+
+    def test_code_stamp_a_verify_pass_with_no_probe_re_execs_at_every_boundary(self):
+        self.assertEqual(self._pm_run_with_probe(1), 2)
+
+    def test_code_stamp_is_asked_between_the_verify_pass_s_units_never_inside_one(self):
+        from sampo import lanes
+        events = []
+        answers = iter([{}, {"r": {"state": "red"}}, {}, {}])
+        with mock.patch.object(train, "reexec_on_new_code", lambda w: events.append("boundary")), \
+                mock.patch.object(lanes, "pm_records", lambda p: next(answers)), \
+                mock.patch.object(lanes, "_pm_settle", lambda *a: events.append("settle")), \
+                mock.patch.object(lanes, "_pm_revert", lambda *a: events.append("unit") or True):
+            lanes.pm_run(None, "main")
+        self.assertEqual(events, ["boundary", "unit", "boundary"])
+
+    def test_code_stamp_is_asked_between_the_watch_follow_s_rounds(self):
+        from sampo import watch
+        calls = []
+
+        def boundary(w):
+            calls.append(1)
+            if len(calls) == 2:
+                raise KeyboardInterrupt
+        out = io.StringIO()
+        with mock.patch.object(train, "reexec_on_new_code", boundary), mock.patch.object(sys, "stdout", out):
+            watch._follow(lambda: {"a": 1}, lambda v: [], 0.01, refresh=0)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(out.getvalue(), '{"a": 1}\n', "the first round was whole before the boundary after it")
 
 
 class ExpressTrainsTogether(ExpressBase):

@@ -1466,6 +1466,20 @@ def pm_stuck_line(p, minutes=30, bad_minutes=10):
          "or trunk is red): " + "; ".join(held) + ".") if held else "") if x)
 
 
+PIPELINE_LEAD = "Pipeline fix parked"  # T-5735: what a recovery line starts with when a pipeline lane is stuck: it leads
+
+
+def parked_pipeline(p, b):
+    """T-5735: whether the lane's tip changes the pipeline's own modules (train.PIPELINE_PATHS), cached per tip. A lane
+    or git that can't be read is no pipeline lane."""
+    from sampo import train
+    try:
+        tip = _git(b.meta["lane"], "rev-parse", "HEAD", timeout=10).stdout.strip()
+        return train.pipeline_lane(c.main_worktree(p.root) or p.root, tip)
+    except Exception:  # a lane that can't be read never costs the next action
+        return False
+
+
 def recovery_line(p, briefs, full):
     return " ".join(x for x in (_recovery_line(p, briefs, full), pm_stuck_line(p)) if x)
 
@@ -1488,7 +1502,7 @@ def _recovery_line(p, briefs, full):
     waits on a merge (no_report) is fm next's finished-lane note."""
     by = {b.id: b for b in briefs}
     causes = {t: v for t, v in stop_causes(p, briefs).items() if v[0] != "no_report"}
-    parts, grants, launch = [], [], []
+    parts, grants, launch, pipe = [], [], [], []
     for tid, (cause, detail) in sorted(causes.items()):
         text = f"{tid} ({STOP_CAUSES[cause][0]}): {recovery_text(cause, tid, detail)}"
         if cause == "guard_refused":  # a grant is the user's, and a rebuild would meet the same refusal
@@ -1499,17 +1513,24 @@ def _recovery_line(p, briefs, full):
         if cause in ("uncommitted", "merge_conflict") and _pilot_has(p, tid):
             continue  # T-5766: a headless resolver or builder holds the lane: a second recovery would race it
         used = len(_recoveries(by[tid]))
-        parts.append(text + (f" — recovered {used}x already, so it blocks the task instead" if used >= RECOVERIES_MAX else ""))
+        text += f" — recovered {used}x already, so it blocks the task instead" if used >= RECOVERIES_MAX else ""
+        if cause in ("merge_conflict", "red_after_merge") and parked_pipeline(p, by[tid]):  # T-5735: it leads, its line named
+            pipe.append(text.replace("fm lane recover", "sampo lane recover"))
+        else:
+            parts.append(text)
         if cause in ("uncommitted", "merge_conflict", "red_after_merge") and used < RECOVERIES_MAX:
             launch.append(f"{AGENT_HEAD}, {agent_prompt(os.path.join(p.dir, 'audits', f'{tid}.builder.md'))}")
-    if not parts and not grants:
+    if not parts and not grants and not pipe:
         return ""
+    lead = (PIPELINE_LEAD + " (it changes the pipeline's own modules, so every fix behind it waits on it): "
+            + "; ".join(pipe) + ". ") if pipe else ""
+    rest = bool(parts or grants)
     if not full:
-        return "Builder lane(s) came back before their merge: " + "; ".join(parts + grants) + "."
-    return ("Builder lane(s) came back before their merge."
+        return lead + ("Builder lane(s) came back before their merge: " + "; ".join(parts + grants) + "." if rest else "")
+    return (lead + ("Builder lane(s) came back before their merge." if rest else "")
             + (" Recover now, no need to ask: " + "; ".join(parts) + "." if parts else "")
             + (" Each fm lane recover prints its Agent line; launch it (" + "; ".join(launch) + ")." if launch else "")
-            + (" A guard refused; only the user grants it: " + "; ".join(grants) + "." if grants else ""))
+            + (" A guard refused; only the user grants it: " + "; ".join(grants) + "." if grants else "")).strip()
 
 
 def awaiting_merge(p, briefs, quiet_min=30, fresh=False):
@@ -6107,7 +6128,15 @@ def pm_run(p, main):
     probed = set()
     from sampo import release
     patience = release._ship_cap()  # T-4718: all the waiting for a project's ships this pass does, together
+    from sampo import measure, train
+    measure.note_pipeline_used(p)  # T-5735: a verify pass starts on the merged code: any pipeline fix before it is in use
+    watch = train.process_watch()
     for _ in range(1000):  # bounded: a requeue loop can't spin forever
+        # T-5735: a unit (one settle, revert or verify) ended and no record is claimed by this pass: the boundary at
+        # which a pipeline fix merged meanwhile is taken up (the same command, on the new code; the records carry on).
+        # Not while a HEAD probe was made (`probed`, like `patience`, is lost on exec: the red probe's full suite would
+        # run again): the pass is short once its probes are done, and the next one starts on the new code.
+        train.unit_boundary(watch, hold=bool(probed))
         for s in [s for s, r in pm_records(p).items() if r["state"] == "conflict"]:
             _pm_settle(p, main, s)  # T-5518: once per HEAD each (settle_head): a conflict clears when trunk passes
         recs = pm_records(p)

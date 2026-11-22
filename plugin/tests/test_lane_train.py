@@ -44,6 +44,7 @@ class TrainCase(ForemanTestCase):
                 if tier != "S" else [])  # M/L plan gate
         tid = first(self.fm("task", "new", f"Lane {n}", "--type", "FEATURE", "--tier", tier, "--ac", f"ok :: {ac}",
                             *plan, "--step", "s", "--json", "--focus", cwd=path).stdout)["id"]
+        os.makedirs(os.path.dirname(os.path.join(path, name)), exist_ok=True)  # T-5735: a lane may write a nested path
         with open(os.path.join(path, name), "w") as f:
             f.write(text or f"{n}\n")
         self.git("add", name, cwd=path)

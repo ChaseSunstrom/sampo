@@ -181,6 +181,95 @@ class Measure(ForemanTestCase):
         self.assertEqual(secs, [])
         self.assertIn("ledger read covers only back to", note)
 
+    def used(self, filed_ago_min, used_ago_min=1.0, tid="T-0001"):
+        """A pipeline_used row: filed `filed_ago_min` minutes ago, first used `used_ago_min` minutes ago."""
+        c.log_event(self.p, "pipeline_used", task=tid, data={"filed": self.now - filed_ago_min * MIN,
+                                                             "merged": self.now - 5 * MIN,
+                                                             "used": self.now - used_ago_min * MIN})
+
+    def test_pipeline_in_use_is_the_first_used_time_minus_the_filed_time(self):
+        self.used(31, 1, "T-0001")   # 30 min
+        self.used(61, 1, "T-0002")   # 60 min
+        self.used(121, 1, "T-0003")  # 120 min
+        got = json.loads(self.run_measure("pipeline-in-use", "--json").stdout)
+        self.assertEqual((got["count"], got["median_min"], got["verdict"]), (3, 60.0, "ok"))
+
+    def test_pipeline_in_use_junk_rows_and_rows_out_of_the_window_are_skipped(self):
+        self.used(31, 1)
+        c.log_event(self.p, "pipeline_used", task="T-0002", data={"filed": "x", "used": None})
+        c.log_event(self.p, "pipeline_used", task="T-0003", data={"filed": self.now, "used": self.now - 600})
+        c.log_event(self.p, "pipeline_used", task="T-0004", data={"filed": self.now - 9 * 86400, "used": self.now - 8 * 86400})
+        self.assertEqual(measure.values(self.p, "pipeline-in-use", 1, now=self.now), [1800.0])
+
+    def test_pipeline_in_use_is_recorded_at_the_merge_and_closed_by_the_next_start_once(self):
+        class B:
+            id = "T-0007"
+            meta = {"created": c.now()}
+        measure.note_pipeline_merged(self.p, B())
+        self.assertEqual(c.ledger_tail(self.p, 50, ["pipeline_used"]), [], "merged is open, not yet in use")
+        measure.note_pipeline_used(self.p)
+        measure.note_pipeline_used(self.p)  # a second start finds nothing open
+        evs = c.ledger_tail(self.p, 50, ["pipeline_used"])
+        self.assertEqual(len(evs), 1)
+        self.assertEqual(evs[0]["task"], "T-0007")
+        self.assertEqual(sorted(evs[0]["data"]), ["filed", "merged", "used"])
+        self.assertGreaterEqual(evs[0]["data"]["used"], evs[0]["data"]["merged"])
+        self.assertEqual([f for f in os.listdir(self.p.dir) if f.startswith("pipeline-open.json")], [],
+                         "no open file and no temp file left behind")
+
+    def test_pipeline_in_use_two_merges_at_once_both_stay_open_and_each_is_used_once(self):
+        import threading
+
+        class B:
+            def __init__(self, n):
+                self.id, self.meta = f"T-{n:04d}", {"created": c.now()}
+        ts = [threading.Thread(target=measure.note_pipeline_merged, args=(self.p, B(n))) for n in range(1, 9)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join()
+        measure.note_pipeline_used(self.p)
+        got = sorted(e["task"] for e in c.ledger_tail(self.p, 50, ["pipeline_used"]))
+        self.assertEqual(got, [f"T-{n:04d}" for n in range(1, 9)], "no read-modify-write lost a lane")
+
+    def test_pipeline_in_use_never_raises_on_a_bad_project_or_a_lane_with_no_filed_time(self):
+        measure.note_pipeline_used(None)
+
+        class B:
+            id = "T-0008"
+            meta = {}
+        measure.note_pipeline_merged(None, B())
+        measure.note_pipeline_merged(self.p, B())
+        measure.note_pipeline_used(self.p)
+        self.assertEqual(c.ledger_tail(self.p, 50, ["pipeline_used"]), [], "no filed time: no first-used number")
+
+    def test_median_within_hour_is_shown_in_status_and_passes_the_bound(self):
+        self.used(31, 1, "T-0001")
+        self.used(41, 1, "T-0002")
+        line = measure.pipeline_line(self.p)
+        self.assertIn("median 35 min from filed to in use over 2 lanes", line)
+        self.assertIn("within the hour", line)
+        self.assertNotIn("ABOVE", line)
+        self.assertEqual(self.run_measure("pipeline-in-use", "--max", "60").returncode, 0)
+
+    def test_median_within_hour_bound_a_median_above_it_is_flagged_in_status_and_misses(self):
+        self.used(91, 1, "T-0001")
+        self.used(151, 1, "T-0002")
+        line = measure.pipeline_line(self.p)
+        self.assertIn("median 120 min", line)
+        self.assertIn("ABOVE 60 min", line)
+        miss = self.run_measure("pipeline-in-use", "--max", "60")
+        self.assertEqual(miss.returncode, 1)
+        self.assertIn("misses --max 60", miss.stdout)
+
+    def test_median_within_hour_status_prints_nothing_without_a_pipeline_lane_used(self):
+        self.assertEqual(measure.pipeline_line(self.p), "")
+
+    def test_median_within_hour_line_reaches_the_status_verb(self):
+        self.fm("task", "new", "a task so status has a body", "--type", "FEATURE", "--tier", "S")
+        self.used(91, 1)
+        self.assertIn("Pipeline fixes: median 90 min", self.fm("status").stdout)
+
     def test_the_real_writers_records_are_what_measure_reads(self):
         class B:
             meta = {"accepted_at": time.time() - 900}

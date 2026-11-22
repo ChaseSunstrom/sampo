@@ -1165,9 +1165,12 @@ def _follow(build, paths, interval, refresh=30.0):
                 out.append(None)
         return out
     last = None
+    from sampo import train
+    code = train.process_watch()
     try:
         v = build()  # the first build only names the paths to watch
         while True:
+            train.unit_boundary(code)  # T-5735: between rounds (a round's line is whole), new code is taken up
             seen, at = sig(v), time.time()
             v = build()  # T-1882: built after the snapshot, so a change while it builds or prints is caught next round
             line = json.dumps(v)

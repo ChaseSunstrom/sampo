@@ -245,6 +245,13 @@ def cmd_state(args):
             except Exception:
                 pass
             _foresight_line(p)
+            try:  # T-5735: the median time a pipeline fix took from filed to in use, flagged above an hour
+                from sampo import measure
+                line = measure.pipeline_line(p)
+                if line:
+                    print(line)
+            except Exception:
+                pass
             try:  # T-4239: how long the newest land took from accept to live, and the ship that outlived it
                 from sampo import train
                 for line in (train.land_line(p), train.ship_line(p)):

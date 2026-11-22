@@ -2851,6 +2851,30 @@ class LaneRecovery(ForemanTestCase):
         self.assertIn("12:00", slanes.recovery_text("usage_limit", "T-1", detail="12:00"))
         self.assertTrue(all(len(v) == 2 for v in slanes.STOP_CAUSES.values()), "label and recovery per cause")
 
+    def test_a_conflict_parked_pipeline_lane_leads_the_recovery_line_and_sampo_next_with_its_recover_command(self):
+        from sampo import lanes as slanes  # T-5735: a pipeline fix parked on a conflict holds every fix behind it
+        p = c.find_project(self.repo)
+        self.stall_env()
+        plain = self.stopped_builder(wip="c.py")[0]  # the lower id: it sorts first, and does not lead
+        self.mark(plain, "conflict")
+        pid, path = self.stopped_builder(wip="d.py")
+        os.makedirs(os.path.join(path, "plugin", "lib", "sampo"))
+        with open(os.path.join(path, "plugin", "lib", "sampo", "train.py"), "w") as f:
+            f.write("x = 1\n")
+        subprocess.run(["git", "-C", path, "add", "-A"], check=True)
+        subprocess.run(["git", "-C", path, "commit", "-qm", "pipeline fix"], check=True)
+        self.mark(pid, "conflict")
+        line = slanes.recovery_line(p, c.load_briefs(p), False)
+        self.assertTrue(line.startswith(slanes.PIPELINE_LEAD), line)
+        self.assertLess(line.index(f"sampo lane recover {pid}"), line.index(plain), line)
+        full = slanes.recovery_line(p, c.load_briefs(p), True)
+        self.assertTrue(full.startswith(slanes.PIPELINE_LEAD) and f"sampo lane recover {pid}" in full, full)
+        self.assertEqual(full.count(f"{pid} (merge conflict"), 1, "named once, not again in the ordinary list")
+        nxt = self.fm("next").stdout
+        self.assertLess(nxt.index(f"sampo lane recover {pid}"), nxt.index(f"fm lane recover {plain}"), nxt)
+        self.assertTrue(slanes.parked_pipeline(p, c.find_brief(p, pid)))
+        self.assertFalse(slanes.parked_pipeline(p, c.find_brief(p, plain)))
+
     def test_a_stopped_builder_whose_fresh_commit_left_the_tree_clean_ended_without_a_report(self):
         from sampo import lanes as slanes  # T-2362: the exam's lanes drill found it read as uncommitted while under 30 minutes old
         tid, _ = self.finished_builder(when=time.strftime("%Y-%m-%dT%H:%M:%S"))
