@@ -4930,6 +4930,51 @@ class LanePrecheck(ForemanTestCase):
         self.assertNotIn("lane_passed", c.find_brief(c.find_project(self.repo), self.tid).meta)
 
 
+class LaneRm(ForemanTestCase):
+    """T-5907: a lane whose only leftovers are ignored build caches (__pycache__, *.pyc, target) is removed
+    without --force, whether git lists them ignored (a .gitignore names them) or untracked (no .gitignore names
+    them but they are known build caches). A real untracked file still blocks."""
+
+    def _lane(self):
+        self.fm("init")
+        self.tid = first(self.fm("task", "new", "Lane work", "--type", "FEATURE", "--tier", "S",
+                                "--ac", "ok :: true", "--step", "s", "--json").stdout)["id"]
+        return json.loads(self.fm("lane", "new", self.tid, "--json").stdout)["path"]
+
+    def _lefts(self, path, rels, ignore=False):
+        if ignore:  # name them via info/exclude, as the repo's .gitignore does (T-5078 pattern)
+            common = subprocess.run(["git", "-C", path, "rev-parse", "--git-common-dir"],
+                                    capture_output=True, text=True).stdout.strip()
+            with open(os.path.join(common, "info", "exclude"), "a") as f:
+                f.write("__pycache__/\n*.pyc\ntarget/\n")
+        for rel in rels:
+            full = os.path.join(path, rel)
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            with open(full, "w") as f:
+                f.write("build\n")
+
+    def test_ignored_build_caches_alone_are_removed_without_force(self):
+        path = self._lane()
+        self._lefts(path, ["__pycache__/lane.cpython-311.pyc", "mod.pyc", "target/debug/dep.bin"], ignore=True)
+        self.fm("lane", "rm", self.tid)
+        self.assertFalse(os.path.exists(path))
+
+    def test_untracked_build_caches_alone_are_removed_without_force(self):
+        # T-5907: no .gitignore names them, so git lists them untracked; known build caches are rebuilds, not work
+        path = self._lane()
+        self._lefts(path, ["__pycache__/lane.cpython-311.pyc", "mod.pyc"])
+        self.fm("lane", "rm", self.tid)
+        self.assertFalse(os.path.exists(path))
+
+    def test_a_tracked_edit_is_still_kept(self):
+        path = self._lane()
+        self._lefts(path, ["__pycache__/lane.cpython-311.pyc", "work.txt"])
+        r = self.fm("lane", "rm", self.tid, check=False)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("uncommitted work", r.stderr)
+        self.assertTrue(os.path.exists(path))
+
+
 class VerifyTimeout(ForemanTestCase):  # T-3418
     def brief(self):
         wt = os.path.join(self.tmp, "wt")

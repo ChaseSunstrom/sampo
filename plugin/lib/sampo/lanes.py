@@ -2066,12 +2066,13 @@ def _cache_name(path, rel):
 
 
 def _cache_line(path, ln):
-    """T-5078: whether one `git status --porcelain --ignored=matching` line is a cache a removal may drop. An ignored
-    one is judged by _is_cache; an untracked one only when it is the fast build's own output (an older base's
-    .gitignore doesn't name it, so git lists it as untracked; it is never work to commit)."""
+    """T-5078/T-5907: whether one `git status --porcelain --ignored=matching` line is a cache a removal may drop. An
+    ignored one is judged by _is_cache; an untracked one (a base .gitignore doesn't name it, so git lists it) when it
+    is a known build cache too — T-5907: __pycache__, *.pyc, target, and the like are rebuilds, never work to commit.
+    Both are rebuildable, so _is_cache judges both (it covers the fast build's own output, T-5078)."""
     if ln.startswith("!! "):
         return _is_cache(path, ln[3:])
-    return ln.startswith("?? ") and _FAST_BUILD.search(ln[3:]) is not None
+    return ln.startswith("?? ") and _is_cache(path, ln[3:])
 
 
 def _drop_untracked_fast(path, status):
@@ -2080,8 +2081,11 @@ def _drop_untracked_fast(path, status):
     for ln in status.splitlines():
         if ln.startswith("?? ") and _cache_line(path, ln):
             full = os.path.join(path, ln[3:])
-            if os.path.isfile(full) and not os.path.islink(full):
+            if os.path.isdir(full) and not os.path.islink(full):  # T-5907: a cache directory (__pycache__, target)
+                shutil.rmtree(full, ignore_errors=True)
+            elif os.path.isfile(full) and not os.path.islink(full):
                 os.unlink(full)
+
 
 
 def _own_cargo_config(path, rel):
