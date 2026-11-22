@@ -761,6 +761,123 @@ class Lanes(ForemanTestCase):
         self.assertTrue(refused())
         self.assertIn('model: "sonnet"', self.fm("lane", "brief", fresh).stdout)
 
+    def _dependent(self, dep, title="Dependent"):  # T-5725: a planned S task that depends_on `dep`
+        self.fm("lane", "max", "20")
+        tid = first(self.fm("task", "new", title, "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true", "--step", "s",
+                            "--json").stdout)["id"]
+        self.fm("task", "set", tid, f"depends_on={dep}")
+        self.fm("task", "set", tid, "approved=true")
+        return tid
+
+    def test_stacked_base_names_a_finished_dependency_s_tip_and_lane_start_brings_it_in(self):  # T-5725: T-5708 called a verb T-5706 adds
+        dep, dpath = self.finished_builder()
+        tip = self.git("rev-parse", "HEAD", cwd=dpath).strip()
+        self.git("commit", "-q", "--allow-empty", "-m", "main moved on", cwd=self.repo)  # the worktree below forks past the dep
+        tid = self._dependent(dep)
+        out = json.loads(self.fm("lane", "brief", tid, "--json").stdout)
+        text = read_text(out["path"])
+        flat = " ".join(text.split())
+        self.assertIn(f"## Built on {dep}", text)
+        rules = text.rpartition(slanes.CONTRACT_HEADING)[2]
+        self.assertRegex(rules, rf"Start from the main checkout's commit {tip}\b", "the dependency's tip is the base")
+        self.assertIn(f"Built on {dep}", rules, "the contract says it too: lane start reads it there")
+        self.assertIn("lane start", flat)
+        self.assertEqual(c.find_brief(c.find_project(self.repo), tid).meta.get("big_base"), tip,
+                         "its own commits are the ones past the tip (finished_lanes, recovery)")
+        wt = os.path.join(self.tmp, "builder-wt")
+        self.git("worktree", "add", "-q", "-b", "worktree-x", wt, cwd=self.repo)  # what the harness makes: main's HEAD
+        self.assertNotEqual(subprocess.run(["git", "-C", wt, "merge-base", "--is-ancestor", tip, "HEAD"]).returncode, 0)
+        r = self.fm("lane", "start", tid, cwd=wt)
+        self.assertEqual(subprocess.run(["git", "-C", wt, "merge-base", "--is-ancestor", tip, "HEAD"]).returncode, 0,
+                         "the dependency's work is in the lane now")
+        self.assertTrue(os.path.isfile(os.path.join(wt, "wip.py")), "the file the dependency adds")
+        self.assertIn(dep, r.stdout)
+        head = self.git("rev-parse", "HEAD", cwd=wt)
+        self.fm("lane", "start", tid, cwd=wt)  # a second run merges nothing more
+        self.assertEqual(self.git("rev-parse", "HEAD", cwd=wt), head)
+
+    def test_stacked_base_fast_forwards_when_the_lane_is_behind_the_tip(self):  # T-5725
+        dep, dpath = self.finished_builder()
+        tip = self.git("rev-parse", "HEAD", cwd=dpath).strip()
+        tid = self._dependent(dep)
+        self.fm("lane", "brief", tid)
+        wt = os.path.join(self.tmp, "builder-wt")
+        self.git("worktree", "add", "-q", "-b", "worktree-x", wt, cwd=self.repo)
+        self.fm("lane", "start", tid, cwd=wt)
+        self.assertEqual(self.git("rev-parse", "HEAD", cwd=wt).strip(), tip, "no merge commit when HEAD is an ancestor")
+
+    def test_stacked_base_stops_without_focus_when_the_tip_does_not_merge(self):  # T-5725
+        dep, dpath = self.finished_builder()
+        tid = self._dependent(dep)
+        self.fm("lane", "brief", tid)
+        with open(os.path.join(self.repo, "wip.py"), "w") as f:  # main's own wip.py: the dependency's add conflicts
+            f.write("y = 2\n")
+        self.git("add", "wip.py", cwd=self.repo)
+        self.git("commit", "-qm", "main wip", cwd=self.repo)
+        wt = os.path.join(self.tmp, "builder-wt")
+        self.git("worktree", "add", "-q", "-b", "worktree-x", wt, cwd=self.repo)
+        r = self.fm("lane", "start", tid, cwd=wt, check=False)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn(dep, r.stderr + r.stdout)
+        self.assertEqual(self.git("status", "--porcelain", cwd=wt).strip(), "", "the failed merge is aborted")
+        self.assertNotIn(tid, (json.loads(self.fm("state", "--json", cwd=wt).stdout)["active"] or {}).get("id", ""))
+
+    def test_waits_on_building_dependency_refuses_the_brief_naming_it(self):  # T-5725: T-5710 read a key T-5613 never wrote
+        from sampo import bus
+        dep, _ = self.stopped_builder(proc=f"{bus.host_id()}|{os.getpid()}|{bus._proc(os.getpid())[1]}")  # alive, uncommitted
+        tid = self._dependent(dep)
+        r = self.fm("lane", "brief", tid, check=False)
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        said = r.stderr + r.stdout
+        self.assertIn(f"{tid} waits on {dep}", said)
+        self.assertIn("still building", said)
+        self.assertFalse(os.path.exists(os.path.join(c.find_project(self.repo).dir, "audits", f"{tid}.builder.md")))
+        ready = json.loads(self.fm("lane", "brief", "--ready", "--json", check=False).stdout)  # the batch skips it too
+        self.assertIn(dep, " ".join(str(x) for x in ready["skipped"] if tid in str(x)), ready)
+
+    def test_a_dependency_with_no_lane_or_already_landed_changes_nothing(self):  # T-5725: only an unlanded lane stacks or holds
+        done = first(self.fm("task", "new", "Landed", "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true", "--step",
+                             "s", "--json").stdout)["id"]
+        p = c.find_project(self.repo)
+        b = c.find_brief(p, done)
+        b.meta["status"] = "done"
+        c.save_brief(p, b)
+        tid = self._dependent(done)
+        text = read_text(json.loads(self.fm("lane", "brief", tid, "--json").stdout)["path"])
+        self.assertNotIn("## Built on", text)
+        head = self.git("rev-parse", "HEAD", cwd=self.repo).strip()
+        self.assertIn(f"Start from the main checkout's commit {head}", text.rpartition(slanes.CONTRACT_HEADING)[2])
+
+    def _lane_editing(self, rel, old, new):  # T-5725: an unlanded lane whose commit rewrites a line of `rel`
+        tid = first(self.fm("task", "new", "Other lane", "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true", "--step",
+                            "s", "--json").stdout)["id"]
+        path = json.loads(self.fm("lane", "new", tid, "--json").stdout)["path"]
+        with open(os.path.join(path, rel), encoding="utf-8") as f:
+            text = f.read()
+        with open(os.path.join(path, rel), "w", encoding="utf-8") as f:
+            f.write(text.replace(old, new))
+        self.git("commit", "-qam", "edit", cwd=path)
+        return tid
+
+    def test_overlap_warn_names_the_unlanded_lane_that_changes_a_function_the_scope_names(self):  # T-5725
+        self._commit_files({"pkg/mod.py": "def target(x):\n    return x + 1\n\n\ndef other(x):\n    return x - 1\n"}, "mod")
+        busy = self._lane_editing("pkg/mod.py", "return x + 1", "return x + 2")
+        self.fm("lane", "max", "20")
+        tid = first(self.fm("task", "new", "Rework target", "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true",
+                            "--scope", "pkg/mod.py", "--step", "Make target return x + 3 in pkg/mod.py", "--json").stdout)["id"]
+        r = self.fm("lane", "brief", tid)
+        lines = [ln for ln in (r.stdout + r.stderr).splitlines() if busy in ln]
+        self.assertEqual(len(lines), 1, r.stdout + r.stderr)
+        self.assertIn("Warning", lines[0])
+        self.assertIn("target", lines[0])
+        self.assertIn("pkg/mod.py", lines[0])
+        # a scope that names a function the other lane left alone is not warned about
+        tid2 = first(self.fm("task", "new", "Rework other", "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true",
+                             "--scope", "pkg/mod.py", "--step", "Make other return x - 3 in pkg/mod.py",
+                             "--json").stdout)["id"]
+        r2 = self.fm("lane", "brief", tid2)
+        self.assertNotIn(busy, r2.stdout + r2.stderr)
+
     def test_lane_brief_refuses_the_one_way_door_focus_refuses_before_a_launch(self):  # T-4821: T-4820's brief, then focus refused
         tid = json.loads(self.fm("task", "new", "Clear the sweep", "--type", "FIX", "--tier", "S", "--raw", "Clear the sweep",
                                  "--ac", "clear :: true", "--step", "delete ./", "--json").stdout)["id"]

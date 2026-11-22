@@ -670,6 +670,8 @@ def refusals(p):
 
 CONTRACT_HEADING = "## Your contract (sampo:fm-builder)\n"  # contract() writes it; start() reads the base after the last one
 BRIEF_BASE = re.compile(r"Start from the main checkout's commit ([0-9a-f]{7,40})\b")  # the contract's first rule, filled in
+BUILT_ON_MARK = "Built on"  # T-5725: the line builder_brief adds after the rules when the base is a dependency's lane tip
+BUILT_ON = re.compile(rf"^- {BUILT_ON_MARK} (T-\d+) \(unlanded lane\)", re.M)
 
 
 def start(p, args):
@@ -694,8 +696,9 @@ def start(p, args):
             # the task's own sections come first and may quote a base line: only the contract (last section) counts
             _, sep, rules = f.read().rpartition(CONTRACT_HEADING)  # no heading: no contract, so no base
             m = BRIEF_BASE.search(rules) if sep else None
+            built = BUILT_ON.search(rules) if sep else None  # T-5725: the base is a dependency's unlanded lane tip
     except OSError:
-        m = None
+        m = built = None
     base, notes = m.group(1) if m else None, []
     if not base:
         notes.append(f"no brief with a base on record for {b.id} (sampo lane brief {b.id} writes one): the base was "
@@ -713,6 +716,16 @@ def start(p, args):
             if not head.startswith(base):
                 notes.append(f"main moved on after the brief was written (its base {base[:12]} is in your HEAD "
                              f"{head[:12]}): builds on HEAD")
+        elif built:  # T-5725: the dependency's work is not on main: bring it in, a fast-forward when HEAD is behind it
+            dep, fast = built.group(1), ancestor("HEAD", base)
+            got = _git(p.root, "merge", "--ff-only" if fast else "--no-edit", base)
+            if got.returncode != 0:
+                _git(p.root, "merge", "--abort")  # nothing half-merged is left; a failed ff-only has nothing to abort
+                raise c.PolicyError(f"{dep}'s lane tip {base} does not {'fast-forward' if fast else 'merge'} into your HEAD "
+                                    f"{head}: {(got.stderr or got.stdout or 'git exit ' + str(got.returncode)).strip()[:300]} "
+                                    f"(the merge was undone, nothing was focused): stop and report both commits")
+            notes.append(f"built on {dep}: its lane's tip {base[:12]} is in your worktree now "
+                         f"({'fast-forward' if fast else 'merged'}); your commits are the ones past it")
         elif ancestor("HEAD", base):
             raise c.PolicyError(f"your worktree is behind the brief's base: git merge --ff-only {base} then sampo lane "
                                 f"start {b.id} again (nothing was focused)")
@@ -2937,8 +2950,12 @@ def brief_ready(p, args):
             return "waits on your approval"
         from sampo import big  # T-4222: a big task's child waits for its siblings to land on the integration branch
         anchor = big.anchor(p, b, by_id)
-        waits = (big.unmet(p, b, anchor, by_id) if anchor else
-                 [d for d in c._deps(b) if d not in by_id or by_id[d].status not in c.CLOSED])
+        if anchor:
+            waits = big.unmet(p, b, anchor, by_id)
+        else:  # T-5725: a dependency whose finished lane has not landed is built on, not waited for; a building one is named
+            stack, building, split = stack_base(p, b, briefs) if b.meta.get("depends_on") else (None, [], [])
+            waits = [f"{d} (still building)" if d in building else d for d in c._deps(b)
+                     if (d not in by_id or by_id[d].status not in c.CLOSED) and d not in (stack[2] if stack else [])]
         if waits:
             return "waits on " + ", ".join(waits)
         gaps = c.plan_gaps(b, autonomy)
@@ -3169,6 +3186,88 @@ def code_context(root, base, b):
     return []
 
 
+LANE_OVERLAP_MAX = 60  # lanes whose diff the function-overlap warning reads, per brief
+_HUNK_OLD = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+")
+
+
+def stack_base(p, b, briefs):
+    """T-5725: (stack, building, split) for the task's recorded depends_on that still hold an open lane (an inferred
+    dependency is a guess and never holds a brief). stack = (dep id, tip sha, [every finished dep id the tip covers]) when
+    the dependencies' finished, unlanded lanes reach one tip (a tip that is an ancestor of another is covered by it), else
+    None; building = deps whose lane has not returned (no brief until it has: its work is not there to build on); split =
+    finished deps whose tips are not one line of history (a lane starts from one base). T-5708 was briefed from main while
+    T-5706's finished lane held the verb it calls, and a builder wrote against a key T-5613 never wrote (T-5710)."""
+    by = {x.id: x for x in briefs}
+    lanes = [by[d] for d in b.meta.get("depends_on") or []
+             if d in by and by[d].meta.get("lane") and not by[d].meta.get("lane_spike") and os.path.isdir(by[d].meta["lane"])]
+    if not lanes:
+        return None, [], []
+    done = set(c.finished_lanes(p, briefs, quiet_min=0, fresh=True))
+    main = c.main_worktree(p.root) or p.root
+    tips, building = {}, []
+    for x in lanes:
+        tip = _git(x.meta["lane"], "rev-parse", "HEAD").stdout.strip() if x.id in done else ""
+        if re.fullmatch(r"[0-9a-f]{40,64}", tip):
+            tips[x.id] = tip
+        elif x.status not in c.CLOSED:
+            building.append(x.id)
+    top = [d for d in tips if not any(e != d and tips[e] != tips[d]
+                                       and _git(main, "merge-base", "--is-ancestor", tips[d], tips[e]).returncode == 0
+                                       for e in tips)]
+    heads = dict.fromkeys(tips[d] for d in top)
+    if len(heads) > 1:
+        return None, building, sorted(top)
+    return ((top[0], tips[top[0]], sorted(tips)) if top else None), building, []
+
+
+def lane_fn_overlap(p, b, main, base, briefs):
+    """T-5725: a warning line per unlanded lane whose diff (past what `base` has) changes a function the task's scope files
+    define and its title or steps name: two lanes on one function conflict at the land, and the second to land redoes it. A
+    function is the span of a def (T-5498's _defs) at the lane's merge-base, hit by a changed line of its diff. At most
+    LANE_OVERLAP_MAX lanes and CODE_SCOPE_MAX scope files are read; a lane this task is built on (an ancestor of base) has
+    nothing past it."""
+    scope = [s.rstrip("/") for s in b.meta.get("scope") or [] if s.rstrip("/") and not re.search(r"[*?\[]", s)]
+    if not scope or b.meta.get("race") or b.meta.get("race_of"):
+        return []
+    words = set(_NAME.findall(" ".join([b.title, *(s.text for s in b.steps())])))
+    named = {}
+    for rel in scope[:CODE_SCOPE_MAX]:
+        text = _source(main, base, rel)
+        hit = {n for n, _, _ in _defs(text, rel) if n in words} if text else set()
+        if hit:
+            named[rel] = hit
+    if not named:
+        return []
+    out = []
+    for x in [x for x in briefs if x.id != b.id and x.meta.get("lane") and x.status != "dropped"
+              and not x.meta.get("lane_spike") and os.path.isdir(x.meta["lane"])][:LANE_OVERLAP_MAX]:
+        tip = _git(x.meta["lane"], "rev-parse", "HEAD").stdout.strip()
+        mb = _git(main, "merge-base", base, tip).stdout.strip() if tip else ""
+        if not mb or mb == tip:
+            continue
+        diff = _git(main, "diff", "-U0", "--no-color", "--no-renames", mb, tip, "--", *named, timeout=30).stdout
+        ranges, cur = {}, None
+        for line in diff.splitlines():
+            if line.startswith("diff --git "):
+                m = re.match(r"diff --git a/.+? b/(.+)$", line)
+                cur = m.group(1) if m else None
+            elif cur and (h := _HUNK_OLD.match(line)):
+                ranges.setdefault(cur, []).append((int(h.group(1)), 1 if h.group(2) is None else int(h.group(2))))
+        hits = []
+        for rel, rs in ranges.items():
+            if rel not in named:
+                continue
+            for name, first, last in _defs(_source(main, mb, rel), rel):
+                if name in named[rel] and any((a <= last and a + n - 1 >= first) if n else first <= a < last for a, n in rs):
+                    hits.append(f"{c.fit(c.plain(name), 60)} in {c.fit(c.plain(rel), 120)}")
+        if hits:
+            out.append(f"Warning: {x.id}'s lane ({c.fit(c.plain(x.title), 60)}) is not landed and its diff changes "
+                       f"{', '.join(dict.fromkeys(hits))}, which this task's scope names: expect a conflict when the "
+                       f"second of you lands; wait for {x.id} to land, or keep your edit to that function small "
+                       f"(sampo lane list)")
+    return out
+
+
 def builder_brief(p, b, args, resume_branch=None, after=""):
     """T-0234: a self-contained brief for one S/M task worked by a sampo:fm-builder subagent in its own worktree
     (Agent isolation "worktree"; its `fm focus` binds the task there), and the Agent call that launches it. The main
@@ -3194,6 +3293,16 @@ def builder_brief(p, b, args, resume_branch=None, after=""):
         if waits := (resume_branch is None and big.unmet(p, b, anchor)):  # a lane that already ran is recovered, not held
             raise c.PolicyError(f"{b.id} waits on {', '.join(waits)}: it is cut from big/{anchor.id} once their commits are on it "
                                 f"({'; '.join(big.why_waits(p, anchor, waits))})")
+    stack = None
+    if not anchor and b.meta.get("depends_on"):  # T-5725: built on a finished dependency's unlanded lane, or held for one
+        stack, building, split = stack_base(p, b, c.load_briefs(p))
+        if resume_branch is None and (building or split):  # a lane that already ran is recovered, not held
+            raise c.PolicyError(
+                f"{b.id} waits on {', '.join(building or split)}: "
+                + (f"{'its lane is' if len(building) == 1 else 'their lanes are'} still building, and a brief built now "
+                   f"would not have that work (sampo lane list; brief it once the lane returns, or after it lands)"
+                   if building else f"each is a finished lane not landed, and a lane starts from one base: land one "
+                   f"first (sampo lane land --bg), then brief {b.id}"))
     from sampo import doors as sdoors  # T-4821: focus's door gaps for a root door, read with no write (after the cheap refusals)
     gaps = list(dict.fromkeys([*c.plan_gaps(b, c.effective_autonomy(p)), *sdoors.brief_gaps(p, b)]))
     if gaps:  # T-0823: the builder's first act is fm focus, which refuses these
@@ -3262,6 +3371,14 @@ def builder_brief(p, b, args, resume_branch=None, after=""):
                   + (f"; the check found the commits of {', '.join(on)} on it" if on else "") + f". Fast-forward your "
                   f"worktree to it first (the contract below names it as <BASE>); the main thread merges your branch back "
                   f"onto `{cut['branch']}`.", ""]
+    if stack:  # T-5725: the dependency's work is not on main yet: the lane is cut from its tip (lane start brings it in)
+        base = stack[1]
+        parts += [f"## Built on {stack[0]}",
+                  f"{b.id} depends on {', '.join(stack[2])}, whose finished lane has not landed: your base `{base}` is the tip "
+                  f"of {stack[0]}'s lane, which has the code your steps call (the contract below names it as <BASE>). "
+                  f"`sampo lane start {b.id}` brings it into your worktree: a fast-forward, or a merge when main moved on "
+                  f"(it stops and names both commits if the merge conflicts). Build on that work, never re-author it; "
+                  f"{stack[0]} lands before this branch, and your commits are the ones past `{base[:12]}`.", ""]
     held, create = cited_missing(p, main, base, b)  # T-4928: a file only an unlanded branch has is a dependency
     if held:
         deps = set(b.meta.get("depends_on") or [])
@@ -3315,7 +3432,7 @@ def builder_brief(p, b, args, resume_branch=None, after=""):
                   "or anywhere git ignores is lost when an unchanged worktree is cleaned up.", ""]
     from sampo import recipe  # T-3292: how the nearest closed task of this type was made (none when nothing is close)
     parts += recipe.section(p, b, briefs)
-    warns = hot_files(p, b)
+    warns = hot_files(p, b) + lane_fn_overlap(p, b, main, base, briefs)  # T-5725: a function an unlanded lane changes
     if warns:
         parts += ["## Warning", *warns, ""]
     keeps = defect_classes(p)
@@ -3334,6 +3451,11 @@ def builder_brief(p, b, args, resume_branch=None, after=""):
               *STANDING, *[f"- {d}: {t}" for d, t in standing_decisions(p)], ""]
     parts += cargo_brief(p)  # T-4575
     parts.append(contract(b.id, base, p.root))
+    if stack:  # T-5725: lane start reads this line (BUILT_ON): the base is a dependency's tip, merged when HEAD isn't behind it
+        parts.append(f"- {BUILT_ON_MARK} {stack[0]} (unlanded lane): the base above is that lane's tip, not main's commit. "
+                     f"`sampo lane start {b.id}` fast-forwards your worktree to it, or merges it when main moved on (the "
+                     f"one merge besides the fast-forward that the rules allow, T-5725); a conflict stops it: report both "
+                     f"commits.")
     path =os.path.join(p.dir, "audits", f"{b.id}.builder.md")
     text = c.redact("\n".join(parts)) + "\n"
     with c.lock(p.dir):
@@ -3344,7 +3466,7 @@ def builder_brief(p, b, args, resume_branch=None, after=""):
         from sampo import bus
         x.meta["builder"] = c.now()
         x.meta["builder_model"] = chosen
-        if anchor:  # T-4222: the lane's base, on the brief
+        if anchor or stack:  # T-4222: the lane's base, on the brief (T-5725: a dependency's tip): its commits are past it
             x.meta["big_base"] = base
         else:
             x.meta.pop("big_base", None)
