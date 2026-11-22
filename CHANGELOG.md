@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- A live train's repo-shape cull now runs each subset tree on the red classes alone and the kept build once on the whole set, with one more split for a class red only there (T-5853).
 - sampo lane recover takes an accepted, returned or reviewed lane the land parked for a conflict or red at once, not after 15 quiet minutes (T-5850).
 - sampo measure review-cost prints, per UTC day, the lanes reviewed, lenses run, review tokens and dollars from the review_cost events and the estimated saving against the five-lens default, with --json rows and no bound (T-5843).
 - sampo lane list shows each lane's stage times (built, reviewed, accepted, landed, closed) as the gap before each stage and a stages field in --json, derived on read from events the ledger already holds (T-5839).
