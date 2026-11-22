@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- A lane check's repo-shape stage runs once for the lanes waiting on it, on one merged scratch tree, marking each member green at its tip; a red or cut batch runs each lane alone (T-5380).
 - A capture naming a file in an open task's scope no longer appends onto a task whose lane has merged or is held by a builder; it files as its own task, so the close gate isn't left refusing a follow-up no builder saw (T-5363).
 - The PreToolUse hook keeps under the harness's 5 s kill with one 3.5 s deadline from process start: the guard's verdict is computed first and never cut, the snapshot (every git step checked and inside the budget) and note builders give way, a blocked builder is interrupted with the alarm handed back, and each skipped part is named in the hook log and hook_ms row (T-5076).
 - The guard's script read undoes its open mark by length inside its try, so a budget timer that fires as the mark is set no longer leaves every later script read counted as nested: unclocked, uncached and never refused (T-5074).
