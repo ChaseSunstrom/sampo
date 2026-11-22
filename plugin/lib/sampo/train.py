@@ -3106,6 +3106,52 @@ def _stale_affected(b, sha, main):
     return None
 
 
+LAND_CHECKS = 3  # T-5561: checks running at once (any lane's) past which the land starts no further stale lane's check
+
+
+STALE_RETRY_S = 600.0  # T-5561 review: a lane whose check would not start is not tried again in this land for this long
+
+
+def _live_checks(p, briefs=None):
+    """T-5561: the lane checks running now in the project, started by an accept or a land alike (`briefs`: already loaded)."""
+    return sum(1 for x in (c.load_briefs(p) if briefs is None else briefs)
+               if x.meta.get("check_state") == "running" and _check_alive(x.meta))
+
+
+def _stale_start(p, b, main, sha, failed=None, live=None):
+    """T-5561: the land's own rerun of a stale lane's check. A lane whose newest affected run predates its tip `sha` (a
+    fixer's commit after accept) waited for a hand-run `sampo check`: 11 lanes sat out a round on 2026-11-22. With no check
+    on record at this tip, the lane's check starts as accept starts it (_start_check: in its lane, niced, behind the slot
+    gate) and the lane is held while it runs (the returned `held: …` line); once LAND_CHECKS run it waits for one to end.
+    None: not a stale lane, a check at this tip already on record (running, red, cut off or green: _check_hold's and the
+    land's own rules apply), or none could start (paused, no background): the land holds or trains it as before.
+    Review: `failed` (lane id -> when the land may try it again) notes a start that did not happen, so the land's 15 s
+    polls do not start it again at once; `live` is a callable giving the running checks, counted once per poll."""
+    m = b.meta
+    if _affected_state(b, sha, main)[0] != "stale" or (m.get("check_state") and m.get("check_tip") == sha):
+        return None
+    note = f"its newest affected run predates the lane tip {sha[:9]}"
+    if (n := live() if live else _live_checks(p)) >= LAND_CHECKS:
+        return (f"held: {note}: {n} checks run already (the land runs at most {LAND_CHECKS}); its check starts when one ends "
+                "and it joins the land when green")
+    retry = time.monotonic() + STALE_RETRY_S
+    try:  # priority 0 (low=True): the train gate's own runs, which wait on a slot at 1, keep first claim
+        started = _start_check(p, b, main, sha, _check_since(main, b, sha), 1, low=True)
+    except _ClaimLost:  # another process started it first: it runs
+        return _check_hold(c.find_brief(p, b.id) or b, sha, main)
+    except Exception as e:  # noqa: BLE001 — a check that cannot start leaves the lane as it was, never a land's crash
+        print(f"sampo lane land: {b.id}: its check did not start: {type(e).__name__}: {c.fit(str(e), 200)}",
+              file=sys.stderr, flush=True)
+        if failed is not None:
+            failed[b.id] = retry
+        return None
+    if not started:
+        if failed is not None:
+            failed[b.id] = retry
+        return None
+    return (f"held: {note}: the land started its check (pid {started[0]}, log {started[1]}); it joins the land when green")
+
+
 def _code_stamp():
     """T-3973: path, mtime and size of every Sampo module on disk: a change means a train merged new code for this land."""
     d = os.path.join(c.PLUGIN_ROOT, "lib", "sampo")
@@ -3362,10 +3408,38 @@ def _land_trains(p, main, batch, owed, closer=None):
             print(f"sampo lane land: parked {i}: {c.fit(c.plain(w), 400)}", file=sys.stderr, flush=True)
 
     held = set()  # T-4767: lanes the check hold left out: read again when a train starts or one is named --first
+    checking, mine = set(), set()  # T-5561: lanes whose check this land started, and those still running (or waiting for a
+    # slot): a land with nothing else to train waits for the second set
+    failed, census = {}, []  # T-5561 review: lane -> when a check that would not start may be tried again; the running checks, counted once per poll
+
+    def running():
+        if not census:
+            census.append(_live_checks(p))
+        return census[0]
+
+    def hold(b):
+        """T-4767's hold, and T-5561: a stale lane with no check at its tip gets its check started here (not in a no-background
+        or paused land: those hold it as before); `checking` follows the lanes whose check is in flight."""
+        sha = tip(b)
+        why = _lane_hold(p, b, sha, main)
+        # live mode trains a stale lane at once with its note (sort): the land does not wait hours for a niced check there
+        if (background and not live_mode(p) and failed.get(b.id, 0) <= time.monotonic()
+                and (why is None or why.startswith("held: no passing affected check"))):
+            if got := _stale_start(p, b, main, sha, failed, running):
+                mine.add(b.id)  # only the checks this land started are waited for: an accept's check joins by its own queueing
+                if "the land started its check" in got:
+                    census[:] = [running() + 1]
+                why = got
+        if why and b.id in mine and (why.startswith(("held: check running", "held: check queued", "held: shape queued"))
+                                     or "predates the lane tip" in why):
+            checking.add(b.id)
+        else:
+            checking.discard(b.id)
+        return why
 
     def sort(bs):  # a conflict never costs a criteria or gate run (an old git without merge-tree: no check)
         for b in sorted(bs, key=land_key):
-            if why := _lane_hold(p, b, tip(b), main):  # T-4286: its check is running, red or cut off at this tip: left out; T-4767: no passing check at the tip at all
+            if why := hold(b):  # T-4286: its check is running, red or cut off at this tip: left out; T-4767: no passing check at the tip at all; T-5561: a stale lane's check is started
                 print(f"sampo lane land: {b.id}: {why}", file=sys.stderr, flush=True)
                 held.add(b.id)
                 continue
@@ -3395,7 +3469,7 @@ def _land_trains(p, main, batch, owed, closer=None):
         now, keep = {b.id: b for b in c.load_briefs(p)}, []
         for t in ids:
             b = now.get(t)
-            if b and (why := _lane_hold(p, b, tip(b), main)):
+            if b and (why := hold(b)):
                 print(f"sampo lane land: {t}: {why}", file=sys.stderr, flush=True)
                 held.add(t)
             else:
@@ -3406,9 +3480,38 @@ def _land_trains(p, main, batch, owed, closer=None):
         """T-4767 review: the held lanes whose check is clean now (a hand check or an accept finished while a train ran)
         are sorted in, as the held line promises. Said once: a lane still held is not printed again."""
         now = c.load_briefs(p)
-        back = {b.id for b in now if b.id in held and not (_lane_hold(p, b, tip(b), main))}
+        census[:] = [_live_checks(p, now)]  # once for the poll, not per stale lane
+        back = set()
+        for b in now:
+            if b.id not in held:
+                continue
+            flying = b.id in checking
+            if not (why := hold(b)):
+                back.add(b.id)
+            elif flying and b.id not in checking:  # T-5561: its check ended and still holds it (red, cut off): said once
+                print(f"sampo lane land: {b.id}: {why}", file=sys.stderr, flush=True)
         back &= set(lanes.awaiting_merge(p, now, 0, fresh=True))
         sort(b for b in now if b.id in back)
+        census.clear()
+
+    def wait_checks():
+        """T-5561: nothing is ready and held lanes' checks run (the land started them): wait, bounded by STALE_WAIT_S, for
+        one to end green and join. True when a lane is ready, a close waiting for its FIX was released or a lane was named
+        --first; False when none is in flight (or the wait ran out). The cheap looks come every CLOSE_POLL_S, the held
+        lanes' read (every brief loaded) every STALE_POLL_S."""
+        end = time.monotonic() + STALE_WAIT_S
+        again = 0.0
+        while checking and time.monotonic() < end and not c.panicked():
+            ensure_pm()
+            time.sleep(CLOSE_POLL_S)
+            if release_waiting():
+                return True
+            if time.monotonic() >= again:
+                again = time.monotonic() + STALE_POLL_S
+                readmit()
+            if ready or first_ids(p, peek=True):
+                return True
+        return False
     left = landed + gone  # merged and open (a train by hand, a land cut short): closed after each train's own (T-3884)
     fixwait.update(_fix_waiting(p, main, left))  # T-5791: an earlier land's closes that wait for their FIX stay out of the closes
     waiting = set(lanes.awaiting_merge(p, briefs)) - set(landed)
@@ -3470,6 +3573,8 @@ def _land_trains(p, main, batch, owed, closer=None):
         if not ready:
             to_close([t for t in left if t not in queued])  # T-5368: the leftovers close now, a lane named meanwhile trains
             if wait_closes() or release_waiting():  # T-5791: a close that waited meanwhile may have its FIX landed already
+                continue
+            if wait_checks():  # T-5561: a stale lane's check the land started: it trains when that check is green
                 continue
             break
         # T-5444: live, one train for all. T-5023: an express lane at the head leaves the ordinary lanes' train; T-5726:
@@ -4304,6 +4409,8 @@ def spawn_land(p, main):
 
 CHECK_TRIES = 2  # a check cut off at its deadline is started once more (its green classes are cached), then reported
 CHECK_WALL_S = 4 * 3600  # a check process still running after this is killed and counts as cut off
+STALE_POLL_S = 15.0  # T-5561 review: how often a land waiting on the checks it started reads every lane's brief again
+STALE_WAIT_S = CHECK_WALL_S + 600  # T-5561: the longest a land with nothing to train waits for the checks it started
 # T-4892: past CHECK_TRIES, a cut-off try that still ran classes is started again (run.py runs only what is left), up to
 # this many tries and CHECK_WALL_S from the first one's start (check_first); a try that ran none is reported
 CHECK_TRIES_MAX = 8
@@ -4361,7 +4468,14 @@ def _lane_tip(main, b):
                 f"{b.meta.get('lane_branch') or 'foreman/' + b.id}^{{commit}}").stdout.strip()
 
 
-def _spawn_check(p, b, main, *, tip, since, tries):
+def _check_since(main, b, tip):
+    """T-4355: the base a merge-commit tip's check diffs from (such a tip has no diff of its own), else None."""
+    if len(_git(main, "rev-list", "--parents", "-n", "1", tip).stdout.split()) > 2:
+        return b.meta.get("base") or None
+    return None
+
+
+def _spawn_check(p, b, main, *, tip, since, tries, low=False):
     """T-4286: the detached, niced process that runs the lane's check (see _accept_check_child) in its own session,
     its output in the state's check/ID.log; never waited on. (pid, log), or None when FOREMAN_NO_BACKGROUND is set
     (the tests') or sampo is paused. The one function the tests replace: none starts a real check.
@@ -4376,6 +4490,8 @@ def _spawn_check(p, b, main, *, tip, since, tries):
                                  "tries": tries, "since": since, "argv": _check_argv(b, since)}})
     lib = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     env = _scrub_env({**os.environ, "PYTHONPATH": lib + os.pathsep + os.environ.get("PYTHONPATH", "")})
+    if low:  # T-5561 review: the land's own start of a stale lane's check: its tests take freed slots after the train gate's
+        env[c.SLOT_PRIORITY] = "0"
     with open(log, "a" if tries > 1 else "w", encoding="utf-8") as out:  # T-4862: a retry keeps the try before it
         out.write(f"sampo: try {tries} on {tip[:9]} at {c.now()}\n")
         out.flush()  # the header precedes the child's own lines, which it writes to this file as it runs
@@ -4641,7 +4757,7 @@ def _check_seen(m):
     return tuple(str(m.get(k) or "") for k in ("check_state", "check_tip", "check_pid"))
 
 
-def _start_check(p, b, main, tip, since, tries, restarts=None):
+def _start_check(p, b, main, tip, since, tries, restarts=None, low=False):
     """T-4286: start the lane's check (try number `tries`) and record it on the task; the started pid and log, or None.
     The claim comes first, inside the project lock: check_state=running with this process's own pid, only if the task's
     check is still what `b` showed (else _ClaimLost: another accept or the check's own retry got there), so two accepts
@@ -4672,7 +4788,7 @@ def _start_check(p, b, main, tip, since, tries, restarts=None):
         _set_check(p, b.id, **prior)
     cli.mutate(p, b.id, claim, "check", {"check_state": "running"})
     try:
-        started = _spawn_check(p, b, main, tip=tip, since=since, tries=tries)
+        started = _spawn_check(p, b, main, tip=tip, since=since, tries=tries, **({"low": True} if low else {}))
     except BaseException:
         give_back()
         raise
@@ -5449,9 +5565,7 @@ def _accept_check(p, b, main, args, tip, lines):
             lines.append(f"  {b.id}: starting its check again as try 1 ({reason}; restart {restarts} of {RESTART_MAX})")
         elif not _restartable(m):
             return held(why)
-    since = None
-    if len(_git(main, "rev-list", "--parents", "-n", "1", tip).stdout.split()) > 2:  # T-4355: a merge tip has no diff of its own
-        since = m.get("base") or None
+    since = _check_since(main, b, tip)
     try:
         started = _start_check(p, b, main, tip, since, tries + 1 if st == "running" and restarts is None else 1, restarts)
     except _ClaimLost as e:  # another accept claimed it after this one read the task

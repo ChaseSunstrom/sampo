@@ -4,10 +4,12 @@ lane land trains every finished lane in batches, closes each landed one from its
 and ships on a publish grant already given. The drive names it when 2+ lanes wait and no land runs."""
 # map-links: plugin/lib/sampo/train.py
 import contextlib
+import io
 import os
 import re
 import subprocess
 import sys
+import threading
 import time
 import unittest
 from unittest import mock
@@ -1771,6 +1773,162 @@ class LeftoverBackoff(LandCase):
         c.save_brief(p, b)
         with mock.patch.object(train, "_code_id", lambda: "new"):
             self.assertTrue(train._retry_due(p, a), "a landed FIX releases it")
+
+
+class StaleCheckStart(LandCase):
+    """T-5561: a queued lane whose newest affected run predates its tip (a fixer's commit after accept) waited for a
+    hand-run `sampo check` in each lane: 11 lanes sat out a round on 2026-11-22. The land starts that check itself (the
+    accept-check runner, in the lane, niced, at most LAND_CHECKS running at once) and trains the lane when it is green."""
+
+    def setUp(self):
+        super().setUp()
+        self.spawned, self.at_spawn, self.finish, self.low, self.refuse, self.tries = [], [], "green", [], set(), {}
+        self.delay = {}  # lane id -> seconds its replaced check runs (0.3 unless set)
+        for patch in (mock.patch.dict(os.environ, {"FOREMAN_NO_BACKGROUND": ""}),
+                      mock.patch.object(train, "_spawn_check", side_effect=self.spawn),
+                      mock.patch.object(train, "CLOSE_POLL_S", 0.05),
+                      mock.patch.object(train, "STALE_POLL_S", 0.05)):
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.p = c.find_project(self.repo)
+
+    def spawn(self, p, b, main, *, tip, since, tries, low=False):
+        """The check's own process is replaced: it ends 0.3 s after its start, green (or red), as the check records it
+        (finish "never": it keeps running; a lane in `refuse` does not start, as under a pause)."""
+        self.tries[b.id] = self.tries.get(b.id, 0) + 1
+        if b.id in self.refuse:
+            return None
+        self.spawned.append((b.id, tip, since, tries))
+        self.low.append(low)
+        self.at_spawn.append(sum(1 for x in c.load_briefs(p) if x.meta.get("check_state") == "running"))
+        if self.finish != "never":
+            t = threading.Timer(self.delay.get(b.id, 0.3), self.end, args=(b.id, tip))
+            t.daemon = True
+            t.start()
+            self.addCleanup(t.cancel)
+        return os.getpid(), os.path.join(self.tmp, f"{b.id}.log")
+
+    def end(self, tid, tip):
+        def done(x):
+            if self.finish == "green":
+                x.add_evidence(c.AFFECTED_LABEL + CLEAN_CMD, "✓ 10 tests", step=1, ran=True,
+                               ts=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+                x.meta.update(check_state="green", check_tip=tip)
+            else:
+                x.meta.update(check_state="red", check_tip=tip, check_failed="test_x")
+            for k in ("check_pid", "check_ticks"):
+                x.meta.pop(k, None)
+        cli.mutate(self.p, tid, done, "check", {})
+
+    def stale(self, n, name):
+        tid = self.lane(n, name, when=OLD, checked=False)
+        b = c.find_brief(self.p, tid)
+        b.add_evidence(c.AFFECTED_LABEL + CLEAN_CMD, "✓ ok", step=1, ts="2025-06-01T00:00:00Z", ran=True)
+        c.save_brief(self.p, b)
+        return tid
+
+    def land_here(self, batch=1):
+        err = io.StringIO()
+        with self.in_project(), contextlib.redirect_stderr(err):
+            train.land(self.p, self.repo, batch)
+        return err.getvalue()
+
+    def landed(self, name):
+        return os.path.exists(os.path.join(self.repo, name))
+
+    def test_stale_lane_gets_its_check_started_by_the_land_and_trains_once_it_is_green(self):
+        a, b = self.stale(1, "a.txt"), self.lane(2, "b.txt", when=OLD)
+        log = self.land_here()
+        self.assertEqual([(i, t, n) for i, t, _, n in self.spawned], [(a, train._lane_tip(self.repo, self.brief(a)), 1)],
+                         "only the stale lane's check, as try 1 at its tip")
+        self.assertRegex(log, rf"(?m)^sampo lane land: {a}: held: .*predates the lane tip.*the land started its check")
+        self.assertEqual(self.low, [True], "priority 0: the train gate's own runs keep first claim on a freed slot")
+        order = re.findall(r"train \d+: (T-\d+)", log)
+        self.assertEqual(order, [b, a], "the fresh lane trains first, the stale one at the first boundary after its check is green")
+        self.assertTrue(self.landed("a.txt") and self.landed("b.txt"), log)
+
+    def test_stale_lane_with_a_red_check_is_reported_and_does_not_train(self):
+        self.finish = "red"
+        a = self.stale(1, "a.txt")
+        log = self.land_here()
+        self.assertEqual(len(self.spawned), 1)
+        self.assertRegex(log, rf"(?m)^sampo lane land: {a}: held: check red: test_x")
+        self.assertNotRegex(log, r"train \d+")
+        self.assertFalse(self.landed("a.txt"))
+
+    def test_stale_lanes_at_most_three_land_checks_run_at_once_and_the_rest_start_as_they_end(self):
+        ids = [self.stale(n, f"{n}.txt") for n in (1, 2, 3, 4)]
+        log = self.land_here(batch=4)
+        self.assertEqual(sorted(i for i, *_ in self.spawned), sorted(ids), "each stale lane's check started once")
+        self.assertLessEqual(max(self.at_spawn), 3, "its own claim counted: three at once, never four")
+        self.assertIn("at most 3", log)
+        self.assertTrue(all(self.landed(f"{n}.txt") for n in (1, 2, 3, 4)), log)
+
+    def test_stale_lane_with_a_check_at_its_tip_already_is_not_started_again(self):
+        a = self.stale(1, "a.txt")
+        cli.mutate(self.p, a, lambda x: x.meta.update(check_state="red", check_tip=train._lane_tip(self.repo, x),
+                                                      check_failed="test_y"), "check", {})
+        log = self.land_here()
+        self.assertEqual(self.spawned, [], "its check at this tip is red: reported as before, not rerun")
+        self.assertIn(f"{a}: held: check red: test_y", log)
+
+    def test_stale_lane_in_a_live_project_trains_at_once_with_its_note_and_no_check_is_started(self):
+        c.write_meta(self.p, {**c.read_meta(self.p), "train_mode": "live"})  # live: the behind suite judges, no hours-long wait
+        a = self.stale(1, "a.txt")
+        log = self.land_here()
+        self.assertEqual(self.spawned, [], "live keeps training at once: no niced check to wait for")
+        self.assertRegex(log, rf"(?m)^sampo lane land: {a}: its newest affected run predates the lane tip")
+        self.assertTrue(self.landed("a.txt"), log)
+
+    def test_stale_lane_wait_releases_a_close_whose_fix_landed_without_waiting_out_the_check(self):
+        self.finish = "never"  # its check keeps running: only the wait's own poll can see the FIX
+        a, seen = self.stale(1, "a.txt"), {}
+
+        def released(p, main, tid, landed=()):  # the FIX lands half a second after the check started: during the wait
+            if self.spawned:
+                seen.setdefault("spawn", time.monotonic())
+                if time.monotonic() - seen["spawn"] >= 0.5 and "at" not in seen:
+                    seen["at"] = time.monotonic()
+                    return True
+            return False
+        with mock.patch.object(train, "STALE_WAIT_S", 3.0), \
+                mock.patch.object(train, "_fix_waiting", return_value={"T-9990": "T-9991"}), \
+                mock.patch.object(train, "_fix_released", side_effect=released):
+            log = self.land_here()
+        self.assertIn("T-9990: its FIX landed: the close is queued again", log, "the wait's loop released it")
+        self.assertLess(seen["at"] - seen["spawn"], 1.5, "released by the wait's loop, not after STALE_WAIT_S ran out")
+        self.assertFalse(self.landed("a.txt"))
+
+    def test_stale_lane_whose_check_did_not_start_is_not_tried_again_on_every_poll(self):
+        a, b = self.stale(1, "a.txt"), self.stale(2, "b.txt")
+        self.refuse = {a}  # paused, or a spawn that failed: its start gives the claim back
+        self.delay = {b: 1.0}  # b's check runs a second: the land polls about twenty times meanwhile
+        log = self.land_here()
+        self.assertEqual(self.tries[a], 1, f"tried once, then left for STALE_RETRY_S: {self.tries}")
+        self.assertEqual(self.tries[b], 1)
+        self.assertTrue(self.landed("b.txt") and not self.landed("a.txt"), log)
+
+    def test_stale_lane_whose_check_start_raises_is_not_tried_again_on_every_poll(self):
+        a, b = self.stale(1, "a.txt"), self.stale(2, "b.txt")
+        self.delay = {b: 1.0}
+        real, calls = self.spawn, []
+
+        def spawn(p, bb, main, **kw):
+            if bb.id == a:
+                calls.append(1)
+                raise OSError("no fork")
+            return real(p, bb, main, **kw)
+        with mock.patch.object(train, "_spawn_check", side_effect=spawn):
+            log = self.land_here()
+        self.assertEqual(len(calls), 1, log)
+        self.assertIn(f"{a}: its check did not start: OSError: no fork", log)
+
+    def test_stale_lane_with_no_background_is_held_as_before(self):
+        a = self.stale(1, "a.txt")
+        with mock.patch.dict(os.environ, {"FOREMAN_NO_BACKGROUND": "1"}):
+            log = self.land_here()
+        self.assertEqual(self.spawned, [])
+        self.assertIn(f"{a}: held: no passing affected check at its tip (its newest affected run is older", log)
 
 
 if __name__ == "__main__":
