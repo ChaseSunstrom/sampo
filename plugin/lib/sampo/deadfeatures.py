@@ -25,17 +25,14 @@ def _days(ts, now):
 
 def _real_vias():
     """The via values that count as real use of a card: callcards' ORIGINS less its NOT_REAL (T-5613's, a bench arm's or a
-    test's call says nothing of the card in use). Until T-5613 lands in this lane, callcards has neither, so the same two
-    tuples are kept here, in step with T-5613 by hand: when it lands, its callcards.ORIGINS wins and this copy is dead."""
+    test's call says nothing of the card in use)."""
     from sampo import callcards
-    origins = getattr(callcards, "ORIGINS", ("cli", "smith", "harness", "bench", "test", "mcp"))
-    not_real = getattr(callcards, "NOT_REAL", ("bench", "test"))
-    return tuple(o for o in origins if o not in not_real)
+    return tuple(o for o in callcards.ORIGINS if o not in callcards.NOT_REAL)
 
 
 def real_card_calls(since):
     """Calling-card calls from a real session since an ISO time: calls.jsonl rows (and the file it rotated to) whose via
-    is a real origin (_real_vias). A row with no via is unknown and never counts (the calls write none until T-5613).
+    is a real origin (_real_vias). A row with no via (one written before T-5613) is unknown and never counts.
     A torn line is skipped, as call_stats skips it."""
     from sampo import callcards
     real = _real_vias()

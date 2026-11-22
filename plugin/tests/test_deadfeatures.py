@@ -4,6 +4,7 @@ and a calling card counts only its real calls: a row whose via is bench or test 
 import json
 import os
 import time
+from unittest import mock
 
 from test_outcomes import Base  # first: it puts plugin/lib on the path
 
@@ -92,17 +93,24 @@ class Dead(Base):
         # cli and mcp are real; bench and test are not; a row with no via is unknown, so not real either
         self.assertEqual(d.real_card_calls(since), 2)
 
-    def test_a_call_through_record_call_is_unknown_not_real(self):
-        callcards._record_call("x", {"status": "applied", "cached": False}, 1.0)  # what the calls write: no via yet
+    def test_a_call_through_record_call_carries_its_via_and_only_a_real_one_counts(self):
+        """T-5613 made _record_call write a via (cli unless the process names itself): a plain call is real, a call under
+        SAMPO_CARD_ORIGIN=test or bench is not, and a row with no via (an old one) is unknown, so not real."""
         path = callcards.calls_path()
-        with open(path) as f:
-            self.assertEqual(len(f.readlines()), 1)
         since = c.iso(time.time() - d.DEAD_DAYS * d.DAY)
-        self.assertEqual(d.real_card_calls(since), 0)
-        with open(path, "a") as f:
-            f.write(json.dumps({"at": c.now(), "card": "x", "class": "pass", "seconds": 1, "cached": False,
-                                "via": "cli"}) + "\n")
+        env = {k: v for k, v in os.environ.items() if k not in ("SAMPO_CARD_ORIGIN", "FOREMAN_CARD_ORIGIN")}
+        with mock.patch.dict(os.environ, env, clear=True):
+            callcards._record_call("x", {"status": "applied", "cached": False}, 1.0)
+        with open(path) as f:
+            self.assertEqual([json.loads(line)["via"] for line in f], ["cli"])
         self.assertEqual(d.real_card_calls(since), 1)
+        for origin in ("test", "bench"):
+            with mock.patch.dict(os.environ, {"SAMPO_CARD_ORIGIN": origin}):
+                callcards._record_call("x", {"status": "applied", "cached": False}, 1.0)
+        self.assertEqual(d.real_card_calls(since), 1)  # the test and bench rows added none
+        with open(path, "a") as f:
+            f.write(json.dumps({"at": c.now(), "card": "x", "class": "pass", "seconds": 1, "cached": False}) + "\n")
+        self.assertEqual(d.real_card_calls(since), 1)  # no via: unknown
 
     def test_the_hit_names_the_window_it_judged_for_a_young_feature(self):
         self.feature("file:widget.out", days=9)
