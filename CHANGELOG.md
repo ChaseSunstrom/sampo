@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- `sampo lane brief` now builds a task from the tip of a finished, unlanded dependency's lane (and `lane start` merges it in), holds the brief while that lane is still building, and warns when an unlanded lane's diff changes a function the scope names (T-5725).
 - The cloud-profile tests now reach a remote host name through an HTTP proxy, since 0.0.0.0 is a loopback spelling, and ideas.safe_root is reviewed into the real-home list (T-5997).
 - Trunk green again after the 02:00 train: lane brief no longer crashes on a code scope, a fixer's or resolver's stop lines are not recorded as a builder's, sampo-fast defers a fixer launch to Python and its MIRRORS are re-checked, and sampo pulse has its docs and shim (T-5774).
 - A builder's or lane pilot's sampo ship is read by Sampo's own ship parser and blocked on any shell expansion or parse error, and a killed ship's spent grant is given back only after ls-remote shows main lacks its head (T-5980).
