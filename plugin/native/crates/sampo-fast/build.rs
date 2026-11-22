@@ -7,7 +7,7 @@ use std::{env, fs};
 // every plugin file the Python hook loads on a call sampo-fast decides (test_fast_equiv checks it against the hook's
 // own module dump), and the guard
 const WATCHED: &[&str] = &["hooks/hook", "lib/sampo/__init__.py", "lib/sampo/py.py", "lib/sampo/hooks.py",
-    "lib/sampo/core.py", "lib/sampo/budget.py", "lib/fmguard.py"];
+    "lib/sampo/core.py", "lib/sampo/budget.py", "lib/sampo/spawn.py", "lib/fmguard.py"];
 
 fn main() {
     let plugin = Path::new(&env::var("CARGO_MANIFEST_DIR").unwrap()).join("../../..");

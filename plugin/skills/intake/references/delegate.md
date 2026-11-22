@@ -14,7 +14,7 @@ Models (T-0373): the main thread (Opus or Fable) plans, judges, merges and write
 | a merge or rebase conflict in a lane's worktree | `sampo:fm-resolver` (`isolation: "worktree"`; the prompt names the lane and the conflicted files) | Haiku (pass `model: "sonnet"` when the conflict is big) |
 | brainstorm lenses, research children, oracle, bench | `sampo ideas` / `sampo research ask` / … (`--model`) | Sonnet by default |
 
-The fixer and the resolver replace a general-purpose launch for these two jobs: they carry only their own short contract, where a general-purpose agent re-reads the whole skill and tool listing every turn (T-5681).
+The fixer and the resolver replace a general-purpose launch for these two jobs: they carry only their own short contract, where a general-purpose agent re-reads the whole skill and tool listing every turn (T-5681). An Agent call with no Sampo type, or a Sampo type on Opus, gets a hook note naming the fit (Opus only for art and UI). A Workflow stage with neither type nor model is refused (T-5497, T-5680).
 
 A cheaper model's output is still checked: the main thread reviews a builder's diff, spot-checks two claims of any report, and re-runs the criteria itself.
 

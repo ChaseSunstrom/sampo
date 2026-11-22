@@ -131,5 +131,44 @@ class Ledger(unittest.TestCase):
             self.assertTrue(os.path.isfile(os.path.join(PLUGIN, "native", "crates", "sampo-fast", "src", "main.rs")))
 
 
+class AgentCalls(unittest.TestCase):
+    """T-5837: hooks._spawn_rule fills a missing model and refuses a lookup sent to a general agent, in output sampo-fast
+    cannot make, so agent_ok hands Python every Agent or Task call the rule could touch. The behaviour is run against
+    the built binary in test_fast_equiv (Agents); this reads the source, so it holds on a machine with no cargo."""
+
+    @classmethod
+    def setUpClass(cls):
+        with open(os.path.join(PLUGIN, "native", "crates", "sampo-fast", "src", "main.rs"), encoding="utf-8") as f:
+            src = f.read()
+        start = src.index("fn agent_ok(")
+        cls.body = src[start:src.index("\n}\n", start)]
+
+    def test_agent_ok_defers_a_call_with_no_model(self):
+        self.assertRegex(self.body, r'ti\.get\("model"\)')
+        self.assertRegex(self.body, r'(?s)ti\.get\("model"\).{0,120}!m\.is_empty\(\).{0,40}return None')
+
+    def test_agent_ok_defers_a_call_with_no_type_or_a_general_purpose_one(self):
+        # a missing type, a blank one (T-5497 trims it) and a general-purpose one (any case) all return None
+        self.assertRegex(self.body, r'(?s)ti\.get\("subagent_type"\) else \{ return None \}')
+        self.assertRegex(self.body, r'(?s)t\.is_empty\(\) \|\| t\.to_lowercase\(\)\.contains\("general-purpose"\).{0,40}return None')
+
+    def test_agent_ok_asks_before_it_reads_any_state(self):
+        # the deferrals come before the budget reads: a call Python must decide never costs a snapshot read first
+        self.assertLess(self.body.index('"general-purpose"'), self.body.index("rate_limits(state)"))
+        self.assertLess(self.body.index('"model"'), self.body.index("budget.json"))
+
+    def test_agent_ok_still_defers_a_fixer_or_resolver(self):
+        self.assertIn('"fm-fixer"', self.body)
+        self.assertIn('"fm-resolver"', self.body)
+
+    def test_agent_calls_the_python_rule_logs_are_the_ones_the_native_path_leaves_to_it(self):
+        # hooks._spawn_rule skips its row for a typed call with a model: the very calls agent_ok answers itself
+        from sampo import hooks
+        import inspect
+        src = inspect.getsource(hooks._spawn_rule)
+        self.assertIn('"general-purpose" not in kind', src)
+        self.assertRegex(src, r"isinstance\(model, str\) and model")
+
+
 if __name__ == "__main__":
     unittest.main()

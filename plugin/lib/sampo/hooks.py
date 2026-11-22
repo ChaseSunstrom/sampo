@@ -3600,7 +3600,13 @@ def _workflow_stages(pl):
         # a stage problem carries the stage fix; any other problem (an unreadable or oversize script, a lexing failure)
         # carries its own fix, and is named as the script that cannot be checked
         stages = [label for label, fix in found if fix == sbudget.WORKFLOW_FIX]
-        others = list(dict.fromkeys(fix for _, fix in found if fix != sbudget.WORKFLOW_FIX))
+        opus = [label for label, fix in found if fix == sbudget.WORKFLOW_OPUS_FIX]  # T-5497: a note, never a refusal
+        others = list(dict.fromkeys(fix for _, fix in found if fix not in (sbudget.WORKFLOW_FIX, sbudget.WORKFLOW_OPUS_FIX)))
+        if opus and not stages and not others:
+            names = ", ".join(opus[:20]) + (f" and {len(opus) - 20} more" if len(opus) > 20 else "")
+            print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": (
+                f"Sampo: agent() stage(s) {names} name a Sampo type and a literal Opus model. {sbudget.WORKFLOW_OPUS_FIX}.")}}))
+            return 0
         why = []
         if stages:
             names = ", ".join(stages[:20]) + (f" and {len(stages) - 20} more" if len(stages) > 20 else "")
@@ -3633,10 +3639,10 @@ def _subagent_route(pl):
     from sampo import budget as sbudget
     held = sbudget.subagent_pause(c.find_project(_cwd(pl)))  # the payload's project: its pace-off steer applies, not the hook's cwd
     if not held:
-        return 0
+        return None  # T-5837: no hold decides nothing: the spawn table's rule and T-5497's fit note go on (0 means "answered")
     ti = pl.get("tool_input")
     if not isinstance(ti, dict):
-        return 0
+        return None
     if ti.get("subagent_type") == "fork":
         return _pre_answer("deny", f"Sampo: usage is ahead of the horizon's pace ({held}), and a fork runs on the session's "
                                    f"model: name a subagent_type (it runs on {sbudget.HELD_MODEL} while this holds), or do "
@@ -3674,6 +3680,47 @@ def _workflow_held(pl):
     return True
 
 
+def _spawn_rule(pl):
+    """T-5837 (part 2 of T-5768): what an Agent or Task launch that passed the isolation and budget checks gets from the
+    spawn table (sampo.spawn): a lookup sent to a general agent is denied naming the typed scout; a launch that names no
+    model is allowed with its type's model in updatedInput (every other field kept) in bypassPermissions only; any other
+    launch, or the same one in another mode (logged filled 0, reason "not bypass"), is left alone. Each
+    spawn that goes on writes one `spawn` event: its type, its model and whether the table filled it. Returns the
+    hookSpecificOutput fields to print, or None to change nothing. Fails open: the table is a saving, not a safety check,
+    so an error here logs and lets the call through unchanged."""
+    try:
+        from sampo import spawn
+        ti = pl.get("tool_input")
+        if not isinstance(ti, dict) or not spawn.enabled():
+            return None
+        why = spawn.lookup_refusal(ti)
+        if why:
+            return {"permissionDecision": "deny", "permissionDecisionReason": why}
+        new = spawn.fill(ti)
+        if not isinstance(new, dict):
+            return None
+        want = new is not ti
+        # T-5597's rule: a hook allow skips a prompt the user's own ask rules would raise, so the fill answers only in
+        # bypassPermissions; in every other mode the call goes on unchanged (a deny never skips a prompt: it stays)
+        filled = want and pl.get("permission_mode") == "bypassPermissions"
+        kind, model = ti.get("subagent_type"), ti.get("model")
+        # sampo-fast decides a typed call that names its model (agent_ok in main.rs) and cannot write this row: so the
+        # same calls are unlogged here, and the log reads alike whichever path decided (a spawn the table could change)
+        native = (isinstance(kind, str) and kind and "general-purpose" not in kind and isinstance(model, str) and model)
+        sid = pl.get("session_id")
+        if not native:
+            ev = {"kind": "spawn", "session_id": sid if isinstance(sid, str) else None,
+                  "type": _clean(kind or spawn.GENERAL, 60),
+                  "model": _clean(new.get("model") or "", 60), "filled": int(filled)}
+            if want and not filled:
+                ev["reason"] = "not bypass"
+            _event(ev)
+        return {"permissionDecision": "allow", "updatedInput": new} if filled else None
+    except Exception:
+        log_error("PreToolUse", _tb())
+        return None
+
+
 def _pre_tool_use(raw):
     try:
         pl = json.loads(raw)
@@ -3703,9 +3750,20 @@ def _pre_tool_use(raw):
                                                          "permissionDecisionReason": why}}))
                 return 0
             try:
-                return _subagent_route(pl)
+                if _subagent_route(pl) == 0:  # T-5562: a held-usage answer (haiku rewrite, deny) or a named haiku decided
+                    return 0
             except Exception:  # a spend cap, not a safety check: a broken budget never blocks work
                 log_error("PreToolUse", _tb())
+            # T-5837: the one spawn chokepoint. A held-usage answer (T-5562's _subagent_route) decides before this: the
+            # table's fill and lookup refusal run only for a spawn that usage left alone. One JSON object at most: a
+            # spawn-table deny wins and drops T-5497's fit note (the denial names the typed agent); a fill carries the note
+            # as additionalContext in the same object; with no fill the note is the whole output
+            out = _spawn_rule(pl)
+            note = _agent_fit_note(pl)
+            if note and not (out and out.get("permissionDecision") == "deny"):
+                out = dict(out or {}, additionalContext=note)
+            if out:
+                print(json.dumps({"hookSpecificOutput": dict({"hookEventName": "PreToolUse"}, **out)}))
             return 0
         if tool == "Read":  # T-0724: its own hook entry, which never blocks a read on failure
             try:  # T-1224: but a credential read is the guard's, and that check fails closed
@@ -4429,6 +4487,66 @@ def _isolation_denial(pl):
     except Exception:
         log_error("PreToolUse", _tb())
     return None
+
+
+# T-5497: the Sampo type (and its model) that fits a job, by the words of the call. Both spellings of a type are accepted
+# (sampo:fm-builder and sampo:builder, for the rename); a note names the fm- spelling the plugin ships today.
+_FIT_SAMPO_TYPE = re.compile(r"(?:sampo|foreman):(?:fm-)?[\w-]+")
+# a build job needs Edit, Write and Bash, which scout, recon and reviewer lack: a build verb anywhere settles it, and a
+# lookup, research or review type is named only when the text OPENS with its word
+_FIT_BUILD = re.compile(r"(?i)\b(?:implement\w*|add(?:s|ed|ing)?|fix\w*|writ(?:e|es|ing|ten)|edit\w*|refactor\w*|"
+                        r"creat(?:e|es|ed|ing)|updat(?:e|es|ed|ing)|chang(?:e|es|ed|ing)|build\w*)\b")
+_FIT_OPEN = re.compile(r"\W*(\w+)")
+_FIT_REVIEW = frozenset(("review", "audit", "critique"))
+_FIT_RESEARCH = frozenset(("research", "doc", "docs", "documentation", "survey", "investigate", "map"))
+_FIT_LOOKUP = frozenset(("find", "where", "which", "list", "grep", "search", "locate", "lookup", "count"))
+
+
+def fit_flag(ti):
+    """T-5497: a note naming the cheaper fit when an Agent or Task call names no Sampo type (none, or general-purpose),
+    or names a Sampo type on Opus (Opus is for art and UI); None when it fits. A named type that is not Sampo's (Explore,
+    Plan, another plugin's) is the caller's choice and passes. Never raises."""
+    if not isinstance(ti, dict):
+        return None
+    typ, model = ti.get("subagent_type"), ti.get("model")
+    typ = typ.strip() if isinstance(typ, str) else ""
+    model = model.strip().lower() if isinstance(model, str) else ""
+    if _FIT_SAMPO_TYPE.fullmatch(typ):
+        if "opus" in model:
+            return (f"Sampo: {typ} is launched on Opus. Opus is for art and UI only; drop the model so it runs on the "
+                    "model its type is set to (Sonnet for build and review, Haiku for lookups).")
+        return None
+    if typ and typ.lower() != "general-purpose":
+        return None
+    fields = [str(ti.get(k) or "")[:300] for k in ("description", "prompt")]
+    opens = set()
+    for f in fields:
+        m = _FIT_OPEN.match(f)
+        if m:
+            opens.add(m.group(1).lower())
+    fit, mdl = "sampo:fm-builder", "Sonnet"
+    if not _FIT_BUILD.search(" ".join(fields)):
+        if opens & _FIT_REVIEW:
+            fit = "sampo:fm-reviewer"
+        elif opens & _FIT_RESEARCH:
+            fit = "sampo:fm-recon"
+        elif opens & _FIT_LOOKUP:
+            fit, mdl = "sampo:fm-scout", "Haiku"
+    own = f"names the {typ} type" if typ else "names no Sampo type"
+    return (f"Sampo: this agent call {own}{'' if model else ' and no model, so it runs on the session' + chr(39) + 's Opus'}. "
+            f"Fit for this job: subagent_type {fit} ({mdl}). Haiku is for lookups and close prep (sampo:fm-scout), "
+            "Sonnet for building, review and research (sampo:fm-builder, sampo:fm-reviewer, sampo:fm-recon); "
+            "Opus only for art and UI.")
+
+
+def _agent_fit_note(pl):
+    """T-5497: fit_flag's note, for the caller to print as PreToolUse additionalContext (context for the model, never a
+    deny; T-5837: the Agent branch prints one object, with the spawn table's answer); None when it fits; never raises."""
+    try:
+        return fit_flag(pl.get("tool_input"))
+    except Exception:
+        log_error("PreToolUse", _tb())
+        return None
 
 
 EVIDENCE_NEST_MAX = 3  # T-4546: sampo task evidence --run 'sampo task evidence --run …' is read this deep, then refused whole

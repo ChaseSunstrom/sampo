@@ -70,7 +70,7 @@ sys.exit(3)
 """
 # the files whose logic sampo-fast mirrors: a copy with the same size and mtime counts as the one it was built from
 WATCHED = ("hooks/hook", "lib/sampo/__init__.py", "lib/sampo/py.py", "lib/sampo/hooks.py", "lib/sampo/core.py",
-           "lib/sampo/budget.py", "lib/fmguard.py")
+           "lib/sampo/budget.py", "lib/sampo/spawn.py", "lib/fmguard.py")
 # the Python it mirrors, function by function: a change to one fails this test until main.rs is checked against it
 MIRRORED = ("hooks.run", "hooks._run", "hooks._pre_tool_use", "hooks._credential_like", "hooks._credential_read",
             "hooks._outline_first", "hooks._outward_denial", "hooks._event", "hooks._rev", "hooks._cwd",
@@ -290,13 +290,46 @@ class Reads(Base):
 class Agents(Base):
     def test_budget_cases(self):
         far = 9e9
-        agent = {"payload": {"tool_name": "Agent", "tool_input": {"prompt": "look", "description": "x"}}}
-        task = {"payload": {"tool_name": "Task", "tool_input": {"prompt": "look"}}}
+        # T-5837: only a typed call that names its model is native; the rest meet the spawn rule in Python
+        scout_in = {"prompt": "look", "description": "x", "subagent_type": "sampo:fm-scout", "model": "haiku"}  # T-5497: typed
+        agent = {"payload": {"tool_name": "Agent", "tool_input": scout_in}}
+        task = {"payload": {"tool_name": "Task", "tool_input": {"prompt": "look", "subagent_type": "sampo:scout",
+                                                                  "model": "haiku"}}}
         self.cases([("no snapshot", agent, True), ("Task, no snapshot", task, True)])
-        fixer = {"payload": {"tool_name": "Agent", "tool_input": {"prompt": "fix", "subagent_type": "sampo:fm-fixer"}}}
-        scout = {"payload": {"tool_name": "Agent", "tool_input": {"prompt": "look", "subagent_type": "sampo:fm-scout"}}}
+        untyped = {"payload": {"tool_name": "Agent", "tool_input": {"prompt": "look", "description": "x", "model": "haiku"}}}
+        general = {"payload": {"tool_name": "Agent", "tool_input": {"prompt": "look", "subagent_type": "general-purpose",
+                                                                      "model": "haiku"}}}
+        on_opus = {"payload": {"tool_name": "Agent", "tool_input": dict(scout_in, model="Opus")}}
+        mixed = {"payload": {"tool_name": "Agent", "tool_input": {"prompt": "look", "subagent_type": "General-Purpose",
+                                                                    "model": "haiku"}}}
+        blank = {"payload": {"tool_name": "Agent", "tool_input": {"prompt": "look", "subagent_type": "  ",
+                                                                    "model": "haiku"}}}
+        explore = {"payload": {"tool_name": "Agent", "tool_input": {"prompt": "look", "subagent_type": "Explore",
+                                                                      "model": "haiku"}}}
+        other = {"payload": {"tool_name": "Agent", "tool_input": {"prompt": "look", "subagent_type": "other:thing",
+                                                                    "model": "haiku"}}}
+        self.cases([("T-5497: an untyped launch gets a fit note from Python", untyped, False),
+                    ("general-purpose gets one", general, False), ("any case of it too", mixed, False),
+                    ("a blank type gets one", blank, False), ("a Sampo type on Opus gets one", on_opus, False),
+                    ("a named type that is not Sampo's has no note: native", explore, True),
+                    ("another plugin's type is native", other, True)])
+        fixer = {"payload": {"tool_name": "Agent", "tool_input": {"prompt": "fix", "subagent_type": "sampo:fm-fixer",
+                                                                   "model": "sonnet"}}}
+        scout = {"payload": {"tool_name": "Agent", "tool_input": {"prompt": "look", "subagent_type": "sampo:fm-scout",
+                                                                   "model": "haiku"}}}
+        spawn = lambda **ti: {"payload": {"tool_name": "Agent", "tool_input": dict({"prompt": "look"}, **ti)}}
         self.cases([("T-5774: a fixer launch without isolation is Python's to refuse", fixer, False),
-                    ("a scout launch is still native", scout, True)])
+                    ("a scout launch that names its model is still native", scout, True),
+                    ("T-5837: no model: the table fills it", spawn(subagent_type="Explore"), False),
+                    ("an empty model", spawn(subagent_type="Explore", model=""), False),
+                    ("a null model", spawn(subagent_type="Explore", model=None), False),
+                    ("a model that is no string", spawn(subagent_type="Explore", model=7), False),
+                    ("no subagent_type", spawn(model="haiku"), False),
+                    ("an empty subagent_type", spawn(subagent_type="", model="haiku"), False),
+                    ("general-purpose: a lookup is refused", spawn(subagent_type="general-purpose", model="haiku"), False),
+                    ("a namespaced general-purpose", spawn(subagent_type="sampo:general-purpose", model="haiku"), False),
+                    ("a tool_input that is no object", {"payload": {"tool_name": "Agent", "tool_input": "x"}}, False),
+                    ("no tool_input", {"payload": {"tool_name": "Task"}}, False)])
         self.snapshot(five_hour={"used_percentage": 40, "resets_at": far},
                       seven_day={"used_percentage": 30.5, "resets_at": far})
         self.cases([("under the pace", agent, True), ("FOREMAN_FAULT_LANE", agent, False,
@@ -322,7 +355,7 @@ class Agents(Base):
             self.skipTest("no recorded statusline snapshots")
         for s in snaps:
             shutil.copy2(s, os.path.join(self.home, "state", "sessions"))
-        self.pair({"tool_name": "Agent", "tool_input": {"prompt": "x"}})
+        self.pair({"tool_name": "Agent", "tool_input": {"prompt": "x", "subagent_type": "sampo:fm-scout"}})
 
 
 class Outward(Base):
@@ -482,7 +515,7 @@ class Passthrough(Base):
         loaded = set()
         for pl in ({"tool_name": "Read", "tool_input": {"file_path": SHIM}},
                    {"tool_name": "Read", "tool_input": {"file_path": big, "offset": 1, "limit": 5}},
-                   {"tool_name": "Agent", "tool_input": {"prompt": "x"}},
+                   {"tool_name": "Agent", "tool_input": {"prompt": "x", "subagent_type": "sampo:fm-scout", "model": "haiku"}},
                    {"tool_name": "SendMessage", "tool_input": {"to": "a", "message": "x"}},
                    {"tool_name": "mcp__claude_ai_Claude_Docs__read", "tool_input": {}}):
             dump = os.path.join(self.tmp, "modules.jsonl")

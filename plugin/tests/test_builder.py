@@ -376,8 +376,10 @@ class Contract(_Tasks):
     def test_a_fixer_or_resolver_launch_without_worktree_isolation_is_refused(self):
         # T-5681 review: an edit-capable agent launched in the main checkout would edit the user's own tree
         for agent in ("sampo:fm-fixer", "sampo:fm-resolver"):
-            for tool_input, refused in (({"subagent_type": agent, "prompt": "x"}, True),
-                                        ({"subagent_type": agent, "prompt": "x", "isolation": "worktree"}, False)):
+            # T-5837: a launch that names its model gets no table rewrite, so an allowed one prints nothing
+            for tool_input, refused in (({"subagent_type": agent, "prompt": "x", "model": "sonnet"}, True),
+                                        ({"subagent_type": agent, "prompt": "x", "model": "sonnet",
+                                          "isolation": "worktree"}, False)):
                 r = self.hook("PreToolUse", {"tool_name": "Agent", "tool_input": tool_input, "cwd": self.repo}).stdout
                 self.assertEqual("permissionDecision" in r, refused, (agent, tool_input, r))
 

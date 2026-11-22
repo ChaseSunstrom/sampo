@@ -40,7 +40,7 @@ const MS_EPOCH: f64 = 1e11; // T-4669: budget.MS_EPOCH
 // sha1[:12] of each mirrored Python function's source (_run: less the other events' else branch; _pre_tool_use: up to
 // its GUARDED check; hooks/hook: its event parse and dispatch)
 const MIRRORS: [(&str, &str); 31] = [
-    ("hooks.run", "e9a5910273f5"), ("hooks._run", "25db3179d55c"), ("hooks._pre_tool_use", "1fc44cdf3ec0"),
+    ("hooks.run", "e9a5910273f5"), ("hooks._run", "25db3179d55c"), ("hooks._pre_tool_use", "fc44bade7843"),
     ("hooks._credential_like", "a60da1d880d6"),
     ("hooks._credential_read", "6ed174ed2226"), ("hooks._outline_first", "c2ddf4904e58"),
     ("hooks._outward_denial", "1e6d4418ddd5"), ("hooks._event", "6440afe94c6e"), ("hooks._rev", "7ee872410ee6"),
@@ -260,6 +260,30 @@ fn agent_ok(pl: &Obj, state: &Path) -> Option<()> {
     if let Some(Value::Object(ti)) = pl.get("tool_input") {
         if let Some(Value::String(t)) = ti.get("subagent_type") {
             if t.contains("fm-fixer") || t.contains("fm-resolver") {
+                return None;
+            }
+        }
+    }
+    // T-5837: _spawn_rule fills a missing model from the spawn table and refuses a lookup sent to a general agent, and
+    // either answers with output this file doesn't make: a call with no model, no subagent_type or a general-purpose
+    // type goes to Python. Only a typed call that names its model is native (an input that isn't an object has none)
+    let ti = match pl.get("tool_input") {
+        Some(Value::Object(ti)) => ti,
+        _ => return None,
+    };
+    if !matches!(ti.get("model"), Some(Value::String(m)) if !m.is_empty()) {
+        return None;
+    }
+    // T-5497: hooks.fit_flag adds a note to a call with no type, a blank or general-purpose one, or a Sampo type on Opus:
+    // this file doesn't mirror the note, so only those launches go to Python; any other named type is native
+    let Some(Value::String(t)) = ti.get("subagent_type") else { return None };
+    let t = t.trim();
+    if t.is_empty() || t.to_lowercase().contains("general-purpose") {
+        return None;
+    }
+    if t.starts_with("sampo:") || t.starts_with("foreman:") {
+        if let Some(Value::String(m)) = ti.get("model") {
+            if m.to_lowercase().contains("opus") {
                 return None;
             }
         }

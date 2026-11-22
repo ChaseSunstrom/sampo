@@ -3342,7 +3342,7 @@ class PreToolUse(HookCase):
             f.writelines(json.dumps(r) + "\n" for r in rows)
 
     def test_subagent_route_held_agent_is_rewritten_to_haiku(self):
-        ti = {"subagent_type": "sampo:fm-recon", "prompt": "look", "description": "x", "model": "opus"}
+        ti = {"subagent_type": "sampo:fm-recon", "prompt": "look", "description": "x", "model": "sonnet"}  # T-5497: a fit call, so no fit note
         free = self.pre("Agent", ti)
         self.assertEqual((free.returncode, free.stdout.strip()), (0, ""), "no hold: no output, as before")
         self.hold()
@@ -3350,7 +3350,7 @@ class PreToolUse(HookCase):
         self.assertEqual(out["permissionDecision"], "allow")
         self.assertEqual(out["updatedInput"], dict(ti, model="haiku"), "the full tool_input, model haiku")
         self.assertIn("5-hour usage 95%", out["permissionDecisionReason"])
-        self.assertIn("model opus → haiku", out["permissionDecisionReason"], "a named model replaced is said so")
+        self.assertIn("model sonnet → haiku", out["permissionDecisionReason"], "a named model replaced is said so")
         bare = self.out_of(self.pre("Agent", {"subagent_type": "sampo:fm-recon", "prompt": "look"}))
         self.assertIn("model inherited → haiku", bare["permissionDecisionReason"])
         for tool in ("Task",):
@@ -3361,6 +3361,13 @@ class PreToolUse(HookCase):
         self.hold(five=40)
         off = self.pre("Agent", ti)
         self.assertEqual(off.stdout.strip(), "", "the hold released: the launch passes as it asked")
+
+    def test_subagent_route_held_usage_decides_before_the_spawn_table(self):  # T-5837 meets T-5562
+        ti = {"subagent_type": "Explore", "prompt": "look", "description": "x"}
+        self.hold()
+        out = self.out_of(self.pre("Agent", ti))
+        self.assertEqual(out["updatedInput"], dict(ti, model="haiku"), "the hold's haiku, not the table's model")
+        self.assertIn("5-hour usage 95%", out["permissionDecisionReason"])
 
     def test_subagent_route_caps_a_held_session_and_denies_fork_and_workflow(self):
         ti = {"subagent_type": "sampo:fm-recon", "prompt": "look"}
@@ -6557,6 +6564,114 @@ class StageClock(ForemanTestCase):
             hooks._stage_done()  # no raise
 
 
+class AgentFit(HookCase):  # T-5497: an Agent call or a Workflow stage names a Sampo type and a model fit for its job
+    def pre(self, tool, tool_input):
+        r = self.hook("PreToolUse", {"tool_name": tool, "tool_input": tool_input, "cwd": self.repo})
+        return r.returncode, parse(r) or {}
+
+    def note(self, tool_input, tool="Agent"):
+        code, out = self.pre(tool, tool_input)
+        self.assertEqual(code, 0, out)
+        return (out.get("hookSpecificOutput") or {}).get("additionalContext", "")
+
+    def test_agent_fit_flags_a_call_with_no_type_and_no_model_and_names_the_cheaper_fit(self):
+        # T-5837: a lookup is the spawn table's refusal now (one object: the deny wins and drops the note), and it names the scout
+        _, out = self.pre("Agent", {"prompt": "find where the budget is read", "description": "find the budget reader"})
+        deny = out.get("hookSpecificOutput") or {}
+        self.assertEqual(deny.get("permissionDecision"), "deny")
+        self.assertIn("sampo:fm-scout", deny.get("permissionDecisionReason", ""), "a lookup: the scout type")
+        self.assertNotIn("additionalContext", deny)
+        build = self.note({"prompt": "add a flag to the parser", "description": "add the flag"})
+        self.assertIn("sampo:fm-builder", build)
+        self.assertIn("Sonnet", build, "build and review")
+        review = self.note({"prompt": "x", "description": "review the diff"})
+        self.assertIn("sampo:fm-reviewer", review)
+
+    def test_agent_fit_never_steers_a_build_job_to_a_read_only_type(self):
+        # review round 1: scout, recon and reviewer have no Edit, Write or Bash
+        for prompt in ("Fix the bug where the parser drops commas", "Find where the parser is called and update it",
+                       "review the diff and fix the nits", "Add a flag; where the parser reads options"):
+            self.assertIn("subagent_type sampo:fm-builder", self.note({"prompt": prompt}), prompt)
+        # T-5837: a lookup call is denied by the spawn table before any note prints, so the note's text is read from fit_flag
+        from sampo import hooks
+        self.assertIn("subagent_type sampo:fm-scout", hooks.fit_flag({"prompt": "Find where the parser drops commas"}))
+        self.assertIn("subagent_type sampo:fm-reviewer", self.note({"prompt": "x", "description": "Review the diff"}))
+        self.assertIn("subagent_type sampo:fm-recon", self.note({"prompt": "Research how the docs describe hooks"}))
+        self.assertIn("subagent_type sampo:fm-builder", self.note({"prompt": "the parser drops commas, look at it"}),
+                      "no opening lookup word: the builder, which can do anything")
+
+    def test_agent_fit_names_the_session_opus_only_when_no_model_is_given(self):
+        none = self.note({"prompt": "look", "subagent_type": "general-purpose"})
+        self.assertIn("session's Opus", none)
+        some = self.note({"prompt": "look", "subagent_type": "general-purpose", "model": "sonnet"})
+        self.assertNotIn("Opus is the", some)
+        self.assertNotIn("session's Opus", some)
+        self.assertIn("general-purpose", some)
+
+    def test_agent_fit_flags_general_purpose_even_with_a_model(self):
+        for model in (None, "sonnet", "haiku"):
+            ti = {"prompt": "look", "subagent_type": "general-purpose"}
+            if model:
+                ti["model"] = model
+            self.assertIn("general-purpose", self.note(ti), model)
+
+    def test_agent_fit_is_silent_for_a_sampo_type_on_a_fit_model_in_both_spellings(self):
+        for typ in ("sampo:fm-builder", "sampo:builder", "foreman:fm-builder", "sampo:fm-scout"):
+            for model in (None, "sonnet", "haiku"):
+                ti = {"prompt": "x", "subagent_type": typ}
+                if model:
+                    ti["model"] = model
+                self.assertEqual(self.note(ti), "", (typ, model))
+        self.assertEqual(self.note({"prompt": "x", "subagent_type": "Explore"}), "",
+                         "a named built-in type is the user's choice")
+
+    def test_agent_fit_flags_opus_on_a_sampo_type(self):
+        note = self.note({"prompt": "x", "subagent_type": "sampo:fm-builder", "model": "opus"})
+        self.assertIn("Opus", note)
+        self.assertIn("art and UI", note)
+
+    def test_agent_fit_reaches_the_task_tool_and_never_blocks(self):
+        code, out = self.pre("Task", {"prompt": "look"})
+        self.assertEqual(code, 0)
+        self.assertIn("sampo:fm-", (out.get("hookSpecificOutput") or {}).get("additionalContext", ""))
+        self.assertNotIn("permissionDecision", out.get("hookSpecificOutput", {}), "a note, not a deny")
+
+    def test_agent_fit_survives_odd_input(self):
+        from sampo import hooks
+        for ti in (None, "text", [], {}, {"subagent_type": 5, "model": ["x"]}, {"subagent_type": None}):
+            hooks.fit_flag(ti)  # no raise
+
+    def test_workflow_stage_fit_flags_a_stage_with_no_model_or_type_and_not_one_with_either(self):
+        code, out = self.pre("Workflow", {"script": "await agent('p', { label: 'lens:intent' })"})
+        why = (out.get("hookSpecificOutput") or {}).get("permissionDecisionReason", "")
+        self.assertIn("lens:intent", why)
+        self.assertIn("haiku", why, "the cheaper fit is named")
+        for opts in ("agentType: 'sampo:fm-scout'", "agentType: 'sampo:scout'", "model: 'haiku'"):
+            code, out = self.pre("Workflow", {"script": "await agent('p', { %s })" % opts})
+            self.assertEqual((code, out), (0, {}), opts)
+
+    def test_workflow_stage_fit_accepts_a_short_type_only_when_plugin_agents_has_it(self):
+        for typ in ("sampo:x", "sampo:buidler", "sampo:"):
+            code, out = self.pre("Workflow", {"script": "await agent('p', { label: 'l', agentType: '%s' })" % typ})
+            self.assertIn("permissionDecision", out.get("hookSpecificOutput", {}), typ)
+        for typ in ("sampo:builder", "sampo:reviewer", "sampo:fm-builder", "foreman:fm-reviewer"):
+            self.assertEqual(self.pre("Workflow", {"script": "await agent('p', { agentType: '%s' })" % typ}),
+                             (0, {}), typ)
+
+    def test_workflow_stage_fit_notes_a_literal_opus_model_on_a_sampo_type_without_a_deny(self):
+        for opts in ("agentType: 'sampo:fm-builder', model: 'opus'", "model: \"Claude-Opus-5\", agentType: 'sampo:builder'"):
+            code, out = self.pre("Workflow", {"script": "await agent('p', { label: 'ui', %s })" % opts})
+            spec = out.get("hookSpecificOutput") or {}
+            self.assertEqual(code, 0)
+            self.assertNotIn("permissionDecision", spec, opts)
+            self.assertIn("Opus", spec.get("additionalContext", ""), opts)
+            self.assertIn("ui", spec.get("additionalContext", ""), "the stage is named")
+        for opts in ("agentType: 'sampo:fm-builder', model: 'sonnet'", "agentType: 'sampo:fm-builder'",
+                     "model: 'opus', agentType: 'Explore'"):
+            code, out = self.pre("Workflow", {"script": "await agent('p', { %s })" % opts})
+            self.assertNotIn("additionalContext", out.get("hookSpecificOutput", {}), opts)
+
+
 class CompactLine(HookCase):
     """T-5769: the lead's idle Stop at a task boundary with the context over 60%: in a tmux pane the keeper types the
     /compact (nothing printed); without one the Stop hook prints the same line for the user or the session to run."""
@@ -6675,3 +6790,173 @@ class CompactLine(HookCase):
         self.stop()
         with open(os.path.join(self.home, "state", "keeper.json")) as f:
             self.assertTrue(json.load(f).get("first"))
+
+
+class SpawnChokepoint(HookCase):  # T-5837 (part 2 of T-5768): the Agent branch fills the model, refuses a lookup, logs
+    TASK = {"prompt": "Write the retry helper for the uploader", "description": "retry helper", "run_in_background": True}
+
+    BYPASS = "bypassPermissions"  # the one mode the fill answers in (T-5597's rule): the tests below run in it unless they say
+
+    def pre(self, tool_input, tool="Agent", env=None, mode=BYPASS):
+        pl = {"tool_name": tool, "tool_input": tool_input}
+        if mode:
+            pl["permission_mode"] = mode
+        return self.hook("PreToolUse", pl, env=env)
+
+    def in_process(self, tool_input, tool="Agent"):
+        """_pre_tool_use run here, so a test can stub the spawn rule: (exit code, the hook output dict or None)."""
+        import contextlib
+        import io
+        from sampo import hooks
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
+            code = hooks._pre_tool_use(json.dumps({"tool_name": tool, "tool_input": tool_input, "session_id": "sess-1",
+                                                   "permission_mode": self.BYPASS}))
+        return code, (json.loads(buf.getvalue()) if buf.getvalue().strip().startswith("{") else None)
+
+    def spawn_rows(self):
+        path = os.path.join(self.home, "state", "events.jsonl")
+        if not os.path.exists(path):
+            return []
+        with open(path) as f:
+            return [r for r in map(json.loads, f) if r.get("kind") == "spawn"]
+
+    def test_spawn_model_fills_a_modelless_call_and_keeps_every_other_field(self):
+        from sampo import spawn
+        for tool in ("Agent", "Task"):
+            ti = dict(self.TASK, subagent_type="Explore")
+            p = self.pre(ti, tool=tool)
+            self.assertEqual(p.returncode, 0, p.stderr)
+            out = self.out_of(p)
+            self.assertEqual(out.get("hookEventName"), "PreToolUse")
+            self.assertEqual(out.get("permissionDecision"), "allow")  # the shape of the Read rewrite
+            self.assertEqual(out.get("updatedInput"), dict(ti, model=spawn.TABLE["Explore"]), tool)
+        typed = dict(self.TASK, subagent_type="sampo:fm-scout")  # a Sampo agent: its frontmatter model
+        self.assertEqual(self.out_of(self.pre(typed))["updatedInput"], dict(typed, model=spawn.model_for("fm-scout")))
+
+    def test_spawn_model_only_bypass_gets_the_allow_and_the_rewrite(self):
+        """A hook allow skips a prompt the user's own ask rules (permissions.ask: ["Agent(Explore)"]) would raise: so the
+        fill answers in bypassPermissions only, and any other mode (or none named) goes on with nothing printed."""
+        ti = dict(self.TASK, subagent_type="Explore")
+        for mode in ("default", "plan", "acceptEdits", "dontAsk", "auto", "", None, 7):
+            p = self.pre(ti, mode=mode)
+            self.assertEqual((p.returncode, p.stdout.strip()), (0, ""), f"mode {mode!r}: no allow, no updatedInput")
+        out = self.out_of(self.pre(ti, mode="bypassPermissions"))
+        self.assertEqual((out.get("permissionDecision"), out.get("updatedInput", {}).get("model")), ("allow", "haiku"))
+        rows = self.spawn_rows()
+        self.assertEqual([(r["filled"], r.get("reason")) for r in rows], [(0, "not bypass")] * 8 + [(1, None)])
+
+    def test_spawn_lookup_a_deny_stands_in_every_mode_and_says_how_to_go_on(self):
+        for mode in ("default", "plan", "acceptEdits", "bypassPermissions", None):
+            out = self.out_of(self.pre({"prompt": "Where is parse_args defined?"}, mode=mode))
+            self.assertEqual(out.get("permissionDecision"), "deny", mode)
+            self.assertIn("say run, test, fix or verify in the prompt", out["permissionDecisionReason"])
+
+    def test_spawn_lookup_a_prompt_that_runs_tests_or_hunts_a_bug_is_not_refused(self):
+        for word in ("run", "test", "tests", "execute", "verify", "check", "bug", "cause", "fix"):
+            ti = {"prompt": f"Where is parse_args defined? Also {word} it", "subagent_type": "general-purpose"}
+            self.assertNotEqual(self.out_of(self.pre(ti)).get("permissionDecision"), "deny", word)
+
+    def test_spawn_model_an_explicit_model_gets_no_rewrite(self):
+        for model in ("opus", "haiku"):
+            out = self.out_of(self.pre(dict(self.TASK, subagent_type="Explore", model=model)))
+            self.assertNotIn("updatedInput", out, model)
+            self.assertNotEqual(out.get("permissionDecision"), "deny")
+        self.assertEqual(self.spawn_rows(), [], "a typed call with its model is sampo-fast's too: neither path logs it")
+        out = self.out_of(self.pre(dict(self.TASK, model="opus")))  # untyped with a model: no rewrite, still logged
+        self.assertNotIn("updatedInput", out)
+        self.assertEqual([(r["type"], r["model"], r["filled"]) for r in self.spawn_rows()],
+                         [("general-purpose", "opus", 0)])
+
+    def test_spawn_model_a_type_the_table_lacks_is_left_alone(self):
+        out = self.out_of(self.pre(dict(self.TASK, subagent_type="some-other-agent")))
+        self.assertNotIn("updatedInput", out)
+
+    def test_spawn_model_off_switch_leaves_the_call_unchanged(self):
+        for off in ("off", "0", "false"):
+            p = self.pre(dict(self.TASK, subagent_type="Explore"), env={"SAMPO_SPAWN_TABLE": off})
+            self.assertEqual(p.returncode, 0)
+            self.assertEqual(p.stdout.strip(), "", off)
+        self.assertEqual(self.spawn_rows(), [], "off turns the rule off, logging with it")
+
+    def test_spawn_model_a_raising_rule_fails_open(self):
+        from sampo import spawn
+        for name in ("fill", "lookup_refusal"):
+            with mock.patch.object(spawn, name, side_effect=RuntimeError("the table broke")):
+                code, out = self.in_process(dict(self.TASK, subagent_type="Explore"))
+            self.assertEqual(code, 0, name)
+            self.assertIsNone(out, f"{name} raised: the call goes on unchanged")
+        self.assertIn("the table broke", self.hooks_log())
+        with mock.patch.object(spawn, "fill", return_value="not a dict"):  # a rule that answers nonsense is no rewrite
+            code, out = self.in_process(dict(self.TASK, subagent_type="Explore"))
+        self.assertEqual((code, out), (0, None))
+
+    def test_spawn_model_a_payload_that_is_no_dict_or_has_odd_fields_passes(self):
+        for ti in (None, "x", [], {}, {"prompt": 5, "subagent_type": ["Explore"]}, {"subagent_type": {"a": 1}, "model": 7}):
+            code, out = self.in_process(ti)
+            self.assertEqual(code, 0, ti)
+            self.assertNotIn("updatedInput", (out or {}).get("hookSpecificOutput", {}), ti)
+
+    def test_spawn_lookup_a_general_purpose_lookup_is_denied_naming_the_scout(self):
+        for ti in ({"prompt": "Where is parse_args defined?", "subagent_type": "general-purpose"},
+                   {"prompt": "Which files import sampo.budget?"}):
+            p = self.pre(ti)
+            out = self.out_of(p)
+            self.assertEqual(out.get("permissionDecision"), "deny", ti)
+            self.assertIn("sampo:fm-scout", out["permissionDecisionReason"])
+            self.assertNotIn("updatedInput", out)
+        self.assertEqual(self.spawn_rows(), [], "a denied spawn never starts, so it is not logged as one")
+
+    def test_spawn_fit_note_and_the_table_answer_make_one_json_object(self):  # T-5837 meets T-5497
+        build = {"prompt": "Write the retry helper for the uploader", "description": "retry helper"}
+        from sampo import hooks
+        p = self.pre(build)  # untyped: the table has no model for it, so the fit note is the whole output, as T-5497 prints it
+        out = self.out_of(p)
+        self.assertEqual((len(p.stdout.strip().splitlines()), "permissionDecision" in out, "updatedInput" in out),
+                         (1, False, False))
+        self.assertIn("sampo:fm-builder", out.get("additionalContext", ""))
+        # a fill and a note together (no real call has both today): one object, the fill's decision plus the note's context
+        fill = {"permissionDecision": "allow", "updatedInput": dict(build, model="haiku")}
+        with unittest.mock.patch.object(hooks, "_spawn_rule", return_value=fill):
+            code, both = self.in_process(build)
+        self.assertEqual(code, 0)
+        both = both["hookSpecificOutput"]
+        self.assertEqual((both["permissionDecision"], both["updatedInput"]["model"]), ("allow", "haiku"))
+        self.assertIn("sampo:fm-builder", both["additionalContext"])
+        out = self.out_of(self.pre({"prompt": "Where is parse_args defined?"}))  # a refusal wins: the note is dropped
+        self.assertEqual(out.get("permissionDecision"), "deny")
+        self.assertNotIn("additionalContext", out)
+
+    def test_spawn_lookup_a_build_prompt_or_a_typed_agent_is_not_refused(self):
+        for ti in ({"prompt": "Where is parse_args defined? Then fix it", "subagent_type": "general-purpose"},
+                   {"prompt": "Where is parse_args defined?", "subagent_type": "sampo:fm-scout", "model": "haiku"},
+                   {"prompt": "Where is parse_args defined?", "subagent_type": "Explore"}):
+            self.assertNotEqual(self.out_of(self.pre(ti)).get("permissionDecision"), "deny", ti)
+
+    def test_spawn_lookup_the_isolation_denial_still_comes_first(self):
+        ti = {"prompt": "Where is parse_args defined?", "subagent_type": "sampo:fm-fixer"}
+        reason = self.out_of(self.pre(ti))["permissionDecisionReason"]
+        self.assertIn("isolation", reason)
+        self.assertNotIn("scout", reason)
+        self.assertEqual(self.spawn_rows(), [])
+        ok = self.out_of(self.pre(dict(ti, isolation="worktree", prompt="Fix the retry bug in uploader.py")))
+        self.assertEqual(ok["updatedInput"]["model"], "sonnet")  # fm-fixer's frontmatter model; isolation present
+
+    def test_spawn_lookup_each_allowed_spawn_logs_its_type_model_and_whether_filled(self):
+        from sampo import spawn
+        self.pre(dict(self.TASK, subagent_type="sampo:fm-scout"))  # filled from the agent file
+        self.pre(dict(self.TASK, subagent_type="Explore", model="opus"))  # typed with a model: sampo-fast's, no row
+        self.pre(dict(self.TASK))  # untyped, no model: no row to fill, still a spawn
+        self.pre(dict(self.TASK, subagent_type="general-purpose", model="sonnet"))  # a general agent: the table's to see
+        rows = self.spawn_rows()
+        self.assertEqual([(r["type"], r["model"], r["filled"]) for r in rows],
+                         [("sampo:fm-scout", spawn.model_for("fm-scout"), 1), ("general-purpose", "", 0),
+                          ("general-purpose", "sonnet", 0)])
+        self.assertTrue(all(r.get("session_id") == "sess-1" for r in rows))
+
+    def test_spawn_lookup_a_long_or_odd_type_is_clipped_in_the_log(self):
+        self.pre(dict(self.TASK, subagent_type="x" * 500 + "\n;rm general-purpose", model="m\x00" + "y" * 500))
+        (row,) = self.spawn_rows()
+        self.assertLessEqual(len(row["type"]), 60)
+        self.assertLessEqual(len(row["model"]), 60)
+        self.assertNotRegex(row["type"] + row["model"], r"[\x00-\x1f]")

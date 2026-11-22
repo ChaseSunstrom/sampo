@@ -138,7 +138,8 @@ class RustMirror(Base):
 
     def test_stale_and_fresh_readings_decide_alike(self):
         far = 9e9
-        agent = {"payload": {"tool_name": "Agent", "tool_input": {"prompt": "look", "description": "x"}}}
+        agent = {"payload": {"tool_name": "Agent", "tool_input": {"prompt": "look", "description": "x",  # T-5837/T-5497: only a
+                                                                    "subagent_type": "sampo:fm-scout", "model": "haiku"}}}  # typed call with its model is native
         full5 = {"five_hour": {"used_percentage": 95, "resets_at": far}}
         over7 = {"seven_day": {"used_percentage": 92, "resets_at": far}}
         for name, ago, limits, native in [

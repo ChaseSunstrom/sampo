@@ -586,13 +586,18 @@ def reserve_subagent(session_id, call_id, now=None):
 # Workflow agent() takes none) or a haiku or sonnet model. A stage with neither inherits the session's Opus, uncapped.
 WORKFLOW_MAX = 512 * 1024  # bytes read of one script file: a larger one is refused, not read whole
 WORKFLOWS = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "workflows"))
-FM_AGENT_TYPE = re.compile(r"(?:sampo|foreman):fm-[\w-]+")  # foreman: the plugin's name before T-2879 (review.js falls back to it)
+FM_AGENT_TYPE = re.compile(r"(?:sampo|foreman):((?:fm-)?[\w-]+)")  # foreman: the plugin's name before T-2879 (review.js falls back to it)
+# T-5497: the short spelling (sampo:builder, for the rename) counts only when plugin/agents has that agent, as builder.md
+# or fm-builder.md, so a typo like sampo:x is not a type; an fm- name is as before
+AGENTS = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "agents"))
 WORKFLOW_FIX = ("name agentType sampo:fm-scout (a lookup), sampo:fm-recon (research), sampo:fm-reviewer (a review) or "
                 "sampo:fm-builder (a build), or model 'haiku' or 'sonnet', in the options of the agent() stage")
 _WF_CALL = re.compile(r"\bagent\s*\(")
 _WF_NAME = re.compile(r"[\w-]{1,64}")
 _WF_MODEL = re.compile(r"(?i)haiku|sonnet")  # a model name holding either: claude-sonnet-4-5, Haiku
-_WF_FM_LITERAL = re.compile(r"""(['"`])(?:sampo|foreman):fm-[\w-]+\1""")  # a quoted fm type in a dynamic agentType
+_WF_FM_LITERAL = re.compile(r"""(['"`])((?:sampo|foreman):(?:fm-)?[\w-]+)\1""")  # a quoted fm type in a dynamic agentType
+WORKFLOW_OPUS_FIX = ("Opus is for art and UI only: drop the model so the stage runs on the model its type is set to "
+                     "(Sonnet for build and review, Haiku for lookups)")  # T-5497: a note, never a refusal
 _WF_OPERATORS = frozenset("(,=:[!&|?{};+-*%<>~^")  # a / after one of these opens a regex literal, after a value it divides
 _WF_KEYWORDS = frozenset(("return", "typeof", "case", "do", "else", "in", "of", "new", "delete", "void", "throw",
                           "yield", "await", "instanceof"))
@@ -782,6 +787,15 @@ def _wf_props(src, code, pairs, lo, hi):
     return props
 
 
+def _wf_sampo_type(text):
+    """True for a Sampo agent type: an fm- name, or a short name that plugin/agents has as NAME.md or fm-NAME.md."""
+    m = FM_AGENT_TYPE.fullmatch(text)
+    if m is None:
+        return False
+    name = m.group(1)
+    return name.startswith("fm-") or any(os.path.isfile(os.path.join(AGENTS, p + ".md")) for p in (name, "fm-" + name))
+
+
 def _wf_typed(props):
     """True when the stage names a model with haiku or sonnet in it, or an agentType that is an fm type: a literal one,
     or a dynamic expression with a quoted fm type in it (a variable's value is not known, so it is refused without one).
@@ -794,8 +808,16 @@ def _wf_typed(props):
     if agent is None:
         return False
     if agent[0]:
-        return FM_AGENT_TYPE.fullmatch(agent[1]) is not None
-    return _WF_FM_LITERAL.search(agent[1]) is not None
+        return _wf_sampo_type(agent[1])
+    return any(_wf_sampo_type(m.group(2)) for m in _WF_FM_LITERAL.finditer(agent[1]))
+
+
+def _wf_opus(props):
+    """T-5497: True when the stage names a Sampo type and a literal model that holds opus (a note, not a refusal)."""
+    agent, model = props.get("agentType"), props.get("model")
+    return bool(None not in props and agent and model and model[0] and "opus" in model[1].lower()
+                and (_wf_sampo_type(agent[1]) if agent[0]
+                     else any(_wf_sampo_type(m.group(2)) for m in _WF_FM_LITERAL.finditer(agent[1]))))
 
 
 def _wf_label(text):
@@ -824,13 +846,14 @@ def _wf_stages(src):
             s = a + len(code[a:b]) - len(code[a:b].lstrip())
             if code[s:s + 1] == "{":
                 props = _wf_props(src, code, pairs, s, pairs.get(s, b))
-        if props is not None and _wf_typed(props):
+        typed = props is not None and _wf_typed(props)
+        if typed and not _wf_opus(props):
             continue
         label = props.get("label") if props else None
         name = _wf_label(label[1]) if label and label[0] else ""
         if not name:
             name = f"line {bisect.bisect_left(newlines, m.start()) + 1}"
-        found.append((name, WORKFLOW_FIX))
+        found.append((name, WORKFLOW_OPUS_FIX if typed else WORKFLOW_FIX))  # T-5497: the opus note is not a refusal
     return found
 
 

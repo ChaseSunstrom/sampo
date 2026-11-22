@@ -27,12 +27,18 @@ _OPENER = re.compile(r"^\s*(where|which|find|locate|search for|grep|what (file|f
 # A word anywhere that makes the ask a change or a study: a prompt that finds AND fixes, or finds out why, is no lookup.
 _NOT_LOOKUP = re.compile(r"\b(implement\w*|write|fix\w*|refactor\w*|add|create|build|change|edit|rename|remove|delete|update"
                          r"|migrate|patch|design|investigate|explain|why|how|analy[sz]e\w*|review\w*|research|compare|debug"
-                         r"|should|plan|summari[sz]e|audit)\b", re.I)
+                         r"|should|plan|summari[sz]e|audit|run|tests?|execute|verify|check|bug|cause|fix)\b", re.I)
+NOT_LOOKUP_WORDS = "run, test, fix or verify"  # what the refusal tells a caller to say: the words that mark a non-lookup
 
 
 def enabled():
-    """False when SAMPO_SPAWN_TABLE is off (off, 0, false, no); on when unset or anything else."""
-    return os.environ.get("SAMPO_SPAWN_TABLE", "").strip().lower() not in OFF
+    """False when SAMPO_SPAWN_TABLE is off (off, 0, false, no); on when unset or anything else. Importing sampo moves
+    SAMPO_X to FOREMAN_X in the process's environment (core.mirror_env), so a hook process finds the switch under the
+    FOREMAN_ name: both are read, the SAMPO_ one first (T-5837)."""
+    v = os.environ.get("SAMPO_SPAWN_TABLE")
+    if v is None:
+        v = os.environ.get("FOREMAN_SPAWN_TABLE", "")
+    return v.strip().lower() not in OFF
 
 
 def base_type(subagent_type):
@@ -133,4 +139,4 @@ def lookup_refusal(tool_input):
         return None
     return (f"That is a lookup, and a general agent runs it on the session's model. Call the scout instead: "
             f"Agent(subagent_type=\"sampo:{SCOUT}\"), or search directly with Grep and Glob. "
-            f"If it is a build or a study, say so in the prompt.")
+            f"If it is more than a lookup, say {NOT_LOOKUP_WORDS} in the prompt.")

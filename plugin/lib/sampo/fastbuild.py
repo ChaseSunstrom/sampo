@@ -527,8 +527,15 @@ def corpus(root, plugin=None):
             ("read, tool_input a list", json.dumps({"tool_name": "Read", "tool_input": ["x"], "cwd": root}).encode(), False),
             ("read, cwd not a string", json.dumps({"tool_name": "Read", "tool_input": {"file_path": p("small.txt")},
                                                    "cwd": 5}).encode(), False),
-            ("an Agent call, no snapshot", call("Agent", prompt="look", description="x"), True),
-            ("a Task call, no snapshot", call("Task", prompt="look"), True),
+            # T-5837: native decides only a typed call that names its model; the spawn table's fill and refusal are Python's
+            # T-5497: and the fit note's calls (no type, general-purpose, a Sampo type on Opus) are Python's too
+            ("an Agent call, typed with a model, no snapshot",
+             call("Agent", prompt="look", description="x", subagent_type="sampo:fm-scout", model="haiku"), True),
+            ("a Task call, typed with a model, no snapshot", call("Task", prompt="look", subagent_type="sampo:fm-scout", model="haiku"), True),
+            ("an Agent call, no model: the table fills it", call("Agent", prompt="look", description="x"), False),
+            ("an Agent call, typed with no model", call("Agent", prompt="look", subagent_type="Explore"), False),
+            ("an Agent call, general-purpose with a model", call("Agent", prompt="look", subagent_type="general-purpose", model="opus"), False),
+            ("an Agent call, a Sampo type on Opus: a fit note", call("Agent", prompt="look", subagent_type="sampo:fm-scout", model="opus"), False),
             ("SendMessage, no project", call("SendMessage", to="lead", message="done"), True),
             ("PushNotification, no project", call("PushNotification", message="done"), True),
             ("a docs tool it doesn't know", call("mcp__claude_ai_Claude_Docs__zap"), False),
