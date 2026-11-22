@@ -4,5 +4,11 @@
   "description": "Plans, sequences, tracks and verifies work from terse prompts: evidence-gated briefs, focus lock, exact resume, a bypass-mode guard, drive mode and memory hygiene.",
   "author": {
     "name": "ChaseSunstrom"
+  },
+  "mcpServers": {
+    "sampo": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/sampo",
+      "args": ["mcp"]
+    }
   }
 }

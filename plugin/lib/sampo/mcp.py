@@ -2,8 +2,10 @@
 stdlib only — so other agents and clients can read the project's state, next action, recall, research notes and
 briefs. Each tool runs the matching read-only fm command (the CLI stays the one implementation), except do (T-3923),
 which runs a registered one-call routine's verbs, and card_find and card_call (T-5603), which serve read cards only; everything sent is
-redacted; a sensitive project serves nothing. Registering it (`claude mcp add foreman -- fm mcp`) is the user's
-step: the guard asks for the plugin category.
+redacted; a sensitive project serves nothing. T-5885: the plugin manifest (plugin/.claude-plugin/plugin.json,
+mcpServers.sampo) registers it, so a Claude Code session and its builders get the tools (deferred: only the names
+cost context) with no step from the user; `sensitive on` makes it serve nothing for a project, and
+`claude mcp`/the plugin's own disable switches it off for good.
 T-0946: plus the stack library (lib_suggest, lib_search, lib_show) and the read-only instruments (outline, sym,
 impact, why, fail on given text, logs, data, trace), whose path inputs must resolve inside the project; every value
 is length-capped and never starts with '-'; each call has a timeout. `fm mcp new` scaffolds a server for any CLI;

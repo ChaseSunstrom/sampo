@@ -50,6 +50,39 @@ class RoundTrip(_Mcp):
         self.assertIn(tid, by[4]["result"]["content"][0]["text"])
 
 
+class PluginManifest(_Mcp):  # T-5885: the plugin ships the server, so a session sees the cards as deferred tools
+    def declared(self):
+        with open(os.path.join(os.path.dirname(FM), "..", ".claude-plugin", "plugin.json")) as f:
+            server = json.load(f)["mcpServers"]["sampo"]
+        root = os.path.dirname(os.path.dirname(FM))
+        sub = lambda s: s.replace("${CLAUDE_PLUGIN_ROOT}", root)
+        return server, [sub(server["command"])] + [sub(a) for a in server.get("args", [])]
+
+    def test_the_manifest_declares_the_sampo_server_and_it_lists_the_card_tools(self):
+        server, argv = self.declared()
+        self.assertTrue(server["command"].startswith("${CLAUDE_PLUGIN_ROOT}/"), server)
+        self.assertEqual(argv[1:], ["mcp"])
+        self.assertTrue(os.access(argv[0], os.X_OK), argv[0])
+        self.fm("init")
+        out, p = self.talk({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, argv=argv)
+        names = {t["name"] for t in out[0]["result"]["tools"]}
+        self.assertTrue({"card_find", "card_call", "do"} <= names, (names, p.stderr))
+
+    def test_a_sensitive_project_still_serves_nothing_from_the_manifests_command(self):
+        _, argv = self.declared()
+        self.fm("init")
+        self.fm("sensitive", "on")
+        out, _ = self.talk({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, argv=argv)
+        self.assertEqual(out[0]["result"]["tools"], [])
+
+    def test_the_server_starts_fast(self):  # started once per session: a slow import would tax every one
+        _, argv = self.declared()
+        self.fm("init")
+        t = time.time()
+        self.talk({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, argv=argv)
+        self.assertLess(time.time() - t, 3.0)
+
+
 class Stateless(_Mcp):  # T-3359: MCP 2026-07-28 beside 2025-06-18
     META = "io.modelcontextprotocol/protocolVersion"
 
