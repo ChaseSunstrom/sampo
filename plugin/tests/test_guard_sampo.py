@@ -193,6 +193,9 @@ class StateEnvAsk(ForemanTestCase):
         # T-5547 round 6 (revised), Rule A: a Sampo state name in an assignment shape asks wherever it stands in the text.
         # A trailing "NAME=" with no value asks too: it cannot be told from "NAME= sampo status", which empties the state.
         "FOREMAN_STATE=/tmp/s sampo status", "FOREMAN_HOME=/tmp/h fm status", "SAMPO_HOME=/tmp/h sampo status",
+        "FOREMAN_PILOT_CLAUDE='sh /tmp/x' sampo status", "export FOREMAN_PILOT_VERB=/tmp/x; true",
+        "FOREMAN_PILOT_HEADLESS=0 sampo status",  # round 2: the marker that confines a headless main session
+        "env FOREMAN_PILOT_HEADLESS= sampo lane list",  # T-5766: a program run detached
         "SAMPO_HOME=/tmp/x true", "FOREMAN_HOME=/tmp/h ls", "env FOREMAN_HOME=/tmp/h env",
         "FOREMAN_STATE=/x/plugin/state ls", "echo FOREMAN_HOME=/tmp/h sampo status",
         "git add plugin/lib/fmguard.py && echo SAMPO_HOME=1", "printf '%s\\n' FOREMAN_HOME=/tmp/h",

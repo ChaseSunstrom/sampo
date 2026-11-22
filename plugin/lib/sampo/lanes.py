@@ -1403,6 +1403,18 @@ def recovery_line(p, briefs, full):
     return " ".join(x for x in (_recovery_line(p, briefs, full), pm_stuck_line(p)) if x)
 
 
+def _pilot_has(p, tid):
+    """T-5766: the lane pilot holds this stopped lane (a live pilot, or the headless claude it started). A read and nothing
+    more: starting a paid session from the lead's reads (fm next, the drive) is not done here, the land's park hook and
+    pilotsig.tick start them. Never raises: a failed read leaves the lane to the recovery line as before."""
+    from sampo import pilotsig
+    try:
+        b = c.find_brief(p, tid)
+        return bool(b and pilotsig.held(b))
+    except Exception:  # a pilot that can't be read never hides a recovery
+        return False
+
+
 def _recovery_line(p, briefs, full):
     """T-2354: what fm next and the drive say about lanes stopped before their merge: each one's cause and its one
     recovery. In full autonomy it is an order with the Agent line; in standard it names the recovery. A lane that only
@@ -1417,6 +1429,8 @@ def _recovery_line(p, briefs, full):
             continue
         if _ignored(by[tid].meta["lane"]):  # recover can't free a lane holding ignored files: fm lane recover says so
             continue
+        if cause in ("uncommitted", "merge_conflict") and _pilot_has(p, tid):
+            continue  # T-5766: a headless resolver or builder holds the lane: a second recovery would race it
         used = len(_recoveries(by[tid]))
         parts.append(text + (f" — recovered {used}x already, so it blocks the task instead" if used >= RECOVERIES_MAX else ""))
         if cause in ("uncommitted", "merge_conflict", "red_after_merge") and used < RECOVERIES_MAX:
@@ -1506,6 +1520,9 @@ def recover(p, b, main, args):
     path = b.meta.get("lane") or ""
     if not b.meta.get("lane") or not os.path.isdir(path) or b.status in c.CLOSED or b.status == "blocked":
         raise c.PolicyError(f"{b.id} has no lane to recover ({b.status}); fm lane brief {b.id} starts a builder")
+    if _pilot_has(p, b.id):  # T-5766: a headless resolver or builder (or its claude, after a killed pilot) is in the lane
+        raise c.PolicyError(f"{b.id}'s lane {path} is held by the lane pilot (a headless agent is working in it): a recovery "
+                            f"would race it; it returns the lane or reports it when it ends")
     if state not in ("stopped", "alive"):
         raise c.PolicyError(f"{b.id}'s builder process is {'on another host' if state == 'unknown' else 'not recorded'}: "
                             f"nothing here can show it ended, so its lane {path} is left alone")

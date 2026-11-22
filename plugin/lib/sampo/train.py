@@ -2953,6 +2953,25 @@ def _park_kind(why):
     return "refused", ""
 
 
+def _pilot_parks(p, parked):
+    """T-5766: after the land marked its parks, the lane pilot is asked for each conflict park (a refusal or a guard's grant
+    is a person's): one detached headless resolver, under the pilot's single-flight claim, 2 h cap and SAMPO_LANE_PILOT
+    switch (pilotsig.resolve is quiet where none starts), then one pilotsig.tick for the lanes stopped before any merge.
+    One lane's failure never costs the land or the other lanes."""
+    from sampo import pilotsig
+    for tid, why in parked:
+        if _park_kind(why)[0] != "conflict":
+            continue
+        try:
+            pilotsig.resolve(p, tid)
+        except Exception as e:  # noqa: BLE001 - the land goes on; the lane waits as it did before the pilot
+            print(f"lane pilot: {tid}: no resolver: {c.fit(str(e), 200)}", file=sys.stderr)
+    try:
+        pilotsig.tick(p)  # the stopped (uncommitted) lanes: the one other start; the lead's reads start nothing
+    except Exception as e:  # noqa: BLE001
+        print(f"lane pilot: tick: {c.fit(str(e), 200)}", file=sys.stderr)
+
+
 def announce_skills(root, before, after):
     """T-3851: a session lists its skills when it starts, so each SKILL.md a train added between `before` and `after`
     is told to every live session once (the bus), with its description and the file to Read. The names sent."""
@@ -3543,6 +3562,7 @@ def _land_trains(p, main, batch, owed, closer=None):
     for tid, why in parked:
         kind, arg = _park_kind(why)
         lanes.stop_mark(p, tid, kind, arg, log=f"land: parked: {c.fit(why, 300)}", tip=tested.get(tid, ""))
+    _pilot_parks(p, parked)  # T-5766: the marks are on the briefs; each parked conflict gets its headless resolver
     try:
         last = ship(True) if landed and not restart else None  # the land's last ship spends the grant: a restart's successor does
     finally:

@@ -4494,8 +4494,12 @@ def _train_hold(p):
 def _visiting(pl, lane):
     """T-3802: a call with no agent_id in a subagent builder's worktree (agent-<id>, as Claude Code's worktree isolation
     names it) is the main session that cd'd in, not the builder: only the subagent's own calls carry an agent_id. A
-    sampo lane new lane, which a headless builder works in with none, is never visited this way."""
-    return not pl.get("agent_id") and bool(re.fullmatch(r"agent-[\w-]{4,64}", os.path.basename(lane.rstrip("/"))))
+    sampo lane new lane, which a headless builder works in with none, is never visited this way. T-5766 review: nor is a
+    headless `claude -p --agent` main session (the lane pilot's resolver or builder: its payload names the editing agent's
+    agent_type, and its environment the pilot's marker, with no agent_id): it is confined, not visiting."""
+    if pl.get("agent_id") or pl.get("agent_type") in c.EDITING_AGENT_NAMES or c.headless_pilot():
+        return False
+    return bool(re.fullmatch(r"agent-[\w-]{4,64}", os.path.basename(lane.rstrip("/"))))
 
 
 

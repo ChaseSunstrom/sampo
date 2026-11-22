@@ -5,10 +5,20 @@ exception with its reason, never a silent drop; a verb that is not there yet (ar
 lane's own unknown 'pilot') is quiet.
 Single flight: the brief's pilot_pid claim names the live pilot, and a dead claim is retaken; pilot_for stamps the return
 a claim serves and pilot_done_for the return it reported, so a return is reported once. Off under FOREMAN_NO_BACKGROUND,
-when sampo is paused, or with SAMPO_LANE_PILOT=off."""
+when sampo is paused, or with SAMPO_LANE_PILOT=off.
+T-5766: the same claim covers a headless run for a lane the land parked for a conflict, or whose builder ended uncommitted:
+`resolve` starts `python -m sampo.pilotsig TID resolve`, which runs `claude -p --agent sampo:fm-resolver` (or fm-builder) in
+the lane's worktree, at most RESOLVE_TRIES times per lane; a commit on a clean tree is a builder return (the pilot stamps
+builder_returned itself, then spawns the review), otherwise the lane is reported once and left. Review round 1: the
+headless claude is confined as a builder (its environment carries core.HEADLESS_ENV; it reads only the user's own settings
+and MCP servers, never the lane's committed ones), bounded in turns and dollars, at most MAX_LIVE at once across lanes,
+and not started over BUDGET_STOP percent of a usage window; its pid is recorded on the brief (claude_pid), so a pilot
+killed mid-run leaves a claim that still reads held. Resolvers start only from the land's park hook and `tick` (never
+from a read path); FOREMAN_PILOT_CLAUDE is honoured only as one executable file under the state dir."""
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -32,6 +42,16 @@ PREFIX = "pilot-"  # a pilot's ledger session: pilot-<TID>
 VERB_ENV = "FOREMAN_PILOT_VERB"  # a test's stub of the verb (a SAMPO_ name would be mirrored to FOREMAN_ at core's import)
 ABSENT = re.compile(r"(?:invalid choice: |unknown )'pilot'")  # the answer from a sampo without the verb yet (argparse or the lane's own)
 TID_RE = re.compile(r"T-\d+")
+RESOLVE_ARG = "resolve"  # T-5766: `python -m sampo.pilotsig TID resolve` is the headless resolver pilot
+RESOLVE_TRIES = 2  # T-5766: headless runs a lane gets in all (lanes.RECOVERIES_MAX's number); then it is reported
+CLAUDE_ENV = "FOREMAN_PILOT_CLAUDE"  # a test's stub of the headless claude: one executable file under the state dir
+CLAUDE_NEEDLE = b"--agent"  # the headless claude's command line names it (the claim's /proc check, as for the pilot's own)
+MAX_TURNS = 60  # one headless run's turns (claude -p --max-turns)
+MAX_USD = "5"  # one headless run's dollars (claude -p --max-budget-usd)
+MAX_LIVE = 2  # headless runs alive at once across all lanes
+BUDGET_STOP = 80  # percent of a usage window past which no headless run starts
+NAME_MAX = 120  # a conflicted file's name in the prompt is cut to this many characters
+KIND = "resolve"  # the brief's pilot_kind while a headless resolver pilot holds the claim (MAX_LIVE counts these)
 
 
 def session(tid):
@@ -53,9 +73,22 @@ def verb_path():
     return os.environ.get(VERB_ENV) or os.path.join(os.path.dirname(os.path.dirname(here)), "bin", "sampo")
 
 
-def alive(pid):
+def held(b):
+    """T-5766 review: whether a brief's claim is held: its pilot lives, or the headless claude it started (claude_pid, kept
+    when the pilot was killed and the claude, in a session of its own, ran on) does."""
+    if alive(b.meta.get("pilot_pid")) or alive(b.meta.get("claude_pid"), CLAUDE_NEEDLE):
+        return True
+    if b.meta.get("claude_pid"):
+        return False  # its pid is known and gone
+    try:  # a start claimed before the spawn, its pid not yet written (the pilot died between): held until the run's cap
+        return time.time() - float(b.meta.get("claude_starting")) < VERB_WALL_S
+    except (TypeError, ValueError):
+        return False
+
+
+def alive(pid, needle=b"sampo.pilotsig"):
     """A claim names a live pilot: the pid answers, and where /proc exists its command line is this module's (a reused
-    pid, or a zombie whose command line is empty, is dead)."""
+    pid, or a zombie whose command line is empty, is dead). `needle` is what that command line must hold."""
     try:
         pid = int(pid)  # a brief's meta is text on disk: "1234"
     except (TypeError, ValueError):
@@ -72,7 +105,7 @@ def alive(pid):
         return True
     try:
         with open(f"/proc/{pid}/cmdline", "rb") as f:
-            return b"sampo.pilotsig" in f.read()
+            return needle in f.read()
     except OSError:
         return False
 
@@ -123,7 +156,7 @@ def spawn(p, tid):
     def claim_and_start():
         with c.lock(p.dir, timeout=5.0):
             b = c.find_brief(p, tid)
-            if b is None or b.status in c.CLOSED or alive(b.meta.get("pilot_pid")):
+            if b is None or b.status in c.CLOSED or held(b):
                 return None
             served = str(b.meta.get("builder_returned") or "")
             if served and b.meta.get("pilot_done_for") == served:
@@ -133,6 +166,7 @@ def spawn(p, tid):
                 proc = subprocess.Popen(argv, cwd=_cwd(p), stdin=subprocess.DEVNULL, stdout=log,
                                         stderr=subprocess.STDOUT, start_new_session=True, env=_env(tid))
             b.meta["pilot_pid"] = str(proc.pid)  # text, as every meta value is on disk
+            b.meta.pop("pilot_kind", None)  # a review pilot, not a resolver (MAX_LIVE counts resolvers)
             b.meta["pilot_for"] = served
             c.save_brief(p, b)
             return proc.pid
@@ -292,14 +326,347 @@ def run(p, tid):
     return res
 
 
+def claude_cmd():
+    """The headless claude the resolver starts, as an argv prefix: `claude`, or FOREMAN_PILOT_CLAUDE (a test's stub). The
+    override is honoured only as one executable file under the Sampo state dir (a link is followed first), never as a shell
+    line: a stray or planted variable runs nothing else, and an override that fails the test is [] (no claude to run)."""
+    stub = os.environ.get(CLAUDE_ENV)
+    if not stub:
+        return ["claude"]
+    real = os.path.realpath(stub)
+    root = os.path.realpath(c.state_dir()) + os.sep
+    return [real] if real.startswith(root) and os.path.isfile(real) and os.access(real, os.X_OK) else []
+
+
+def claude_found():
+    cmd = claude_cmd()
+    return bool(cmd) and shutil.which(cmd[0]) is not None
+
+
+def _name(f):
+    """A conflicted file's name as data in the prompt: control characters (a newline starts a new instruction line, an escape
+    repaints a terminal) become spaces, instruction-like text is marked, the name is cut to NAME_MAX."""
+    return c.defang(c.fit(" ".join(re.sub(r"[\x00-\x1f\x7f-\x9f]", " ", str(f)).split()), NAME_MAX))
+
+
+def _plugin_dir():
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # plugin/lib/sampo -> plugin
+
+
+def _conflict_prompt(p, b, lane, main):
+    """The recover brief for a conflict (lanes.recover's): what clashed, and the one move. Its words are data to the agent."""
+    from sampo import lanes
+    files = next(((e.get("data") or {}).get("files") or [] for e in reversed(c.ledger_tail(p, 500))
+                  if e.get("task") == b.id and e.get("event") == "lane_conflict"), [])
+    files = [_name(f) for f in (files if isinstance(files, list) else [])[:200]]  # repo-controlled names: data, bounded
+    brief = os.path.join(p.dir, "audits", f"{b.id}.conflict.md")
+    trunk = _name(lanes._git(main, "rev-parse", "--abbrev-ref", "HEAD").stdout) or "HEAD"  # a branch name is repo-controlled too
+    return (f"Resolve the merge conflict of {b.id} in your worktree {lane}. Merging this branch into {trunk} conflicted in: "
+            f"{c.joinmore(files, 20) or 'see the conflict brief'}. Run `git merge {trunk}` in your worktree, resolve the "
+            f"clash keeping both sides' intent, run the task's tests and commit. The task's brief: "
+            f"{os.path.join(p.dir, 'audits', f'{b.id}.builder.md')}."
+            + (f" What clashed: {brief}" if os.path.exists(brief) else ""))
+
+
+def plan(p, b):
+    """(what, agent, cause, prompt) for the headless run a lane needs, or None. A lane the land parked for a conflict, whose
+    builder has returned (or whose lane shows no file change since the park), gets the resolver; a lane whose builder's
+    process ended with the work uncommitted (lanes.stop_causes) gets a builder on its brief. A refusal, a stall, a usage
+    limit, a lane waiting on a merge, a guard (the user's grant) or a lane already moved on: None."""
+    from sampo import bus
+    from sampo import lanes
+    lane = str(b.meta.get("lane") or "")
+    if not lane or not os.path.isdir(lane) or b.status in c.CLOSED or b.status == "blocked":
+        return None
+    if lanes._ignored(lane):  # recover can't free a lane holding ignored files (the recovery line's own skip): a person reads it
+        return None
+    main = c.main_worktree(p.root) or p.root
+    kind, at, _ = lanes._stop(b)
+    if kind == "conflict" and lanes.parked(b):
+        if bus.proc_state(b.meta.get("builder_proc")) == "alive" and not (
+                b.meta.get("builder_returned") and lanes._newest(lane, lanes._git) <= at + 2):
+            return None  # the launching session lives and the lane shows work since the park: a builder may be in it
+        return ("merge conflict", c.ns_names("fm-resolver")[0], "merge_conflict", _conflict_prompt(p, b, lane, main))
+    got = lanes.stop_causes(p, [b]).get(b.id)
+    if got and got[0] == "uncommitted":
+        brief = os.path.join(p.dir, "audits", f"{b.id}.builder.md")
+        return ("stopped lane", c.ns_names("fm-builder")[0], "uncommitted",
+                f"Read {brief} and work the task it describes. The previous builder's process ended before it reported: "
+                f"its work is in your worktree {lane}; finish it, run the task's tests and commit.")
+    return None
+
+
+def _resolves(b):
+    got = b.meta.get("resolves") or []
+    return got if isinstance(got, list) else [got]
+
+
+def _stuck(p, tid, why, what, tries):
+    """The lead's one line when the pilot gives up on a lane (the cap, or no claude to run), said once per reason: the
+    brief's resolve_reported names the reason already told. The claim is dropped when it is still this pilot's."""
+    if why == "claude":
+        text = f"{tid}: lane pilot cannot resolve the {what}: no claude to run ({(claude_cmd() or ['claude'])[0]})"
+    else:
+        text = (f"{tid}: lane pilot resolve gave up on the {what} after {tries} "
+                f"{'try' if tries == 1 else 'tries'}: the lane waits for a person")
+
+    def mark():
+        with c.lock(p.dir, timeout=5.0):
+            b = c.find_brief(p, tid)
+            if b is None:
+                return False
+            mine = str(b.meta.get("pilot_pid")) == str(os.getpid())
+            if mine:
+                b.meta.pop("pilot_pid", None)
+            fresh = b.meta.get("resolve_reported") != why
+            if fresh:
+                b.meta["resolve_reported"] = why
+                b.append_log(f"lane pilot: {text.partition(': ')[2]}")
+            if mine or fresh:  # a capped lane is asked about at every park and tick: an unchanged brief is not written again
+                c.save_brief(p, b)
+            return fresh
+    try:
+        fresh = _locked(mark)
+    except Exception:
+        traceback.print_exc()
+        fresh = False
+    if fresh:
+        try:
+            from sampo import selfcheck
+            selfcheck.notify_detached(p, c.redact(text))
+        except Exception:
+            traceback.print_exc()  # the alerts.jsonl row comes first: a failed desktop notice never stops the land
+    return fresh
+
+
+def budget_high():
+    """True when a usage window is spent past BUDGET_STOP percent: a headless run is paid work, and it starts only while the
+    user's own sessions have room (lanes._usage_wall stops at 100). A snapshot that can't be read is no reason to stop."""
+    from sampo import budget
+    try:
+        return any(w["used"] >= BUDGET_STOP for w in budget.forecast().values())
+    except Exception:
+        return False
+
+
+def tick(p):
+    """The explicit pilot tick (the land's park hook calls it): `resolve` for each open lane that stopped with a conflict or
+    uncommitted work, the pids started. This and the park hook are the only starts: the lead's reads (lanes.recovery_line,
+    fm next, the drive) never launch a paid session. One lane's failure costs none of the others."""
+    from sampo import lanes
+    started = []
+    if os.environ.get("FOREMAN_NO_BACKGROUND") or not enabled() or c.panicked():
+        return started
+    for tid, (cause, _) in sorted(lanes.stop_causes(p).items()):
+        if cause not in ("uncommitted", "merge_conflict"):
+            continue
+        try:
+            pid = resolve(p, tid)
+        except Exception as e:  # noqa: BLE001 - the others are still asked
+            print(f"lane pilot: {tid}: no resolver: {c.fit(str(e), 200)}", file=sys.stderr)
+            continue
+        if pid:
+            started.append(pid)
+    return started
+
+
+def _start(argv, **kw):
+    """The one detached resolver pilot's process (the seam a test replaces: git runs through Popen too)."""
+    return subprocess.Popen(argv, **kw)
+
+
+def resolve(p, tid):
+    """The land's call for a lane it parked (and the lead's for a stopped one): one detached headless resolver or builder,
+    its pid, or None when none starts. Under the pilot's own single-flight claim (a live pilot_pid starts none, so a second
+    park within it is quiet) and its off switches (background off, paused, SAMPO_LANE_PILOT=off: quiet). A lane that has
+    had RESOLVE_TRIES attempts, or a host with no claude, is reported once and started no more."""
+    if os.environ.get("FOREMAN_NO_BACKGROUND") or not enabled() or c.panicked():
+        return None
+    b = c.find_brief(p, tid)
+    if b is None or b.status in c.CLOSED or held(b):
+        return None
+    pl = plan(p, b)
+    if pl is None:
+        return None
+    what = pl[0]
+
+    def claim_and_start():
+        with c.lock(p.dir, timeout=5.0):
+            b = c.find_brief(p, tid)
+            if b is None or b.status in c.CLOSED or held(b):
+                return None
+            if len(_resolves(b)) >= RESOLVE_TRIES:
+                return "cap"
+            if not claude_found():
+                return "claude"
+            if budget_high() or sum(1 for x in c.load_briefs(p) if x.id != tid and x.meta.get("pilot_kind") == KIND
+                                    and held(x)) >= MAX_LIVE:
+                return None  # a quiet wait: the lane is the lead's recovery line until a window or a run frees
+            argv = c.nice_argv([sys.executable, "-m", "sampo.pilotsig", tid, RESOLVE_ARG], NICE)
+            with open(_log(p), "a", encoding="utf-8") as log:
+                proc = _start(argv, cwd=_cwd(p), stdin=subprocess.DEVNULL, stdout=log,
+                              stderr=subprocess.STDOUT, start_new_session=True, env=_env(tid))
+            b.meta["pilot_pid"] = str(proc.pid)
+            b.meta["pilot_kind"] = KIND
+            b.meta.pop("claude_pid", None)  # a dead claude's pid from an earlier run (held() said it is gone)
+            c.save_brief(p, b)
+            return proc.pid
+    got = _locked(claim_and_start)
+    if got in ("cap", "claude"):
+        _stuck(p, tid, got, what, RESOLVE_TRIES if got == "cap" else 0)
+        return None
+    return got
+
+
+def _head(lane):
+    from sampo import lanes
+    return lanes._git(lane, "rev-parse", "HEAD", timeout=10).stdout.strip()
+
+
+def _clean(lane):
+    from sampo import lanes
+    return not lanes._git(lane, "status", "--porcelain", "--untracked-files=no", timeout=30).stdout.strip()
+
+
+def _claude_env():
+    """The headless agent's environment: the pilot's, as its own main session (the pilot's session id is not its), marked
+    (core.HEADLESS_ENV) so the hooks confine that main session to the lane as they do a subagent builder."""
+    env = c.scrubbed_env(os.environ)
+    for k in ("CLAUDE_CODE_SESSION_ID", "FOREMAN_SESSION_ID", "FOREMAN_PILOT"):
+        env.pop(k, None)
+    env[c.HEADLESS_ENV] = "1"
+    return env
+
+
+def _note_claude(p, tid, pid):
+    """The headless claude's run on the brief, so a pilot killed mid-run, whose claude runs on in a session of its own,
+    still leaves a claim that reads held (`held`). pid "starting": the start is claimed before the spawn (claude_starting,
+    no pid yet); a pid: it runs; None: it ended. True when the brief says so (a start the brief cannot record is not made)."""
+    def mark():
+        with c.lock(p.dir, timeout=5.0):
+            b = c.find_brief(p, tid)
+            if b is None:
+                return False
+            if pid == "starting":
+                b.meta["claude_starting"] = str(int(time.time()))
+                b.meta.pop("claude_pid", None)
+            elif pid:
+                b.meta["claude_pid"] = str(pid)
+            else:
+                b.meta.pop("claude_pid", None)
+                b.meta.pop("claude_starting", None)
+            c.save_brief(p, b)
+            return True
+    try:
+        return bool(_locked(mark))
+    except Exception:
+        traceback.print_exc()
+        return False
+
+
+def _headless(p, tid, lane, agent, prompt, left):
+    """One `claude -p` run of `agent` in the lane's own worktree, cut (its process group killed) after `left` seconds.
+    True when it ended inside the time; its output goes to pilot.log (stdout) as its last bytes. It reads only the user's
+    settings and MCP servers (the lane's own .claude/settings.json and .mcp.json are repo-controlled, and `-p` trusts the
+    folder without asking) and is bounded in turns and dollars."""
+    argv = [*claude_cmd(), "-p", prompt, "--agent", agent, "--plugin-dir", _plugin_dir(),
+            "--setting-sources", "user", "--strict-mcp-config", "--max-turns", str(MAX_TURNS), "--max-budget-usd", MAX_USD,
+            "--permission-mode", "acceptEdits", "--allowedTools", "Bash"]
+    if not _note_claude(p, tid, "starting"):
+        print("pilot resolve: the start could not be recorded on the brief; no claude is started")
+        return False
+    with tempfile.TemporaryFile() as out:
+        try:
+            proc = subprocess.Popen(argv, cwd=lane, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
+                                    start_new_session=True, env=_claude_env())
+        except OSError as e:
+            _note_claude(p, tid, None)
+            print(f"pilot resolve: claude could not start: {e}")
+            return False
+        _note_claude(p, tid, proc.pid)
+        try:
+            proc.wait(timeout=max(left, 1.0))
+            ended = True
+        except subprocess.TimeoutExpired:
+            _kill_group(proc)
+            proc.wait()
+            ended = False
+        _kill_group(proc)
+        _note_claude(p, tid, None)
+        print(f"pilot resolve: {agent} {'ended' if ended else 'cut'}: " + " ".join(_tail(out, ERR_MAX).split())[-WHY_MAX:])
+    return ended
+
+
+def _returned(p, tid, what):
+    """The resolver's exit as a builder return: under one lock the claim is dropped, builder_returned is stamped as the
+    SubagentStop hook would (a headless main session has no such stop), and the park mark is cleared (the lane is taken
+    back); then the pilot's own spawn reviews it, as it does a builder's return."""
+    with c.lock(p.dir, timeout=5.0):
+        b = c.find_brief(p, tid)
+        if b is None:
+            return
+        if str(b.meta.get("pilot_pid")) == str(os.getpid()):
+            b.meta.pop("pilot_pid", None)
+        for k in ("lane_stop", "lane_stop_tip", "resolve_reported"):
+            b.meta.pop(k, None)
+        b.meta["builder_returned"] = c.now()
+        b.append_log(f"lane pilot: a headless agent resolved the {what}; it returns to the review")
+        c.save_brief(p, b)
+        c.log_event(p, "pilot_resolve", task=tid, data={"what": what, "tries": len(_resolves(b))}, session=session(tid))
+
+
+def resolve_run(p, tid):
+    """The detached resolver pilot: up to RESOLVE_TRIES headless runs for the lane (counted on its brief across parks),
+    within VERB_WALL_S in all. A run that moved the lane (a new commit on a clean tree) is a builder return: _returned,
+    then the review pilot. Otherwise the lane is reported and left. Returns {outcome: returned | failed | none}."""
+    deadline = time.monotonic() + VERB_WALL_S
+    for _ in range(RESOLVE_TRIES + 1):  # the last pass only reports: no unbounded loop if a count can't be saved
+        b = c.find_brief(p, tid)
+        if b is None or str(b.meta.get("pilot_pid")) != str(os.getpid()) or alive(b.meta.get("claude_pid"), CLAUDE_NEEDLE):
+            return {"outcome": "none", "why": "the claim is not this pilot's"}  # a claim lost (retaken, recovered) or a claude
+            # of an earlier pilot still running in the lane: no second claude; the claim is its holder's, not dropped here
+        pl = plan(p, b) if b.status not in c.CLOSED else None
+        if pl is None:
+            _release(p, tid)
+            return {"outcome": "none", "why": "nothing to resolve"}
+        what, agent, cause, prompt = pl
+        tries = len(_resolves(b))
+        if tries >= RESOLVE_TRIES or time.monotonic() >= deadline:
+            _stuck(p, tid, "cap", what, tries)
+            return {"outcome": "failed", "why": f"{tries} tries"}
+        if not claude_found():
+            _stuck(p, tid, "claude", what, tries)
+            return {"outcome": "failed", "why": "no claude"}
+        if budget_high():  # a window filled while this pilot waited its turn: the lane is the lead's again, no try is used
+            _release(p, tid)
+            return {"outcome": "none", "why": "over the budget stop"}
+
+        def count():
+            with c.lock(p.dir, timeout=5.0):
+                x = c.find_brief(p, tid)
+                if x is not None:
+                    x.meta["resolves"] = _resolves(x) + [f"{cause}@{c.now()}"]
+                    c.save_brief(p, x)
+        _locked(count)  # counted before the run: a pilot that dies mid-run still used its try
+        lane = str(b.meta["lane"])
+        before = _head(lane)
+        _headless(p, tid, lane, agent, prompt, deadline - time.monotonic())
+        if _head(lane) != before and _clean(lane):
+            _returned(p, tid, what)
+            spawn(p, tid)
+            return {"outcome": "returned", "why": ""}
+    _release(p, tid)
+    return {"outcome": "failed", "why": "no count"}
+
+
 def main(argv):
-    """The detached pilot's entry: `python -m sampo.pilotsig TID`, run from the project's folder."""
-    if len(argv) != 1 or not TID_RE.fullmatch(argv[0]):
+    """The detached pilot's entry: `python -m sampo.pilotsig TID [resolve]`, run from the project's folder."""
+    if len(argv) not in (1, 2) or not TID_RE.fullmatch(argv[0]) or (len(argv) == 2 and argv[1] != RESOLVE_ARG):
         return 2
     p = c.find_project(os.getcwd())
     if not p:
         return 2
-    run(p, argv[0])
+    (resolve_run if len(argv) == 2 else run)(p, argv[0])
     return 0
 
 

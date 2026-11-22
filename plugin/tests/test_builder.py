@@ -273,6 +273,16 @@ class Contract(_Tasks):
                                             "tool_input": {"file_path": main_file, "content": "x"}}).stdout
         self.assertNotIn("blocked confine", said(), "the main thread, visiting")
         self.assertIn("blocked confine", said(agent_id="a1b2c3d4", agent_type="sampo:fm-builder"), "the builder")
+        # T-5766 review: the lane pilot's `claude -p --agent sampo:fm-resolver` is a main session (no agent_id) in that
+        # worktree: it is no visitor, it is the editing agent, and its writes (and Bash) are confined
+        for agent in ("sampo:fm-resolver", "sampo:fm-builder", "sampo:fm-fixer"):
+            self.assertIn("blocked confine", said(agent_type=agent), f"a headless {agent}")
+        bash = self.hook("PreToolUse", {"tool_name": "Bash", "cwd": wt, "agent_type": "sampo:fm-resolver",
+                                        "tool_input": {"command": f"echo x > {main_file}"}}).stdout
+        self.assertIn("blocked confine", bash, "a headless resolver's Bash is confined")
+        marked = self.hook("PreToolUse", {"tool_name": "Write", "cwd": wt, "tool_input": {"file_path": main_file, "content": "x"}},
+                           env={"FOREMAN_PILOT_HEADLESS": "1"}).stdout
+        self.assertIn("blocked confine", marked, "the pilot's environment marker confines a main session in the lane")
 
     def test_a_fixer_writes_only_in_its_worktree_with_no_builder_brief(self):
         # T-5681 review: the editing set confines a fixer too; a fixer gets no lane brief, so its task has no builder mark

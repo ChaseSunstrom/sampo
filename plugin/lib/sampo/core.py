@@ -3312,7 +3312,17 @@ def builder_confine(p, b, agent=""):
     lane = getattr(p, "lane", None)
     if not lane:
         return None
-    return (lane, main_worktree(lane)) if agent in EDITING_AGENT_NAMES or (b and b.meta.get("builder")) else None
+    return (lane, main_worktree(lane)) if agent in EDITING_AGENT_NAMES or headless_pilot() or (b and b.meta.get("builder")) else None
+
+
+HEADLESS_ENV = "FOREMAN_PILOT_HEADLESS"  # T-5766: the lane pilot's `claude -p` sets it: that main session is a builder, confined
+
+
+def headless_pilot():
+    """T-5766 review: whether this process runs under the lane pilot's headless claude. Such a main session has no
+    agent_id on its calls (only a subagent's own carry one), so the payload alone can't say it is confined; the pilot's
+    environment does (the hook and every command it runs inherit it)."""
+    return os.environ.get(HEADLESS_ENV) == "1"
 
 
 def find_project(cwd, create=False):
