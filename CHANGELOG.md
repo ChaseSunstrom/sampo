@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- callcards.remeasure pairs before/after bench rows per failure class and marks it closed only at p<0.05 over at least 30 scenarios, calling smaller samples inconclusive (T-3486).
 - `sampo seams FILE` ranks the cleanest split clusters of a big module by recent edits, and louhi's exam lock moved out into `louhi_lock` behind the same names (T-3290).
 - sampo lane list now trial-merges every open lane against main and against each other with git merge-tree and prints a "Will conflict:" line naming the clashing files, so clashes show before you merge (--no-preview skips it) (T-3268).
 - A merged lane whose only ignored files are the guard's ward index (and guard-scripts.json) is now removed by the close without a hand step (T-5529).
