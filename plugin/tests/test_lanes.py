@@ -4938,6 +4938,77 @@ class RecordedAuditsCount(tla.AuditCase):
                          "no audit was recorded or counted: the review did not see this tip")
 
 
+class LaneListCompact(_LaneRepo):  # T-5687: a builder's lane list is its own row and a count; --all is every lane
+    def test_lane_list_in_a_lane_is_compact(self):
+        self.fm("init")
+        for title in ("First lane", "Second lane"):
+            self.fm("task", "new", title, "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true", "--step", "s")
+        mine = json.loads(self.fm("lane", "new", "T-0001", "--json").stdout)["path"]
+        other = json.loads(self.fm("lane", "new", "T-0002", "--json").stdout)["path"]
+        short = self.fm("lane", "list", cwd=mine).stdout
+        self.assertIn(mine, short)
+        self.assertNotIn(other, short)
+        self.assertIn("1 other lane", short)
+        self.assertIn("sampo lane list --all", short)
+        self.assertIn(other, self.fm("lane", "list", "--all", cwd=mine).stdout)
+        self.assertEqual({r["path"] for r in json.loads(self.fm("lane", "list", "--json", cwd=mine).stdout)["lanes"]},
+                         {mine, other}, "--json keeps every lane")
+        main = self.fm("lane", "list").stdout  # the main checkout prints every lane, as before
+        self.assertIn(mine, main)
+        self.assertIn(other, main)
+
+    def test_the_compact_warnings_name_only_this_lanes_clashes(self):  # T-5687: other lanes' clashes are --all's
+        from sampo import lane_overlap, lane_preview
+        s = lane_preview.Scan({("mine", "other"): ["a.py"], ("x", "y"): ["b.py"]}, 2, 2, "")
+        ov = {"overlaps": [{"a": "T-0001", "b": "T-0002", "advice": "merge one"},
+                           {"a": "T-0003", "b": "T-0004", "advice": "merge two"}], "unscanned": ["T-0005"]}
+        self.assertEqual(len(lane_preview.warn_lines(s)), 2)
+        self.assertEqual(lane_preview.warn_lines(s, keep={"mine"}), ["Will conflict: mine and other: a.py"])
+        self.assertEqual(lane_overlap.lines(ov), ["OVERLAP T-0001 and T-0002: merge one",
+                                                  "OVERLAP T-0003 and T-0004: merge two",
+                                                  "OVERLAP ?: T-0005 not scanned"])
+        self.assertEqual(lane_overlap.lines(ov, keep={"T-0002"}), ["OVERLAP T-0001 and T-0002: merge one"])
+        self.assertEqual(lane_overlap.lines(ov, keep={"T-0009"}), [])
+        self.assertEqual(lane_preview.warn_lines(lane_preview.Scan({}, 1, 2, "x"), keep={"mine"}),
+                         ["(preview incomplete: 1 of 2 pairs checked: x)"],
+                         "a partial scan says so in a builder's list too")
+
+    def test_the_compact_list_falls_back_to_the_full_list_when_no_lane_is_mine(self):  # T-5687 round 1
+        self.fm("init")
+        self.fm("task", "new", "First lane", "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true", "--step", "s")
+        self.fm("task", "new", "Second lane", "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true", "--step", "s")
+        mine = json.loads(self.fm("lane", "new", "T-0001", "--json").stdout)["path"]
+        other = json.loads(self.fm("lane", "new", "T-0002", "--json").stdout)["path"]
+        stray = os.path.join(self.tmp, "stray")  # a worktree of the project that no task's lane is
+        self.git(self.repo, "worktree", "add", "-q", stray, "-b", "stray")
+        out = self.fm("lane", "list", cwd=stray).stdout
+        self.assertIn(mine, out, "no row is the builder's, so every row prints, as before")
+        self.assertIn(other, out)
+        self.assertNotIn("sampo lane list --all names them", out)
+
+    def test_the_compact_count_says_how_many_lanes_are_under_andon(self):  # T-5687 round 1
+        self.fm("init")
+        for title in ("First lane", "Second lane", "Third lane"):
+            self.fm("task", "new", title, "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true", "--step", "s")
+        mine = json.loads(self.fm("lane", "new", "T-0001", "--json").stdout)["path"]
+        other = json.loads(self.fm("lane", "new", "T-0002", "--json").stdout)["path"]
+        json.loads(self.fm("lane", "new", "T-0003", "--json").stdout)
+        with open(os.path.join(other, "ANDON.md"), "w") as f:
+            f.write("stuck on the merge\n")
+        short = self.fm("lane", "list", cwd=mine).stdout
+        self.assertEqual([x for x in short.splitlines() if "other lane" in x],
+                         ["2 other lanes, 1 under ANDON: sampo lane list --all names them"])
+
+    def test_a_builder_alone_prints_no_count_line(self):  # T-5687 round 1: nothing to count, so nothing printed
+        self.fm("init")
+        self.fm("task", "new", "Only lane", "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true", "--step", "s")
+        mine = json.loads(self.fm("lane", "new", "T-0001", "--json").stdout)["path"]
+        short = self.fm("lane", "list", cwd=mine).stdout
+        self.assertIn(mine, short)
+        self.assertNotIn("other lane", short)
+        self.assertNotIn("ANDON", short)
+
+
 class LaneStart(_LaneRepo):
     """T-3958: `sampo lane start ID` in a builder's lane is the opening routine in one call: the brief's base against
     HEAD, then the focus, then the brief's path and steps."""

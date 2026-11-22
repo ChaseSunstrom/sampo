@@ -87,6 +87,36 @@ def need_brief(p, tid):
     return b
 
 
+def render_compact(b):  # T-5687: a builder's `task show` in its lane: the criteria, steps and open evidence, short
+    """The short view: the header, the criteria (verify command, checked mark), the steps (done and current marks),
+    the steps and criteria with no evidence yet, and the line that names --full for the rest of the brief."""
+    acs, steps = b.acceptance(), b.steps()
+    rows = [f"{b.id} {c.plain(str(b.meta.get('type', '')))} {c.plain(str(b.meta.get('tier', '')))} {c.plain(b.status)}: "
+            f"{c.fit(c.plain(b.title), 90)}"]
+    rows.append(f"Criteria: {sum(a.checked for a in acs)} of {len(acs)} checked" if acs else "Criteria: none")
+    for a in acs:  # the criteria and their verify commands are never cut: a builder needs the whole check
+        text, verify = c.split_verify(a.text)
+        rows.append(f"  {a.n} [{'x' if a.checked else ' '}] {c.plain(text)}"
+                    + (f" — verify `{c.plain(verify)}`" if verify else ""))
+    rows.append(f"Steps: {sum(s.done for s in steps)} of {len(steps)} done" if steps else "Steps: none")
+    for s in steps:
+        rows.append(f"  {s.n} [{'x' if s.done else ' '}] {c.fit(c.plain(s.text), 80)}" + (" <- current" if s.current else ""))
+    # open: no run on record, or the newest run failed (a red run is evidence on record, not a pass)
+    no_step = [s.n for s in steps if not b.has_evidence(step=s.n)]
+    red_step = [s.n for s in steps if b.step_failed(s.n)]
+    no_ac = [a.n for a in acs if not b.has_evidence(ac=a.n)]
+    red_ac = [a.n for a in acs if b.red_ran_line(a.n) is not None]
+
+    def listed(one, many, ns, tail):
+        return f"{one if len(ns) == 1 else many} {', '.join(map(str, ns))}{tail}" if ns else ""
+    gaps = [x for x in (listed("step", "steps", no_step, " (no run)"), listed("step", "steps", red_step, " red"),
+                        listed("criterion", "criteria", no_ac, " (no run)"),
+                        listed("criterion", "criteria", red_ac, " red")) if x]
+    rows.append("Open evidence (no passing run yet): " + ("; ".join(gaps) if gaps else "none"))
+    rows.append(f"The rest of the brief and its story: sampo task show {b.id} --full")
+    return "\n".join(rows) + "\n"
+
+
 def mutate(p, tid, fn, event, data=None):
     """Load a brief under the project lock, apply fn(brief), save, log; regenerate the views after the lock (T-3556)."""
     with c.lock(p.dir):
@@ -3939,6 +3969,9 @@ def _show_one(p, b, args):
         return out(args, s, recall.render_story(s))
     if args.json:
         return print(json.dumps(dict(c.brief_detail(b), meta=b.meta, blockers=b.done_blockers()), indent=2))
+    own = bool(p.lane and b.meta.get("lane")) and os.path.realpath(b.meta["lane"]) == os.path.realpath(p.lane or "")
+    if own:  # T-5687: a task in its own lane gets the short view; a lead who cd's into another lane gets the full one
+        return print(render_compact(b), end="")
     from sampo import cost
     return print(b.render() + (f"\n{line}\n" if (line := cost.cost_line(p, b)) else ""), end="")  # T-1083
 
@@ -10007,7 +10040,9 @@ def _build_parser(only=None):
     t.add_argument("--story", action="store_true", help="the ledger as chapters (plan, steps, evidence, reviews, "
                                                         "close) with their times")
     t.add_argument("--full", action="store_true", help="the brief, then its story (what --story prints), one call; "
-                                                       "with --json, the brief's JSON plus a story key")
+                                                       "with --json, the brief's JSON plus a story key. In a lane, show "
+                                                       "prints the short view (criteria, steps, open evidence) without it "
+                                                       "(T-5687)")
     t = tadd("ls")  # T-5599: one line per task; bare `task ls` is still the queue (ALIASES)
     t.add_argument("id", nargs="+", help="task ids: T-1 T-3, T-1,T-3, T-3..T-7")
     t = tadd("card")  # T-1541
@@ -12216,8 +12251,10 @@ def _build_parser(only=None):
     s.add_argument("action", choices=["new", "list", "rm", "brief", "merge", "max", "resume", "recover", "race", "pick",
                                       "stats", "verify", "train", "precheck", "land", "andon", "accept", "mode", "start",
                                       "classify", "fixes"])  # fixes: the review's findings for the lane's builder (T-5477); classify: the detached pass a builder brief starts (T-5723), not typed
-    s.add_argument("--all", action="store_true", help="recover: every lane stopped before its merge, one launch line each "
-                                                      "or the reason it's left (T-3922); merge: every finished lane (T-3119)")
+    s.add_argument("--all", action="store_true", help="list: every lane's row, or in a builder's lane its own row and a "
+                                                      "count of the others (T-5687); recover: every lane stopped before its "
+                                                      "merge, one launch line each or the reason it's left (T-3922); merge: "
+                                                      "every finished lane (T-3119)")
     s.add_argument("--audit", nargs=3, action="append", metavar=("LENS", "HOW", "RESULT"),
                    help="accept: one audit of the lane, three values: LENS HOW RESULT (its lens, how it was done, the result); "
                         "repeat the whole --audit LENS HOW RESULT per lens, never two values (T-3922, T-4391)")

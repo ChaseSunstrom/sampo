@@ -135,13 +135,15 @@ def incomplete_line(s):
     return f"(preview incomplete: {s.checked} of {s.total} pairs checked" + (f": {s.note})" if s.note else ")")
 
 
-def warn_lines(s):
+def warn_lines(s, keep=None):
     """The text form: a 'Will conflict:' line per pair (LINES_MAX at most, FILES_MAX files each), a line for the pairs
-    left out, and the incomplete line. Nothing when there was no scan, or no clash and every pair was checked."""
+    left out, and the incomplete line. Nothing when there was no scan, or no clash and every pair was checked.
+    keep (T-5687, a builder's compact list): only the pairs that name a branch in keep. The incomplete line stays: a
+    partial scan is said so whatever the list keeps."""
     if s is None:
         return []
     lines = []
-    items = list(s.pairs.items())
+    items = [(p, f) for p, f in s.pairs.items() if keep is None or any(x in keep for x in p)]
     for (a, b), files in items[:LINES_MAX]:
         more = f" +{len(files) - FILES_MAX} more" if len(files) > FILES_MAX else ""
         lines.append(f"Will conflict: {a} and {b}: {', '.join(files[:FILES_MAX])}{more}")

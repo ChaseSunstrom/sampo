@@ -957,7 +957,20 @@ def cmd_lane(args):
             main, [r["branch"] for r in rows if r["branch"] and not r["missing"]])
         from sampo import lane_overlap  # T-3285: open lanes whose branch diffs add the same def or touch the same file
         ov = lane_overlap.scan(main, rows)
-        text = "\n".join(lines + lane_preview.warn_lines(s) + lane_overlap.lines(ov) + git_lock_lines(locks))
+        shown = lines  # T-5687: in a builder's lane, its own row and a count of the others (--all: every row)
+        keep_b = keep_t = None  # the clashes a builder's compact list keeps: those that name its own branch or task
+        mine = {i for i, r in enumerate(rows) if p.lane and r["tasks"]  # a stray worktree's row has no task: not a lane
+                and os.path.realpath(r["path"]) == os.path.realpath(p.lane)}
+        if mine and not getattr(args, "all", False):  # no row of its own (a stray worktree): the full list, as before
+            others = len(rows) - len(mine)
+            under = sum(1 for i, r in enumerate(rows) if i not in mine and r.get("andon"))
+            shown = [lines[i] for i in sorted(mine)] + (
+                [f"{others} other lane{'s' if others != 1 else ''}, {under} under ANDON: sampo lane list --all names them"]
+                if others else [])  # alone: its row and nothing to count
+            keep_b = {rows[i]["branch"] for i in mine if rows[i]["branch"]}
+            keep_t = {t["id"] for i in mine for t in rows[i]["tasks"]}
+        text = "\n".join(shown + lane_preview.warn_lines(s, keep=keep_b) + lane_overlap.lines(ov, keep=keep_t)
+                         + git_lock_lines(locks))
         return cli.out(args, {"lanes": rows, "git_locks": locks, "conflicts": lane_preview.rows(s.pairs) if s else [],
                               "preview": lane_preview.preview_json(s), **ov},
                        text or "No lanes: fm lane new <task id> makes one.")

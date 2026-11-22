@@ -2132,6 +2132,73 @@ class SelfRunningLine(ForemanTestCase):  # T-2364: what ran by itself, in fm sta
         self.assertTrue(any(s["text"].startswith("Self-running:") for s in view["signals"]), view["signals"])
 
 
+class TaskShowInALane(ForemanTestCase):  # T-5687: a builder's `task show` is the short view; --full is the rest
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        self.fm("task", "new", "Compact view for subagents", "--type", "PERFORMANCE", "--tier", "M",
+                "--ac", "first check :: true", "--ac", "second check :: true",
+                "--step", "first step", "--step", "second step")
+        self.fm("task", "evidence", "T-0001", "--step", "1", "pytest", "3 passed")
+        self.lane = json.loads(self.fm("lane", "new", "T-0001", "--json").stdout)["path"]
+
+    def test_task_show_in_a_lane_is_compact(self):
+        short = self.fm("task", "show", "T-0001", cwd=self.lane).stdout
+        self.assertLessEqual(len(short), 700, short)  # about 600 characters for a task this size
+        self.assertIn("1 [ ] first check — verify `true`", short)
+        self.assertIn("2 [ ] second check — verify `true`", short)
+        self.assertIn("1 [x] first step", short)  # a run recorded on a step marks it done
+        self.assertIn("2 [ ] second step", short)
+        self.assertRegex(short, r"Open evidence[^\n]*step 2")  # step 1 has a run; step 2 and both criteria have none
+        self.assertRegex(short, r"Open evidence[^\n]*criteria 1, 2")
+        self.assertIn("sampo task show T-0001 --full", short)
+        self.assertNotIn("## Raw request", short, "the brief's body is for --full")
+
+    def test_task_show_full_json_and_main_checkout_are_unchanged(self):
+        full = self.fm("task", "show", "T-0001", "--full", cwd=self.lane).stdout
+        self.assertEqual(full, self.fm("task", "show", "T-0001", "--full").stdout)
+        self.assertIn("## Raw request", full)
+        story = self.fm("task", "show", "T-0001", "--story", cwd=self.lane).stdout
+        self.assertEqual(story, self.fm("task", "show", "T-0001", "--story").stdout)
+        got = json.loads(self.fm("task", "show", "T-0001", "--json", cwd=self.lane).stdout)
+        self.assertEqual([x["text"] for x in got["criteria"]], ["first check", "second check"])
+        self.assertEqual(got, json.loads(self.fm("task", "show", "T-0001", "--json").stdout))
+        main = self.fm("task", "show", "T-0001").stdout
+        self.assertIn("## Raw request", main, "the main checkout prints the whole brief, as before")
+        self.assertIn("## Acceptance criteria", main)
+
+    def test_a_criterion_and_its_verify_are_never_cut(self):  # T-5687 round 1: only the title and steps may be cut
+        long = ("the compact view keeps every word of a criterion longer than eighty characters so the builder can "
+                "read the whole check")
+        self.fm("task", "new", "Long criterion", "--type", "FEATURE", "--tier", "S",
+                "--ac", f"{long} :: true", "--step", "only step")
+        lane = json.loads(self.fm("lane", "new", "T-0002", "--json").stdout)["path"]
+        short = self.fm("task", "show", "T-0002", cwd=lane).stdout
+        self.assertIn(f"1 [ ] {long} — verify `true`", short)
+
+    def test_a_red_run_is_open_evidence(self):  # T-5687 round 1: a criterion whose newest run failed is open, marked red
+        self.fm("task", "new", "Red run", "--type", "FEATURE", "--tier", "S",
+                "--ac", "broken check :: false", "--ac", "fine check :: true", "--step", "only step")
+        lane = json.loads(self.fm("lane", "new", "T-0002", "--json").stdout)["path"]
+        self.fm("task", "evidence", "T-0002", "--ac", "1", check=False)  # fails: a red run on record
+        self.fm("task", "evidence", "T-0002", "--ac", "2", check=False)  # passes: no longer open
+        short = self.fm("task", "show", "T-0002", cwd=lane).stdout
+        line = next(x for x in short.splitlines() if x.startswith("Open evidence"))
+        self.assertIn("criterion 1 red", line)
+        self.assertNotIn("2", line, "a criterion with a passing run is not open")
+
+    def test_a_lead_in_another_lane_gets_the_full_view(self):  # T-5687 round 1: the short view is for the task's own lane
+        self.fm("task", "new", "Other work", "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true", "--step", "s")
+        self.fm("lane", "new", "T-0002")
+        full = self.fm("task", "show", "T-0002", cwd=self.lane).stdout
+        self.assertIn("## Raw request", full)
+        self.assertEqual(full, self.fm("task", "show", "T-0002").stdout)
+
+    def test_the_all_help_says_what_list_does_with_it(self):  # T-5687 round 1: lane list has its own --all sentence
+        text = " ".join(self.fm("lane", "--help").stdout.split())
+        self.assertIn("list: every lane's row, or in a builder's lane its own row and a count of the others", text)
+
+
 class EmptyModule(unittest.TestCase):
     """T-3727: a crash can leave one of Sampo's own modules empty on disk; bin/sampo heals it from HEAD or names the
     file and the one fix, never an AttributeError traceback."""

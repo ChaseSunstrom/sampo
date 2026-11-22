@@ -118,12 +118,15 @@ def _advice(head, defs, files):
     return f"both {c.fit(c.plain(' and '.join(what)), max(room, 1))}: {tail}"
 
 
-def lines(ov):
+def lines(ov, keep=None):
     """fm lane list's OVERLAP lines: one per pair, naming both tasks and what they share; then one note naming the
-    open lanes that could not be scanned."""
-    out = [f"OVERLAP {r['a']} and {r['b']}: {r['advice']}" for r in ov["overlaps"]]
-    if ov["unscanned"]:
-        out.append(f"OVERLAP ?: {', '.join(ov['unscanned'])} not scanned")
+    open lanes that could not be scanned. keep (T-5687, a builder's compact list): only the pairs and unscanned ids
+    that name a task id in keep."""
+    overlaps = [r for r in ov["overlaps"] if keep is None or r["a"] in keep or r["b"] in keep]
+    unscanned = [t for t in ov["unscanned"] if keep is None or t in keep]
+    out = [f"OVERLAP {r['a']} and {r['b']}: {r['advice']}" for r in overlaps]
+    if unscanned:
+        out.append(f"OVERLAP ?: {', '.join(unscanned)} not scanned")
     return out
 
 
