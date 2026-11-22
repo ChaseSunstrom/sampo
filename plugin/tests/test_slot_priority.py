@@ -239,9 +239,13 @@ class GateKeepsFirstClaim(SlotCase):
         return mark
 
     def leave(self, mark):
-        if mark[1] not in self.left:  # once: a second close could close an fd number reused since
+        if mark[1] not in self.left:  # once, by its path (an fd number is reused): a second close could close another's fd
             self.left.add(mark[1])
             run._unmark(mark)
+
+    def take(self, **kw):
+        with run.cpu_slot(wait=1000, poll=0.01, **kw) as s:
+            return s
 
     def test_an_ordinary_run_leaves_a_freed_slot_to_a_gate_past_the_deferral_bound(self):
         mark = self.marker("-g")
@@ -254,10 +258,6 @@ class GateKeepsFirstClaim(SlotCase):
         t.join(10)
         self.assertEqual(got, [0], "the gate gone, the ordinary run takes the slot")
 
-    def take(self, **kw):
-        with run.cpu_slot(wait=1000, poll=0.01, **kw) as s:
-            return s
-
     def test_a_plain_priority_marker_still_ends_at_the_bound(self):
         self.marker("")
         start = time.monotonic()
@@ -267,7 +267,7 @@ class GateKeepsFirstClaim(SlotCase):
         self.assertLess(waited, 5, "and for DEFER_MAX only (T-4247): a small priority run's marker is no gate's")
 
     def test_a_gate_beside_many_ordinary_waiters_takes_the_freed_slot_first(self):
-        for _ in range(2):  # before the fix the gate drew one in five: two rounds
+        for _ in range(3):  # before the fix the gate drew one in nine: three rounds pass by luck 1 time in 729, not 1 in 25
             free, order, lock = self.hold(), [], threading.Lock()
 
             def body(who):
@@ -280,14 +280,14 @@ class GateKeepsFirstClaim(SlotCase):
                 gate = threading.Thread(target=body, args=("gate",), daemon=True)
                 gate.start()
                 self.assertTrue(self.wait_for(lambda: self.markers("prio-")), "the waiting gate leaves its marker")
-            others = [threading.Thread(target=body, args=(f"run{i}",), daemon=True) for i in range(4)]
+            others = [threading.Thread(target=body, args=(f"run{i}",), daemon=True) for i in range(8)]
             for t in others:
                 t.start()
             time.sleep(0.6)  # past DEFER_MAX: the ordinary waiters' bounded deferral is over
             free.set()
             for t in [gate, *others]:
                 t.join(10)
-            self.assertEqual(len(order), 5)
+            self.assertEqual(len(order), 9)
             self.assertEqual(order[0], "gate", "the gate takes the freed slot before the ordinary waiters")
             run._DEFER["first"] = None
 
