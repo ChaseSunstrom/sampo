@@ -9869,6 +9869,8 @@ def _build_parser(only=None):
     s.add_argument("--minutes", type=float, default=20)
     s.add_argument("--warn", action="store_true", help="take a claim that overlaps another session's, with a warning")
     s.add_argument("--force", action="store_true", help="drop: also release another holder's lease on the named target (T-3371)")
+    s.add_argument("--whole", metavar="REASON", help="take: claim a whole file over 1,500 lines (otherwise name FILE::function), "
+                                                     "with the reason (T-5519)")
     s = add("conductor", lazy("sampo.bus", "cmd_conductor"), tier=("Running elsewhere", 1310), help="live sessions with their task, context, mail and leases; "
                                                               "steer them all (T-0708)")
     s.add_argument("action", nargs="?", default="list", choices=["list", "steer", "send", "remote", "refresh"],

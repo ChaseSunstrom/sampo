@@ -451,7 +451,59 @@ class Lease(Base):
         self.assertIn("lane-T-0002", r.stderr, "the take names the pre-claim it went over")
         r = self.fm("lease", "take", "cli.py::x", env=b, check=False)
         self.assertEqual(r.returncode, 1, "an explicit lease of another session still refuses")
-        self.assertIn("overlaps session sess-a", r.stderr)
+        self.assertIn("(session sess-a)", r.stderr)  # T-5519: the holder is named by its task, then its session
+
+    def big_file(self, name="big.py", lines=bus.LEASE_WHOLE_MAX + 1):
+        path = os.path.join(self.repo, name)
+        with open(path, "w") as f:
+            f.write("def alpha():\n    pass\n\n\ndef beta():\n    pass\n" + "x = 1\n" * lines)
+        return name
+
+    def test_a_whole_file_take_on_a_big_file_is_refused_naming_symbols_and_whole_takes_it(self):  # T-5519 whole_file
+        a = {"CLAUDE_CODE_SESSION_ID": "sess-a"}
+        name = self.big_file()
+        r = self.fm("lease", "take", name, env=a, check=False)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn(f"{name}::name", r.stderr)
+        self.assertIn("alpha", r.stderr, "the file's own functions are named")
+        self.assertIn("--whole", r.stderr)
+        self.assertNotIn("big.py", self.fm("lease", "list", env=a).stdout, "a refused take claims nothing")
+        r = self.fm("lease", "take", name, "--whole", "", env=a, check=False)
+        self.assertEqual(r.returncode, 1, "an empty reason is no reason")
+        r = self.fm("lease", "take", f"{name}::alpha", env=a)  # a symbol on a big file is the normal claim
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r = self.fm("lease", "take", name, "--whole", "rename across the module", env=a)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("took: big.py::*", r.stdout)
+        kinds = [e["event"] for e in c.ledger_events(self.project(), kinds=["lease.whole"])]
+        self.assertEqual(kinds, ["lease.whole"], "the override is logged")
+
+    def test_an_explicit_star_symbol_on_a_big_file_is_a_whole_file_take_too(self):  # T-5519 whole_file
+        a = {"CLAUDE_CODE_SESSION_ID": "sess-a"}
+        name = self.big_file()
+        r = self.fm("lease", "take", f"{name}::*", env=a, check=False)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("--whole", r.stderr)
+        r = self.fm("lease", "take", f"{name}::*", "--whole", "rename across the module", env=a)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("took: big.py::*", r.stdout)
+
+    def test_a_whole_file_take_on_a_small_or_missing_file_is_allowed(self):  # T-5519 whole_file
+        a = {"CLAUDE_CODE_SESSION_ID": "sess-a"}
+        name = self.big_file("small.py", lines=10)
+        self.assertEqual(self.fm("lease", "take", name, "nothere.py", env=a).returncode, 0)
+
+    def test_holder_task_names_the_holder_in_a_refusal_and_a_warning(self):  # T-5519
+        self.assertEqual(bus._who({"session": "sess-abcdef123", "task": "T-0042"}), "task T-0042 (session sess-abc)")
+        self.assertEqual(bus._who({"session": "sess-abcdef123", "task": None}), "session sess-abc")
+        a, b = {"CLAUDE_CODE_SESSION_ID": "sess-a"}, {"CLAUDE_CODE_SESSION_ID": "sess-b"}
+        self.fm("lease", "take", "w.py::f", env=a)
+        task = next(iter(bus._leases().values()))["task"]
+        self.assertTrue(task)
+        r = self.fm("lease", "take", "w.py::f", env=b, check=False)
+        self.assertIn(f"overlaps task {task} (session sess-a)", r.stderr)
+        r = self.fm("lease", "take", "w.py::f", "--warn", env=b)
+        self.assertIn(f"warning: w.py::f overlaps task {task}", r.stderr)
 
     def test_a_long_drop_is_cut_and_a_lanes_claims_still_held_are_said(self):
         # T-1731 review: one line per lease uncapped; a lane's bare drop said "Dropped 0" with its pre-claims held

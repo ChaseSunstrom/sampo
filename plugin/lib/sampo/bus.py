@@ -18,6 +18,7 @@ LIVE_S = 15 * 60       # a session whose statusline wrote within this is live
 LEASE_S = 20 * 60      # an edit holds its function this long, renewed by each edit
 FRESH_ALL_S = 15 * 60  # a session reading mail for the first time gets broadcasts this recent
 WATCH_S = 10           # a watcher whose heartbeat is this fresh delivers wakes; older, tmux is tried
+LEASE_WHOLE_MAX = 1500  # T-5519: a take of a whole file longer than this names symbols (--whole REASON overrides)
 KEEP = 500             # messages kept
 INTERPRETERS = {"sh", "bash", "dash", "zsh", "node", "bun", "deno"}  # T-2512: what runs a shebang script
 TYPES = ("note", "steer", "stop")
@@ -498,7 +499,32 @@ def _sh(s):  # a lane claim's id is short already and its prefix is what names i
 
 
 def _who(v):
-    return f"session {_sh(v['session'])}" + (f" ({v['task']})" if v.get("task") else "")
+    """T-5519: by its task when it has one (builders of one lead share its session id, so the session alone names the lead)."""
+    if v.get("task"):
+        return f"task {v['task']} (session {_sh(v['session'])})"
+    return f"session {_sh(v['session'])}"
+
+
+def _big_whole(path):
+    """T-5519: (line count, first function names) of a file over LEASE_WHOLE_MAX lines, else None. An unreadable or
+    missing file is not big: the take of a file that isn't there yet stays as it was."""
+    try:
+        if not os.path.isfile(path) or os.path.getsize(path) < LEASE_WHOLE_MAX:
+            return None
+        with open(path, errors="replace") as f:
+            lines = f.read().split("\n")
+    except OSError:
+        return None
+    if len(lines) <= LEASE_WHOLE_MAX:
+        return None
+    names = []
+    for ln in lines:
+        m = _DEF.match(ln)
+        if m and not m.group(1) and m.group(2) not in names:
+            names.append(m.group(2))
+            if len(names) == 4:
+                break
+    return len(lines), names
 
 
 def claim_overlaps(p, rel, sym, me, act=None, data=None):
@@ -720,7 +746,7 @@ def cmd_lease(args):
                                 + (f"{mid:.1f} min to resolve" if mid is not None else "n/a") + f" (n={r['n']}). "
                                 "Blocks whose lease expired or is still held count as unresolved: expiries aren't logged.")
     me = _sid(cli.session()) or "user"
-    forced = []
+    forced, wholes = [], []
     if args.force and not (args.action == "drop" and args.target):
         raise cli.UsageError("--force names a lease to drop: fm lease drop FILE[::SYMBOL]... --force")
     with c.lock(_dir()):
@@ -754,6 +780,15 @@ def cmd_lease(args):
                 if not os.path.exists(rel) and os.path.exists(os.path.join(p.root, rel)):  # T-1148: root-relative from a subdir
                     rel = os.path.join(p.root, rel)
                 rel = os.path.relpath(os.path.abspath(rel), p.root)
+                big = _big_whole(os.path.join(p.root, rel)) if args.action == "take" and sym in ("", "*") else None  # FILE::* is whole too
+                if big and not (getattr(args, "whole", None) or "").strip():  # T-5519: a module-wide claim blocks every builder
+                    raise cli.UsageError(
+                        f"{rel} is {big[0]} lines: name the functions you edit, {rel}::name"
+                        + (f" (it has {', '.join(big[1])}…; sampo outline {rel} lists them)" if big[1]
+                           else f" (sampo outline {rel} lists them)")
+                        + ", or --whole \"reason\" to claim the whole file (logged)")
+                if big:
+                    wholes.append((rel, args.whole.strip()))
                 todo.append((rel, sym or "*"))
 
             def sibling(v):  # T-5720: a builder lane shares its parent's session id, so another task's hold of mine here
@@ -792,6 +827,8 @@ def cmd_lease(args):
                            advisory=any(not v["session"].startswith("lane-") and not sibling(v)  # T-3283, T-5720: not holds
                                         for v in claim_overlaps(p, rel, sym, me, act, data)))
             _write_leases(data)
+    for rel, why in wholes:  # T-5519: a whole-file claim on a big file is logged with its reason
+        c.log_event(p, "lease.whole", task=act.id if act else None, data={"file": rel, "reason": why[:200], "by": me})
     for v in forced:  # T-3371: a forced drop of another holder's lease is logged and the holder told
         c.log_event(p, "lease.forced_drop", task=v.get("task"), data={"file": v["file"], "symbol": v["symbol"],
                                                                         "holder": v["session"], "by": me})
