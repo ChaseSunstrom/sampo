@@ -63,7 +63,7 @@ def live_lite_lines():
 # (name, regex whose group 1 is the number, live count, how the claim reads: exact, floor "Over N" or ceiling "under N")
 CLAIMS = (
     ("stack cards", re.compile(rf"\b[Oo]ver ({NUM}) stack cards"), live_cards, "floor"),
-    ("areas", re.compile(rf"\b({NUM}) areas\b"), live_areas, "exact"),
+    ("areas", re.compile(rf"\bin ({NUM}) areas\b"), live_areas, "exact"),
     ("named looks", re.compile(rf"\b({NUM}) named looks\b"), live_looks, "exact"),
     ("panels", re.compile(rf"\b({NUM}) panels (?:sized to the dock|in a two-column grid)"), live_panels, "exact"),
     ("deny rules", re.compile(rf"\b({NUM}) deny rules\b"), live_deny_rules, "exact"),
@@ -145,12 +145,16 @@ class ReadmeClaims(unittest.TestCase):
         self.assertTrue(any(p.startswith(f"README.md:{line}: ") for p in bad), bad)
 
     def test_a_count_with_no_live_source_is_named(self):
-        found = problems(readme() + "\nSampo ships 412 verbs and forty-two hooks.\n")
+        found = problems(SYNTHETIC + "Sampo ships 412 verbs and forty-two hooks.\n", live=LIVE)
         self.assertEqual(sum("with no live source" in p for p in found), 2, found)
 
     def test_a_claim_that_went_missing_is_named(self):
         found = problems(SYNTHETIC.replace("twenty named looks", "a shelf of looks"), live=LIVE)
         self.assertTrue(any("no claim about named looks" in p for p in found), found)
+
+    def test_only_the_stack_card_sentence_states_the_area_count(self):
+        # "N areas" in other prose is not the shelf's area count
+        self.assertEqual(problems(SYNTHETIC + "Sampo has two areas of work left.\n", live=LIVE), [])
 
     def test_number_words(self):
         for tok, n in (("ten", 10), ("twenty", 20), ("twenty-five", 25), ("1,227", 1227), ("29", 29)):
