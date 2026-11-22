@@ -8060,6 +8060,11 @@ def subagent_stop(pl):
             log_error("SubagentStop", _tb())
     _mark_builder(pl, True)  # T-3145
     _close_fields(pl)  # T-3500
+    try:  # T-5708: the lane's pilot starts after the fields are closed; its failure is bookkeeping, never the stop's own
+        from sampo import pilotsig
+        pilotsig.returned(pl)
+    except Exception:
+        log_error("lane pilot", _tb())
     p = c.find_project(_cwd(pl))
     if p and pl.get("agent_type"):
         act = c.active_brief_fast(p, p.lane)

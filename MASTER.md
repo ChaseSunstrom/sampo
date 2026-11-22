@@ -192,6 +192,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fminstr` (`sampo which --instruments`: the zero-token instruments `sampo sym`… [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmintegrations` (T-1551: Sampo for other tools, read-only: `sampo timeline` as… [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmjeffexport` (T-2970: Sampo's own decider on Jeff, `sampo exam models --jeff DIR` and `--train-jeff`: Examples… [→ files-lib-2](docs/map/files-lib-2.md)
+- `fmpilotsig` (T-5708: a sampo:fm-builder's return starts one detached lane pilot per lane (`sampo lane pilot ID --json`), its answer one pilot_done event and one line to the lead; a dead claim is retaken; a second return of a reported lane spawns nothing; an absent `lane pilot` verb is quiet; `SAMPO_LANE_PILOT=off` stops them [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmjobprog` (T-5034: the live page's background job rows with elapsed, typical, ratio, last log line and an ended… [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmlake` (T-2974: the training lake, `sampo exam models --export DIR [--with-agent]`: outcome-labelled… [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmrecover` (T-3928, `sampo/recover.py`): a restart nobody announced. `cli.main` wraps `lane land`, `lane train`… [→ files-lib-2](docs/map/files-lib-2.md)

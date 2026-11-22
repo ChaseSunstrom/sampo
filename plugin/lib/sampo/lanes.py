@@ -17,6 +17,7 @@ import shlex
 import shutil
 import signal
 import stat as _stat
+import statistics
 import subprocess
 import sys
 import tarfile
@@ -656,6 +657,43 @@ ISOLATED = "This agent is isolated"  # T-4139: how Claude Code's worktree isolat
 REFUSAL_WINDOW = 50000  # T-4139: the newest events of each log file the count reads (a bounded parse, not the whole history)
 
 
+LANDING_KINDS = ("builder_mark", "lane_landed", "subagent")  # the events the metric reads: the lead's turns are subagent stops
+LANDING_WINDOW_S = 30 * 86400  # a return older than this is not a lane this metric reads
+
+
+def landing(p):
+    """T-5708: the builder-done to landed time (a median, seconds) and the lead's turns per landed lane, from the ledger.
+    A lane's clock starts at its builder's latest return (builder_mark returned) and stops at its lane_landed (one event
+    may land several comma-listed tasks); its turns are the subagent stops of the lead in between (a pilot's own session
+    is not the lead's). Read over LANDING_WINDOW_S only. None when no lane has landed since a return."""
+    from sampo import pilotsig
+    since = c.iso(time.time() - LANDING_WINDOW_S)
+    open_, secs, turns = {}, [], []  # open_: tid -> [the return's ts, the lead's turns so far]
+    for e in c.ledger_events(p, LANDING_KINDS, since):
+        kind, sid = e.get("event"), e.get("session_id")
+        tids = [x.strip() for x in str(e.get("task") or "").split(",") if x.strip()]
+        if kind == "builder_mark" and (e.get("data") or {}).get("returned"):
+            for tid in tids:
+                open_[tid] = [e.get("ts"), 0]
+        elif kind == "lane_landed":
+            for tid in tids:
+                if tid not in open_:
+                    continue
+                t0, n = open_.pop(tid)
+                a, z = c.parse_ts(t0), c.parse_ts(e.get("ts"))
+                if a is not None and z is not None:
+                    secs.append((z - a).total_seconds())
+                    turns.append(n)
+        elif kind != "builder_mark" and not pilotsig.is_pilot(sid):
+            for tid in tids:
+                if tid in open_:
+                    open_[tid][1] += 1
+    if not secs:
+        return None
+    return {"landed": len(secs), "median_s": round(float(statistics.median(secs)), 1),
+            "turns_per_lane": round(sum(turns) / len(turns), 1)}
+
+
 def refusals(p):
     """T-4139: this project's isolation refusals (failed calls whose error opens with the harness's words), in all and in
     the last 7 days, from the event log. A row carries no lane id, so the count is per project: the next mining shows
@@ -780,15 +818,17 @@ def cmd_lane(args):
         c.lower_nice()  # T-5527: background work: its closes and every child run niced, so the load gate never counts them
         return (train.cmd if args.action == "train" else train.cmd_land)(p, args, main)
     if args.action == "stats":  # T-2368: does a long brief land worse than a short one
-        rows, ref = stats(p), refusals(p)
+        rows, ref, land = stats(p), refusals(p), landing(p)
         text = "\n".join(
             f"{r['size']}: {r['landed']} of {r['briefs']} briefs landed ({r['pct']}%)" for r in rows) + (
             "\n(unsized: a brief a later one overwrote, so that row leans toward lanes that were re-briefed)"
             if any(r["size"] == "unsized" for r in rows) else "")
-        text = (text or "No builder briefs on record yet.") + (
+        text = (text or "No builder briefs on record yet.") + (  # T-5708: builder done to landed, and the lead's turns
+            f"\nBuilder done to landed: median {land['median_s'] / 60:.1f} min over {land['landed']} landed lane"
+            f"{'s' if land['landed'] != 1 else ''}\nlead turns per landed lane: {land['turns_per_lane']}" if land else "") + (
             f"\nIsolation refusals of this project's calls: {ref['all']} in all, {ref['last_7_days']} in the last 7 days "
             "(T-4139: the harness refused them before sampo ran)")
-        return cli.out(args, {"stats": rows, "refusals": ref}, text)
+        return cli.out(args, {"stats": rows, "refusals": ref, "landing": land}, text)
     if args.action == "verify":  # T-3141: the detached process pm_spawn starts: the full suite on each landed merge
         if getattr(args, "reset", None):
             if not pm_reset(p, args.reset):
