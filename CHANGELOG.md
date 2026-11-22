@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- sampo ship auto on|off|status turns on a standing ship: with no task holding a publish grant the land still ships trunk to the remote's main after every train that merged, on a grant no push spends, and a task's own grant still wins (T-5938).
 - sampo targets now lists push lag, lead context per turn, compactions per session-day, Sampo's disk growth and steers per day, and reads tokens per change from the per-lane cost reader; the scans run detached from the self-check, and a push-lag breach files one task (T-5973).
 - A builder now reviews its own diff with the intent, edge and adversary lenses (sampo audit prep --rehearse) and fixes each finding's siblings, reviewers list every sibling instance, a diff touching subprocess, env, paths, hooks or auth gets a threat-model file in round 1, and rework_rounds counts each audit prep at a new lane tip (T-5972).
 - MASTER.md's file-map index lines are back under 160 characters, so test_map_room is green on trunk again (T-5983).
