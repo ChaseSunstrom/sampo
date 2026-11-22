@@ -12,6 +12,7 @@
 ### Everything else
 - Builders no longer run the six repo-shape modules before their report: `sampo lane accept` already runs them once over a batch of lanes and the hold check runs the shape classes, so each lane stops paying a third 8-minute, slot-bound run (T-5511)
 - Trunk is green again in six test classes every lane reported red: the fmmapmerge shim, three classified env switches, the panel report reads core.TIERS, two commands moved off shared help positions, and the night test checks an unconditional job (T-5506)
+- The CPU panel can no longer report more cores than the machine has: each read scales the per-kind estimate to the exact busy clock, where a long-lived process first seen, or a reparented tree's reaped ticks, had shown tests at 24 cores on 16 and a 438-core peak (T-5512)
 
 - The guard refuses a git command that moves trunk or takes HEAD off it (commit, merge, cherry-pick, rebase, reset, pull, am, revert, a branch checkout or switch, a forced branch move, update-ref) in the main checkout while a live merge train holds it, naming the train and how long it has run, so a stray commit no longer voids hours of gate time (T-5077).
 - The home resolves to ~/.claude/sampo only when ~/.claude/foreman is no real folder (absent or a link), else ~/.claude/foreman; a project whose root moved keeps its slug through an alias record; the guard, hooks, fast build and state restore follow the same rule and protect both names (T-5060).

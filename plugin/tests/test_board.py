@@ -142,6 +142,34 @@ class Collect(SampoTestCase):
         self.assertLessEqual(len(board.cpu_part()["minutes"]), board.MINUTES_MAX)
         json.dumps(board.cpu_part())
 
+    def test_the_kinds_never_sum_past_the_busy_clock(self):  # T-5512: 'tests 24.0' on 16 busy, a 438-core minute
+        proc, tick = os.path.join(self.tmp, "proc"), board.cpu.TICK
+
+        def write(busy, procs):
+            os.makedirs(proc, exist_ok=True)
+            with open(os.path.join(proc, "stat"), "w") as f:
+                f.write(f"cpu  {busy} 0 0 9000 0 0 0 0 0 0\n")
+            for pid, (cmd, ut, reaped) in procs.items():
+                os.makedirs(os.path.join(proc, str(pid)), exist_ok=True)
+                with open(os.path.join(proc, str(pid), "stat"), "w") as f:
+                    f.write(f"{pid} (python3) S 1 " + "0 " * 9 + f"{ut} 0 {reaped} 0 " + "0 " * 4 + f"{1000 + pid} 0 0")
+                with open(os.path.join(proc, str(pid), "cmdline"), "w") as f:
+                    f.write(cmd.replace(" ", "\0"))
+        run = "python3 plugin/tests/run.py test_x"
+        write(0, {11: (run, 0, 0)})
+        board.cpu_tick(now=6000, proc=proc)
+        # one minute, 4 cores busy; a long-lived run first seen now carries an hour of lifetime ticks, and a run seen
+        # before reaped a reparented tree's hour that no gone-entry takes off
+        write(int(4 * 60 * tick), {11: (run, int(60 * tick), int(3600 * tick)), 12: (run, int(3600 * tick), 0)})
+        board.cpu_tick(now=6060, proc=proc)
+        got = board.cpu_part()
+        now = got["now"]
+        self.assertAlmostEqual(now["busy"], 4.0, places=1)
+        self.assertLessEqual(sum(now[k] for k in board.KINDS), now["busy"] + 0.01, now)
+        self.assertAlmostEqual(now["tests"], 4.0, places=1)  # the busy clock goes to the only kind that ran
+        for row in got["minutes"]:
+            self.assertLessEqual(sum(row[1:]), got["cores"] + 0.01, row)
+
     def test_commands_are_this_projects_sampo_calls_redacted_newest_twelve(self):
         rows = [{"ts": f"2026-11-07T10:{i:02}:00Z", "kind": "tool", "tool": "Bash", "project": self.p.slug,
                  "target": f"nice -n 19 sampo shot /home/alice/site/p{i}.html", "ok": True} for i in range(20)]

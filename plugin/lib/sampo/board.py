@@ -312,6 +312,12 @@ def cpu_tick(now=None, proc="/proc", every=TICK_S):
                 used[_kind(k[0], table)] += max(0, own - own0) + max(0, reaped - reaped0 - gone.get(k[0], 0))
             got = {k: v / cpu.TICK / secs for k, v in used.items() if k != "other"}
             got["busy"] = max(0, busy - busy0) / cpu.TICK / secs
+            named = sum(got[k] for k in KINDS if k != "other")
+            if named > got["busy"]:  # T-5512: busy is exact, the kinds an estimate (a long-lived process first seen now
+                # brings its lifetime, a reparented tree's reaped ticks miss their gone-entry): scale them to the machine
+                for k in KINDS:
+                    if k != "other":
+                        got[k] = got[k] * got["busy"] / named
             got["other"] = max(0.0, got["busy"] - sum(got[k] for k in KINDS if k != "other"))
             _RING["now"] = {k: round(v, 2) for k, v in got.items()}
             minute, rows = int(now // 60 * 60), _RING["minutes"]
