@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- An appended CHANGELOG.md line now selects only the recorded test classes whose test file names CHANGELOG, not every class a shared path made stat or read it (T-5587).
 - A run whose every class was joined from a concurrent run now records ok with its joined count, so sampo check --last reads it green (T-5557).
 - Reviewer reports record their audits (bound to the task their prompt names and the tree they were briefed on), accept counts recorded audits, dissent resolves several objections in one call and refuses answered lines, task plan takes a file as one locked batch, and the land summary groups hand closes by reason (T-5516).
 - sampo digest now prints a Flow section and --json a flow key (request-to-done by stage, tokens and turns per agent type, test runs by origin, guard blocks by category, tasks made versus closed), each number against the last earlier day's snapshot, one snapshot a day (T-5503).
