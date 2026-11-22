@@ -1052,5 +1052,31 @@ class UncheckedLane(LandCase):
         self.assertTrue(self.landed("a.txt"), "the same lane lands when its green check is at its tip")
 
 
+class HandCloseGroups(LandCase):
+    def test_hand_close_groups_name_each_reason_once_with_its_clearing_command(self):
+        """T-5516: the land's summary says how many lanes each reason leaves, once per reason, with one command that
+        clears it (the per-lane lines stay as they were)."""
+        a, b, d = (self.lane(n, f"{x}.txt", when=OLD) for n, x in ((1, "a"), (2, "b"), (3, "d")))
+        p = c.find_project(self.repo)
+        for tid in (a, b):  # an audit older than the lane's tip: predates it
+            self.returned(tid)
+            x = c.find_brief(p, tid)
+            x.add_audit("self", "a review of an older tip", "no findings", ts="2025-06-01T00:00:00Z")
+            c.save_brief(p, x)
+        self.returned(d)  # no audit at all
+        r = self.land()
+        groups = [ln for ln in r.stdout.splitlines() if ln.startswith("  hand close group")]
+        self.assertEqual(len(groups), 2, r.stdout)
+        predate = [g for g in groups if "audits predate the lane tip" in g]
+        self.assertEqual(len(predate), 1, r.stdout)
+        self.assertIn("group (2) audits predate the lane tip: ", predate[0])
+        self.assertIn(a, predate[0])
+        self.assertIn(b, predate[0])
+        self.assertIn(f"clear with: sampo task audit {a} ", predate[0])
+        missing = [g for g in groups if "no audit recorded" in g]
+        self.assertEqual(len(missing), 1, r.stdout)
+        self.assertIn(f"hand close group (1) no audit recorded: {d} ", missing[0])
+
+
 if __name__ == "__main__":
     unittest.main()

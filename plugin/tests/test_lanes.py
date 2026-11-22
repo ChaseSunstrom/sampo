@@ -3958,6 +3958,47 @@ class MergeTrain(tlt.TrainCase):
         self.assertEqual(worst[0], 1)
 
 
+import test_lane_accept_audit as tla  # noqa: E402  (T-5516: its case class, not its tests, is the base here)
+
+
+class RecordedAuditsCount(tla.AuditCase):
+    """T-5516: an audit already on the brief after the lane's tip commit counts for `lane accept`, whoever recorded it
+    (sampo task audit or a reviewer's report), so accept takes no --audit for it and records nothing again."""
+
+    def lane_tree(self):
+        return c.worktree_id(c.find_brief(self.p, self.tid).meta.get("lane"))
+
+    def add_self_audit(self, tree, ts=None):
+        b = c.find_brief(self.p, self.tid)
+        b.add_audit("self", "sampo task audit, by hand", "no findings", ts=ts, tree=tree)
+        c.save_brief(self.p, b)
+
+    def test_accept_counts_recorded_audits_after_the_tip(self):
+        self.add_self_audit(self.lane_tree())  # recorded now, on the lane's tree: after its commit and still current
+        code, text = self.accept()
+        self.assertEqual(code, 0, text)
+        self.assertIn("counted from audits after the lane tip: self", text)
+        self.assertEqual(self.audits(), ["self"], "accept counts the audit on the brief and records no second one")
+
+    def test_an_audit_on_another_tree_is_not_counted(self):  # T-5516 item 4: the tree decides, not the clock
+        self.add_self_audit("deadbeef")  # recorded after the tip, but the lane has moved since
+        code, text = self.accept()
+        self.assertNotIn("counted from audits after the lane tip", text, text)
+        self.assertNotIn("counted from audits", text)
+
+    def test_a_current_tree_audit_counts_whatever_its_time(self):  # T-5516 item 4: no time comparison with the tip
+        self.add_self_audit(self.lane_tree(), ts="2001-01-01T00:00:00Z")  # before the tip's commit time, same tree
+        code, text = self.accept()
+        self.assertEqual(code, 0, text)
+        self.assertIn("counted from audits after the lane tip: self", text)
+
+    def test_accept_with_nothing_to_count_stamps_no_reviewed_tip(self):  # T-5516 item 8
+        code, text = self.accept()  # tier S needs only self, which accept's own rows and counted audits do not give
+        self.assertEqual(code, 0, text)
+        self.assertFalse(c.find_brief(self.p, self.tid).meta.get("reviewed_tip"),
+                         "no audit was recorded or counted: the review did not see this tip")
+
+
 class LaneStart(_LaneRepo):
     """T-3958: `sampo lane start ID` in a builder's lane is the opening routine in one call: the brief's base against
     HEAD, then the focus, then the brief's path and steps."""

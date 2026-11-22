@@ -249,23 +249,31 @@ def task_dissent(p, args):
         cli.mutate(p, b.id, lambda x: x.set_section("Dissent", (x.section("Dissent").rstrip() + "\n" if
                                                                   x.section("Dissent").strip() else "") + f"- [ ] {text}"),
                      "dissent", {"add": text[:120]})
-    elif words[:1] == ["resolve"] and len(words) > 2 and words[1].isdigit():
-        n, how = int(words[1]), c.fit(c.plain(" ".join(words[2:])), 200)
+    elif words[:1] == ["resolve"] and len(words) > 2 and re.fullmatch(r"\d+(?:\s*,\s*\d+)*", words[1]):
+        # T-5516: '1,2,4' answers several objections in one call: all or nothing, one event for the batch
+        ns = sorted({int(x) for x in re.split(r"\s*,\s*", words[1])})
+        how = c.fit(c.plain(" ".join(words[2:])), 200)
 
         def resolve(x):
-            lines, k = x.section("Dissent").splitlines(), 0
+            lines, k, at = x.section("Dissent").splitlines(), 0, {}
             for i, ln in enumerate(lines):
                 if re.match(r"- \[[ xX]\] ", ln):
                     k += 1
-                    if k == n:
-                        lines[i] = f"- [x] {ln[6:].strip()} — answered: {how}"
-                        break
-            else:
-                raise cli.UsageError(f"{b.id} has no objection {n}")
+                    if k in ns:
+                        at[k] = i
+            missing = [n for n in ns if n not in at]
+            if missing:  # refused before anything is changed: a list names only open objections, or none is answered
+                raise cli.UsageError(f"{b.id} has no objection {', '.join(str(n) for n in missing)}")
+            done = [n for n in ns if lines[at[n]].startswith("- [x]") or lines[at[n]].startswith("- [X]")]
+            if done:  # T-5516 item 9: an answered line is not answered again (a second "— answered:" would stack)
+                raise cli.UsageError(f"{b.id} already answered objection {', '.join(str(n) for n in done)}: "
+                                     "resolve only open ones (fm task dissent ID shows them)")
+            for n in ns:
+                lines[at[n]] = f"- [x] {lines[at[n]][6:].strip()} — answered: {how}"
             x.set_section("Dissent", "\n".join(lines))
-        cli.mutate(p, b.id, resolve, "dissent", {"resolve": n})
+        cli.mutate(p, b.id, resolve, "dissent", {"resolve": ns[0] if len(ns) == 1 else ns})
     elif words:
-        raise cli.UsageError("fm task dissent ID [add \"<objection>\" | resolve N \"<how it was answered>\"]")
+        raise cli.UsageError("fm task dissent ID [add \"<objection>\" | resolve N[,N...] \"<how it was answered>\"]")
     b = cli.need_brief(p, args.id)
     still = open_dissent(b)
     return cli.out(args, {"open": [{"n": n, "text": t} for n, t in still]},

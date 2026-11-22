@@ -1,5 +1,6 @@
 """T-1181: a stopped fm-reviewer's findings are logged as `finding` events, one per finding, verdict 'reported'."""
 import json
+import os
 import unittest
 
 from helpers import ForemanTestCase
@@ -32,7 +33,13 @@ class ReviewerFindings(ForemanTestCase):
         self.fm("focus", self.tid)
 
     def stop(self, msg=MSG, agent="sampo:fm-reviewer"):
-        self.hook("SubagentStop", {"agent_id": "a1", "agent_type": agent, "last_assistant_message": msg})
+        # T-5516 item 1: the task is the one the reviewer's prompt names: its transcript's first user turn carries it
+        path = os.path.join(self.tmp, "a1.jsonl")
+        prompt = f"Read {os.path.join(self.tmp, 'audits', f'{self.tid}.review.md')} and do the review it describes."
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"type": "user", "message": {"role": "user", "content": prompt}}) + "\n")
+        self.hook("SubagentStop", {"agent_id": "a1", "agent_type": agent, "last_assistant_message": msg,
+                                   "agent_transcript_path": path})
 
     def found(self):
         return [e for e in c.ledger_tail(c.find_project(self.repo), 200) if e["event"] == "finding"]

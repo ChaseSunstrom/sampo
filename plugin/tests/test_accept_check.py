@@ -371,6 +371,9 @@ class LiveLauncher(AcceptCase):
 
     def test_a_refused_accept_marks_no_review(self):
         tid = self.launched()
+        b = self.brief(tid)
+        b.meta["tier"] = "M"  # T-5516: an S lane's self audit is implicit, so with none typed an M lane (intent needed) refuses
+        c.save_brief(self.p, b)
         args = types.SimpleNamespace(audit=[], json=False, no_check=True)
         with self.assertRaises(cli.UsageError), contextlib.redirect_stdout(io.StringIO()):
             train.accept(self.p, self.brief(tid), self.repo, args)

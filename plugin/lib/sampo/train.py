@@ -1885,7 +1885,7 @@ def _cmd_report(p, args, main, close, got, owed):
             lines.append("A sampo lane land is running: it closes the lanes this merge landed.")
         got["closed"], got["hand"] = [t for t, _ in done], left
         lines += [f"  closed {t}: {c.fit(c.plain(x), 160)}" for t, x in done]
-        lines += [f"  hand close {t}: {w} (then sampo focus {t}; sampo task finish {t})" for t, w in left]
+        lines += _hand_close_lines(left)  # T-5516: grouped by reason, then the per-lane lines
     try:
         sh = _ship(p, False, main) if got["merged"] else None  # T-3849: a train by hand ships too, on a grant already given
     finally:
@@ -3233,7 +3233,7 @@ def cmd_land(p, args, main):
     skipped = sum("no retry)" in w for _, w in got["hand"])
     lines += [f"  {skipped} refused close(s) not retried: brief and lane tip unchanged since the last land"] * bool(skipped)
     lines += [f"  closed {t}: {c.fit(c.plain(x), 160)}" for t, x in got.pop("lines")]
-    lines += [f"  hand close {t}: {w} (then sampo focus {t}; sampo task finish {t})" for t, w in got["hand"]]
+    lines += _hand_close_lines(got["hand"])  # T-5516: grouped by reason, then the per-lane lines
     lines += [f"  parked {t}: {w}" for t, w in got["parked"]]
     lines += [f"Stopped: {got['stopped']}"] if got["stopped"] else []
     lines += ([wait] if wait else [f"Ship ({got['ship_grant']}'s grant): {c.fit(c.plain(got['ship']), REFUSAL_LINE)}"]
@@ -3997,9 +3997,7 @@ def _audit_rows(args):
     not read and shows the form; a known lens, a non-empty HOW and RESULT, and no value that is one of the command's own
     options are all it takes."""
     from sampo import cli
-    rows = [tuple(x) for x in (getattr(args, "audit", None) or [])]
-    if not rows:
-        raise cli.UsageError(f"sampo lane accept needs {AUDIT_FORM} (one per lens reviewed, three values each)")
+    rows = [tuple(x) for x in (getattr(args, "audit", None) or [])]  # T-5516: none typed is fine: audits on the brief count
     lane = next(a for a in cli.build_parser()._actions if isinstance(a, cli.argparse._SubParsersAction)).choices["lane"]
     flags = set(lane._option_string_actions)
     form = f"{AUDIT_FORM}: a lens ({', '.join(c.AUDIT_LENSES)}), then how it was done, then the result, each one word or quoted"
@@ -4015,14 +4013,51 @@ def _audit_rows(args):
         raise cli.UsageError(f"unknown lens {', '.join(bad)}; {form}")
     more = list(getattr(args, "more", None) or [])
     if more:  # words after the audits that no audit took: a dropped audit's, never a task id (accept takes one lane)
-        raise cli.UsageError(f"could not read {', '.join(repr(w) for w in more)} after the {rows[-1][0]} audit; {form}")
+        raise cli.UsageError(f"could not read {', '.join(repr(w) for w in more)} after the "
+                             f"{rows[-1][0] + ' audit' if rows else 'audit options'}; {form}")
     return rows
 
 
-def _accept_gaps(b, path, main, rows):
+# T-5516: the hand-close reasons with a known clearing command, in the order their groups print. The first text that holds
+# one of them names the group. Any other reason clears the way its per-lane line says: focus, then finish.
+_HAND_REASONS = [
+    ("no audit recorded", 'sampo task audit {t} <lens> "<what you checked>" "<result>"'),
+    ("audits predate the lane tip", 'sampo task audit {t} <lens> "<what you checked>" "<result>"'),
+]
+_HAND_FALLBACK = "sampo focus {t}; sampo task finish {t}"
+
+
+def _hand_close_lines(left):
+    """T-5516: the hand-close leftovers [(id, why)] as one line per reason, `  hand close group (N) REASON: IDS (clear with:
+    COMMAND, once for each id)`, N the lanes it leaves and COMMAND filled for the first id, then the per-lane lines as
+    they were. The known reasons come first in _HAND_REASONS order; any other reason groups by its text with shas and
+    task ids blanked, in first-seen order."""
+    groups = {}  # reason: (command, [ids])
+    for t, w in left:
+        text = " ".join(str(w).split())
+        known = next(((lab, cmd) for lab, cmd in _HAND_REASONS if lab in text), None)
+        label, cmd = known or (re.sub(r"\bT-\d+\b", "<id>", re.sub(r"\b[0-9a-f]{7,40}\b", "<sha>", text)), _HAND_FALLBACK)
+        groups.setdefault(label, (cmd, []))[1].append(t)
+    known_labels = [lab for lab, _ in _HAND_REASONS]
+    order = [lab for lab in known_labels if lab in groups] + [lab for lab in groups if lab not in known_labels]
+    lines = [f"  hand close group ({len(groups[lab][1])}) {lab}: {', '.join(groups[lab][1])} (clear with: "
+             f"{groups[lab][0].format(t=groups[lab][1][0])}, once for each id)" for lab in order]
+    return lines + [f"  hand close {t}: {w} (then sampo focus {t}; sampo task finish {t})" for t, w in left]
+
+
+def _counted_lenses(b, path):
+    """T-5516: the lenses with an audit on the brief recorded against the lane's current tree, whoever recorded it
+    (sampo task audit, a reviewer's report, or accept's own rows). The tree decides, as audit_blockers judges it, not
+    the clock: an audit with no tree, or one against another tree, counts none."""
+    tree = c.worktree_id(path)
+    return {lens for lens, _, t in b.audits() if tree and t == tree} if tree else set()
+
+
+def _accept_gaps(b, path, main, rows, counted=()):
     """T-4487: what the close would refuse for the lane at `path` once these audits (rows) are on its brief: the lens
     groups its tier needs (cli._audit_gaps, the close's own rule), and adversary when the lane's own diff is
-    security-sensitive (the close's _adversary_gaps). Judged against the lane's tree, before anything is recorded."""
+    security-sensitive (the close's _adversary_gaps). Judged against the lane's tree, before anything is recorded.
+    T-5516: a lens in `counted` (an audit on the lane's tree, see _counted_lenses) is given without a row."""
     from sampo import cli
     tree = c.worktree_id(path)
     base = c.task_base(main, b)  # the close reads the same start point: a task with none is judged on its audits alone
@@ -4033,8 +4068,9 @@ def _accept_gaps(b, path, main, rows):
         risky = ["diff unavailable, so its content wasn't checked"]
     else:
         risky = c.sensitive(sorted(set(names.splitlines())), c.task_diff(path, base) or "")
-    gaps = cli._audit_gaps(b, [(lens, how) for lens, how, _ in rows], b.audit_blockers(tree=tree))
-    if risky and not any(lens == "adversary" for lens, _, _ in rows):
+    given = [(lens, how) for lens, how, _ in rows] + [(lens, "") for lens in sorted(counted)]
+    gaps = cli._audit_gaps(b, given, b.audit_blockers(tree=tree))
+    if risky and "adversary" not in {lens for lens, _ in given}:
         gaps += [r + cli._adversary_ask(risky) for r in b.audit_blockers(tree=tree, need=("adversary",))
                  if r.startswith("audit missing: adversary")]
     return gaps
@@ -4278,22 +4314,29 @@ def accept(p, b, main, args):
             f"{b.id} has no passing affected run at its tip that held the repo-shape classes "
             f"({', '.join(c.repo_shape_classes())}): --no-check would queue it without them. Run "
             f"`sampo check --affected --hold --evidence {b.id}` in the lane (or drop --no-check: accept starts that check)")
-    gaps = _accept_gaps(b, path, main, rows)
+    counted = _counted_lenses(b, path)  # T-5516: audits already on the brief for the lane's tree count, typed or not
+    gaps = _accept_gaps(b, path, main, rows, counted)
     if gaps:  # T-4487: refused before anything is recorded or started: the close would refuse the lane for these
-        raise c.PolicyError(f"{b.id} not accepted, nothing recorded: the close would refuse this lane: {'; '.join(gaps)}. "
-                            f"Accept again with the audits it names ({AUDIT_FORM}, one per lens)")
+        msg = (f"{b.id} not accepted, nothing recorded: the close would refuse this lane: {'; '.join(gaps)}. "
+               f"Accept again with the audits it names ({AUDIT_FORM}, one per lens)")
+        if not rows and not counted:  # T-5516: nothing typed and nothing on the brief after the tip: a usage refusal
+            raise cli.UsageError(msg)
+        raise c.PolicyError(msg)
     tree = c.worktree_id(path)
     added = 0
     for lens, how, result in rows:
         _, new = cli.mutate(p, b.id, lambda x, lens=lens, how=how, result=result: _add_audit_once(x, lens, how, result, tree),
                             "audit", {"lens": lens, "how": how[:200], "result": result[:300]})
         added += bool(new)
-    if tip:  # T-5359: the review saw this tip: for a lane whose launcher lives (no builder_returned) that is its return,
-        # so the awaiting test below counts it; accepted_at is still stamped only when the lane really queues (T-4239)
+    if tip and (rows or counted):  # T-5359: the review saw this tip: for a lane whose launcher lives (no builder_returned)
+        # that is its return, so the awaiting test below counts it; accepted_at is still stamped only when the lane really
+        # queues (T-4239). T-5516 item 8: an accept that recorded and counted no audit saw nothing, so it stamps nothing
         cli.mutate(p, b.id, lambda x: x.meta.__setitem__("reviewed_tip", tip), "reviewed", {"tip": tip[:12]})
     b = cli.need_brief(p, b.id)
-    lines = [f"accept {b.id}: {added} audit(s) recorded ({', '.join(sorted({lens for lens, _, _ in rows}))})"
-             + (f", {len(rows) - added} already on the brief" if added < len(rows) else "") + "."]
+    lines = [f"accept {b.id}: {added} audit(s) recorded"
+             + (f" ({', '.join(sorted({lens for lens, _, _ in rows}))})" if rows else "")
+             + (f", {len(rows) - added} already on the brief" if added < len(rows) else "")
+             + (f"; counted from audits after the lane tip: {', '.join(sorted(counted))}" if counted else "") + "."]
     lines += [f"  the close will be refused: {g}" + ("" if g.startswith("no red→green proof") else
                                                      " (add it to the brief's Close fields before the land closes it)")
               for g in _close_gaps(b)]  # T-4209: the proof is recorded in the lane (sampo task prove), not a Close field

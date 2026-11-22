@@ -871,8 +871,8 @@ def cmd_lane(args):
     b = cli.need_brief(p, args.id)
     branch = f"foreman/{b.id}"
     if args.action == "accept":  # T-3922: a reviewed lane's audits, then the lane lands first
-        if not getattr(args, "audit", None):
-            raise cli.UsageError("fm lane accept ID --audit LENS 'how' 'result' (one per lens reviewed)")
+        # T-5516: no --audit is fine when the audits on the brief after the lane tip cover what the close needs
+        # (train.accept refuses, naming the audits, when they don't)
         from sampo import train
         return train.accept(p, b, main, args)
     if args.action == "race":
@@ -2230,8 +2230,9 @@ DEFECT_CLASSES = [
 ]
 
 
-# "## edge", "## lens: edge" or "## edge: ok"; never "## Edge cases" or "## Design notes" (T-1501 review)
-_LENS_HEAD = re.compile(r"(?i)^#+\s*(?:lens:\s*)?(" + "|".join(c.AUDIT_LENSES) + r")\s*(?::.*)?$")
+# "## edge", "## lens: edge", "## edge: ok" or "## lens: adversary — changes needed" (T-5516 item 2: a dash or colon
+# suffix is the heading's own, and its findings are its lens's); never "## Edge cases" or "## Design notes" (T-1501 review)
+_LENS_HEAD = re.compile(r"(?i)^#+\s*(?:lens:\s*)?(" + "|".join(c.AUDIT_LENSES) + r")\s*(?:[:—–-].*)?$")
 _FINDING = re.compile(r"(?i)^(?:[-*]|\d+[.)])\s*(CRITICAL|HIGH|MEDIUM|LOW)\s*[—–-]+\s*(\S+?)\s*[—–-]+\s*(.+)$")
 
 
@@ -2249,6 +2250,62 @@ def reviewer_findings(msg, cap=30):
         if m and len(out) < cap:
             out.append((lens, m.group(1).upper(), m.group(2)[:200], c.redact(m.group(3)).split(" — ")[0][:300]))
     return out
+
+
+_VERDICT = re.compile(r"(?i)^verdict\s*[—–:-]+\s*(.+)$")
+
+
+_VERDICT_APPROVE = ("approve", "approve with nits")  # T-5516: the only verdict words that record audits
+_VERDICT_CHANGES = ("changes needed", "changes-needed")  # the only words that mark the task for the builder
+_LENS_ANY = re.compile(r"(?i)^#+\s*(?:lens:\s*)?(" + "|".join(c.AUDIT_LENSES) + r")\b(.*)$")  # any heading suffix
+_NOT_CLEAN = re.compile(r"(?i)not checked|changes[ -]needed")  # a lens heading that says it is not a pass
+_BLOCKING = ("HIGH", "CRITICAL")  # a finding this severe keeps its lens from being recorded as clean
+
+
+def reviewer_verdict(msg):
+    """T-5516: ('approve' | 'changes', the verdict's words) from a reviewer's '**Verdict** — …' line, or None. Only the
+    exact words 'approve' or 'approve with nits' (case, surrounding space and trailing punctuation aside) approve, and
+    only 'changes needed' asks for changes: 'approve only once the HIGH is fixed' is neither, so it records nothing."""
+    for line in str(msg or "").splitlines():
+        m = _VERDICT.match(line.strip().replace("`", "").replace("**", ""))
+        if not m:
+            continue
+        words = " ".join(re.split(r"[.;:(]", m.group(1), maxsplit=1)[0].lower().split()).strip(" .,;:!?_-")
+        if words in _VERDICT_APPROVE:
+            return "approve", words
+        if words in _VERDICT_CHANGES:
+            return "changes", "changes needed"
+        return None
+    return None
+
+
+def review_tree(p, b):
+    """T-5516: the tree id a review of this task is briefed on (audit prep stamps it) and checked against at its stop: the
+    task's lane when it has one, else this checkout. '' when there is no git tree to name."""
+    lane = b.meta.get("lane") or ""
+    return c.worktree_id(lane if lane and os.path.isdir(lane) else p.root) or ""
+
+
+def reviewer_lenses(msg):
+    """T-5516: {lens: finding count} for each '## lens: X' heading of a reviewer's report that is clean enough to record:
+    a heading that says 'not checked' or 'changes needed', or a lens with a HIGH or CRITICAL finding, is left out for the
+    lead to record by hand. Only headings count (text before the first heading is no lens), so a report with none gives {}."""
+    counts, lens, unclean = {}, None, set()
+    for line in str(msg or "").splitlines():
+        line = line.strip().replace("`", "").replace("**", "")
+        h = _LENS_ANY.match(line)
+        if h:
+            lens = h.group(1).lower()
+            counts.setdefault(lens, 0)
+            if _NOT_CLEAN.search(h.group(2)):
+                unclean.add(lens)
+            continue
+        m = _FINDING.match(line)
+        if lens and m:
+            counts[lens] += 1
+            if m.group(1).upper() in _BLOCKING:
+                unclean.add(lens)
+    return {k: v for k, v in counts.items() if k not in unclean}
 
 
 CLOSE_FIELDS = "Close fields"  # T-3500: the brief section a builder's report lines land in

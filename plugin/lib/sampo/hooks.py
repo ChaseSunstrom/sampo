@@ -7511,6 +7511,103 @@ def _close_refused(pl, who):
         log_error("close fields", _tb())
 
 
+_REVIEW_BRIEF = re.compile(r"audits/(T-\d{4,})\.review(?:-\d+)?\.md")
+
+
+def _prompt_task(path):
+    """T-5516: the task a reviewer was briefed on: the review brief its first user turn names (audits/T-X.review.md).
+    The transcript is read in bounded pieces; a missing or unreadable one names no task."""
+    if not path:
+        return None
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for _ in range(50):  # the prompt is the first user turn, near the top
+                line = f.readline(262144)
+                if not line:
+                    break
+                try:
+                    e = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(e, dict) or e.get("type") != "user":
+                    continue
+                m = e.get("message")
+                content = m.get("content") if isinstance(m, dict) else None
+                if isinstance(content, list):
+                    content = "\n".join(x.get("text") or "" for x in content
+                                        if isinstance(x, dict) and x.get("type") == "text")
+                found = _REVIEW_BRIEF.search(content) if isinstance(content, str) else None
+                return found.group(1) if found else None
+    except OSError:
+        return None
+    return None
+
+
+def _reviewer_task(path, msg, act):
+    """T-5516: the task a reviewer's report is for. Three sources name one: its prompt (the brief it was given), the
+    first task its report names, and the lane's active task. Every one that names a task must name the same one;
+    a disagreement binds nothing and comes back with the reason. Nothing named binds nothing: the focused task is
+    a guess, never the answer. Returns (tid or None, why)."""
+    found = []
+    prompt = _prompt_task(path)
+    if prompt:
+        found.append(("prompt", prompt))
+    named = re.search(r"\bT-\d{4,}\b", msg)
+    if named:
+        found.append(("report", named.group(0)))
+    if act:
+        found.append(("active", act.id))
+    ids = {x for _, x in found}
+    if len(ids) > 1:
+        return None, "; ".join(f"{src} names {x}" for src, x in found)
+    if not (prompt or named):
+        return None, ""
+    return (ids.pop() if ids else None), ""
+
+
+def _reviewer_return(p, tid, pl, msg):
+    """T-5516: a stopped fm-reviewer's report says what its lead would otherwise type. An approve (or approve with nits)
+    records one audit per '## lens:' heading on the task it names (how: the reviewer and its agent id; result: the
+    verdict and the finding count under that lens), once per agent id. 'changes needed' records none and marks the task
+    (meta changes_asked: who; changes_asked_at: when, changes_asked_tree: the tree they were asked on) so sampo next names
+    the relay with its findings. The mark clears only on the same reviewer's approve, or once the tree has moved since the
+    changes were asked (T-5516 item 5: another reviewer's approve on that same tree does not answer them). An approve is
+    recorded only when the lane still has the tree the review was briefed on (item 3); otherwise nothing is recorded and
+    the drop is logged. A report with no verdict line, or no lens heading, changes nothing and the lead records as before."""
+    from sampo import lanes as slanes
+    verdict = slanes.reviewer_verdict(msg)
+    if not tid or not verdict:
+        return
+    kind, words = verdict
+    aid = str(pl.get("agent_id") or "")
+    with c.lock(p.dir, timeout=LOCK_QUICK):
+        b = c.find_brief(p, tid)
+        if b is None:
+            return
+        now = slanes.review_tree(p, b)  # the tree this report is about: the one at its stop
+        if kind == "changes":
+            # flat keys: meta values are text (a dict would round-trip as its repr); the findings are the `finding` events
+            b.meta["changes_asked"] = aid or "fm-reviewer"
+            b.meta["changes_asked_at"] = c.now()
+            b.meta["changes_asked_tree"] = now
+        else:
+            briefed = b.meta.get("review_tree") or ""
+            if not briefed or briefed != now:  # the review judged another tree than the one there is now: nothing counts
+                c.log_event(p, "reviewer_unbound", task=tid, session=pl.get("session_id"),
+                            data={"agent_id": aid, "why": "no tree was briefed" if not briefed
+                                  else f"the lane moved since the brief ({briefed[:12]} now {now[:12]})"})
+                return
+            if b.meta.get("changes_asked") == (aid or "fm-reviewer") or b.meta.get("changes_asked_tree", "") != now:
+                # the same reviewer's approve, or a tree the changes were not asked on: its mark is answered
+                for key in ("changes_asked", "changes_asked_at", "changes_asked_tree"):
+                    b.meta.pop(key, None)
+            from sampo import train  # its audit row rule: the same row, once, as a typed `lane accept --audit`
+            who = f"{pl.get('agent_type')} {aid}".strip()
+            for lens, n in slanes.reviewer_lenses(msg).items():
+                train._add_audit_once(b, lens, who, f"{words}, {n} finding{'' if n == 1 else 's'}", briefed)
+        c.save_brief(p, b)
+
+
 def subagent_stop(pl):
     _event({"kind": "subagent_stop", "session_id": pl.get("session_id"), "agent_id": pl.get("agent_id"),
             "agent_type": pl.get("agent_type")})
@@ -7536,11 +7633,18 @@ def subagent_stop(pl):
         if re.search(r"(?:^|:)fm-reviewer$", str(pl["agent_type"])):  # T-1181: its findings, without a typed fm task finding
             from sampo import lanes as slanes
             msg = pl.get("last_assistant_message") or ""
-            named = re.search(r"\bT-\d{4,}\b", msg)
-            tid = act.id if act else named.group(0) if named else None
-            for lens, sev, file, text in slanes.reviewer_findings(msg):
-                c.log_event(p, "finding", task=tid, session=pl.get("session_id"),
-                            data={"lens": lens, "severity": sev, "file": file, "text": text, "verdict": "reported"})
+            tid, why = _reviewer_task(pl.get("agent_transcript_path"), msg, act)
+            if why:  # T-5516: the prompt, the report and the active task disagree: nothing is recorded, and why is
+                c.log_event(p, "reviewer_unbound", task=None, session=pl.get("session_id"),
+                            data={"agent_id": pl.get("agent_id"), "why": why})
+            else:
+                for lens, sev, file, text in slanes.reviewer_findings(msg):
+                    c.log_event(p, "finding", task=tid, session=pl.get("session_id"),
+                                data={"lens": lens, "severity": sev, "file": file, "text": text, "verdict": "reported"})
+                try:  # T-5516: its verdict's audits, or its changes-needed mark (bookkeeping: never the subagent's event)
+                    _reviewer_return(p, tid, pl, msg)
+                except Exception:
+                    log_error("SubagentStop", _tb())
         chars = len((pl.get("last_assistant_message") or "").strip())
         if re.search(r"(?:^|:)fm-(?:builder|reviewer)$", str(pl["agent_type"])) and chars < HOLLOW_CHARS:
             # T-0963: async, so it can't block; fm next names it so the main thread reads the transcript first

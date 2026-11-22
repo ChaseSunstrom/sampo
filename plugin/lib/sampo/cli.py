@@ -827,6 +827,8 @@ def cmd_task(args):
     if sub == "dissent":  # T-0642
         from sampo import second
         return second.task_dissent(p, args)
+    if sub == "plan":  # T-5516: many tasks' plans from one file
+        return plan_file(p, args)
     if sub == "follow":  # T-4743: the follow-ups captured on a task
         from sampo import triggers
         return triggers.task_follow(p, args)
@@ -4641,6 +4643,115 @@ def task_new(p, args):
             cmd_focus(argparse.Namespace(id=b.id, project=getattr(args, "project", None), json=False))
             if warns:  # T-3813: still the last line after focus's own
                 print(f"{b.id}: verify{_warned(warns)}")
+
+
+def _plan_field(text):
+    """T-5516 item 7: one plan field as text a brief can hold: its newlines collapsed (a field can't start a section or an
+    audit row of its own), a leading '#' escaped (text, never a heading), redacted, and the marks fm appends taken out."""
+    one = " ".join(str(text).splitlines()).strip()
+    if one.startswith("#"):
+        one = "\\" + one
+    return c._unmarked(c.redact(one))
+
+
+def _plan_into(x, e, crit, steps):
+    """T-5516 item 6: one entry's plan written into the brief as it is now (judged here, under the batch's lock): a task
+    that started or was planned since the file was checked is refused, as is a re-plan without "replan"."""
+    if not (x.status == "captured" or (x.status == "planned" and not x.meta.get("base"))):  # as task new --from
+        raise c.PolicyError(f"{x.id} is {x.status}, not captured or planned and never started: nothing written")
+    if crit and x.acceptance() and not e.get("replan"):
+        raise c.PolicyError(f"{x.id} is already planned with criteria; set \"replan\": true to re-plan it")
+    if x.status == "captured":
+        x.meta["status"] = "planned"
+    for name, key in (("Interpretation", "interpretation"), ("Approach", "approach")):
+        if e.get(key):
+            x.set_section(name, _plan_field(e[key]))
+    if crit:
+        x.set_section("Acceptance criteria", "")
+        for text in crit:  # "criterion :: verify command" (T-0042)
+            x.add_ac(*c.split_verify(_plan_field(text)))
+    if steps:
+        x.set_section("Steps", "")
+        for text in steps:
+            x.add_step(_plan_field(text))
+
+
+def plan_file(p, args):
+    """T-5516: `fm task plan --file PLANS.json`: the Interpretation, Approach, criteria and steps of several planned tasks
+    in one call. Each entry is read and judged before anything is written, and one bad entry refuses the whole file, naming
+    each problem. A task that already has criteria needs "replan": true (the rule `task new --from` keeps). One task may
+    appear once. The batch is one locked write, all or nothing: each plan is judged again on its brief under that lock,
+    and a write that fails part way puts back the briefs already written."""
+    path = args.file
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except OSError as e:
+        raise UsageError(f"no plan file {path}: {e.strerror or e}")
+    except ValueError as e:
+        raise UsageError(f"{path} is not JSON: {e}")
+    entries = data.get("plans") if isinstance(data, dict) else data
+    if not isinstance(entries, list) or not entries:
+        raise UsageError(f"{path} takes a list of plans, one per task (or {{\"plans\": [...]}})")
+    todo, problems, seen = [], [], set()
+    for i, e in enumerate(entries, 1):
+        if not isinstance(e, dict) or not str(e.get("id") or "").strip():
+            problems.append(f"entry {i} has no id")
+            continue
+        tid = str(e["id"]).strip().upper()
+        if tid in seen:  # T-5516 item 6: one plan per task, so the second would overwrite the first
+            problems.append(f"{tid} is in the file twice: one plan per task")
+            continue
+        seen.add(tid)
+        b = c.find_brief(p, tid)
+        if b is None:
+            problems.append(f"{tid}: no such task")
+            continue
+        if b.status != "captured" and not (b.status == "planned" and not b.meta.get("base")):  # as task new --from
+            problems.append(f"{b.id} is {b.status}, not captured or planned and never started")
+            continue
+        crit, steps = e.get("criteria") or [], e.get("steps") or []
+        if not (isinstance(crit, list) and isinstance(steps, list) and all(isinstance(x, str) for x in crit + steps)
+                and all(isinstance(e.get(k, ""), str) for k in ("interpretation", "approach"))):
+            problems.append(f"{b.id}: interpretation, approach, criteria and steps are text (criteria and steps are lists)")
+            continue
+        if crit and b.acceptance() and not e.get("replan"):
+            problems.append(f"{b.id} is already planned with criteria; set \"replan\": true to re-plan it")
+            continue
+        todo.append((b.id, e, crit, steps))
+    if problems:
+        raise UsageError("nothing written: " + "; ".join(problems))
+    verifies = [v for _, _, crit, _ in todo for t in crit for _, v in [c.split_verify(t)] if v]
+    _refuse_unrunnable(p, verifies)
+    lines, rows = [], []
+    with c.lock(p.dir):  # T-5516 item 6: one lock for the batch; each plan is judged on its brief as it is under this lock
+        planned, before = [], []
+        for tid, e, crit, steps in todo:
+            before.append(c.find_brief(p, tid))  # the brief as it is now: what a rollback writes back
+            x = need_brief(p, tid)
+            _plan_into(x, e, crit, steps)  # raises before anything is saved: one refusal writes nothing
+            planned.append(x)
+        tried = 0
+        try:
+            for x in planned:
+                tried += 1  # counted before the write: a write that fails part way may have left its brief half-written
+                c.save_brief(p, x)
+        except Exception:  # a write failed part way: every brief tried goes back to what it was, its own mark untouched
+            for old in before[:tried]:
+                c.save_brief(p, old, touch=False)
+            raise
+        for x, old, (_, _, crit, steps) in zip(planned, before, todo):
+            c.log_event(p, "task_plan", task=x.id, data={"ac": len(crit), "step": len(steps), "file": True},
+                        session=session())
+            if c.stage(x) != c.stage(old):  # as mutate logs it: the pane splits read these
+                c.log_event(p, "stage", task=x.id, data={"from": c.stage(old), "to": c.stage(x)}, session=session())
+        c.export_mirror(p)
+    c.regen_views(p, mirror=False)  # every brief re-read: never while hooks queue on the project lock
+    for x, (_, _, crit, steps) in zip(planned, todo):
+        rows.append({"id": x.id, "criteria": len(crit), "steps": len(steps)})
+        lines.append(f"{x.id}: planned ({len(crit)} criteria, {len(steps)} steps)")
+    warns = _lint_verify(p, verifies)
+    return out(args, {"plans": rows}, "\n".join(lines) + _warned(warns))
 
 
 def _section_pairs(args):
@@ -8517,6 +8628,10 @@ def cmd_audit(args):
     if not briefs:
         briefs.append(os.path.join(p.dir, "audits", f"{b.id}.review.md"))
         c.write_atomic(briefs[0], "\n\n".join(blocks) + f"\n\nDiff: {path}\n" + lists)
+    with c.lock(p.dir):  # T-5516: the tree these reviews are briefed on; a reviewer's stop records only while it still is
+        fresh = need_brief(p, b.id)
+        fresh.meta["review_tree"] = lanes.review_tree(p, fresh)
+        c.save_brief(p, fresh)
     brief = briefs[0]
     big = b.tier == "L" and len(groups) == 1 and r.stdout.count("\n") > SPLIT_SUGGEST
     how = (f"Run {len(briefs)} sampo:fm-reviewer subagents in parallel, one per brief, each with the prompt \"Read "
@@ -8566,6 +8681,22 @@ def _sync_in(args):
         print("sampo: .sampo changes were not imported: " + c.PRIVATE_UNREADABLE, file=sys.stderr)
     except (UsageError, OSError, ValueError, c.LockTimeout):
         pass
+
+
+def _changes_relay(p, b):
+    """T-5516 item 5: the relay a reviewer's 'changes needed' opened on this task: who asked, and its findings (the
+    `finding` events for the task since the mark) inline, so the builder acts on them without another command."""
+    since = str(b.meta.get("changes_asked_at") or "")[:19]
+    head = f"relay: {b.meta.get('changes_asked')} asked for changes on {b.id} ({since[:16]})"
+    texts = []
+    for e in c.ledger_events(p, kinds=["finding"]):
+        if e.get("task") == b.id and str(e.get("ts") or "")[:19] >= since:
+            d = e.get("data") or {}
+            texts.append(c.fit(" ".join(str(d[k]) for k in ("severity", "file", "text") if d.get(k)), 120))
+    if not texts:
+        return head + ": no finding text on record"
+    shown, left = c.more(texts, 3)
+    return head + ": " + "; ".join(shown + ([left] if left else []))
 
 
 def cmd_next(args):
@@ -8618,6 +8749,8 @@ def cmd_next(args):
                  f"transcript ({d.get('transcript') or 'no path'}) before trusting or merging its work")
     if b and b.status == "active" and b.meta.get("base_note"):  # T-2497: kept at focus, never recomputed per turn
         over += f" · {b.meta['base_note']}"
+    for asked in [x for x in briefs if x.meta.get("changes_asked") and x.status == "active"][:2]:  # T-5516 item 5
+        over += f" · {_changes_relay(p, asked)}"
     if b and b.status == "active":  # T-0631: beliefs still open, each with what would kill it
         beliefs = [f"A{n} {t.split(' — kill: ')[0]} (dead if {t.split(' — kill: ')[1]})"
                    for n, tag, _, t in b.assumptions() if tag in (None, "assumed") and " — kill: " in t]
@@ -9201,7 +9334,8 @@ def _build_parser(only=None):
 
     task_help = {  # T-1908: fm task -h, fm help and fm which read these
         "dissent": "add or resolve an objection raised against the plan",
-        "split": "partition the task's files over the work graph into child tasks",
+        "plan": "write the Interpretation, Approach, criteria and steps of many planned tasks from one JSON file (--file)",
+        "split":"partition the task's files over the work graph into child tasks",
         "capsule": "a split child's bounded return to its parent",
         "follow": "list, settle (done, capture or drop with a why) the follow-ups captured on a task", "finding": "record one reviewer finding and if it held",
         "revert": "what undoing the task would touch, and the command that undoes it",
@@ -9225,7 +9359,11 @@ def _build_parser(only=None):
 
     t = tadd("dissent")  # T-0642
     t.add_argument("id")
-    t.add_argument("words", nargs="*", help="add \"<objection>\" | resolve N \"<how it was answered>\"")
+    t.add_argument("words", nargs="*", help="add \"<objection>\" | resolve N[,N...] \"<how it was answered>\"")
+    t = tadd("plan")  # T-5516: a list of plans in one call
+    t.add_argument("--file", required=True, metavar="PLANS.json",
+                   help="a list of {\"id\", \"interpretation\", \"approach\", \"criteria\": [\"criterion :: verify\"], "
+                        "\"steps\": [...], \"replan\"} (or {\"plans\": [...]}); one bad entry writes nothing")
     t = tadd("split")  # T-0709
     t.add_argument("id")
     t.add_argument("--parts", type=int, help="how many children (default: about 4 files each, 2–4)")
