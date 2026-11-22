@@ -7,6 +7,7 @@ The train's check_run carries the code tree (core.code_tree: no CHANGELOG.md, no
 each close reuses the pass while the code is unchanged. T-3544: the full-suite gate runs only the tests the batch's
 changes reach (_affected_gate); the full suite then runs on the landed merges in the background (lanes.pm_run)."""
 import ast
+import collections
 import concurrent.futures
 import contextlib
 import fcntl
@@ -727,12 +728,13 @@ def _union_tests(wt, files):
     return sorted(done)
 
 
-def _merge_in(wt, b, tip, log, kept=None):
+def _merge_in(wt, b, tip, log, kept=None, moved=None):
     """Merge `tip` into the scratch tree; a conflict is aborted and logged (id, files). The new head sha or None.
     T-4375: a conflict only in docs/map/*.md entries is resolved keeping both sides' lines, the files recorded in
     `kept` (lane id: files) for the train to say and follow up. T-5824: a conflict only in plugin/tests/*.py files where
     every hunk is a pure insertion (both sides only added lines at that spot) keeps ours then theirs, the files recorded
-    in `kept` under the lane id + TESTS_KEY; the train's gate judges the result as it does any merge."""
+    in `kept` under the lane id + TESTS_KEY; the train's gate judges the result as it does any merge. T-5381: map entries
+    moved to keep a file under its cap are recorded in `moved` (lane id: [str])."""
     ident = ("-c", "user.name=sampo", "-c", "user.email=sampo@localhost")
     msg = f"Merge {b.id}: {b.title}"
     if kept is not None:
@@ -741,27 +743,162 @@ def _merge_in(wt, b, tip, log, kept=None):
     before = _git(wt, "rev-parse", "HEAD").stdout.strip()
     r = _git(wt, *ident, "merge", "--no-ff", "-m", msg, tip)
     if not r.returncode:
-        return _over_cap(wt, b, before, log)
+        return _over_cap(wt, b, before, log, moved)
     files = [f for f in _git(wt, "diff", "--name-only", "--diff-filter=U", "-z").stdout.split("\0") if f]
     doubled = _union_map(wt, files) if kept is not None and _map_only(files) else None
     unioned = _union_tests(wt, files) if kept is not None and doubled is None and _tests_only(files) else None
     if unioned is not None and not _git(wt, *ident, "commit", "-m", msg).returncode:
         kept[b.id + TESTS_KEY] = unioned
-        return _over_cap(wt, b, before, log)
+        return _over_cap(wt, b, before, log, moved)
     if doubled is not None and not _git(wt, *ident, "commit", "-m", msg).returncode:
         if doubled:  # T-5472: only a line kept twice needs a read; a clean key-aware merge needs none
             kept[b.id] = sorted(doubled)
-        return _over_cap(wt, b, before, log)
+        return _over_cap(wt, b, before, log, moved)
     _git(wt, "merge", "--abort")
     log.append((b.id, "conflicts with an earlier lane in the train" + (f": {c.joinmore(files, 8)}" if files else "")))
     return None
 
 
-def _over_cap(wt, b, before, log):
-    """T-4980: the merge's head sha, or None with the merge undone and the lane left out when it took MASTER.md or a
-    docs/map file over the cap a Read opens whole (MAP_FILE_BYTES), alone or with the lanes merged before it: a gate
-    and its bisection found that in about 40 minutes (2026-11-15, twice). A file already over it before the merge is
-    the base's, so no lane is blamed for it."""
+_LIB_SHARD = re.compile(r"docs/map/(files-lib-(\d+))\.md")  # T-5381: the shards of independent module bullets
+_BULLET_KEY = re.compile(r"- `([^`\n]+)`")
+_INDEX_LINE = re.compile(r"(- `[^`\n]+`)\s.*?(\s?\[→ [^\]\n]+\]\(docs/map/[^)\n]+\))$")  # name, the words, the link
+
+
+def _bullet_blocks(lines):
+    """T-5381: [(key or None, first, end)] for each bullet of a shard: a `- ` line and the indented lines after it."""
+    out, i = [], 0
+    while i < len(lines):
+        if not lines[i].startswith("- "):
+            i += 1
+            continue
+        j = i + 1
+        while j < len(lines) and lines[j].strip() and lines[j][0] in " \t":
+            j += 1
+        m = _BULLET_KEY.match(lines[i])
+        out.append((m.group(1) if m else None, i, j))
+        i = j
+    return out
+
+
+def _pure_additions(before, now):
+    """T-5381: [(key, lines of the whole bullet)] a shard `now` added over `before`, or None unless that is all it did:
+    each new bullet has a key `before` lacks and `now` minus those bullets is `before` word for word (an edit of an
+    existing bullet, a changed header or a line anywhere else is no pure addition)."""
+    was, here = before.split("\n"), now.split("\n")
+    known = {k for k, _, _ in _bullet_blocks(was)}
+    added = [(k, i, j) for k, i, j in _bullet_blocks(here) if k is not None and k not in known]
+    if not added or len({k for k, _, _ in added}) != len(added):
+        return None
+    gone = {n for _, i, j in added for n in range(i, j)}
+    if [ln for n, ln in enumerate(here) if n not in gone] != was or any("```" in here[n] for n in gone):
+        return None
+    return [(k, here[i:j]) for k, i, j in added]
+
+
+def _new_shard(source, moves, cap):
+    """T-5381: (name, text) of a new files-lib shard that holds `moves` and has the shape of `source`'s header, or None
+    when they do not fit one Read."""
+    n = max(int(m.group(2)) for f in source["all"] if (m := _LIB_SHARD.fullmatch(f))) + 1
+    name = f"docs/map/files-lib-{n}.md"
+    keys = sorted(k for k, _ in moves)
+    body = "\n".join(ln for _, lines in moves for ln in lines)
+    stem = _LIB_SHARD.fullmatch(source["name"]).group(1)
+    text = (f"{source['title']}\n\n"
+            f"Full entries for [MASTER.md](../../MASTER.md) section 3 (File map), split out of [{stem}]({stem}.md) when a "
+            f"train's lanes together took it over its {cap}-byte cap (T-5381): {len(keys)} module(s), {keys[0]} to "
+            f"{keys[-1]}.\n\n### plugin/lib modules, {keys[0]} to {keys[-1]}\n\n<details>\n"
+            f"<summary>every module, one line each</summary>\n\n{body}\n\n</details>\n")
+    return (name, text) if len(text.encode("utf-8", "surrogateescape")) <= cap else None
+
+
+def _append_bullets(text, moves):
+    """T-5381: `text` (a files-lib shard) with the bullets `moves` after its last bullet, or None when it has none."""
+    lines = text.split("\n")
+    blocks = _bullet_blocks(lines)
+    if not blocks:
+        return None
+    end = blocks[-1][2]
+    return "\n".join(lines[:end] + [ln for _, bl in moves for ln in bl] + lines[end:])
+
+
+def _repoint(master, key, old, new):
+    """T-5381: `master` with the one index line of `key` that links `old` (a shard's stem) linking `new`, or None when
+    there is not exactly one such line."""
+    lines = master.split("\n")
+    hits = [n for n, ln in enumerate(lines) if ln.startswith(f"- `{key}`") and ln.endswith(f"](docs/map/{old}.md)")
+            and "[→ " in ln]
+    if len(hits) != 1:
+        return None
+    ln = lines[hits[0]]
+    lines[hits[0]] = f"{ln[:ln.rfind('[→ ')]}[→ {new}](docs/map/{new}.md)"
+    return "\n".join(lines)
+
+
+def _make_room(over, before, now, cap):
+    """T-5381: (the map files to write {path: text}, what moved [str]) that bring the files in `over` (paths this merge
+    took over `cap`) back under it, or None when that needs more than moving the lane's own pure additions: a files-lib
+    shard's new whole bullets go to the files-lib shard with the most room (or a new one) and their MASTER.md index lines
+    follow; MASTER.md over its cap has the lane's new index lines cut to the name and the link, the longest saving first,
+    only as many as it takes. `before` {path: text} holds each file in `over` as the merge's base had it; `now` {path:
+    text} MASTER.md and every shard as they are. Pure: it reads no file and runs no git."""
+    files, notes = dict(now), []
+    size = lambda t: len(t.encode("utf-8", "surrogateescape"))  # noqa: E731
+    for f in sorted(over):
+        if f == "MASTER.md":
+            continue
+        m = _LIB_SHARD.fullmatch(f)
+        moves = _pure_additions(before[f], now[f]) if m else None
+        if not moves or "MASTER.md" not in files:
+            return None
+        master = files["MASTER.md"]
+        need = size("".join(ln + "\n" for _, bl in moves for ln in bl))
+        room = {p: cap - size(t) for p, t in files.items() if p != f and _LIB_SHARD.fullmatch(p)}
+        target = max((p for p, r in room.items() if r >= need), key=lambda p: room[p], default=None)
+        made = None
+        if target:
+            added = _append_bullets(files[target], moves)
+        else:
+            title = now[f].split("\n", 1)[0]
+            made = _new_shard({"name": f, "title": title, "all": list(files)}, moves, cap)
+            target, added = made if made else (None, None)
+        if not target or added is None:
+            return None
+        stem, there = _LIB_SHARD.fullmatch(f).group(1), _LIB_SHARD.fullmatch(target).group(1)
+        for k, _ in moves:
+            master = _repoint(master, k, stem, there)
+            if master is None:
+                return None
+        files["MASTER.md"], files[target], files[f] = master, added, before[f]
+        keys = [k for k, _ in moves]
+        notes.append(f"{len(keys)} new map entr{'y' if len(keys) == 1 else 'ies'} ({c.joinmore(keys, 4)}) moved from {f} to "
+                     f"{target}{' (a new shard)' if made else ''}, their MASTER.md index links repointed")
+    if "MASTER.md" in over:
+        master, mine = files["MASTER.md"], before["MASTER.md"].split("\n")
+        extra = collections.Counter(mine)
+        lines, cuts = master.split("\n"), []
+        for n, ln in enumerate(lines):
+            if extra[ln] > 0:
+                extra[ln] -= 1
+                continue
+            if (m := _INDEX_LINE.fullmatch(ln)) and m.group(1) + " " + m.group(2).strip() != ln:
+                cuts.append((len(ln) - len(m.group(1) + " " + m.group(2).strip()), n, m.group(1) + " " + m.group(2).strip()))
+        total, shortened = size(master), []
+        for gain, n, short in sorted(cuts, reverse=True):
+            if total <= cap:
+                break
+            lines[n], total = short, total - gain
+            shortened.append(n)
+        if total > cap:
+            return None
+        files["MASTER.md"] = "\n".join(lines)
+        notes.append(f"{len(shortened)} new MASTER.md index line(s) cut to the name and the link")
+    return {p: t for p, t in files.items() if t != now.get(p)}, notes
+
+
+def _over_files(wt, before):
+    """T-4980: [(path, size)] of MASTER.md and docs/map files the merge in `wt` took over the cap a Read opens whole
+    (MAP_FILE_BYTES), alone or with the lanes merged before it. A file already over it before the merge is the base's, so
+    no lane is blamed for it."""
     over = []
     for f in _git(wt, "diff", "--name-only", "-z", before, "HEAD").stdout.split("\0"):
         if f != "MASTER.md" and not (f.startswith("docs/map/") and f.endswith(".md")):
@@ -772,12 +909,104 @@ def _over_cap(wt, b, before, log):
             continue
         was = _git(wt, "cat-file", "-s", f"{before}:{f}").stdout.strip()
         if size > c.MAP_FILE_BYTES and not (was.isdigit() and int(was) > c.MAP_FILE_BYTES):
-            over.append(f"{f} ({size} bytes)")
+            over.append((f, size))
+    return over
+
+
+def _map_path(wt, f):
+    """T-5381: the path of the map file `f` in `wt`, or OSError when it is not a plain file the lane's own tree holds:
+    a symlink (a lane commits one to a file outside the scratch tree, and a write through it lands as the user), a
+    directory or device, or a path whose parents resolve anywhere but under `wt` (docs/map itself a link). A file that
+    does not exist yet is fine: it is a new shard."""
+    root = os.path.realpath(wt)
+    path = os.path.join(root, f)
+    if os.path.realpath(os.path.dirname(path)) != os.path.dirname(path):
+        raise OSError(f"{f}: a parent directory is a link or leaves the tree")
+    if os.path.lexists(path) and (os.path.islink(path) or not os.path.isfile(path)):
+        raise OSError(f"{f}: not a regular file")
+    return path
+
+
+def _read_map(wt, paths):
+    """T-5381: {path: text} of the files `paths` in `wt` (none for one that does not exist), as bytes kept apart from the
+    platform's newline and encoding. OSError for a link or a file that is not a plain one (_map_path)."""
+    out = {}
+    for f in paths:
+        path = _map_path(wt, f)
+        if not os.path.lexists(path):
+            continue
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, "rb") as fh:
+            out[f] = fh.read().decode("utf-8", "surrogateescape")
+    return out
+
+
+def _write_map(wt, f, text):
+    """T-5381: write `text` to the map file `f` in `wt` without following a link: _map_path first, then O_NOFOLLOW so a
+    link made between the check and the open fails too (OSError)."""
+    path = _map_path(wt, f)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644)
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(text.encode("utf-8", "surrogateescape"))
+
+
+def _relieve(wt, b, before, over, moved):
+    """T-5381: True when the merge in `wt` was amended to fit the cap (_make_room), the notes in `moved` {lane id:
+    [str]}; False with the tree reset to the merge as it was when that cannot be done. Anything that goes wrong
+    (a file that can't be read or written, git refusing) is False: the caller leaves the lane out as before."""
+    ident = ("-c", "user.name=sampo", "-c", "user.email=sampo@localhost")
+    merged = _git(wt, "rev-parse", "HEAD").stdout.strip()
+    try:
+        names = ["MASTER.md"] + [os.path.relpath(p, wt).replace(os.sep, "/") for p in c.map_shards(wt)]
+        now = _read_map(wt, names)
+        old = {}
+        for f in over:
+            r = subprocess.run(["git", "-C", wt, "show", f"{before}:{f}"], capture_output=True, timeout=60)
+            if r.returncode:
+                return False
+            old[f] = r.stdout.decode("utf-8", "surrogateescape")
+        got = _make_room(over, old, now, c.MAP_FILE_BYTES)
+        if got is None:
+            return False
+        for f in got[0]:  # every target checked before the first write: a link anywhere is a refusal, not a half move
+            _map_path(wt, f)
+        for f, text in got[0].items():
+            _write_map(wt, f, text)
+        if _git(wt, "add", "--", *got[0]).returncode or _git(wt, *ident, "commit", "-q", "--amend", "--no-edit").returncode:
+            raise OSError("git refused the amend")
+        if moved is not None:
+            moved[b.id] = got[1]
+        return True
+    except (OSError, KeyError, ValueError, subprocess.SubprocessError):
+        _git(wt, "reset", "-q", "--hard", merged)
+        _git(wt, "clean", "-fdq", "--", "docs/map")
+        return False
+
+
+def _over_cap(wt, b, before, log, moved=None):
+    """T-4980: the merge's head sha, or None with the merge undone and the lane left out when it took MASTER.md or a
+    docs/map file over the cap a Read opens whole (MAP_FILE_BYTES), alone or with the lanes merged before it: a gate
+    and its bisection found that in about 40 minutes (2026-11-15, twice). A file already over it before the merge is
+    the base's, so no lane is blamed for it.
+    T-5381: before it is left out, the merge is amended to fit when the lane only added (_make_room: a files-lib shard's
+    new whole bullets move to a shard with room and their index links follow; MASTER.md's new index lines are cut to the
+    short form): ~119 waiting lanes each fit alone and together took files-lib-4 from 76 to 119 KB. What moved goes in
+    `moved` {lane id: [str]} for the train's report."""
+    if moved is not None:
+        moved.pop(b.id, None)
+    over = _over_files(wt, before)
+    if over and _relieve(wt, b, before, [f for f, _ in over], moved):
+        over = _over_files(wt, before)
+        if over and moved is not None:
+            moved.pop(b.id, None)
     if not over:
         return _git(wt, "rev-parse", "HEAD").stdout.strip()
     _git(wt, "reset", "-q", "--hard", before)
-    log.append((b.id, f"takes {c.joinmore(over, 4)} over its {c.MAP_FILE_BYTES}-byte cap with the lanes merged before "
-                      "it: move its map line to a docs/map file with room (sampo selfcheck names them)"))
+    _git(wt, "clean", "-fdq", "--", "docs/map")
+    log.append((b.id, f"takes {c.joinmore([f'{f} ({n} bytes)' for f, n in over], 4)} over its {c.MAP_FILE_BYTES}-byte cap "
+                      "with the lanes merged before it: move its map line to a docs/map file with room (sampo selfcheck "
+                      "names them)"))
     return None
 
 
@@ -1621,6 +1850,7 @@ def _run(p, main, ids, defer_verify=False, judged=None):
     pre_tree = c.worktree_tree(main)
     left, notes = [], []  # notes: (id, what a probe saw that still let the lane on)
     kept_maps = {}  # T-4375: lane id: the docs/map files its merge resolved keeping both sides' lines
+    moved_maps = {}  # T-5381: lane id: the map entries its merge moved to keep a map file under its cap
     cands, rows = [], []  # (brief, tip) in order; (brief, tip, why so far) in order
     from sampo import lanes, release
     try:  # T-4804: unreadable is not unset: the merge scan refuses each lane on it (held, nothing pushed); this only says so
@@ -1823,11 +2053,11 @@ def _run(p, main, ids, defer_verify=False, judged=None):
         for b, tip in lanes:
             n = len(left)
             ensure_wt()
-            sha = _merge_in(wt, b, tip, left, kept_maps)
+            sha = _merge_in(wt, b, tip, left, kept_maps, moved_maps)
             if not sha and wt_gone():  # T-4728: the tree went under the merge: that is no conflict, and no lane is left out for it
                 del left[n:]
                 ensure_wt()  # a second loss stops the train here
-                sha = _merge_in(wt, b, tip, left, kept_maps)
+                sha = _merge_in(wt, b, tip, left, kept_maps, moved_maps)
                 if not sha and wt_gone():
                     ensure_wt()
             if sha:
@@ -1937,10 +2167,13 @@ def _run(p, main, ids, defer_verify=False, judged=None):
                 continue
             for o in (x.id for x, _ in merged if x.id != i and _mod(k) in {_stem(f) for f in covers(x.id)}):
                 n, was, kept = len(left), here(), {m: list(fs) for m, fs in kept_maps.items()}
+                moves = {m: list(fs) for m, fs in moved_maps.items()}
                 got = build(base, [(x, tips[x.id]) for x, _ in merged if x.id == o])
                 del left[n:]
                 kept_maps.clear()  # build's merge pops and re-adds the lane's entry: put the train's own back
                 kept_maps.update(kept)
+                moved_maps.clear()
+                moved_maps.update(moves)
                 row = probe(got[0][1], g, [k]) if got else None
                 reset(was)
                 if row and row["exit"] and any(_same(f, k) for f in row.get("failing") or ()):
@@ -2270,6 +2503,7 @@ def _run(p, main, ids, defer_verify=False, judged=None):
                 "confirm": round(confirm_s[0] / 60, 1), "land": round((t3 - t2) / 60, 1)}  # T-4676: gate + confirm = the gates
         return {"merged": ids_in, "left_out": left, "notes": notes, "kept": kept, "map_merged": maps,
                 "test_merged": unions, "map_follow_up": map_task, "gate_runs": runs[0], "verify_owed": bool(part and defer_verify),
+                "map_moved": [(i, "; ".join(moved_maps[i])) for i in ids_in if moved_maps.get(i)],  # T-5381
                 "probes": probes[0], "tip": tip, "branch": branch, "affected": part, "minutes": mins, "probes_skipped": sum(
                     w.startswith(SKIPPED) for _, w in notes), "lanes_probed": len(rows)}
     finally:
@@ -2372,6 +2606,11 @@ def cmd(p, args, main, close=False):
         start_verify(p, main, owed)
 
 
+def _move_lines(got):
+    """T-5381: the report's line for each landed lane whose map entries the train moved to keep a map file under its cap."""
+    return [f"  moved {i}: {what}" for i, what in got.get("map_moved") or []]
+
+
 def _cmd_report(p, args, main, close, got, owed):
     from sampo import cli
     lines = [f"Train: {len(got['merged'])} lane(s) landed on {got['branch']} ({got['tip'][:9]}) in "
@@ -2382,6 +2621,7 @@ def _cmd_report(p, args, main, close, got, owed):
               for i, fs in got.get("map_merged") or []]  # T-4375
     lines += [f"  merged {i} keeping both sides' added lines in {', '.join(fs)} (both only added lines at one spot)"
               for i, fs in got.get("test_merged") or []]  # T-5824
+    lines += _move_lines(got)
     if got.get("map_follow_up"):
         lines.append(f"  follow-up {got['map_follow_up']}: read the merged map entries (a line both sides rewrote is "
                      "kept twice)")

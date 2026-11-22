@@ -871,6 +871,45 @@ class Train(TrainCase):
         self.assertNotIn("B" * 200, self.read(self.MAP))
         self.assertEqual(self.gate_runs(), 1, "one gate run, on the lanes that fit; no bisection")
 
+    def test_two_lanes_that_each_add_a_module_bullet_to_a_full_shard_both_land_the_second_one_moved(self):
+        """T-5381: the 2026-11-19 case in small: each lane fits alone, together they take files-lib-1 over its cap; the
+        second lane's new bullet moves to files-lib-2 with its MASTER.md index link, the lane lands, the report says so."""
+        head = ("# Sampo map: File map, plugin/lib modules\n\nIntro.\n\n### plugin/lib modules, a to z\n\n<details>\n"
+                "<summary>every module, one line each</summary>\n\n")
+        foot = "\n</details>\n"
+
+        def shard(*bullets):
+            return head + "".join(bullets) + foot
+
+        def master(*names):
+            return "# M\n\n" + "".join(f"- `{n}` (words…) [→ files-lib-{s}](docs/map/files-lib-{s}.md)\n" for n, s in names)
+
+        old = [("fmold", 1), ("fmother", 2)]
+        fill = c.MAP_FILE_BYTES - 300 - len(shard("- `fmold` (\n", ")\n"))
+        self.map_base("docs/map/files-lib-1.md", shard(f"- `fmold` ({'x' * fill})\n"))
+        self.map_base("docs/map/files-lib-2.md", shard("- `fmother` (y)\n"))
+        self.map_base("MASTER.md", master(*old))
+
+        def add(n, name, size):
+            tid = self.lane(n, "docs/map/files-lib-1.md", shard(f"- `fmold` ({'x' * fill})\n", f"- `{name}` ({'z' * size})\n"))
+            path = os.path.join(self.tmp, f"lane{n}")
+            with open(os.path.join(path, "MASTER.md"), "w") as f:
+                f.write(master(*old, (name, 1)))
+            self.git("add", "MASTER.md", cwd=path)
+            subprocess.run(["git", "-C", path, "commit", "-qm", f"index {name}"], check=True, capture_output=True)
+            return tid
+
+        a, b = add(1, "fmnewa", 200), add(2, "fmnewb", 200)
+        r = self.train(a, b)
+        self.assertNotIn("left out", r.stdout)
+        self.assertIn(f"moved {b}: 1 new map entry (fmnewb) moved from docs/map/files-lib-1.md to docs/map/files-lib-2.md", r.stdout)
+        self.assertTrue(self.meta(b)["lane_stop"].startswith("merged"), r.stdout)
+        self.assertIn(f"`fmnewa` ({'z' * 200})", self.read("docs/map/files-lib-1.md"))
+        self.assertNotIn("fmnewb", self.read("docs/map/files-lib-1.md"))
+        self.assertIn(f"`fmnewb` ({'z' * 200})", self.read("docs/map/files-lib-2.md"))
+        self.assertIn("`fmnewb` (words…) [→ files-lib-2](docs/map/files-lib-2.md)", self.read("MASTER.md"))
+        self.assertLessEqual(os.path.getsize(os.path.join(self.repo, "docs/map/files-lib-1.md")), c.MAP_FILE_BYTES)
+
     def test_a_map_file_the_base_has_over_its_cap_blames_no_lane_at_its_merge(self):
         """T-4980: the base's own breach is the gate's to name, never a lane's leave-out."""
         filler = self.cap_base(-100)
