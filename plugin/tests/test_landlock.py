@@ -9,6 +9,7 @@ confined child, so a rule that is wrong shows as a write that went through."""
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import tempfile
 import types
@@ -750,6 +751,405 @@ class StateNarrow(unittest.TestCase):
             with self.assertRaises(smith.ConfineError):
                 smith.worker_confinement(self.wt)
             self.assertEqual(smith.containment(self.wt)["kind"], "guard")
+
+
+@unittest.skipUnless(HOME_OK, "the home isn't writable here (a sandbox)")
+class LaneGrantRecover(unittest.TestCase):
+    """T-5974: every grant and every path in landlock.py comes from the worktree's own lane id and Sampo's own record, never
+    from a file the confined worker can write (HEAD, its git dir's commondir and gitdir files, its .git file, its lane
+    folders, the environment). Nothing here stubs Popen: a stubbed pid must never reach os.kill."""
+
+    def setUp(self):
+        self._d = tempfile.TemporaryDirectory(prefix=PREFIX, dir=os.path.expanduser("~"))
+        self.addCleanup(self._d.cleanup)
+        self.base = os.path.realpath(self._d.name)
+        self.state = os.path.join(self.base, "state")
+        env = mock.patch.dict(os.environ, {"FOREMAN_STATE": self.state})
+        env.start()
+        self.addCleanup(env.stop)
+        self.main, self.wt = make_lane(self.base, "worktree-agent-x")
+        self.common = os.path.realpath(os.path.join(self.main, ".git"))
+        self.lane = landlock.lane_begin(self.wt, smith._head(self.wt))
+        self.assertIsNotNone(self.lane)
+        self.own = landlock._lane_id(self.wt)
+
+    def another(self, name="other", branch="fm/T-2"):
+        """A second worktree of the same repository with its own lane in flight: (path, lane)."""
+        wt = os.path.join(self.base, name)
+        git(self.main, "worktree", "add", "-q", "-b", branch, wt)
+        return wt, landlock.lane_begin(wt, smith._head(wt))
+
+    def fresh(self, name, branch="fm/T-9"):
+        """A repository of its own, apart from self.main: (main, worktree)."""
+        base = os.path.join(self.base, name)
+        os.makedirs(base)
+        return make_lane(base, branch)
+
+    def gd(self, wt):
+        return os.path.realpath(git(wt, "rev-parse", "--absolute-git-dir"))
+
+    def set_head(self, wt, text):
+        """What a worker can do: write HEAD in its git dir as it likes (git itself would refuse some of these names)."""
+        with open(os.path.join(self.gd(wt), "HEAD"), "w") as fh:
+            fh.write(text)
+
+    def head_text(self, wt):
+        return read(os.path.join(self.gd(wt), "HEAD"))
+
+    def ref_paths(self, real, common=None):
+        common = common or self.common
+        return sorted(p for p in real if p.startswith((os.path.join(common, "refs") + os.sep,
+                                                       os.path.join(common, "logs") + os.sep)))
+
+    def own_folders(self):
+        return sorted(os.path.join(self.common, top, "heads", "fmw", self.own) for top in ("refs", "logs/refs"))
+
+    def under_common(self, wt, common):
+        """The granted paths at or under the shared git folder, or 'refused' when the grant was refused."""
+        try:
+            real = landlock.writable_for(wt)
+        except landlock.Refused:
+            return "refused"
+        return sorted(p for p in real if p == common or p.startswith(common + os.sep))
+
+    def test_the_grants_of_a_worktree_on_its_own_lane_are_that_lanes_two_folders_and_nothing_else_of_the_refs(self):
+        real = landlock.writable_for(self.wt)
+        self.assertEqual(self.ref_paths(real), self.own_folders())
+        for f in self.own_folders():
+            self.assertEqual(os.path.realpath(f), f, "no link or dot part on the way to it")
+            self.assertTrue(f.endswith(os.path.join("heads", "fmw", self.own)), f)
+        for p in (os.path.join(self.common, "refs"), os.path.join(self.common, "refs", "heads"), self.common,
+                  os.path.join(self.common, "refs", "heads", "fmw"), os.path.join(self.common, "logs")):
+            self.assertNotIn(p, real)
+        self.assertEqual(landlock.ref_grants(self.common, self.wt, True)[0], os.path.join(self.common, "objects"))
+        self.assertEqual(landlock.ref_grants(self.common, self.wt, False), [os.path.join(self.common, "objects")])
+
+    def test_a_head_the_worker_pointed_at_another_lane_gets_no_grant_of_that_lane(self):
+        other, lane2 = self.another()
+        theirs = landlock._lane_id(other)
+        for what, head in (("the other lane's tip", f"ref: {lane2['lane']}\n"),
+                           ("another ref in the other lane's folder", f"ref: refs/heads/fmw/{theirs}/x\n"),
+                           ("a lane that is nobody's", "ref: refs/heads/fmw/nobody/tip\n")):
+            with self.subTest(what):
+                self.set_head(self.wt, head)
+                real = landlock.writable_for(self.wt)
+                self.assertEqual(self.ref_paths(real), [], "no ref folder at all, neither the other's nor its own")
+                for f in landlock._lane_folders(self.common, lane2["lane"]):
+                    self.assertNotIn(f, real)
+
+    def test_a_head_with_a_dotted_name_gets_no_ref_folder_and_no_path_through_it(self):
+        git(self.main, "branch", "x")  # something for fmw/../x to resolve to
+        other, lane2 = self.another()
+        theirs = landlock._lane_id(other)
+        names = ("refs/heads/fmw/../x", "refs/heads/fmw/./x", "refs/heads/fmw/..", "refs/heads/fmw/.",
+                 f"refs/heads/fmw/{self.own}/../{theirs}/tip", f"refs/heads/fmw/{self.own}/./../{theirs}/tip",
+                 f"refs/heads/fmw/{self.own}/../../main", f"refs/heads/fmw//{self.own}/tip", f"refs/heads/fmw/{self.own}/tip/",
+                 f"refs/heads/fmw/{self.own}/tip.lock", f"refs/heads/fmw/{self.own}/x\\y", f"refs/heads/fmw/{self.own}/a b",
+                 f"refs/heads/fmw/{self.own}/..", "refs/heads/fmw/a\x00/tip", "refs/heads/fmw")
+        for name in names:
+            with self.subTest(name):
+                self.set_head(self.wt, f"ref: {name}\n")
+                real = landlock.writable_for(self.wt)
+                self.assertEqual(self.ref_paths(real), [], "a name git would not take picks nothing")
+                self.assertNotIn(os.path.join(self.common, "refs", "heads"), real)
+
+    def test_a_confined_worker_whose_head_names_another_lane_cannot_write_that_lane(self):
+        if not LANDLOCK:
+            self.skipTest("this kernel has no Landlock")
+        other, lane2 = self.another()
+        tip2 = git(other, "rev-parse", lane2["lane"])
+        self.set_head(self.wt, f"ref: {lane2['lane']}\n")
+        victim = os.path.join(self.common, *lane2["lane"].split("/"))
+        code, text = confined(self.wt, f"echo {'0' * 40} > {shlex.quote(victim)}")
+        self.assertNotEqual(code, 0)
+        self.assertRegex(text, DENIED)
+        self.assertEqual(read(victim).strip(), tip2, "the other lane's ref is as it was")
+
+    def test_the_own_lane_grant_needs_sampos_record_as_well_as_the_head(self):
+        os.unlink(os.path.join(self.state, "lanes", self.own + ".json"))
+        self.assertEqual(landlock._own_lane(self.wt, landlock._head_ref(self.wt)), True)
+        self.assertEqual(self.ref_paths(landlock.writable_for(self.wt)), [], "HEAD alone is a worker's word")
+
+    def test_a_record_the_worker_could_forge_is_ignored_and_its_names_reach_no_grant(self):
+        path = os.path.join(self.state, "lanes", self.own + ".json")
+        good = json.loads(read(path))
+        tip = good["tip"]
+        forged = (("another lane", {**good, "lane": "refs/heads/fmw/other/tip"}),
+                  ("a real branch inside fmw", {**good, "real": "refs/heads/fmw/a/tip"}),
+                  ("a dotted real branch", {**good, "real": "refs/heads/x/../fmw/a"}),
+                  ("a real branch that is the fmw folder", {**good, "real": "refs/heads/fmw"}),
+                  ("a real branch outside refs/heads", {**good, "real": "refs/remotes/o/x"}),
+                  ("a tip that is a path", {**good, "tip": "../../x"}), ("a short tip", {**good, "tip": tip[:7]}),
+                  ("a number", {**good, "tip": 5}), ("a list", [good]), ("a control byte", {**good, "real": "refs/heads/a\nb"}))
+        for what, rec in forged:
+            with self.subTest(what):
+                with open(path, "w") as fh:
+                    json.dump(rec, fh)
+                self.assertIsNone(landlock._recorded(self.wt))
+                self.assertEqual(self.ref_paths(landlock.writable_for(self.wt)), [])
+                self.assertIsNone(landlock.lane_recover(self.wt))
+        with open(path, "w") as fh:  # one past the cap, and a link to a file: neither is read
+            fh.write(json.dumps(good) + " " * 9000)
+        self.assertIsNone(landlock._recorded(self.wt))
+        os.unlink(path)
+        victim = os.path.join(self.base, "victim.json")
+        with open(victim, "w") as fh:
+            json.dump(good, fh)
+        os.symlink(victim, path)
+        self.assertIsNone(landlock._recorded(self.wt), "a link in the lanes folder is never followed")
+        os.unlink(path)
+        os.mkfifo(path)
+        self.assertIsNone(landlock._recorded(self.wt), "a FIFO does not hang the parent")
+
+    def test_a_lane_folder_that_is_a_link_is_never_granted_wiped_or_read(self):
+        folder = os.path.join(self.common, "refs", "heads", "fmw", self.own)
+        heads = os.path.join(self.common, "refs", "heads")
+        main_ref = os.path.join(heads, "main")
+        shutil.rmtree(folder)
+        os.symlink(heads, folder)  # the lane's ref folder is now refs/heads itself
+        real = landlock.writable_for(self.wt)
+        self.assertNotIn(heads, real, "the link's target is no grant")
+        self.assertEqual([p for p in self.ref_paths(real) if os.path.join("refs", "heads") in p
+                          and not p.startswith(os.path.join(self.common, "logs"))], [])
+        self.assertEqual(landlock.lane_end(self.wt, self.lane), "", "no tip is read through the link")
+        self.assertTrue(os.path.exists(main_ref), "and nothing in the target is wiped")
+        self.assertEqual(git(self.wt, "symbolic-ref", "HEAD"), "refs/heads/worktree-agent-x", "HEAD is back all the same")
+        self.assertIsNone(landlock.lane_begin(self.wt, smith._head(self.wt)), "no lane is made through the link")
+        self.assertTrue(os.path.exists(main_ref))
+
+    def test_a_lane_folder_under_a_linked_ancestor_is_never_granted_or_wiped(self):
+        fmw = os.path.join(self.common, "refs", "heads", "fmw")
+        elsewhere = os.path.join(self.base, "elsewhere")
+        os.rename(fmw, elsewhere)
+        os.symlink(elsewhere, fmw)
+        mark = os.path.join(elsewhere, self.own, "mark")
+        with open(mark, "w") as fh:
+            fh.write("x")
+        real = landlock.writable_for(self.wt)
+        self.assertEqual([p for p in real if p.startswith((fmw, elsewhere))], [], "nothing under the link is granted")
+        landlock.lane_end(self.wt, self.lane)
+        self.assertTrue(os.path.exists(mark), "nothing under the link is wiped")
+        self.assertIsNone(landlock.lane_begin(self.wt, smith._head(self.wt)))
+        self.assertTrue(os.path.exists(mark))
+
+    def test_a_reflog_folder_that_is_a_link_is_never_granted_either(self):
+        logs = os.path.join(self.common, "logs", "refs", "heads", "fmw", self.own)
+        victim = os.path.join(self.base, "logvictim")
+        os.makedirs(victim)
+        shutil.rmtree(logs)
+        os.symlink(victim, logs)
+        real = landlock.writable_for(self.wt)
+        self.assertEqual(self.ref_paths(real), [os.path.join(self.common, "refs", "heads", "fmw", self.own)],
+                         "the link is left out, the plain folder stays: a commit fails closed on the missing reflog")
+        self.assertNotIn(victim, real)
+        self.assertNotIn(logs, real)
+
+    def test_a_lane_begin_on_a_head_that_names_the_fmw_namespace_makes_nothing(self):
+        tip = git(self.wt, "rev-parse", "worktree-agent-x")
+        landlock.lane_end(self.wt, self.lane)
+        for name in (f"refs/heads/fmw/{self.own}/tip", "refs/heads/fmw/other/tip", "refs/heads/fmw/../x",
+                     "refs/heads/fmw/./x", "refs/heads/fmw", "refs/heads/a/../b", "refs/heads/a/./b", "HEAD", "refs/heads/",
+                     "refs/heads/a b", "refs/tags/t"):
+            with self.subTest(name):
+                self.assertIsNone(landlock.lane_begin(self.wt, (name.encode(), tip.encode())))
+                self.assertFalse(os.path.exists(os.path.join(self.state, "lanes", self.own + ".json")))
+                self.assertEqual(git(self.wt, "symbolic-ref", "HEAD"), "refs/heads/worktree-agent-x")
+
+    def test_a_worktree_whose_git_dir_files_were_forged_is_refused_and_no_shared_folder_is_granted(self):
+        other, lane2 = self.another()
+        fmain, fwt = self.fresh("foreign")
+        fcommon = os.path.realpath(os.path.join(fmain, ".git"))
+        gd = self.gd(self.wt)
+        with open(os.path.join(gd, "commondir")) as fh:
+            commondir = fh.read()
+        with open(os.path.join(gd, "gitdir")) as fh:
+            gitdir = fh.read()
+        dotgit = os.path.join(self.wt, ".git")
+        with open(dotgit) as fh:
+            dotgit_text = fh.read()
+
+        def restore():
+            for p, t in ((os.path.join(gd, "commondir"), commondir), (os.path.join(gd, "gitdir"), gitdir), (dotgit, dotgit_text)):
+                if os.path.islink(p):
+                    os.unlink(p)
+                with open(p, "w") as fh:
+                    fh.write(t)
+        cases = (("commondir at another repository", os.path.join(gd, "commondir"), os.path.join(fcommon, "") + "\n", fcommon),
+                 ("commondir at the root", os.path.join(gd, "commondir"), "/\n", "/"),
+                 ("commondir with a dotted path", os.path.join(gd, "commondir"),
+                  os.path.join(self.common, "worktrees", "..", "..", os.path.basename(fmain), ".git") + "\n", fcommon),
+                 ("a gitdir back pointer at another worktree", os.path.join(gd, "gitdir"),
+                  os.path.join(other, ".git") + "\n", self.common),
+                 ("a gitdir back pointer at nothing", os.path.join(gd, "gitdir"), "\n", self.common),
+                 ("a .git file at another worktree's git dir", dotgit, f"gitdir: {self.gd(other)}\n", self.common),
+                 ("a .git file at another repository's", dotgit, f"gitdir: {os.path.join(fcommon)}\n", fcommon),
+                 ("a .git file at the main checkout's git dir", dotgit, f"gitdir: {self.common}\n", self.common))
+        for what, path, text, common in cases:
+            with self.subTest(what):
+                with open(path, "w") as fh:
+                    fh.write(text)
+                got = self.under_common(self.wt, common)
+                self.assertIn(got, ("refused", []), "refused, or nothing of that git folder granted")
+                if got == []:
+                    self.assertEqual(self.under_common(self.wt, self.common), [])
+                restore()
+        self.assertEqual(self.ref_paths(landlock.writable_for(self.wt)), self.own_folders(), "restored, it is granted again")
+
+    def test_a_worktree_nested_under_its_main_checkout_cannot_borrow_the_mains_git_dir(self):
+        nested = os.path.join(self.main, "nested-wt")
+        git(self.main, "worktree", "add", "-q", "-b", "fm/nested", nested)
+        lane = landlock.lane_begin(nested, smith._head(nested))
+        self.assertIsNotNone(lane)
+        self.assertEqual(self.ref_paths(landlock.writable_for(nested)),
+                         sorted(os.path.join(self.common, top, "heads", "fmw", landlock._lane_id(nested))
+                                for top in ("refs", "logs/refs")))
+        with open(os.path.join(nested, ".git"), "w") as fh:  # the worker rewrites its .git file to the main's own
+            fh.write(f"gitdir: {self.common}\n")
+        got = self.under_common(nested, self.common)
+        self.assertIn(got, ("refused", []), "the main's git dir is not this tree's: nothing of it is granted")
+        self.assertFalse(landlock.refs_guarded(nested))
+        self.assertIsNone(landlock.lane_begin(nested, (b"refs/heads/fm/x", git(self.main, "rev-parse", "main").encode())))
+
+    def test_a_git_dir_that_sits_outside_the_tree_of_a_plain_checkout_is_refused(self):
+        plain = os.path.join(self.base, "plain")
+        git(self.base, "init", "-q", "-b", "main", plain)
+        elsewhere = os.path.join(self.base, "elsewhere.git")
+        os.rename(os.path.join(plain, ".git"), elsewhere)
+        with open(os.path.join(plain, ".git"), "w") as fh:
+            fh.write(f"gitdir: {elsewhere}\n")
+        self.assertEqual(self.under_common(plain, os.path.realpath(elsewhere)), "refused")
+
+    def test_a_plain_checkout_still_gets_its_own_git_dir_and_no_ref_folder(self):
+        plain = os.path.join(self.base, "plain2")
+        git(self.base, "init", "-q", "-b", "main", plain)
+        git(plain, "commit", "-q", "--allow-empty", "-m", "c")
+        real = landlock.writable_for(plain)
+        self.assertIn(os.path.realpath(plain), real)
+        self.assertEqual([p for p in real if "fmw" in p], [])
+        self.assertFalse(landlock.refs_guarded(plain))
+
+    def test_a_git_environment_the_lead_carries_never_redirects_the_layout(self):
+        fmain, fwt = self.fresh("foreign2")
+        want = landlock.writable_for(self.wt)
+        env = {"GIT_DIR": os.path.join(fmain, ".git"), "GIT_COMMON_DIR": os.path.join(fmain, ".git"),
+               "GIT_WORK_TREE": fmain, "GIT_INDEX_FILE": os.path.join(fmain, ".git", "index"),
+               "GIT_NAMESPACE": "ns", "GIT_CEILING_DIRECTORIES": self.base, "GIT_CONFIG_COUNT": "1",
+               "GIT_CONFIG_KEY_0": "core.hooksPath", "GIT_CONFIG_VALUE_0": "/tmp"}
+        with mock.patch.dict(os.environ, env):
+            self.assertEqual(landlock.writable_for(self.wt), want)
+            self.assertEqual(landlock._head_ref(self.wt), self.lane["lane"])
+            self.assertEqual(landlock.lane_end(self.wt, self.lane), git(self.wt, "rev-parse", "worktree-agent-x"))
+            self.assertEqual(git(self.wt, "symbolic-ref", "HEAD"), "refs/heads/worktree-agent-x")
+
+    def test_recover_puts_back_a_head_on_another_lane_or_a_malformed_fmw_name_from_the_record(self):
+        other, lane2 = self.another()
+        theirs = landlock._lane_id(other)
+        path = os.path.join(self.state, "lanes", self.own + ".json")
+        good = read(path)
+        for what, head in (("another lane's tip", f"ref: {lane2['lane']}\n"),
+                           ("another ref in another lane's folder", f"ref: refs/heads/fmw/{theirs}/x\n"),
+                           ("a dotted name", "ref: refs/heads/fmw/../x\n"), ("a dot part", "ref: refs/heads/fmw/./x\n"),
+                           ("a dotted way into another lane", f"ref: refs/heads/fmw/{self.own}/../{theirs}/tip\n"),
+                           ("the fmw name alone", "ref: refs/heads/fmw\n")):
+            with self.subTest(what):
+                with open(path, "w") as fh:
+                    fh.write(good)
+                self.set_head(self.wt, head)
+                rec = landlock.lane_recover(self.wt)
+                self.assertEqual(rec["real"], "refs/heads/worktree-agent-x")
+                self.assertEqual(self.head_text(self.wt).strip(), "ref: refs/heads/worktree-agent-x", "HEAD is back")
+                self.assertFalse(os.path.exists(path), "the record is dropped once HEAD is back")
+        self.assertTrue(has_ref(other, lane2["lane"]), "the other lane's own ref was not touched")
+
+    def test_recover_refuses_a_foreign_or_malformed_fmw_head_when_sampo_holds_no_record(self):
+        other, lane2 = self.another()
+        os.unlink(os.path.join(self.state, "lanes", self.own + ".json"))
+        for head in (f"ref: {lane2['lane']}\n", "ref: refs/heads/fmw/../x\n", "ref: refs/heads/fmw/./x\n",
+                     f"ref: refs/heads/fmw/{self.own}/tip\n"):
+            with self.subTest(head):
+                self.set_head(self.wt, head)
+                self.assertIsNone(landlock.lane_recover(self.wt), "nothing is restored from a guess")
+                self.assertEqual(self.head_text(self.wt), head, "HEAD is left as it is")
+                self.assertEqual(self.ref_paths(landlock.writable_for(self.wt)), [], "and it holds no ref folder")
+        self.assertTrue(has_ref(other, lane2["lane"]))
+
+    def test_recover_leaves_a_head_on_a_real_branch_or_a_detached_one_alone(self):
+        landlock.lane_end(self.wt, self.lane)
+        for head in ("ref: refs/heads/main\n", "ref: refs/heads/fmwx/a\n", "ref: refs/heads/a/fmw/b\n",
+                     git(self.wt, "rev-parse", "HEAD") + "\n"):
+            with self.subTest(head):
+                self.set_head(self.wt, head)
+                self.assertIsNone(landlock.lane_recover(self.wt))
+                self.assertEqual(self.head_text(self.wt), head)
+
+    def test_recover_does_not_follow_a_head_that_is_a_link_or_a_fifo(self):
+        victim = os.path.join(self.base, "headvictim")
+        with open(victim, "w") as fh:
+            fh.write("ref: refs/heads/fmw/other/tip\n")
+        head = os.path.join(self.gd(self.wt), "HEAD")
+        os.unlink(head)
+        os.symlink(victim, head)
+        self.assertEqual(landlock._read_plain(head), None)
+        os.unlink(head)
+        os.mkfifo(head)
+        self.assertEqual(landlock._read_plain(head), None, "a FIFO does not hang the parent")
+        self.assertEqual(landlock._read_plain(self.base), None, "a folder is no file")
+        big = os.path.join(self.base, "big")
+        with open(big, "w") as fh:
+            fh.write("x" * 5000)
+        self.assertIsNone(landlock._read_plain(big), "a file past the cap is not read")
+
+    def test_the_env_folders_a_lead_carries_never_widen_the_grants_to_the_home_the_state_or_the_root(self):
+        home = os.path.expanduser("~")
+        legit = os.path.join(self.base, "cache")
+        os.makedirs(legit)
+        bad = (home, os.path.dirname(home), "/", self.state, os.path.join(self.state, "lanes"), "relative/dir",
+               landlock._CODE, os.path.join(landlock._CODE, "lib"), os.path.join(home, ".claude"),
+               os.path.join(home, ".claude", "foreman"), "")
+        self.assertIsNone(landlock._env_grant("a\0b", "", home, self.state), "a NUL byte (not settable in a real environment)")
+        for var in ("TMPDIR", "XDG_CACHE_HOME"):
+            for value in bad:
+                with self.subTest(var=var, value=value):
+                    with mock.patch.dict(os.environ, {var: value}):
+                        real = landlock.writable_for(self.wt)
+                    for p in {home, "/", self.state, os.path.join(self.state, "lanes"), landlock._CODE, os.path.join(home, ".claude"),
+                              os.path.dirname(home)} - {"/tmp"}:
+                        self.assertNotIn(p, real)
+            with mock.patch.dict(os.environ, {var: legit}):
+                self.assertIn(legit, landlock.writable_for(self.wt), "a working folder of its own is still granted")
+        with mock.patch.dict(os.environ, {"CARGO_HOME": self.state}):
+            self.assertEqual([p for p in landlock.writable_for(self.wt) if p.startswith(self.state) and "lanes" in p], [])
+
+    def test_a_state_log_that_is_a_link_or_a_fifo_is_not_granted_nor_followed_nor_waited_on(self):
+        os.makedirs(self.state, exist_ok=True)
+        victim = os.path.join(self.base, "victim.txt")
+        with open(victim, "w") as fh:
+            fh.write("keep\n")
+        os.symlink(victim, os.path.join(self.state, "events.jsonl"))
+        os.mkfifo(os.path.join(self.state, "spend.jsonl"))
+        got = landlock.state_grants(self.state)
+        self.assertEqual(got, [], "neither is a log: no rule follows them")
+        self.assertEqual(read(victim), "keep\n", "the link's target was not opened for append")
+        real = landlock.writable_for(self.wt)
+        self.assertNotIn(victim, real)
+        self.assertNotIn(os.path.join(self.state, "spend.jsonl"), real)
+
+    def test_a_worker_sessions_folder_that_is_a_link_is_not_granted(self):
+        victim = os.path.join(self.base, "sessvictim")
+        os.makedirs(victim)
+        mine = os.path.join(self.state, "worker-sessions", self.own)
+        self.assertEqual(landlock._worker_sessions_grant(self.wt, self.state), [mine], "the plain folder is granted")
+        os.rmdir(mine)
+        os.symlink(victim, mine)
+        self.assertEqual(landlock._worker_sessions_grant(self.wt, self.state), [])
+        self.assertNotIn(victim, landlock.writable_for(self.wt))
+        os.unlink(mine)
+        up = os.path.join(self.state, "worker-sessions")
+        os.rmdir(up)
+        os.symlink(victim, up)
+        self.assertEqual(landlock._worker_sessions_grant(self.wt, self.state), [], "a link above the folder is no grant")
+        self.assertEqual(os.listdir(victim), [], "and nothing was made through it")
+        self.assertNotIn(victim, landlock.writable_for(self.wt))
 
 
 if __name__ == "__main__":

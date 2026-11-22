@@ -90,13 +90,77 @@ def _writes(v):
     return bits | (_A["REFER"] if v >= 2 else 0) | (_A["TRUNCATE"] if v >= 3 else 0)
 
 
+# T-5974: git's own answer to "which repository is this" is never bent by the caller's environment, and no hook or monitor
+# a worker planted in its git dir's config runs for the parent's questions.
+_GIT_LOCATE = ("GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+               "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_CEILING_DIRECTORIES", "GIT_CONFIG",
+               "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS")
+
+
+def _genv():
+    return {k: v for k, v in os.environ.items() if k not in _GIT_LOCATE}
+
+
 def _git(root, flag):
     try:
-        r = subprocess.run(["git", "-C", root, "rev-parse", "--path-format=absolute", flag], capture_output=True,
-                           text=True, timeout=10)
+        r = subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", root, "rev-parse",
+                            "--path-format=absolute", flag], capture_output=True, text=True, timeout=10, env=_genv())
     except (OSError, subprocess.TimeoutExpired):
         return None
     return os.path.realpath(r.stdout.strip()) if r.returncode == 0 and r.stdout.strip() else None
+
+
+def _read_plain(path, limit=4096):
+    """T-5974: the text of a plain file the worker may have written, or None: never a link (O_NOFOLLOW), never a FIFO or
+    device (O_NONBLOCK, then fstat on the open fd), never more than limit bytes."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except OSError:
+        return None
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_size > limit:
+            return None
+        data = os.read(fd, limit + 1)
+        return data.decode("utf-8", "replace") if len(data) <= limit else None
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
+def _layout(root):
+    """T-5974: (git dir, common dir) of root's worktree when they hold together, else None. The worker writes its git dir
+    whole (its commondir and gitdir files) and the .git file in its tree, so neither is believed on its own word: a plain
+    checkout's git dir must sit inside the tree; a linked worktree's must be <common>/worktrees/<name>, and its gitdir
+    file must name this tree's own .git (git wrote that back pointer when Sampo made the worktree; a git dir that
+    belongs to another worktree or to no worktree fails it). A forged commondir or .git file reaches no grant."""
+    gd, common = _git(root, "--git-dir"), _git(root, "--git-common-dir")
+    if not (gd and common):
+        return None
+    tree, tops = os.path.realpath(root), []  # root itself, or a folder inside the tree: the .git is at the top of it
+    while tree not in tops:
+        tops.append(tree)
+        tree = os.path.dirname(tree)
+    # git's own discovery: the nearest folder upward with a .git entry (a file or a folder); a forged .git file in the tree
+    # is that nearest one, so it cannot borrow an ancestor's .git (a worktree under its main checkout)
+    dots = [d for d in (os.path.join(t, ".git") for t in tops) if os.path.lexists(d)][:1]
+    if gd == common:
+        return (gd, common) if gd in dots else None
+    if os.path.dirname(gd) != os.path.join(common, "worktrees"):
+        return None
+    back = (_read_plain(os.path.join(gd, "gitdir"), 4096) or "").strip()
+    if not back or "\0" in back:
+        return None
+    if not os.path.isabs(back):
+        back = os.path.join(gd, back)  # git's relative worktree paths (worktree.useRelativePaths)
+    return (gd, common) if os.path.realpath(back) in dots else None
+
+
+def _common(root):
+    """The shared git dir of root's linked worktree after _layout's check, else None (a plain checkout has none apart)."""
+    lay = _layout(root)
+    return lay[1] if lay and lay[0] != lay[1] else None
 
 
 # T-5909: what a confined worker never writes in Sampo's state folder, so it is granted none of it: consent and trust, the
@@ -120,8 +184,9 @@ def state_grants(state):
     if not os.path.isdir(state):
         return []
     for n in STATE_FILES:  # a rule needs the path to exist: a fresh state folder gets the empty log, not a wider rule
-        try:
-            open(os.path.join(state, n), "a").close()
+        try:  # T-5974: never through a link, never waiting on a FIFO
+            os.close(os.open(os.path.join(state, n), os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK
+                             | os.O_CLOEXEC, 0o644))
         except OSError:
             pass
     for n in STATE_DIRS:
@@ -129,7 +194,16 @@ def state_grants(state):
             os.makedirs(os.path.join(state, n), exist_ok=True)
         except OSError:
             pass
-    return [os.path.join(state, n) for n in STATE_FILES + STATE_DIRS if os.path.lexists(os.path.join(state, n))]
+    out = []
+    for n in STATE_FILES + STATE_DIRS:  # a link or an odd file there is no log: a rule never follows it to its target
+        p = os.path.join(state, n)
+        try:
+            mode = os.lstat(p).st_mode
+        except OSError:
+            continue
+        if (n in STATE_FILES and stat.S_ISREG(mode)) or (n in STATE_DIRS and stat.S_ISDIR(mode)):
+            out.append(p)
+    return out
 
 
 WORKER_SESSIONS_ENV = "FOREMAN_WORKER_SESSIONS"  # the worker's session files folder, for the nested session's hooks
@@ -147,7 +221,8 @@ def worker_sessions(root):
 def _worker_sessions_grant(root, state):
     """The worker's session folder, made (and its old files pruned) so a rule can name it; [] when it can't be made."""
     path = worker_sessions(root)
-    if not os.path.isdir(state) or not path.startswith(os.path.join(state, "worker-sessions") + os.sep):
+    if not os.path.isdir(state) or not path.startswith(os.path.join(state, "worker-sessions") + os.sep) \
+            or os.path.realpath(path) != path:  # T-5974: no link anywhere on the way to the folder
         return []  # no state folder: nothing is made for it
     try:
         os.makedirs(path, exist_ok=True)
@@ -161,14 +236,20 @@ def _worker_sessions_grant(root, state):
     return [path] if os.path.isdir(path) and not os.path.islink(path) else []
 
 
-def _branch(root):
-    """The branch HEAD names in root ('' when detached or unborn)."""
+def _head_ref(root):
+    """The full ref name HEAD names in root, one level and never followed ('' when detached, unborn or not a repository).
+    HEAD is the worker's to write: when git refuses the name it holds (a dotted or malformed one), the raw text of HEAD
+    is read instead (a plain file only), so a name git won't take is still known for what it is."""
     try:
-        r = subprocess.run(["git", "-C", root, "symbolic-ref", "-q", "--no-recurse", "--short", "HEAD"], capture_output=True, text=True,
-                           timeout=10)
+        r = _jgit(root, "symbolic-ref", "-q", "--no-recurse", "HEAD")
     except (OSError, subprocess.TimeoutExpired):
-        return ""
-    return r.stdout.strip() if r.returncode == 0 else ""
+        r = None
+    if r is not None and r.returncode == 0:
+        return r.stdout.strip()
+    gd = _git(root, "--git-dir")
+    text = _read_plain(os.path.join(gd, "HEAD"), 4096) if gd else None
+    m = re.match(r"ref:[ \t]*(\S[^\n]*)", text or "")
+    return m.group(1).strip() if m else ""
 
 
 LANE = "fmw"  # T-5909: the folder of refs/heads a confined worker commits in, one subfolder per worktree
@@ -190,25 +271,60 @@ def _lane_folder(branch):
     """The lane folder name (fmw/<lane>) a branch named fmw/<lane>/<anything> lives in, '' for any other branch: the worker
     may write every ref in its folder, so none of them is ever taken for a real branch."""
     parts = branch.split("/") if isinstance(branch, str) else []
-    return "/".join(parts[:2]) if len(parts) >= 3 and parts[0] == LANE and parts[1] else ""
+    if len(parts) < 3 or parts[0] != LANE or any(p in ("", ".", "..") or "\0" in p for p in parts):
+        return ""  # a dotted or empty part is no folder: fmw/../x and fmw/./x name nothing a grant may follow
+    return "/".join(parts[:2])  # not a list: the two path parts of a ref name
+
+
+def _in_lane_ns(ref):
+    """T-5974: True when a full ref name is anywhere in the fmw/ namespace the worker writes in (any lane's folder, a
+    dotted or malformed name too): never a real branch, whatever its shape. Judged on the name and on its normalised form,
+    so refs/heads/fmw/../x is in it as well as refs/heads/fmw/a/tip."""
+    if not isinstance(ref, str):
+        return False
+    pre = f"refs/heads/{LANE}"
+    return any(r == pre or r.startswith(pre + "/") for r in (ref, os.path.normpath(ref)))
+
+
+_REF_BAD = re.compile(r"[\x00-\x20\x7f~^:?*\[\\]|\.\.|@\{|//|/\.|\.lock(/|$)|[/.]$")
+
+
+def _safe_ref(ref):
+    """T-5974: True for a full refs/heads/ name git itself would take and no path trick rides on (no '..', no dotted part, no
+    control or glob byte, no .lock part): a name that reaches git or a path is checked here first."""
+    return (isinstance(ref, str) and ref.startswith("refs/heads/") and len(ref) > len("refs/heads/")
+            and len(ref) < 1024 and not _REF_BAD.search(ref))
 
 
 def _own_lane(root, ref):
-    """True for a full ref name inside this worktree's own lane folder (the lane ref, or any other a worker made there)."""
-    return isinstance(ref, str) and ref.startswith("refs/heads/") and \
-        _lane_folder(ref[len("refs/heads/"):]) == f"{LANE}/{_lane_id(root)}"
+    """True for a full ref name inside this worktree's own lane folder (the lane ref, or any other a worker made there),
+    well-formed: refs/heads/fmw/<this id>/../x is nobody's."""
+    return _safe_ref(ref) and _lane_folder(ref[len("refs/heads/"):]) == f"{LANE}/{_lane_id(root)}"
 
 
-def ref_grants(common, branch):
-    """T-5909: the shared git folders a commit on branch needs, each on its own: the objects, and, only for a worker's
-    own lane ref (fmw/<lane>/tip), that ref's folder and its reflog's (git writes <ref>.lock beside the ref and renames
-    it: a rule on the file itself cannot allow that, measured). Any other branch gets no ref folder at all: a folder
-    rule covers every ref beneath it, and refs/heads holds trunk and the other lanes. Never refs/tags, refs/remotes,
-    refs/stash, packed-refs or the other logs: the kernel refuses a write there.
+def ref_grants(common, root, on_lane=False):
+    """T-5909: the shared git folders a commit needs, each on its own: the objects, and, only when on_lane (HEAD is on this
+    worktree's own lane ref), the folder of lane_ref(root) and its reflog's (git writes <ref>.lock beside the ref and
+    renames it: a rule on the file itself cannot allow that, measured). T-5974: the folders come from lane_ref(root), the
+    worktree's own id, never from the name HEAD holds (the worker writes HEAD: a name it picks reaches no grant), and each
+    is granted only when its path holds no link and no dot part from common down (realpath equals the path itself, so it
+    is exactly refs/heads/fmw/<id> and logs/refs/heads/fmw/<id>). Any other worktree's folder gets nothing, nor does
+    refs/heads, trunk, refs/tags, refs/remotes, refs/stash, packed-refs or the other logs: the kernel refuses a write there.
     ponytail: objects/ stays writable (T-5924: a private object folder with alternates takes it back)."""
     out = [os.path.join(common, "objects")]
-    if sub := _lane_folder(branch):
-        out += [os.path.join(common, "refs", "heads", sub), os.path.join(common, "logs", "refs", "heads", sub)]
+    if on_lane:
+        out += _lane_folders_ok(common, root)
+    return out
+
+
+def _lane_folders_ok(common, root):
+    """The ref folder and reflog folder of root's own lane, those whose realpath is the path itself (no link, no '..'
+    anywhere between common and the folder); the ones that are not are left out, so nothing is made or wiped through
+    them either."""
+    out = []
+    for f in _lane_folders(common, lane_ref(root)):
+        if os.path.realpath(f) == f and f.startswith(common + os.sep):
+            out.append(f)
     return out
 
 
@@ -226,13 +342,15 @@ def lane_begin(root, head):
     ref folder); in a plain checkout the refs are inside the writable tree, so the kernel guards nothing there and the
     judge's refs_undo backstop is the only guard."""
     real, tip = _txt(head[0]), _txt(head[1])
-    common = _git(root, "--git-common-dir")
-    if not (real and tip and real.startswith("refs/heads/") and common and refs_guarded(root)):
+    common = _common(root)  # a linked worktree whose commondir, gitdir file and .git file hold together (T-5974)
+    if not (real and tip and _safe_ref(real) and re.fullmatch(r"[0-9a-f]{40,64}", tip) and common):
         return None
-    if _lane_folder(real[len("refs/heads/"):]):
-        return None  # HEAD is on a lane ref: lane_recover (before the snapshot) puts the branch back first
+    if _in_lane_ns(real):
+        return None  # HEAD is on a ref of the fmw/ namespace (the lane's, another's, a malformed one): never a real branch
     lane = lane_ref(root)
-    folders = _lane_folders(common, lane)
+    folders = _lane_folders_ok(common, root)
+    if len(folders) != 2:
+        return None  # a link or a dot part on the way to the folder: nothing is wiped or made through it
     try:
         for f in folders:  # whatever a past turn left there is not trusted: gone before the ref is made
             _wipe(f)
@@ -261,8 +379,7 @@ def _lane_folders(common, lane):
 def refs_guarded(root):
     """True when a confined worker in root is kernel-refused every shared ref (a linked worktree: its refs are in a folder
     its grants leave out); False for a plain checkout, whose refs sit inside the writable tree."""
-    gd, common = _git(root, "--git-dir"), _git(root, "--git-common-dir")
-    return bool(gd and common and gd != common)
+    return _common(root) is not None
 
 
 def _wipe(path):
@@ -301,14 +418,16 @@ def _record(root, rec):
 def _recorded(root):
     """The record of root's lane in flight, or None when there is none or it is not a branch and a commit."""
     from sampo import core
+    text = _read_plain(os.path.join(core.state_dir(), "lanes", _lane_id(root) + ".json"), 8192)
     try:
-        with open(os.path.join(core.state_dir(), "lanes", _lane_id(root) + ".json")) as fh:
-            rec = json.load(fh)
-    except (OSError, ValueError):
+        rec = json.loads(text) if text else None
+    except ValueError:
         return None
+    # T-5974: the record is Sampo's, but nothing in it reaches a grant (those come from lane_ref(root)) and what it names is
+    # checked as if a worker had written it: its lane is this worktree's own, its branch a well-formed one outside fmw/
     ok = (isinstance(rec, dict) and all(isinstance(rec.get(k), str) for k in ("lane", "real", "tip"))
-          and rec["lane"] == lane_ref(root) and rec["real"].startswith("refs/heads/")
-          and not _lane_folder(rec["real"][len("refs/heads/"):]) and re.fullmatch(r"[0-9a-f]{40,64}", rec["tip"]))
+          and rec["lane"] == lane_ref(root) and _safe_ref(rec["real"]) and not _in_lane_ns(rec["real"])
+          and re.fullmatch(r"[0-9a-f]{40,64}", rec["tip"]))
     return rec if ok else None
 
 
@@ -350,16 +469,18 @@ def lane_end(root, lane):
         return ""
     tip = ""
     try:
-        common = _git(root, "--git-common-dir")
+        common = _common(root)
         if common and lane["lane"] == lane_ref(root):
-            tip = _lane_tip(root, common, lane["lane"])
-            cur = _jgit(root, "symbolic-ref", "-q", "--no-recurse", "HEAD")  # a planted symref there is not followed
-            on_lane = cur.returncode == 0 and _own_lane(root, cur.stdout.strip())
-            for f in _lane_folders(common, lane["lane"]):  # before any git call resolves HEAD through the lane ref
+            folders = _lane_folders_ok(common, root)  # T-5974: none is read or wiped through a link or a dot part
+            tip = _lane_tip(root, common, lane["lane"]) if len(folders) == 2 else ""
+            # T-5974: HEAD on ANY ref of the fmw/ namespace (the lane's, another lane's, a malformed one) goes back to the branch
+            on_lane = _in_lane_ns(_head_ref(root))  # a planted symref there is not followed
+            for f in folders:  # before any git call resolves HEAD through the lane ref
                 _wipe(f)
             back = True
             if on_lane:
-                back = lane["real"].startswith("refs/heads/") and _jgit(root, "symbolic-ref", "HEAD", lane["real"]).returncode == 0
+                real = lane["real"]
+                back = _safe_ref(real) and not _in_lane_ns(real) and _jgit(root, "symbolic-ref", "HEAD", real).returncode == 0
             if back:
                 _record(root, None)
     except (OSError, subprocess.TimeoutExpired):
@@ -371,12 +492,15 @@ def lane_recover(root):
     """T-5909: before a turn's snapshot: when HEAD still names this worktree's lane ref, or any ref in its lane folder (the
     worker may write them all; a turn died before its judge), and
     Sampo's record says which branch it was on, put it back (lane_end) so the snapshot sees the real branch. The lane's
-    commits are not kept as a branch: their changes stay staged. Returns the record, or None when there was nothing."""
+    commits are not kept as a branch: their changes stay staged. Returns the record, or None when there was nothing.
+    T-5974: HEAD on any ref of the fmw/ namespace is put back the same way, another lane's ref and a dotted or malformed
+    name too (the worker wrote HEAD: it may name anything); with no record of Sampo's own to say where it was, it is
+    refused: nothing is restored from a guess, and the grants (writable_for) give a worker on such a HEAD no ref folder."""
     try:
-        cur = _jgit(root, "symbolic-ref", "-q", "--no-recurse", "HEAD")
+        cur = _head_ref(root)
     except (OSError, subprocess.TimeoutExpired):
         return None
-    if cur.returncode or not _own_lane(root, cur.stdout.strip()):  # the lane ref or any other ref in the lane's folder
+    if not _in_lane_ns(cur):
         return None
     rec = _recorded(root)
     if rec:
@@ -387,7 +511,7 @@ def lane_recover(root):
 def _jgit(root, *a):
     """The judge's own git: no fsmonitor or hook runs, whatever config a worker planted."""
     return subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", root, *a],
-                          capture_output=True, text=True, timeout=60)
+                          capture_output=True, text=True, timeout=60, env=_genv())
 
 
 def refs_snapshot(root):
@@ -471,6 +595,31 @@ class Refused(OSError):
     """The worker can't be confined in this tree without covering what it must not write."""
 
 
+_CODE = os.path.realpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))  # Sampo's own plugin folder
+
+
+def _covers(a, b):
+    return b == a or b.startswith(a.rstrip(os.sep) + os.sep)
+
+
+def _env_grant(path, sub, home, state):
+    """T-5974: a folder an environment variable names (TMPDIR, XDG_CACHE_HOME, CARGO_HOME, GOPATH), or None. The grant is
+    a rule on a whole folder, so a value that would cover what must stay unwritten is dropped, not granted: not absolute, the
+    filesystem root, the home or any folder above it, anything above or inside Sampo's state folder, Sampo's own code,
+    or ~/.claude beyond the working folders granted by name. (The turn's environment is the lead's, not the worker's:
+    this is for a lead started from one that carries a value it should not.)"""
+    if not path or not isinstance(path, str) or "\0" in path or not os.path.isabs(path):
+        return None
+    real = os.path.realpath(os.path.join(path, sub) if sub else path)
+    claude = os.path.realpath(os.path.join(home, ".claude"))
+    if real == os.sep or _covers(real, os.path.realpath(home)) or _covers(real, state) or _covers(state, real) \
+            or _covers(real, _CODE) or _covers(_CODE, real):
+        return None
+    if _covers(claude, real) and not any(_covers(os.path.join(claude, x), real) for x in _CLAUDE_WRITABLE):
+        return None
+    return os.path.join(path, sub) if sub else path
+
+
 def writable_for(root):
     """The writable set for a worker in root (only paths that exist; a missing one has nothing to allow). Raises Refused
     when the tree holds Sampo's state folder (a plain checkout of a self-hosting repo): the grant on the tree would cover
@@ -482,18 +631,25 @@ def writable_for(root):
         raise Refused(f"this tree holds Sampo's state folder ({state}): a write grant on the tree would cover it; run the "
                       "worker from a git worktree of the repository instead")
     out = [tree, "/tmp", "/var/tmp", *_DEVICES]
-    git_dir, common = _git(root, "--git-dir"), _git(root, "--git-common-dir")
-    if git_dir:
+    if _git(root, "--git-dir"):
+        lay = _layout(root)  # T-5974: the worker writes its git dir and its .git file: neither is granted on its own word
+        if lay is None:
+            raise Refused("this worktree's git dir does not hold together (its commondir, its gitdir back pointer and its "
+                          ".git file disagree: a worker rewrote them, or git moved): no grant is made from it")
+        git_dir, common = lay
         out.append(git_dir)  # a worktree's own HEAD and index; a plain checkout's .git is inside the tree anyway
-    if common and common != git_dir:  # shared with the main checkout: its objects and its own branch's folders only
-        out += ref_grants(common, _branch(root))
+        if common != git_dir:  # shared with the main checkout: its objects and its own lane's folders only
+            # T-5974: the lane folders follow lane_ref(root) and only while Sampo's own record says a turn is in flight and
+            # HEAD is on that lane: the name HEAD holds picks nothing, it only switches this worktree's own folder on
+            on_lane = _own_lane(root, _head_ref(root)) and _recorded(root) is not None
+            out += ref_grants(common, root, on_lane)
     out += [os.path.join(home, ".claude", x) for x in _CLAUDE_WRITABLE]
     out += [os.path.join(home, x) for x in _HOME_WRITABLE]
     out += state_grants(state)
     out += _worker_sessions_grant(root, state)
     for var, sub in (("TMPDIR", ""), ("XDG_CACHE_HOME", ""), ("CARGO_HOME", "registry"), ("GOPATH", "pkg")):
-        if os.environ.get(var):
-            out.append(os.path.join(os.environ[var], sub) if sub else os.environ[var])
+        if g := _env_grant(os.environ.get(var), sub, home, state):
+            out.append(g)
     seen = []
     for p in out:
         if os.path.lexists(p) and os.path.realpath(p) not in seen:
