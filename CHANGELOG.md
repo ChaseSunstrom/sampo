@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- `sampo.hooksmoke.run(plugin)` feeds a tree's own hook four payloads (SessionStart, UserPromptSubmit, a blocked and an allowed Bash call) in a scratch home and answers `(ok, why)` in under a second, naming the case that broke (T-5040).
 - Site pages' numeric claims (stack cards, areas, tests, tasks, lanes, moonshots, feature pages, record tiles) are checked against stats.json, genesis.json and the page list after a build, and the cards page description computes its stack-card count instead of typing "Over a thousand" (T-5035).
 - Background job rows on the live page now carry elapsed time, the ledger's typical time and their ratio, the job's last log line, and, for an ended job, its result (T-5034).
 - A test now compares the README's counts of stack cards, areas, named looks, Board panels, deny rules and the lite CLAUDE.md's length with the live ones and names README.md:line when one drifts; the README's "20 deny rules" is corrected to 11 (T-5032).
