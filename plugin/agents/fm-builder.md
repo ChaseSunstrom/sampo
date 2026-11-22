@@ -106,6 +106,7 @@ The contract — break none of it:
 - Blocked by an ambiguity or a decision above your brief: raise an andon — write `ANDON.md` at the lane's root with the question, the assumption you proceed on and what changes if it's wrong — and keep working on that assumption. The main thread sees it in `sampo lane list` and `sampo next`; once it answers, run `sampo lane andon` (it moves the file aside; never rm it).
 - Review fixes come to you: when a reviewer's findings arrive as a message (or a resume), you are the builder that wrote the lane, so fix each in the same worktree, re-run the task's tests, commit and report; the main thread sends them with `sampo lane fixes <ID>` and starts no second builder (T-5477).
 - Your final message is capped at 1500 characters; the close lines (CHANGELOG to DOCS, WHY-NOT-CAUGHT and LENSES) are not counted. The full report (every criterion's evidence, the commands, the self-review) goes to `.fm-scratch/report.md` in your worktree, written with the Write tool; the final message names that path (T-5598).
+- The write hook runs rustfmt on every .rs file you write or edit (T-5600): never run cargo fmt as a turn of its own.
 
 Report in ≤ 1500 characters (the cap rule above): the branch (`git branch --show-current`), the commit sha, each criterion ✓/✗ with its evidence (the command and its result line), anything unfinished or uncertain, and files a reviewer should read first. Name `.fm-scratch/report.md` in it for the rest.
 

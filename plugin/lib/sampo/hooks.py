@@ -10,6 +10,7 @@ import json
 import os
 import re
 import shlex
+import signal
 import stat
 import sys
 import time
@@ -3051,7 +3052,7 @@ def _syntax_note(path):
     return None
 
 
-ONWRITE_TIMEOUT = 5  # seconds per project validator (fm check onwrite)
+ONWRITE_TIMEOUT = 5  # seconds for each project validator (fm check onwrite), and for the one rustfmt call (T-5600)
 _CARD = c.lazy(r"/skills/library/cards/[^/]+/[^/]+\.md$")
 
 
@@ -3075,10 +3076,73 @@ def _frontmatter_problem(path):
             f"otherwise); add them between --- lines at the top.") if missing else None
 
 
+_RUST_EDITION = c.lazy(r"""(?m)^edition[ \t]*=[ \t]*["'](\d{4})["'][ \t]*(?:#.*)?$""")
+
+
+def _rust_edition(path, root):
+    """T-5600: the edition rustfmt formats by: the edition line of the nearest Cargo.toml (double or single quotes, an
+    optional trailing # comment), walking up at most 16 folders and never past the project root (a member with
+    edition.workspace = true has no such line, so its workspace root's counts); 2021 without one. Digits only."""
+    folder = os.path.dirname(path)
+    for _ in range(16):
+        try:
+            with open(os.path.join(folder, "Cargo.toml"), encoding="utf-8") as f:
+                m = _RUST_EDITION.search(f.read(20000))
+        except (OSError, ValueError):
+            m = None
+        if m:
+            return m.group(1)
+        if os.path.normcase(folder) == os.path.normcase(root) or os.path.dirname(folder) == folder:
+            break
+        folder = os.path.dirname(folder)
+    return "2021"
+
+
+def _rustfmt(p, path):
+    """T-5600: a Rust file the write hook formats, so a builder runs no cargo fmt turn. The file's text goes to one
+    `rustfmt --emit stdout` call on stdin, so rustfmt never sees the path: it follows no out-of-line module (cargo fmt
+    would rewrite files this write didn't touch) and writes nothing itself. The file is written only when the text
+    differs. The call and its pipes share one ONWRITE_TIMEOUT deadline, and the process group is killed at it. A
+    missing rustfmt, a symlink out of the project, a parse error (exit 1, the message on stderr) or a timeout leaves the
+    file as it is and says nothing: a formatter never blocks a write. Returns the note that a reformat was made."""
+    if not path.endswith(".rs") or not os.path.isfile(path) or not shutil.which("rustfmt"):
+        return None
+    if os.path.relpath(os.path.realpath(path), os.path.realpath(p.root)).startswith(".."):
+        return None
+    try:
+        with open(path, "rb") as f:
+            before = f.read()
+        proc = subprocess.Popen(["rustfmt", "--edition", _rust_edition(path, p.root), "--emit", "stdout"],
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                cwd=p.root, start_new_session=True)
+    except OSError:
+        return None
+    try:
+        out, _ = proc.communicate(before, timeout=ONWRITE_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)  # the group: a child of rustfmt can't hold the pipe open
+        except OSError:
+            pass
+        proc.communicate()
+        return None
+    if proc.returncode != 0 or not out or out == before:
+        return None
+    try:
+        with open(path, "wb") as f:
+            f.write(out)
+    except OSError:
+        return None
+    rel = os.path.relpath(path, p.root)
+    c.log_event(p, "rustfmt", data={"file": rel})
+    return f"Sampo: rustfmt reformatted {rel}; re-read it before the next Edit"
+
+
 def _onwrite(p, path):
     """T-0947: the validators for a file just written, as (problem, note): a problem blocks until fixed; a note (a
     project validator that timed out, which says nothing about the file) doesn't. Built-ins run in this process; the
-    project's own (fm check onwrite GLOB 'CMD {file}') run in its root, ONWRITE_TIMEOUT seconds each."""
+    project's own (fm check onwrite GLOB 'CMD {file}') run in its root, ONWRITE_TIMEOUT seconds each. T-5600: a .rs
+    file in the project is formatted by rustfmt first (_rustfmt), and a reformat is said in the note."""
     rel = os.path.relpath(path, p.root)
     # T-2035: Python outside the project (a scratch snippet that starts indented) isn't code it runs; JSON is checked
     # everywhere (an fm edit draft)
@@ -3090,17 +3154,21 @@ def _onwrite(p, path):
         problem = (f"Sampo: the stack card fails the lint (sampo lib check): {'; '.join(found)}") if found else None
     if problem:
         return problem, None
+    # T-5600: a reformat is said in the note (even when a project rule then blocks), before the project's own rules run
+    fmt = None if rel.startswith("..") else _rustfmt(p, path)
     rules = (c.read_meta(p).get("onwrite") or {}) if not rel.startswith("..") else {}
     for pattern, cmd in rules.items():
         if not fnmatch.fnmatch(rel, pattern) or not os.path.isfile(path):
             continue
         code, out = c.run_command(p.root, cmd.replace("{file}", shlex.quote(path)), timeout=ONWRITE_TIMEOUT)
         if code == 124:
-            return None, f"Sampo: the onwrite validator for {pattern} timed out after {ONWRITE_TIMEOUT}s: `{cmd}`"
+            return None, "\n".join(filter(None, [fmt, f"Sampo: the onwrite validator for {pattern} timed out after "
+                                                       f"{ONWRITE_TIMEOUT}s: `{cmd}`"]))
         if code:
             tail = "\n".join([l for l in out.splitlines() if l.strip()][-8:])
-            return f"Sampo: {rel} fails the project's onwrite check `{cmd}` (exit {code}):\n{tail}", None
-    return None, None
+            return "\n".join(filter(None, [f"Sampo: {rel} fails the project's onwrite check `{cmd}` (exit {code}):\n{tail}",
+                                           fmt])), None
+    return None, fmt
 
 
 THRASH = 6  # edits of one file with no check recorded in between
