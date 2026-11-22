@@ -196,20 +196,26 @@ class ReviewerAudits(ForemanTestCase):
         self.assertEqual(self.brief().audits(), [], "no heading, no audit: the lead records it as before")
 
     # T-5516 item 1: the task is the one the reviewer's prompt names, never the focused task by default
-    def test_reviewer_audits_report_naming_another_task_than_its_prompt_records_nothing(self):
+    def test_reviewer_audits_report_naming_another_task_than_its_prompt_binds_the_prompts(self):
         other = self.other_task()
-        self.stop(f"{other} reviewed.\n" + APPROVE)  # the prompt names self.tid: the report's task disagrees
+        self.stop(f"{other} reviewed.\n" + APPROVE)  # T-5913: the prompt's review brief decides, not the report's ids
+        self.assertEqual([lens for lens, _, _ in self.brief().audits()], ["intent", "adversary"])
+        self.assertEqual(self.brief_of(other).audits(), [])
+
+    def test_reviewer_audits_report_and_focused_task_disagreeing_without_a_prompt_record_nothing(self):
+        other = self.other_task()
+        self.stop(f"{other} reviewed.\n" + APPROVE, transcript=False)  # no brief path: the old rule
         self.assertEqual(self.brief().audits(), [])
         self.assertEqual(self.brief_of(other).audits(), [])
         unbound = c.ledger_events(c.find_project(self.repo), kinds=["reviewer_unbound"])
         self.assertTrue(any(other in json.dumps(e) and self.tid in json.dumps(e) for e in unbound),
                         "the disagreement is logged with the tasks it names")
 
-    def test_reviewer_audits_prompt_naming_another_task_than_the_focused_one_records_nothing(self):
+    def test_reviewer_audits_prompt_naming_another_task_than_the_focused_one_binds_the_prompts(self):
         other = self.other_task()
-        self.stop(APPROVE, prompt=self.review_prompt(other))  # the focused task is self.tid: the prompt disagrees
+        self.stop(APPROVE, prompt=self.review_prompt(other))  # T-5913: the focus is only a guess; `other` was never briefed
         self.assertEqual(self.brief().audits(), [])
-        self.assertEqual(self.brief_of(other).audits(), [])
+        self.assertEqual(self.brief_of(other).audits(), [], "no tree was briefed on it: nothing is recorded")
 
     def test_reviewer_audits_without_a_transcript_or_a_report_task_binds_nothing(self):
         self.stop(APPROVE, transcript=False)  # the focused task is only a guess: no audit lands on it

@@ -7279,3 +7279,216 @@ class GuardCtxCost(ForemanTestCase):
         with open(hooks.__file__, encoding="utf-8") as f:
             src = f.read()
         self.assertRegex(src, r"ctx, p, act = _guard_ctx\(pl, guard, lanes\)\n\s+ctx\.index_inline = inline\n\s+mark\(\"state\"\)")
+
+
+APPROVE_ALL = """**Verdict** — approve.
+
+## lens: intent
+No findings.
+
+## lens: adversary
+No findings.
+"""
+CHANGES_ONE = """**Verdict** — changes needed.
+
+## lens: adversary
+- HIGH — `plugin/lib/fmhooks.py:12` — trusts the payload text — cap it — high
+"""
+DELTA_APPROVE = "**Verdict** — approve. The three fixes hold.\n"
+RESTATED = "**Verdict** — approve.\n\n## lens: adversary\nNo findings.\n"
+
+
+class ReviewerBind(ForemanTestCase):
+    """T-5913: a reviewer's reply records its audits on the task its prompt's review brief names, whatever other tasks its
+    report mentions; a resumed reviewer binds to the task its first reply bound to; a delta round on a moved lane that names
+    the new head is accepted; an approve after a changes-needed round records the lenses with the round count."""
+
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        self.tid = json.loads(self.fm("task", "new", "Fix login", "--type", "FIX", "--tier", "S", "--json").stdout)["id"]
+        self.fm("task", "step", self.tid, "add", "fix")
+        self.fm("task", "ac", self.tid, "add", "works", "--verify", "pytest")
+        self.fm("focus", self.tid)
+        self.fm("audit", "prep", self.tid)
+
+    def prompt(self, tid):
+        return f"Read {os.path.join(self.tmp, 'audits', f'{tid}.review.md')} and do the review it describes."
+
+    def stop(self, msg, turns, agent_id="a1"):
+        """A reviewer's stop whose transcript holds these user turns (the first is its prompt, a later one a delta round)."""
+        path = os.path.join(self.tmp, f"{agent_id}.jsonl")
+        with open(path, "w", encoding="utf-8") as f:
+            for t in turns:
+                f.write(json.dumps({"type": "user", "message": {"role": "user", "content": t}}) + "\n")
+                f.write(json.dumps({"type": "assistant", "message": {"role": "assistant", "content": "ok"}}) + "\n")
+        self.hook("SubagentStop", {"agent_id": agent_id, "agent_type": "sampo:fm-reviewer",
+                                   "last_assistant_message": msg, "agent_transcript_path": path})
+
+    def brief(self, tid=None):
+        return c.find_brief(c.find_project(self.repo), tid or self.tid)
+
+    def lenses(self):
+        return [lens for lens, _, _ in self.brief().audits()]
+
+    def other(self):
+        return json.loads(self.fm("task", "new", "Fix logout", "--type", "FIX", "--tier", "S", "--json").stdout)["id"]
+
+    def unbound(self):
+        return [e["data"]["why"] for e in c.ledger_events(c.find_project(self.repo), kinds=["reviewer_unbound"])]
+
+    def commit(self):
+        with open(os.path.join(self.repo, "moved.txt"), "w", encoding="utf-8") as f:
+            f.write("a later commit\n")
+        subprocess.run(["git", "-C", self.repo, "add", "-A"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", self.repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "more"],
+                       check=True, capture_output=True)
+        return subprocess.run(["git", "-C", self.repo, "rev-parse", "HEAD"], check=True, capture_output=True,
+                              text=True).stdout.strip()
+
+    def test_the_review_brief_in_the_prompt_binds_though_the_report_names_other_tasks(self):
+        other = self.other()  # today's ledger: "prompt names T-5884; report names T-5899"
+        self.stop(f"Compared with {other} and T-9999: fine.\n" + APPROVE_ALL, [self.prompt(self.tid)])
+        self.assertEqual(self.lenses(), ["intent", "adversary"])
+        self.assertEqual(self.brief(other).audits(), [])
+        self.assertEqual(self.unbound(), [])
+
+    def test_the_review_brief_in_the_prompt_binds_over_the_focused_task(self):
+        other = self.other()
+        self.stop(APPROVE_ALL, [self.prompt(other)])  # the focus is self.tid: the prompt names the task reviewed
+        self.assertEqual(self.brief().audits(), [])
+        self.assertEqual(len(self.brief(other).audits()), 0, "its review tree was never briefed: nothing recorded there")
+        self.assertTrue(any("no tree was briefed" in w for w in self.unbound()))
+
+    def test_a_prompt_naming_two_review_briefs_binds_nothing(self):
+        other = self.other()
+        self.stop(APPROVE_ALL, [self.prompt(self.tid) + " Then " + self.prompt(other)])
+        self.assertEqual(self.lenses(), [])
+        self.assertEqual(self.unbound(), [f"prompt names {self.tid} and {other}"])
+
+    def test_without_a_brief_path_the_old_rule_holds_report_and_active_must_agree(self):
+        other = self.other()
+        self.stop(f"{other} reviewed.\n" + APPROVE_ALL, ["review the lane please"])
+        self.assertEqual(self.lenses(), [])
+        self.assertEqual(self.unbound(), [f"report names {other}; active names {self.tid}"])
+
+    def test_a_resumed_reviewer_binds_to_the_task_its_first_reply_bound(self):
+        other = self.other()
+        self.stop(f"{self.tid} reviewed.\n" + CHANGES_ONE, ["review the lane please"])  # first reply: the old rule binds
+        self.assertEqual(self.brief().meta.get("changes_asked"), "a1")
+        self.stop(f"Fixes checked; see {other} for the same.\n" + RESTATED,
+                  ["review the lane please", "re-check the three fixes"])  # the delta round names no task
+        self.assertEqual(self.unbound(), [])
+        self.assertEqual(self.lenses(), ["adversary"])
+
+    def test_a_delta_round_naming_the_new_head_is_accepted_on_the_moved_lane(self):
+        head = self.commit()  # the lane moved since the brief
+        self.stop(APPROVE_ALL, [self.prompt(self.tid), f"The builder fixed it: re-review commit {head[:9]}."])
+        self.assertEqual(self.lenses(), ["intent", "adversary"])
+        self.assertEqual(self.unbound(), [])
+        tree = self.brief().meta.get("review_tree")
+        self.assertEqual({t for _, _, t in self.brief().audits()}, {tree}, "the audits carry the tree the head has")
+
+    def test_a_moved_lane_without_the_head_in_a_later_prompt_is_still_refused(self):
+        self.commit()
+        self.stop(APPROVE_ALL, [self.prompt(self.tid)])  # no delta round at all
+        self.assertEqual(self.lenses(), [])
+        self.assertTrue(any(w.startswith("the lane moved since the brief") for w in self.unbound()), self.unbound())
+        old = subprocess.run(["git", "-C", self.repo, "rev-parse", "HEAD~1"], check=True, capture_output=True,
+                             text=True).stdout.strip()
+        self.stop(APPROVE_ALL, [self.prompt(self.tid), f"re-review commit {old[:9]}"], agent_id="a2")  # an older commit
+        self.assertEqual(self.lenses(), [])
+
+    def test_a_named_head_with_a_dirty_lane_is_refused(self):
+        head = self.commit()
+        with open(os.path.join(self.repo, "moved.txt"), "w", encoding="utf-8") as f:
+            f.write("edited after the head the review was told to read\n")  # tracked file, uncommitted
+        self.stop(APPROVE_ALL, [self.prompt(self.tid), f"re-review commit {head[:9]}"])
+        self.assertEqual(self.lenses(), [])
+        self.assertTrue(any("moved since the brief" in w and "uncommitted" in w for w in self.unbound()), self.unbound())
+
+    def test_a_named_head_with_an_untracked_file_in_the_lane_is_refused(self):
+        head = self.commit()
+        with open(os.path.join(self.repo, "new.txt"), "w", encoding="utf-8") as f:
+            f.write("untracked\n")
+        self.stop(APPROVE_ALL, [self.prompt(self.tid), f"re-review commit {head[:9]}"])
+        self.assertEqual(self.lenses(), [])
+        self.assertTrue(any("uncommitted" in w for w in self.unbound()), self.unbound())
+
+    def test_a_rebound_tree_carries_no_earlier_lens_unless_the_reply_restates_it(self):
+        self.stop(CHANGES_ONE, [self.prompt(self.tid)])
+        head = self.commit()
+        delta = [self.prompt(self.tid), f"re-review commit {head[:9]}"]
+        self.stop(DELTA_APPROVE, delta)  # a short approve on a new tree: it says nothing about the adversary lens
+        self.assertEqual(self.lenses(), [])
+        self.stop("**Verdict** — approve.\n\n## lens: adversary\nNo findings.\n", delta)  # restated: recorded as written
+        self.assertEqual(self.lenses(), ["adversary"])
+
+    def test_an_approve_after_a_changes_round_records_the_lenses_with_the_round_count(self):
+        self.stop(CHANGES_ONE, [self.prompt(self.tid)])
+        self.assertEqual(self.lenses(), [])
+        self.stop(RESTATED, [self.prompt(self.tid), "re-check"])
+        self.assertEqual(self.lenses(), ["adversary"])
+        row = [x for x in self.brief().evidence() if c._AUDIT_RE.match(x)][0]
+        self.assertIn("approve, 0 findings, round 2 after 1 changes needed", row)
+        self.assertFalse(self.brief().meta.get("changes_asked"))
+
+    def test_a_short_approve_after_changes_records_no_lens_it_did_not_write(self):
+        self.stop(CHANGES_ONE, [self.prompt(self.tid)])
+        self.stop(DELTA_APPROVE, [self.prompt(self.tid), "re-check"])  # no lens heading: nothing to credit
+        self.assertEqual(self.lenses(), [], "a lens that had a HIGH is not passed by a verdict line alone")
+
+    def test_an_approve_after_changes_does_not_credit_a_lens_the_approve_itself_marks_unchecked(self):
+        self.stop(CHANGES_ONE, [self.prompt(self.tid)])
+        self.stop("**Verdict** — approve.\n\n## lens: adversary — not checked (no runtime)\nNo findings.\n",
+                  [self.prompt(self.tid), "re-check"])
+        self.assertEqual(self.lenses(), [])
+
+    def test_the_round_count_is_written_only_for_the_reviewer_that_asked_for_the_changes(self):
+        self.stop(CHANGES_ONE, [self.prompt(self.tid)], agent_id="a1")
+        self.stop(RESTATED, [self.prompt(self.tid)], agent_id="a2")
+        rows = [x for x in self.brief().evidence() if c._AUDIT_RE.match(x)]
+        self.assertEqual(len(rows), 1)
+        self.assertNotIn("round", rows[0])
+
+    def test_a_brief_path_that_only_appears_in_prose_does_not_bind_its_task(self):
+        other = self.other()
+        prose = f"Review the lane. Last round is in {os.path.join(self.tmp, 'audits', f'{other}.review.md')} for context."
+        self.stop(f"{self.tid} reviewed.\n" + APPROVE_ALL, [prose])  # the report and the active task agree: self.tid
+        self.assertEqual(self.lenses(), ["intent", "adversary"])
+        self.assertEqual(self.brief(other).audits(), [])
+
+    def test_a_prose_brief_path_equal_to_the_reports_task_binds(self):
+        prose = f"Review the lane against {os.path.join(self.tmp, 'audits', f'{self.tid}.review.md')} please."
+        self.stop(f"{self.tid} reviewed.\n" + APPROVE_ALL, [prose])
+        self.assertEqual(self.lenses(), ["intent", "adversary"])
+
+    def test_a_later_turn_naming_another_brief_is_logged_not_silently_ignored(self):
+        other = self.other()
+        self.stop(APPROVE_ALL, [self.prompt(self.tid), self.prompt(other)])
+        self.assertEqual(self.lenses(), [])
+        self.assertEqual(self.unbound(), [f"a later turn names {other}; bound to {self.tid}"])
+
+    def test_the_head_is_read_only_from_the_last_turn_not_an_injected_reminder(self):
+        head = self.commit()
+        reminder = f"<system-reminder>git status: recent commit {head[:9]}</system-reminder>"
+        self.stop(APPROVE_ALL, [self.prompt(self.tid), "go on", reminder], agent_id="a1")  # the reminder is no turn
+        self.assertEqual(self.lenses(), [], "the SendMessage turn does not name the head")
+        self.stop(APPROVE_ALL, [self.prompt(self.tid), f"re-review commit {head[:9]}", reminder], agent_id="a2")
+        self.assertEqual(self.lenses(), ["intent", "adversary"])
+
+    def test_the_agents_bound_task_is_looked_up_once_per_stop(self):
+        from sampo import hooks
+        path = os.path.join(self.tmp, "once.jsonl")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"type": "user", "message": {"role": "user", "content": self.prompt(self.tid)}}) + "\n")
+        pl = {"agent_id": "a1", "agent_type": "sampo:fm-reviewer", "last_assistant_message": APPROVE_ALL,
+              "agent_transcript_path": path, "cwd": self.repo, "session_id": "sess-1"}
+        with mock.patch.object(hooks, "_agent_task", wraps=hooks._agent_task) as spy, mock.patch("sampo.tripwire.start"):
+            hooks.subagent_stop(pl)
+        self.assertEqual(spy.call_count, 1)
+
+    def test_another_reviewers_short_approve_credits_no_carried_lens(self):
+        self.stop(CHANGES_ONE, [self.prompt(self.tid)], agent_id="a1")
+        self.stop(DELTA_APPROVE, [self.prompt(self.tid)], agent_id="a2")
+        self.assertEqual(self.lenses(), [])

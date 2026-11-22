@@ -8285,58 +8285,145 @@ def _close_refused(pl, who):
 _REVIEW_BRIEF = c.lazy(r"audits/(T-\d{4,})\.review(?:-\d+)?\.md")  # T-5553: compiled on first use, never at import
 
 
-def _prompt_task(path):
-    """T-5516: the task a reviewer was briefed on: the review brief its first user turn names (audits/T-X.review.md).
-    The transcript is read in bounded pieces; a missing or unreadable one names no task."""
+TURN_TAIL = 524288  # T-5913: how much of a transcript's end is read for the turns after the first
+_REMINDER = c.lazy(r"(?is)<system-reminder>.*?</system-reminder>")  # T-5913: Claude Code's injected context blocks
+_FIXED_PROMPT = c.lazy(r"(?s)Read\s+\S*audits/(T-\d{4,})\.review(?:-\d+)?\.md\s+and do the review\b")  # cli's template
+
+
+def _user_turns(path):
+    """T-5913: the text of a reviewer's user turns, oldest first: the first (its prompt) from the top of the transcript,
+    the later ones (a SendMessage delta round) from its last TURN_TAIL bytes. Read in bounded pieces; a missing or
+    unreadable transcript has none. Tool results are no turn: only text blocks count."""
     if not path:
-        return None
+        return []
+    turns = []
+
+    def take(line):
+        try:
+            e = json.loads(line)
+        except ValueError:
+            return
+        if not isinstance(e, dict) or e.get("type") != "user":
+            return
+        m = e.get("message")
+        content = m.get("content") if isinstance(m, dict) else None
+        if isinstance(content, list):
+            content = "\n".join(x.get("text") or "" for x in content if isinstance(x, dict) and x.get("type") == "text")
+        if isinstance(content, str):
+            content = _REMINDER.sub("", content).strip()  # injected context is no part of what the lead said
+            if content:
+                turns.append(content)
+
     try:
-        with open(path, encoding="utf-8", errors="replace") as f:
+        with open(path, "rb") as f:
             for _ in range(50):  # the prompt is the first user turn, near the top
                 line = f.readline(262144)
                 if not line:
                     break
-                try:
-                    e = json.loads(line)
-                except ValueError:
-                    continue
-                if not isinstance(e, dict) or e.get("type") != "user":
-                    continue
-                m = e.get("message")
-                content = m.get("content") if isinstance(m, dict) else None
-                if isinstance(content, list):
-                    content = "\n".join(x.get("text") or "" for x in content
-                                        if isinstance(x, dict) and x.get("type") == "text")
-                found = _REVIEW_BRIEF.search(content) if isinstance(content, str) else None
-                return found.group(1) if found else None
-    except OSError:
+                take(line)
+                if turns:
+                    break
+            if not turns:
+                return []
+            after = f.tell()  # the later turns start past the first
+            end = f.seek(0, os.SEEK_END)
+            start = max(after, end - TURN_TAIL)
+            f.seek(start)
+            if start > after:
+                f.readline()  # the cut line is partial
+            for line in f.read(TURN_TAIL).splitlines()[-400:]:
+                take(line)
+    except (OSError, ValueError):
+        return turns
+    return turns
+
+
+def _prompt_tasks(turns):
+    """T-5913: the tasks whose review brief (audits/T-X.review.md) a reviewer's first user turn names, in order."""
+    out = []
+    for m in _REVIEW_BRIEF.finditer(turns[0]) if turns else ():
+        if m.group(1) not in out:
+            out.append(m.group(1))
+    return out
+
+
+def _agent_task(p, aid):
+    """T-5913: the task this agent's first reply was bound to (a reviewer_bound row), or None: a resumed reviewer
+    (SendMessage) answers for the task it was first bound to, whatever its delta prompt says."""
+    if not aid:
         return None
+    for e in c.ledger_events(p, kinds=["reviewer_bound"]):
+        d = e.get("data") if isinstance(e.get("data"), dict) else {}
+        if d.get("agent_id") == aid and isinstance(e.get("task"), str) and e["task"]:
+            return e["task"]
     return None
 
 
-def _reviewer_task(path, msg, act):
-    """T-5516: the task a reviewer's report is for. Three sources name one: its prompt (the brief it was given), the
-    first task its report names, and the lane's active task. Every one that names a task must name the same one;
-    a disagreement binds nothing and comes back with the reason. Nothing named binds nothing: the focused task is
-    a guess, never the answer. Returns (tid or None, why)."""
-    found = []
-    prompt = _prompt_task(path)
-    if prompt:
-        found.append(("prompt", prompt))
-    named = re.search(r"\bT-\d{4,}\b", msg)
+def _reviewer_task(turns, earlier, msg, act):
+    """T-5516, T-5913: the task a reviewer's report is for, from the first source that names one: the review brief its
+    prompt reads, the task this agent's first reply was bound to (`earlier`, a resumed reviewer), then the old rule:
+    the first task its report names and the lane's active task must agree. The prompt binds only when it holds exactly
+    one brief path and that path is the template's own ("Read <path> and do the review") or the task the report or the
+    lane names: a path in prose ("last round is in audits/T-5800.review.md") is a mention. A prompt with two brief paths
+    is a reviewer on two tasks, and a later turn naming another brief than the bound one is a reviewer pointed
+    elsewhere: nothing binds and the reason comes back. Nothing named binds nothing: the focused task is a guess,
+    never the answer. Returns (tid or None, why)."""
+    named = _prompt_tasks(turns)
+    if len(named) > 1:
+        return None, "prompt names " + " and ".join(named)
+    report = re.search(r"\bT-\d{4,}\b", msg)
+    tid = None
     if named:
-        found.append(("report", named.group(0)))
-    if act:
-        found.append(("active", act.id))
-    ids = {x for _, x in found}
-    if len(ids) > 1:
-        return None, "; ".join(f"{src} names {x}" for src, x in found)
-    if not (prompt or named):
-        return None, ""
-    return (ids.pop() if ids else None), ""
+        fixed = _FIXED_PROMPT.match(turns[0])
+        if (fixed and fixed.group(1) == named[0]) or (report and report.group(0) == named[0]) or \
+                (act and act.id == named[0]):
+            tid = named[0]
+    if not tid and earlier:
+        tid = earlier
+    if not tid:
+        found = [("report", report.group(0))] if report else []
+        if act:
+            found.append(("active", act.id))
+        ids = {x for _, x in found}
+        if len(ids) > 1:
+            return None, "; ".join(f"{src} names {x}" for src, x in found)
+        if not report:
+            return None, ""
+        tid = ids.pop()
+    for t in turns[1:]:
+        for m in _REVIEW_BRIEF.finditer(t):
+            if m.group(1) != tid:
+                return None, f"a later turn names {m.group(1)}; bound to {tid}"
+    return tid, ""
 
 
-def _reviewer_return(p, tid, pl, msg, asked_at=None):
+def _names_head(b, p, turns, now):
+    """T-5913: (rebind, why): whether the lane's current head commit is the one the last user turn (the SendMessage
+    delta round; Claude Code's injected reminders are already out of `turns`) names, as a hex word of 7 or more
+    characters the head's id starts with, AND the lane holds nothing but that commit: its working files (tracked
+    and untracked, the sync mirror aside) equal the head's tree and the tree id `now`. The lead typed the commit it
+    told the reviewer to read, so an approve of it is for the tree the lane has now; a file changed after it is no part
+    of that review (why: what stopped it, '' when no head was named or git could not say)."""
+    if len(turns) < 2:
+        return False, ""
+    lane = str(b.meta.get("lane") or "")
+    root = lane if lane and os.path.isdir(lane) else p.root
+    head = c._git(root, "rev-parse", "HEAD", timeout=10).strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{40,64}", head):
+        return False, ""
+    if not any(head.startswith(w) for w in re.findall(r"\b[0-9a-f]{7,64}\b", turns[-1].lower())):
+        return False, ""
+    tree = c.worktree_tree(root, timeout=60)
+    diff = c._git(root, "diff", "--name-only", head, tree, timeout=30, proc=True) if tree else None
+    if not tree or tree[:12] != now or diff is None or diff.returncode != 0:
+        return False, "the named head's tree could not be compared with the lane's"
+    left = [x for x in diff.stdout.splitlines() if x and not any(x.startswith(m + "/") for m in c.MIRRORS)]
+    if left:
+        return False, f"uncommitted changes since the named head ({len(left)} file{'' if len(left) == 1 else 's'})"
+    return True, ""
+
+
+def _reviewer_return(p, tid, pl, msg, asked_at=None, turns=()):
     """T-5516: a stopped fm-reviewer's report says what its lead would otherwise type. An approve (or approve with nits)
     records one audit per '## lens:' heading on the task it names (how: the reviewer and its agent id; result: the
     verdict and the finding count under that lens), once per agent id. 'changes needed' records none and marks the task
@@ -8368,19 +8455,35 @@ def _reviewer_return(p, tid, pl, msg, asked_at=None):
                         data={"who": aid or "fm-reviewer", "tree": now[:12]})
         else:
             briefed = b.meta.get("review_tree") or ""
+            moved = ""
+            if briefed and briefed != now:
+                rebind, moved = _names_head(b, p, turns, now)
+                if rebind:
+                    # T-5913: a delta round on the moved lane: its SendMessage turn names the head commit and the lane
+                    # holds nothing past it, so the review is of this tree
+                    b.append_log(f"review tree moved {briefed[:12]} to {now[:12]}: the delta round's prompt names the lane's head")
+                    b.meta["review_tree"] = briefed = now
             if not briefed or briefed != now:  # the review judged another tree than the one there is now: nothing counts
                 c.log_event(p, "reviewer_unbound", task=tid, session=pl.get("session_id"),
                             data={"agent_id": aid, "why": "no tree was briefed" if not briefed
-                                  else f"the lane moved since the brief ({briefed[:12]} now {now[:12]})"})
+                                  else f"the lane moved since the brief ({briefed[:12]} now {now[:12]})"
+                                  + (f"; {moved}" if moved else "")})
                 return
-            if b.meta.get("changes_asked") == (aid or "fm-reviewer") or b.meta.get("changes_asked_tree", "") != now:
+            same = b.meta.get("changes_asked") == (aid or "fm-reviewer")
+            # T-5913: only lenses the approve itself writes are recorded (no carry from the changes round: a verdict line
+            # alone does not pass a lens that had a HIGH); the round count only for the reviewer that asked for changes
+            lenses = slanes.reviewer_lenses(msg)
+            if same or b.meta.get("changes_asked_tree", "") != now:
                 # the same reviewer's approve, or a tree the changes were not asked on: its mark is answered
-                for key in ("changes_asked", "changes_asked_at", "changes_asked_tree"):
+                for key in ("changes_asked", "changes_asked_at", "changes_asked_tree", "changes_lenses"):
                     b.meta.pop(key, None)
             from sampo import train  # its audit row rule: the same row, once, as a typed `lane accept --audit`
             who = f"{pl.get('agent_type')} {aid}".strip()
-            for lens, n in slanes.reviewer_lenses(msg).items():
-                train._add_audit_once(b, lens, who, f"{words}, {n} finding{'' if n == 1 else 's'}", briefed)
+            rounds = len([e for e in c.ledger_events(p, kinds=["changes_asked"]) if e.get("task") == tid]) \
+                if same and lenses else 0
+            after = f", round {rounds + 1} after {rounds} changes needed" if rounds else ""
+            for lens, n in lenses.items():
+                train._add_audit_once(b, lens, who, f"{words}, {n} finding{'' if n == 1 else 's'}{after}", briefed)
         c.save_brief(p, b)
 
 
@@ -8414,17 +8517,22 @@ def subagent_stop(pl):
         if re.search(r"(?:^|:)fm-reviewer$", str(pl["agent_type"])):  # T-1181: its findings, without a typed fm task finding
             from sampo import lanes as slanes
             msg = pl.get("last_assistant_message") or ""
-            tid, why = _reviewer_task(pl.get("agent_transcript_path"), msg, act)
+            turns = _user_turns(pl.get("agent_transcript_path"))
+            aid = str(pl.get("agent_id") or "")
+            earlier = _agent_task(p, aid) if aid else None  # T-5913: once per stop (it scans the ledger and its archives)
+            tid, why = _reviewer_task(turns, earlier, msg, act)
             if why:  # T-5516: the prompt, the report and the active task disagree: nothing is recorded, and why is
                 c.log_event(p, "reviewer_unbound", task=None, session=pl.get("session_id"),
                             data={"agent_id": pl.get("agent_id"), "why": why})
             else:
+                if tid and aid and earlier is None:  # T-5913: a resumed round binds to this one
+                    c.log_event(p, "reviewer_bound", task=tid, session=pl.get("session_id"), data={"agent_id": aid})
                 asked_at = c.now()  # before the findings are logged: none of them is older than the mark it sets
                 for lens, sev, file, text in slanes.reviewer_findings(msg):
                     c.log_event(p, "finding", task=tid, session=pl.get("session_id"),
                                 data={"lens": lens, "severity": sev, "file": file, "text": text, "verdict": "reported"})
                 try:  # T-5516: its verdict's audits, or its changes-needed mark (bookkeeping: never the subagent's event)
-                    _reviewer_return(p, tid, pl, msg, asked_at)
+                    _reviewer_return(p, tid, pl, msg, asked_at, turns)
                 except Exception:
                     log_error("SubagentStop", _tb())
         chars = len((pl.get("last_assistant_message") or "").strip())
