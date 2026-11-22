@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- A resumed lane's brief now lists what its last builder committed, the steps done, the last evidence and why it stopped, so the next builder skips re-reading (T-5684).
 - sampo audit prep gives each review lens the non-test diff (ID.src.diff) and a test summary (ID.tests.md), while the full ID.diff stays on disk (T-5683).
 - Calling-card calls record who made them (cli, smith, harness, bench, test or mcp), bench and test calls stay out of pass rates and the rank, and sampo doctor prints a calling cards line (T-5613).
 - `sampo backtest --card NAME` accepts a calling card with a "hand" list of regexes and reports how many by-hand Bash runs it would have replaced in the recorded sessions, with the result bytes and tokens (bytes // 4) those runs read (T-5612).
