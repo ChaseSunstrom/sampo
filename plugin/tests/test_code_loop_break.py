@@ -142,13 +142,25 @@ class ForcedEdit(CodeCase):
         f, r = self.run_script(*SEARCHES, EDIT, call("done", summary="x"))
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("return a + b", self.calc())
-        self.assertLessEqual(tool_names(f.seen[1]), {"read", "search", "run", "edit", "write", "done", "lib", "unprovable"})
+        self.assertLessEqual(tool_names(f.seen[1]), {"read", "search", "run", "edit", "write", "done", "lib", "unprovable", "do"})  # T-5797: "do" is T-3923's routine tool
         self.assertIn("search", tool_names(f.seen[8]), "eight explorations are within the budget")
         forced = f.seen[9]  # plan, eight searches, then the ninth turn
         self.assertTrue({"edit", "write"} <= tool_names(forced))
-        self.assertFalse(tool_names(forced) & {"read", "search", "run", "card", "lib"}, tool_names(forced))
+        self.assertFalse(tool_names(forced) & {"read", "search", "run", "card", "lib", "do"}, tool_names(forced))
         self.assertIn("explor", last(f, 9), "the turn says why, and what was read is summarised")
         self.assertIn("calc.py", last(f, 9))
+
+    def test_forced_edit_a_routine_the_do_tool_runs_counts_as_a_look_against_the_budget(self):
+        # T-5797: `do` runs commands, so eight of them are the budget as eight searches are. A name no routine has
+        # is refused before anything runs, so the test starts nothing.
+        looks = [{"calls": [("do", {"name": f"no-such-routine-{i}"})]} for i in range(8)]  # call() takes name itself
+        f, r = self.run_script(*looks, EDIT, call("done", summary="x"))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("do", tool_names(f.seen[8]), "eight looks are within the budget")
+        self.assertFalse(tool_names(f.seen[9]) & {"do", "read", "search", "run"}, tool_names(f.seen[9]))
+        self.assertTrue({"edit", "write"} <= tool_names(f.seen[9]))
+        self.assertIn("explor", last(f, 9))
+        self.assertIn("return a + b", self.calc())
 
     def test_forced_edit_a_model_that_would_explore_forever_still_ends_with_an_edit(self):
         # a fake that answers every turn with a new search: only a forced turn can change what it does, and the

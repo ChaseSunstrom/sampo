@@ -273,10 +273,10 @@ NESTED = ("args", "arguments", "parameters", "input")
 # T-2878 small-model mode: the plan types that change files, and request words that ask for a change (qwen3.8-27b planned
 # 'Something is off in the paging; find and fix it.' as RESEARCH, closed it on a check already green, and edited nothing)
 CHANGE_TYPES = ("FIX", "FEATURE", "PERFORMANCE", "SECURITY")
-# T-4177: a step of a change plan may look (read, search, run, card) this many times before it has edited, by the plan's
+# T-4177: a step of a change plan may look (read, search, run, card, lib, skill, do: T-5797) this many times before it has edited, by the plan's
 # tier; then the turn is a forced edit (qwen3.8-27b on T-4132: 40 turns, 23 reads, 12 searches, 0 edits)
 EXPLORE_BUDGET, FORCE_TURNS, SCRATCH_CHARS = dict(zip(core.TIERS, (8, 10) + (12,) * (len(core.TIERS) - 2))), 3, 1600  # T-4220: a big tier explores like an L
-EXPLORING = ("read", "search", "run", "card", "lib", "skill")
+EXPLORING = ("read", "search", "run", "card", "lib", "skill", "do")  # T-5797: a routine runs commands, as run does
 # T-1390: Agent Skills (SKILL.md folders of the installed plugins, and of the open-licence lib sources) offered to any model
 # by name and description, within 1/SKILL_BUDGET_FRAC of its context in tokens (at most SKILL_BUDGET_MAX; SKILL_BUDGET_UNKNOWN
 # when the context is not known); each description is cut at SKILL_DESC_MAX characters; a body or a file of the skill's
