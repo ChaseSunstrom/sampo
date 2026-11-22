@@ -30,6 +30,7 @@ import shlex
 import subprocess
 
 from sampo import core as c
+from sampo import killsafe
 
 CONCERNS = "concerns.jsonl"
 LINK_S = 1800      # a capture links to the newest message of its session before it, within this many seconds
@@ -748,7 +749,7 @@ def _run_capped(argv, cwd):
 
     def kill():
         try:
-            os.killpg(proc.pid, signal.SIGKILL)
+            killsafe.killpg(proc.pid, signal.SIGKILL)
         except OSError:
             pass
     got, end, why = bytearray(), time.monotonic() + PROOF_S, None

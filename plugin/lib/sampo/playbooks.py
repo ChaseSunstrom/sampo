@@ -42,6 +42,7 @@ import time
 from array import array
 
 from sampo import core as c
+from sampo import killsafe
 
 ROOT = os.environ.get("FOREMAN_PLAYBOOKS") or os.path.join(c.PLUGIN_ROOT, "skills", "playbooks")  # tests: a fixture
 RATCHET = "ratchet.json"  # {path: tokens (chars / 4)}
@@ -213,7 +214,7 @@ def _run(code, timeout, limits=(), argv=(sys.executable, "-I", "-c"), env=None, 
         except subprocess.TimeoutExpired:
             rc = None
         try:  # a timed-out leader isn't reaped yet, and live members hold the group id: it can't have been reused
-            os.killpg(proc.pid, signal.SIGKILL)
+            killsafe.killpg(proc.pid, signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
             pass
         if rc is None:

@@ -39,6 +39,7 @@ import time
 import types
 
 from sampo import core as c
+from sampo import killsafe
 from sampo import landlock
 
 TIMEOUT = 60  # seconds per generator or checker run
@@ -712,7 +713,7 @@ def _spawn(argv, cwd, stdin, reads, writes, logs, timeout):
                     break
         finally:
             try:
-                os.killpg(p.pid, signal.SIGKILL)  # seccomp keeps all it started in this group: they go with it
+                killsafe.killpg(p.pid, signal.SIGKILL)  # seccomp keeps all it started in this group: they go with it
             except (ProcessLookupError, PermissionError):
                 pass
             rc = p.wait()

@@ -26,6 +26,7 @@ import threading
 import time
 import unicodedata
 
+from sampo import killsafe
 from sampo.smithterm import PASTE_CAP, Term, colour_depth, parse_keys, session, split_tail  # noqa: E402 (T-1300)
 
 SCHEMA = 1  # the fm code event stream this reader knows (fmcode.SCHEMA)
@@ -2911,13 +2912,13 @@ class App:
         for p in [self.runner_proc, *self.side]:  # T-1511: a runner test's CLI and T-1770's asks (each its own
             if p is not None and getattr(p, "poll", lambda: 0)() is None:  # session) end with the app
                 try:
-                    os.killpg(p.pid, signal.SIGKILL)
+                    killsafe.killpg(p.pid, signal.SIGKILL)
                 except OSError:
                     pass
         if self.running():
             self.stopping = self._runners_of_child()  # T-1756: named on the way out
             try:
-                os.killpg(self.child.pid, signal.SIGTERM)
+                killsafe.killpg(self.child.pid, signal.SIGTERM)
             except (OSError, AttributeError):
                 pass
             self.message = "stopped: r resumes"
@@ -3100,8 +3101,7 @@ class App:
             how = "stopped"
             if _alive(pid):
                 try:
-                    os.killpg(pid, signal.SIGKILL)
-                    how = "stopped (killed)"
+                    how = "stopped (killed)" if killsafe.killpg(pid, signal.SIGKILL) else f"still running: kill {pid}"
                 except OSError:
                     how = f"still running: kill {pid}"
             lines.append(f"stopping {name} (pid {pid})… {how}")
@@ -3795,7 +3795,7 @@ class App:
                 self.runner_proc = p
                 if self.done and p.poll() is None:  # T-2030: the quit landed before this; stop() saw no CLI
                     with contextlib.suppress(OSError):
-                        os.killpg(p.pid, signal.SIGKILL)
+                        killsafe.killpg(p.pid, signal.SIGKILL)
             try:
                 if ping:
                     got = smith.ping_runner(item["name"], on_spawn=spawned)

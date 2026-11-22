@@ -23,6 +23,7 @@ import urllib.request
 import zlib
 
 from sampo import core as c
+from sampo import killsafe
 
 VIEWS = (("desktop", (1440, 900)), ("phone", (390, 844)))
 SCREENS, DIAGRAMS = os.path.join("docs", "assets", "screens"), os.path.join("docs", "assets", "diagrams")
@@ -601,7 +602,7 @@ class App:
     def stop(self):
         for sig in (signal.SIGTERM, signal.SIGKILL):
             try:
-                os.killpg(self.proc.pid, sig)
+                killsafe.killpg(self.proc.pid, sig)
             except (ProcessLookupError, PermissionError):
                 break
             try:

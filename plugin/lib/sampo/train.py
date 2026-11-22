@@ -31,6 +31,7 @@ import time
 import typing
 
 from sampo import core as c
+from sampo import killsafe
 from sampo.lanes import CLOSE_MARK, CriterionRed, _git, _ref_ok, _verify, clear_git_locks, cpu_env, git_lock_lines, \
     pm_after_train, pm_record, pm_rerun_cmd, pm_wait, train_lock, train_lock_closing
 
@@ -3047,7 +3048,7 @@ def _ship_run(main, grant, head, argv=None):
                     if time.monotonic() >= deadline:
                         capped = True
                         with contextlib.suppress(OSError):
-                            os.killpg(proc.pid, signal.SIGKILL)
+                            killsafe.killpg(proc.pid, signal.SIGKILL)
                         rc = proc.wait()
                 drain()
             drain(last=True)
@@ -5214,8 +5215,7 @@ def stop_check(b):
     if not _check_alive(m) or str(m.get("check_pid")) == str(os.getpid()):  # never this process
         return False
     with contextlib.suppress(OSError, ValueError):
-        os.kill(int(m["check_pid"]), signal.SIGTERM)
-        return True
+        return killsafe.kill(int(m["check_pid"]), signal.SIGTERM)
     return False
 
 

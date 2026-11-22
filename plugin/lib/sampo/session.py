@@ -24,6 +24,7 @@ import sys
 import time
 
 from sampo import core as c
+from sampo import killsafe
 
 AGENTS = ("claude", "codex", "gemini", "opencode", "agy", "cursor")  # gemini is legacy (T-3347): Code Assist Enterprise/API keys only
 BINARY = {"cursor": "cursor-agent"}  # the executable where it differs from the agent's name
@@ -477,12 +478,12 @@ def stop(sid):
     pid = meta.get("pid")
     if _alive(pid, sid):
         try:
-            os.killpg(pid, signal.SIGTERM)  # the runner leads its own group: the agent and its tools go with it
+            killsafe.killpg(pid, signal.SIGTERM)  # the runner leads its own group: the agent and its tools go with it
             end = time.time() + 3
             while time.time() < end and _group(pid):
                 time.sleep(0.05)
             if _group(pid):
-                os.killpg(pid, signal.SIGKILL)
+                killsafe.killpg(pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
     meta = _set(sid, status="stopped", pid=None)

@@ -28,6 +28,7 @@ import unicodedata
 
 from sampo import core as c
 from sampo import img as simg
+from sampo import killsafe
 
 SIZE = (1280, 800)
 MAX_FRAMES, MIN_EVERY, MAX_EVERY = 60, 10, 10000
@@ -268,12 +269,12 @@ class Browser:
     def close(self):
         if self.pid:
             try:
-                os.killpg(self.pid, signal.SIGKILL)
+                killsafe.killpg(self.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
             except PermissionError:  # the group can't be signalled: the browser itself, at least
                 with contextlib.suppress(OSError):
-                    os.kill(self.pid, signal.SIGKILL)
+                    killsafe.kill(self.pid, signal.SIGKILL)
             end = time.monotonic() + CLOSE_S  # a browser that can't be killed is left, not waited on forever
             with contextlib.suppress(ChildProcessError):
                 while not os.waitpid(self.pid, os.WNOHANG)[0] and time.monotonic() < end:

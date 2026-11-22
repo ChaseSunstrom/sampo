@@ -66,6 +66,7 @@ import time
 import urllib.parse
 
 from sampo import core
+from sampo import killsafe
 from sampo import models as m
 from sampo import vsearch
 
@@ -5106,7 +5107,7 @@ class Run:
                 # can't be waited out, so work() blocks; a bare 'quota' or '429' only labels the stall, it never kills
                 self.limit_hit = last
                 try:
-                    os.killpg(pid, signal.SIGKILL)
+                    killsafe.killpg(pid, signal.SIGKILL)
                 except (ProcessLookupError, PermissionError):
                     pass
         return beat
@@ -5807,7 +5808,7 @@ def run_bounded(cmd, cwd, timeout, env=None, cap=CAP, reap=False, on_line=None, 
         shown = on_line(line)
         if shown is STOP:  # T-1388: the turn ends now, whatever it would do next
             try:
-                os.killpg(p.pid, signal.SIGKILL)
+                killsafe.killpg(p.pid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError):
                 pass
         return bool(shown)
@@ -5825,7 +5826,7 @@ def run_bounded(cmd, cwd, timeout, env=None, cap=CAP, reap=False, on_line=None, 
         code = None
     finally:
         try:
-            os.killpg(p.pid, signal.SIGKILL)
+            killsafe.killpg(p.pid, signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
             pass
         p.wait()
@@ -5895,8 +5896,8 @@ def stop_survivors():
             except FileNotFoundError:
                 ours = ideas._strays(int(name), start)
             if ours:
-                os.killpg(int(name), signal.SIGKILL)
-                out.append(int(name))
+                if killsafe.killpg(int(name), signal.SIGKILL):
+                    out.append(int(name))
         except (OSError, ValueError, IndexError):  # gone, garbled or not ours to kill: the entry goes
             pass
         _unregister(name)
@@ -5963,7 +5964,7 @@ def _kill_orphans():
             return
         for k in kids:
             try:
-                os.kill(k, signal.SIGKILL)
+                killsafe.kill(k, signal.SIGKILL)
             except OSError:
                 pass
         while True:

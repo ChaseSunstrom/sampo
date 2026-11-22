@@ -18,6 +18,7 @@ from collections import Counter
 
 from sampo import budget
 from sampo import core as c
+from sampo import killsafe
 from sampo import recall
 
 LENSES = ["user value", "unspoken needs", "delight", "capability map", "approaches", "reliability", "performance",
@@ -239,8 +240,8 @@ def sweep_orphans(max_age=1800):
             except FileNotFoundError:  # the leader is gone
                 ours = _strays(pid, start)  # T-1249: ps's start time is no number; only the /proc scan compares it
             if ours:
-                os.killpg(pid, signal.SIGKILL)
-                n += 1
+                if killsafe.killpg(pid, signal.SIGKILL):
+                    n += 1
         except (OSError, ValueError, IndexError):  # gone, garbled or not ours to kill: the entry goes
             pass
         try:

@@ -234,6 +234,8 @@ def fixed_tmp_dir():
 
 def _stop_group(proc):
     """End a child started with start_new_session and everything it started (a run.py's class subprocesses)."""
+    import killguard  # T-5900: a stubbed Popen's pid must never reach killpg(1)
+    killguard.install()
     for sig in (signal.SIGTERM, signal.SIGKILL):
         try:
             os.killpg(proc.pid, sig)

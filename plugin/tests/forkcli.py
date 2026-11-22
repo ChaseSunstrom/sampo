@@ -133,6 +133,8 @@ def serve(path, parent):
     me = os.getpid()
     _BASE_PATH[:] = sys.path[1:]
     sys.path.insert(0, LIB)
+    import killguard  # T-5900: the server's own kills of a gone client's call, and every forked worker's, refuse a bad pid
+    killguard.install()
     import argparse  # noqa: F401 - warm what every call needs
     import runpy  # noqa: F401
     for mod in PRELOAD:

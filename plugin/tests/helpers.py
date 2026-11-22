@@ -26,6 +26,9 @@ RELAY = "import subprocess, sys; sys.exit(subprocess.run(sys.argv[1:4]).returnco
 if LIB not in sys.path:
     sys.path.insert(0, LIB)
 
+import killguard  # noqa: E402  T-5900: no test signals pid 1, 0 or a stub's pid (kill(-1) killed every process of the user)
+killguard.install()
+
 # T-0283: tests never reach the real claude. A stub dir a test puts first on PATH still wins; a stub that can't run (no
 # shebang: ENOEXEC) makes the PATH lookup move on — to this lockout, not to the paid binary further along.
 # T-4728: every folder this process makes in the temp root lives in ONE folder named for it (run.py's fmtest-<pid>- shape)

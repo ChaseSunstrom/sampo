@@ -70,7 +70,7 @@ sys.exit(3)
 """
 # the files whose logic sampo-fast mirrors: a copy with the same size and mtime counts as the one it was built from
 WATCHED = ("hooks/hook", "lib/sampo/__init__.py", "lib/sampo/py.py", "lib/sampo/hooks.py", "lib/sampo/core.py",
-           "lib/sampo/budget.py", "lib/sampo/spawn.py", "lib/fmguard.py")
+           "lib/sampo/budget.py", "lib/sampo/spawn.py", "lib/sampo/killsafe.py", "lib/fmguard.py")
 # the Python it mirrors, function by function: a change to one fails this test until main.rs is checked against it
 MIRRORED = ("hooks.run", "hooks._run", "hooks._pre_tool_use", "hooks._credential_like", "hooks._credential_read",
             "hooks._outline_first", "hooks._outward_denial", "hooks._event", "hooks._rev", "hooks._cwd",

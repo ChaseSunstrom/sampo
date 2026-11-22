@@ -35,6 +35,11 @@ import sys
 import tempfile
 import time
 
+try:
+    from sampo import killsafe
+except ImportError:  # run as a script (install.sh: python3 -I fastbuild.py): this folder is the path
+    import killsafe
+
 PLUGIN = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 BIN, SUM, SRC = "sampo-fast", "sampo-fast.sha256", "sampo-fast.src"
 NEW = ".sampo-fast-new-"  # the probe's copy beside the destination; any ".sampo-fast-*" left over is ours to remove
@@ -696,7 +701,7 @@ def _run(cmd, env, cwd, seconds):
         out, err = p.communicate(timeout=seconds)
     except subprocess.TimeoutExpired:
         with contextlib.suppress(OSError):
-            os.killpg(p.pid, signal.SIGKILL)
+            killsafe.killpg(p.pid, signal.SIGKILL)
         p.communicate()
         return None, "", f"cargo ran past {seconds} s"
     return p.returncode, out.decode("utf-8", "replace"), " ".join(err.decode("utf-8", "replace").split())[-300:]

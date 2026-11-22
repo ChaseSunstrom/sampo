@@ -16,6 +16,7 @@ import tokenize
 import tomllib
 
 from sampo import core as c
+from sampo import killsafe
 
 LANG = {".py": "py", ".js": "js", ".mjs": "js", ".cjs": "js", ".jsx": "js", ".ts": "ts", ".tsx": "ts", ".mts": "ts",
         ".cts": "ts", ".rb": "rb", ".rs": "rs", ".c": "c", ".h": "c", ".cc": "c", ".cpp": "c", ".hpp": "c"}
@@ -964,7 +965,7 @@ def _run_tool(argv, root, env):
                     time.sleep(0.05)
         finally:
             try:
-                os.killpg(proc.pid, signal.SIGKILL)
+                killsafe.killpg(proc.pid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError):
                 pass
             proc.wait()

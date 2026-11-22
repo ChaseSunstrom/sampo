@@ -22,6 +22,7 @@ if __name__ == "__main__":  # the canary worker runs this file: lib/sampo first 
     sys.path[:] = [os.path.dirname(_here)] + [p for p in sys.path if os.path.realpath(p or ".") != _here]
 
 from sampo import core as c
+from sampo import killsafe
 
 # FOREMAN_RELEASE_FM: tests point the gates and the canary at a stub fm
 FM = [sys.executable, os.environ.get("FOREMAN_RELEASE_FM") or os.path.join(
@@ -916,7 +917,7 @@ def _run_times(wt, cmd, env=None, wait=30):
     finally:  # every exit (clean, too slow, interrupted): the reader's session ends with whatever it left running
         if proc is not None:
             with contextlib.suppress(OSError):
-                os.killpg(proc.pid, signal.SIGKILL)
+                killsafe.killpg(proc.pid, signal.SIGKILL)
             with contextlib.suppress(OSError, subprocess.SubprocessError):
                 proc.wait(timeout=5)  # reaped, so the child is no zombie
     if not isinstance(got, dict):

@@ -11,6 +11,7 @@ import tempfile
 import time
 
 from sampo import core as c
+from sampo import killsafe
 
 EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"  # git's empty tree: the parent of a root commit
 MAX_HUNKS = 60  # ponytail: one check run per hunk; a bigger commit tests its first 60 and says so. Upgrade: group by file
@@ -31,7 +32,7 @@ def run_group(argv, cwd, timeout, capture=False):
         return None, ""
     finally:
         try:
-            os.killpg(p.pid, signal.SIGKILL)  # the group outlives its leader while a child runs; ESRCH when it's gone
+            killsafe.killpg(p.pid, signal.SIGKILL)  # the group outlives its leader while a child runs; ESRCH when it's gone
         except OSError:
             pass
 

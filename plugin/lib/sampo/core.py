@@ -14,6 +14,8 @@ import sys
 import time
 from collections import Counter, defaultdict
 
+from sampo import killsafe  # T-5900: the one os.kill/os.killpg guard (os only: cheap on every hook call)
+
 LOADED_NS = time.time_ns()  # T-4045: when this process loaded Sampo's code; a source newer than it may not be what runs
 
 
@@ -1802,7 +1804,7 @@ def kill_group(proc):
     """T-1094: kill a child started with start_new_session and everything it started (its process group); the leader
     alone when the group is gone or isn't ours to signal. Never raises: the child may have exited first."""
     try:
-        os.killpg(proc.pid, 9)
+        killsafe.killpg(proc.pid, 9)  # T-5900: nothing is signalled for a pid that is not a plain int above 1
     except OSError:
         try:
             proc.kill()
@@ -1831,8 +1833,7 @@ def _proc_children():
 def _signal(pid, sig, group=False):
     """os.kill (or killpg) that says whether it reached anything, never raising."""
     try:
-        (os.killpg if group else os.kill)(pid, sig)
-        return True
+        return (killsafe.killpg if group else killsafe.kill)(pid, sig)
     except OSError:
         return False
 

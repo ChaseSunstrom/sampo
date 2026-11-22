@@ -30,6 +30,7 @@ import urllib.parse
 
 from sampo import budget as sbudget
 from sampo import core as c
+from sampo import killsafe
 from sampo.louhi_scratch import _gen_grow, _scratch  # noqa: F401  (T-3290: moved to louhi_scratch; the names stay here)
 
 KINDS = ("bug", "vuln", "untested", "slow", "docs", "flaky", "dep", "vague", "ambiguous", "missing-tool", "none", "clean", "rank",
@@ -3662,7 +3663,7 @@ def _lanes_drill(base, key):
         pr = procs.pop(tid, None)
         if pr and pr.poll() is None:
             with contextlib.suppress(OSError):
-                os.killpg(pr.pid, 9)
+                killsafe.killpg(pr.pid, 9)
             pr.wait(timeout=30)
 
     def do(tid, step, d):

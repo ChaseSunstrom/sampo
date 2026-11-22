@@ -279,6 +279,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmshade` (T-1846: a GLSL ES fragment-shader subset compiled to Python and run… [→ files-lib-8](docs/map/files-lib-8.md)
 - `fmshape` (T-3275: `sampo shape FILE`, the companions a new file is owed, learned from git history: a companion that… [→ files-lib-8](docs/map/files-lib-8.md)
 - `fmshot` (T-1636: `sampo shot URL|FILE...`, a viewport shot, frames in real… [→ files-lib-4](docs/map/files-lib-4.md)
+- `fmkillsafe` (T-5900: `sampo/killsafe.py`, the one guarded os.kill/os.killpg: nothing is signalled unless the pid is a plain int above 1… [→ files-lib-8](docs/map/files-lib-8.md)
 - `fmspawn` (T-5835: `sampo/spawn.py`, the one spawn table: model by agent type… [→ files-lib-8](docs/map/files-lib-8.md)
 - `fmsmallcards`… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmcallcards` (T-3160: `sampo card`, calling cards: verified generators run confined… [→ files-lib-4](docs/map/files-lib-4.md)

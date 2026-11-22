@@ -19,6 +19,7 @@ import threading
 import time
 
 from sampo import budget
+from sampo import killsafe
 from sampo import core as c
 from sampo import models
 from sampo import moonscale
@@ -480,7 +481,7 @@ def _spawn(argv, cwd, env, timeout):
         out, err = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
         try:
-            os.killpg(proc.pid, signal.SIGKILL)  # the group: the job and every child it started (unreaped, so pid is ours)
+            killsafe.killpg(proc.pid, signal.SIGKILL)  # the group: the job and every child it started (unreaped, so pid is ours)
         except ProcessLookupError:  # the group has ended already
             pass
         try:

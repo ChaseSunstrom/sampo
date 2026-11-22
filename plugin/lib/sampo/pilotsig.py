@@ -28,6 +28,7 @@ import time
 import traceback
 
 from sampo import core as c
+from sampo import killsafe
 
 SWITCH = "SAMPO_LANE_PILOT"  # off | 0 | no | false: no pilot starts, and the lead reads each lane as before
 OFF = ("off", "0", "no", "false")
@@ -218,11 +219,8 @@ def _tail(f, cap):
 
 def _kill_group(proc):
     """The verb's children die with it: its session is its own process group, and the group is killed whole."""
-    pid = proc.pid
-    if type(pid) is not int or pid <= 1:  # T-5899: killpg(1) is every process of the user; a Mock's pid converts to 1
-        return
-    try:
-        os.killpg(pid, signal.SIGKILL)
+    try:  # T-5899, T-5900: killsafe signals only a plain int pid above 1 (killpg(1) is every process; a Mock's pid is 1)
+        killsafe.killpg(proc.pid, signal.SIGKILL)
     except OSError:
         pass  # the group is already gone
 

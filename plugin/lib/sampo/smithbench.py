@@ -15,6 +15,7 @@ import tempfile
 import time
 
 from sampo import core
+from sampo import killsafe
 
 FM = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(os.path.dirname(__file__)))), "bin", "fm")
 SEED_SET = 1  # bump when a seed changes, so scores from different sets aren't compared
@@ -91,7 +92,7 @@ def kill_marked(tmp):
                 continue
             with open(f"/proc/{d}/environ", "rb") as f:
                 if want in f.read().split(b"\0"):
-                    os.kill(int(d), signal.SIGKILL)
+                    killsafe.kill(int(d), signal.SIGKILL)
         except OSError:
             pass
 

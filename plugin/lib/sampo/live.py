@@ -37,7 +37,7 @@ import urllib.parse
 import urllib.request
 
 from sampo import core as c
-from sampo import jobprog, settingsserve
+from sampo import jobprog, killsafe, settingsserve
 
 WEB = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "web", "live"))
 CACHE_S = 2.5  # T-5549: above STREAM_S, so /api/state's one-off build is never older than a stream tick's
@@ -993,7 +993,7 @@ def _run(argv, p):
         return child.wait(timeout=SLOW_ACT_TIMEOUT if argv[0] == "resume" else ACT_TIMEOUT)
     except subprocess.TimeoutExpired:
         try:
-            os.killpg(child.pid, signal.SIGKILL)
+            killsafe.killpg(child.pid, signal.SIGKILL)
         except OSError:
             pass
         child.wait()

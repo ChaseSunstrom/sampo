@@ -28,6 +28,7 @@ import typing
 import zlib
 
 from sampo import core as c
+from sampo import killsafe
 from sampo import lane_preview
 from sampo import racemetrics
 
@@ -381,7 +382,7 @@ def deleted_test_procs(table=None, facts=None, note=None):
     return holders(gone, table, facts=facts, ns=True, note=note)
 
 
-def end_procs(find, grace=3.0, poll=0.1, sleep=time.sleep, kill=os.kill):
+def end_procs(find, grace=3.0, poll=0.1, sleep=time.sleep, kill=killsafe.kill):
     """T-4720: SIGTERM what find() names, SIGKILL what is left after grace s, reading afresh each round so a gone or reused
     pid is not signalled from an old list; bounded. Returns the pids signalled; find() None ends nothing."""
     sent = set()
@@ -390,8 +391,8 @@ def end_procs(find, grace=3.0, poll=0.1, sleep=time.sleep, kill=os.kill):
         found = find()
         for pid, _ in found or ():
             with contextlib.suppress(OSError):
-                kill(pid, sig)
-                sent.add(pid)
+                if kill(pid, sig) is not False:  # T-5900: killsafe.kill says False for a pid it won't signal; a test's kill says None
+                    sent.add(pid)
         return bool(found)
 
     if not signal_all(signal.SIGTERM):

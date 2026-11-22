@@ -15,6 +15,7 @@ import sys
 import time
 
 from sampo import core as c
+from sampo import killsafe
 from sampo.core import subprocess  # T-2023: imported on first use
 from sampo.core import contextlib, shutil  # T-3577: these too
 
@@ -3155,7 +3156,7 @@ def _rustfmt(p, path):
     except subprocess.TimeoutExpired:
         try:
             import signal  # here, not at the top: the hook hot path loads no `signal` (T-5888)
-            os.killpg(proc.pid, signal.SIGKILL)  # the group: a child of rustfmt can't hold the pipe open
+            killsafe.killpg(proc.pid, signal.SIGKILL)  # the group: a child of rustfmt can't hold the pipe open
         except OSError:
             pass
         proc.communicate()
@@ -6905,7 +6906,7 @@ def wait_timer(raw):
             with open(pidfile) as f:
                 old = int(f.read().strip())
             if old != os.getpid() and _is_timer(old):
-                os.kill(old, signal.SIGTERM)
+                killsafe.kill(old, signal.SIGTERM)
         except (OSError, ValueError):
             pass
         c.write_atomic(pidfile, str(os.getpid()), durable=False)

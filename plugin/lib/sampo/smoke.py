@@ -19,6 +19,7 @@ import subprocess
 import tempfile
 
 from sampo import core as c
+from sampo import killsafe
 
 SCRIPT = os.path.join(os.path.dirname(os.path.abspath(os.path.dirname(__file__))), "smoke_web.cjs")
 GATE = "fm smoke"
@@ -68,7 +69,8 @@ def _kill(proc):
     the browser it started in a group of its own), SIGKILL for whatever is left (T-1509)."""
     for sig in (signal.SIGTERM, signal.SIGKILL):
         try:
-            os.killpg(proc.pid, sig)
+            if not killsafe.killpg(proc.pid, sig):  # not a pid to signal: nothing to end
+                return
         except (ProcessLookupError, PermissionError):
             return
         try:

@@ -2662,6 +2662,13 @@ if _cpu:
             me, them = resource.getrusage(resource.RUSAGE_SELF), resource.getrusage(resource.RUSAGE_CHILDREN)
             _put(_cpu, me.ru_utime + me.ru_stime + them.ru_utime + them.ru_stime + _forked())
         atexit.register(_alone)
+sys.path.insert(0, os.environ.get('RUNPY_TESTS') or os.getcwd())  # the tests folder, not whatever folder the class starts in
+try:
+    import killguard  # T-5900: a stubbed Popen's pid must never reach killpg(1): refuse it for every class, plain unittest too
+    killguard.install()
+except ModuleNotFoundError as e:  # run.py copied alone into a scratch folder: toy classes only (test_killguard pins the file)
+    if e.name != 'killguard':
+        raise
 unittest.main(module=None, argv=['python -m unittest', *sys.argv[2:]])
 """
 
@@ -2893,11 +2900,12 @@ def holders(match, table=None, facts=None, fds=False, ns=False, note=None):
     return out
 
 
-def end_procs(find, grace=3.0, poll=0.1, sleep=time.sleep, kill=os.kill):
+def end_procs(find, grace=3.0, poll=0.1, sleep=time.sleep, kill=None):
     """T-4720: SIGTERM what find() names, SIGKILL what is left after grace s, and read again so a process that forked a
     replacement meanwhile goes too; bounded (grace, then three more rounds). find() is read afresh each round, so a pid
     that is gone or reused is not signalled by an old list. Returns the pids signalled; find() None ends nothing."""
     sent = set()
+    kill = kill or os.kill  # at call time, not as a default: main() installs the pid guard (killguard) after this def runs
 
     def signal_all(sig):
         found = find()
@@ -3014,6 +3022,7 @@ def _run_one(cid, k, timeout, deadline, slot):
                      *extra], child_env(tmp)
         env[SLOT_ENV] = "none" if slot is None else str(slot)  # T-3442: with no slot too, its runs never queue again
         env["RUNPY_CPU"] = os.path.join(tmp, ".runcpu")  # T-3757: what the class's processes cost, written as it exits
+        env["RUNPY_TESTS"] = os.path.dirname(os.path.abspath(__file__))  # T-5900: where BOOT finds killguard
         if COVER_PY:  # T-3593: its processes append the repo files they read here, the venv's python first on PATH
             env["RUNPY_COVER"] = os.path.join(tmp, ".runcover")
             env["PATH"] = os.path.dirname(COVER_PY[0]) + os.pathsep + env.get("PATH", os.defpath)
@@ -3291,6 +3300,12 @@ def main():
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     except (ImportError, ValueError, OSError):
         pass
+    try:
+        import killguard  # T-5900: the runner's own killpg calls (a hung class, a leftover) take a real pid or raise
+        killguard.install()
+    except ModuleNotFoundError as e:  # run.py copied alone into a scratch folder (test_check_paths): toy classes only
+        if e.name != "killguard":
+            raise
     a = parse()
     ap = a
     if a.last:  # T-4268: a reader: no slot, no sweep, no test

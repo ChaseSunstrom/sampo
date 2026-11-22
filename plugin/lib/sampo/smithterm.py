@@ -12,6 +12,8 @@ import termios
 import time
 import tty
 
+from sampo import killsafe  # os only
+
 # what a terminal sends for a key → the name the App's keys use (curses' names, so tui.toml stays as it was)
 SEQS = {"\x1b[A": "KEY_UP", "\x1b[B": "KEY_DOWN", "\x1b[C": "KEY_RIGHT", "\x1b[D": "KEY_LEFT", "\x1bOA": "KEY_UP",
         "\x1bOB": "KEY_DOWN", "\x1bOC": "KEY_RIGHT", "\x1bOD": "KEY_LEFT", "\x1b[5~": "KEY_PPAGE", "\x1b[6~": "KEY_NPAGE",
@@ -288,7 +290,8 @@ def session(fn, fd_in=None, fd_out=None):
 
     def suspend(*_):  # Ctrl-Z: the shell gets its terminal back; fg takes it again and redraws everything
         restore()
-        os.kill(os.getpid(), signal.SIGSTOP)
+        # killsafe refuses pid <= 1, so as pid 1 (a container's init) there is no SIGSTOP to ourselves: Ctrl-Z does nothing
+        killsafe.kill(os.getpid(), signal.SIGSTOP)
         try:
             tty.setcbreak(fd_in)
             io.write(ENTER)
