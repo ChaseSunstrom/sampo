@@ -82,6 +82,14 @@ class StoredAtTheStop(LandCase):
         fields, _ = self.stop(tid, f"Done.\n\n{block}\nNoticed: a\nNoticed: b\n\n{POINTER}")
         self.assertIn(f"CHANGELOG: Does a thing ({tid}).", fields)
 
+    def test_a_fixer_or_resolver_report_is_stored_like_a_builders(self):  # T-5681 review: the same editing set
+        for n, agent in ((1, "sampo:fm-fixer"), (2, "sampo:fm-resolver")):
+            tid = self.lane(n, f"f{n}.txt")
+            block = BLOCK.replace("T-0007", tid)
+            self.hook("SubagentStop", {"agent_type": agent, "agent_id": f"a1b2c3d{n}",
+                                       "last_assistant_message": f"Done.\n\n{block}\nNoticed: none\n"})
+            self.assertIn(f"CHANGELOG: Does a thing ({tid}).", self.brief(tid).section("Close fields"), agent)
+
     def test_a_report_whose_lines_are_not_its_end_leaves_a_log_line_naming_why(self):
         tid = self.lane(1, "a.txt")
         fields, log = self.stop(tid, f"The brief said:\nCHANGELOG: Quoted only ({tid}).\nDone.\n")

@@ -10,7 +10,11 @@ Models (T-0373): the main thread (Opus or Fable) plans, judges, merges and write
 | recon, research, audits, debugging hypotheses | `sampo:fm-recon` / `fm-reviewer` / `fm-debugger` | Sonnet (their frontmatter) |
 | an S task in a builder lane | `sampo:fm-builder` (`sampo lane brief` prints `model: "sonnet"`) | Sonnet |
 | an M task in a builder lane, an L plan's critique | `sampo:fm-builder`, `sampo second plan` | the main model |
+| a review's findings fixed in a lane's worktree | `sampo:fm-fixer` (`isolation: "worktree"`; the prompt names the lane and the findings) | Sonnet |
+| a merge or rebase conflict in a lane's worktree | `sampo:fm-resolver` (`isolation: "worktree"`; the prompt names the lane and the conflicted files) | Haiku (pass `model: "sonnet"` when the conflict is big) |
 | brainstorm lenses, research children, oracle, bench | `sampo ideas` / `sampo research ask` / … (`--model`) | Sonnet by default |
+
+The fixer and the resolver replace a general-purpose launch for these two jobs: they carry only their own short contract, where a general-purpose agent re-reads the whole skill and tool listing every turn (T-5681).
 
 A cheaper model's output is still checked: the main thread reviews a builder's diff, spot-checks two claims of any report, and re-runs the criteria itself.
 
@@ -21,11 +25,11 @@ Allowed only for:
 3b. a failure that keeps coming back → `sampo:fm-debugger` (read-only; ranked hypotheses with discriminating probes, ready for `sampo task hypo`)
 4. optional independent read-only review of L-tier changes → `sampo:fm-reviewer` (or `/code-review`)
 
-5. the one bounded exception that edits — a builder (T-0234) → `sampo:fm-builder`, below
+5. the bounded exceptions that edit, each in its own worktree — a builder (T-0234) → `sampo:fm-builder`, below; a fixer for a review's findings → `sampo:fm-fixer`; a resolver for a lane's merge conflict → `sampo:fm-resolver` (the table above)
 
 Contract for every delegation:
 - A self-contained brief: the question, scope paths, what to ignore, the output format. Never the conversation history.
-- Read-only tools only (the Sampo agents have Read, Grep, Glob and, for recon, WebFetch/WebSearch) — except a builder.
+- Read-only tools only (the Sampo agents have Read, Grep, Glob and, for recon, WebFetch/WebSearch) — except a builder, a fixer and a resolver.
 - Output ≤ 400 words, every claim backed by `path:line` or a URL, confidence per finding, an explicit "not checked" list.
 - Save the summary: `sampo research add <topic> <<'EOF'` … `EOF`. Spot-check at least two claims yourself before relying on them.
 - Parallel only with disjoint scopes, at most 3 at once.

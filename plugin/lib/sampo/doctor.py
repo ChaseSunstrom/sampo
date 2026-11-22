@@ -30,8 +30,8 @@ LEAN_SKILLS = {"brainstorm": 2500, "directions": 3000}  # chars of the stub, by 
 RULES_CHARS_MAX = 6400  # T-1279: the reply format moved in from the output style; chars (~1.5k tokens) of always-on rules: denser lines cost as much as more lines
 CTX_BUDGET, PROMPT_BUDGET = 1500, 400  # fmhooks' own (T-2589: a test pins them equal)
 READ_ONLY_TOOLS = {"Read", "Grep", "Glob", "WebFetch", "WebSearch"}
-EDITING_AGENTS = {"fm-builder.md": {"Edit", "Write", "Bash"},  # T-0234: bounded exceptions, each in its own worktree
-                  "fm-reproducer.md": {"Edit", "Write", "Bash"}}  # T-0608: the failing test, on its lane branch
+EDITING_AGENTS = {f"{a}.md": {"Edit", "Write", "Bash"}  # T-0234, T-5681: bounded exceptions, each in its own worktree
+                  for a in (*c.EDITING_AGENTS, "fm-reproducer")}  # T-0608: the failing test, on its lane branch (not in the confine set yet)
 EXPECTED_EXIT = {"PreToolUse:Bash:block": [2], "TaskCompleted": [2]}  # fixtures that are designed to block
 SCRIPTS = ["install.sh", "setup-plugins.sh", "configure-repo.sh", "reset-claude.sh", "plugin/uninstall.sh"]
 

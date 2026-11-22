@@ -351,6 +351,14 @@ def ns_names(name):
     return tuple(f"{n}:{name}" for n in NAMESPACES)
 
 
+# T-5681: the agents that edit, each in its own worktree. One set for the guard's confine, the wide-check refusal, the
+# start and stop marks, the close fields, and the lean types' launch rule (ISOLATED_AGENT_NAMES); the plugin's doctor
+# and tests read it too, so a new editing agent is added here and nowhere else.
+EDITING_AGENTS = ("fm-builder", "fm-fixer", "fm-resolver")
+EDITING_AGENT_NAMES = tuple(n for a in EDITING_AGENTS for n in ns_names(a))
+ISOLATED_AGENT_NAMES = tuple(n for a in ("fm-fixer", "fm-resolver") for n in ns_names(a))  # launched with isolation "worktree"
+
+
 def installed_ids(part=""):
     """The ids of this plugin (part: its sibling) Claude Code's install record holds, the current first; () when it
     holds none or can't be read. T-2879: a disable or update hint names the one that is there."""
@@ -3270,12 +3278,15 @@ def main_worktree(gr):
     return os.path.realpath(os.path.dirname(common)) if os.path.basename(common) == ".git" else None
 
 
-def builder_confine(p, b):
+def builder_confine(p, b, agent=""):
     """T-4785 round 9: the guard's confine pair (the lane's worktree, its main checkout) for the active brief `b` when a
-    builder works it in a lane `p`, else None. The hook, a stored command's guard and a settings write all confine a
-    builder by this one rule, so a change to it reaches the three."""
+    builder works it in a lane `p`, else None. T-5681: and for any editing agent (`agent`, the hook payload's agent_type,
+    in EDITING_AGENT_NAMES) working in a lane, with or without a brief: a fixer or resolver has no builder brief. The
+    hook, a stored command's guard and a settings write all confine by this one rule, so a change to it reaches the three."""
     lane = getattr(p, "lane", None)
-    return (lane, main_worktree(lane)) if lane and b and b.meta.get("builder") else None
+    if not lane:
+        return None
+    return (lane, main_worktree(lane)) if agent in EDITING_AGENT_NAMES or (b and b.meta.get("builder")) else None
 
 
 def find_project(cwd, create=False):

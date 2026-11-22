@@ -65,12 +65,20 @@ class BuilderHook(Calm):
     def builder(self, cmd):
         return self.pre(cmd, agent_id="a42cb51b932d1111a", agent_type="sampo:fm-builder")
 
+    def test_a_fixers_own_wide_check_is_refused_too(self):  # T-5681 review: the editing set, not fm-builder alone
+        for cmd in ("sampo check --affected", "sampo check"):
+            r = self.pre(cmd, agent_id="a42cb51b932d1111a", agent_type="sampo:fm-fixer")
+            self.assertEqual(r.returncode, 2, (cmd, r.stdout, r.stderr))
+
     def test_a_builders_own_wide_check_is_refused_with_one_line_naming_the_targeted_form(self):
         for cmd in WIDE:
             r = self.builder(cmd)
             self.assertEqual(r.returncode, 2, (cmd, r.stdout, r.stderr))
             why = json.loads(r.stdout)["hookSpecificOutput"]["permissionDecisionReason"]
             self.assertEqual(len(why.splitlines()), 1, why)
+            if "--frobnicate" in cmd:  # T-5681: the guard's builder confine reads an option it doesn't know as a gate change
+                self.assertIn("blocked confine", why, cmd)  # first (a brief-less builder is confined too now), so
+                continue  # the wide-check wording is not reached for it
             for need in ("main thread", "sampo lane accept", "plugin/tests/run.py", "-k"):
                 self.assertIn(need, why, cmd)
 

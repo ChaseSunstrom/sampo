@@ -259,6 +259,29 @@ class Contract(_Tasks):
         self.assertNotIn("blocked confine", said(), "the main thread, visiting")
         self.assertIn("blocked confine", said(agent_id="a1b2c3d4", agent_type="sampo:fm-builder"), "the builder")
 
+    def test_a_fixer_writes_only_in_its_worktree_with_no_builder_brief(self):
+        # T-5681 review: the editing set confines a fixer too; a fixer gets no lane brief, so its task has no builder mark
+        tid = self.task("Fix it")
+        wt = os.path.join(self.repo, ".claude", "worktrees", "agent-f1x2e3d4")
+        git(self.repo, "worktree", "add", "-q", "-b", "worktree-agent-f1x2e3d4", wt)
+        self.fm("focus", tid, cwd=wt)
+        main_file = os.path.join(self.repo, "x.py")
+
+        def write(path):
+            return self.hook("PreToolUse", {"tool_name": "Write", "cwd": wt, "agent_id": "f1x2e3d4",
+                                            "agent_type": "sampo:fm-fixer",
+                                            "tool_input": {"file_path": path, "content": "x"}}).stdout
+        self.assertIn("blocked confine", write(main_file), "the fixer's write outside its worktree")
+        self.assertNotIn("blocked", write(os.path.join(wt, "x.py")), "its own worktree")
+
+    def test_a_fixer_or_resolver_launch_without_worktree_isolation_is_refused(self):
+        # T-5681 review: an edit-capable agent launched in the main checkout would edit the user's own tree
+        for agent in ("sampo:fm-fixer", "sampo:fm-resolver"):
+            for tool_input, refused in (({"subagent_type": agent, "prompt": "x"}, True),
+                                        ({"subagent_type": agent, "prompt": "x", "isolation": "worktree"}, False)):
+                r = self.hook("PreToolUse", {"tool_name": "Agent", "tool_input": tool_input, "cwd": self.repo}).stdout
+                self.assertEqual("permissionDecision" in r, refused, (agent, tool_input, r))
+
     def test_lane_merge_and_cache_only_removal(self):
         # T-0377: on Foreman's own repo the guard refuses `git merge` (a tree write over core), so a reviewed branch
         # lands through fm, each file it changes judged as its task's write; and python caches don't hold a lane

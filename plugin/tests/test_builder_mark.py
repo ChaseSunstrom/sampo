@@ -86,6 +86,13 @@ class BuilderMark(ForemanTestCase):
         with mock.patch.object(cli, "mutate", side_effect=AssertionError("locked for a no-op")):
             hooks._mark_builder(self.pl, True)  # already marked: nothing to write
 
+    def test_a_fixers_start_and_stop_mark_its_lane_task_too(self):  # T-5681 review: the editing set, not fm-builder alone
+        fixer = dict(self.pl, agent_type="sampo:fm-fixer")
+        hooks._mark_builder(fixer, True)
+        self.assertTrue(self.returned())
+        hooks._mark_builder(fixer, False)
+        self.assertFalse(self.returned())
+
     def locked(self):
         import fcntl
         fd = os.open(os.path.join(self.p.dir, ".lock"), os.O_RDWR)

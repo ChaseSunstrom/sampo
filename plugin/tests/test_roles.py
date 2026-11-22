@@ -117,3 +117,41 @@ class Andon(ForemanTestCase):
         self.assertIn("ANDON", self.fm("lane", "list").stdout)
         self.assertIn("date format", self.fm("next").stdout)
         self.assertTrue(re.search(r"(?i)andon", read_text(os.path.join(AGENTS, "fm-builder.md"))))
+
+
+class Lean(ForemanTestCase):
+    # T-5681: a general-purpose launch carries the whole skill listing and tool text every turn (~56k chars); the lean
+    # fixer and resolver types take only their own short contract, and delegate.md routes the two jobs to them
+    def test_the_fixer_and_the_resolver_are_small_editing_agents_with_their_own_model(self):
+        for name, model in (("fm-fixer", "sonnet"), ("fm-resolver", "haiku")):
+            text = read_text(os.path.join(AGENTS, name + ".md"))
+            self.assertLess(len(text.encode()), 3000, name)
+            self.assertRegex(text, rf"(?m)^name: {name}$")
+            self.assertRegex(text, r"(?m)^tools: .*Edit")
+            self.assertRegex(text, r"(?m)^omitClaudeMd: true$")
+            self.assertRegex(text, r"(?m)^maxTurns: [1-9][0-9]*$")
+            self.assertRegex(text, rf"(?m)^model: {model}$")
+            self.assertIn("Noticed:", text)  # the closing line the Noticed class in this file reads back
+            self.assertIn("400 words", text)
+
+    def test_delegate_routes_review_fixes_and_merge_conflicts_to_them(self):
+        delegate = read_text(os.path.join(c.PLUGIN_ROOT, "skills", "intake", "references", "delegate.md"))
+        rows = delegate.splitlines()
+        fixer = [l for l in rows if "sampo:fm-fixer" in l]
+        resolver = [l for l in rows if "sampo:fm-resolver" in l]
+        self.assertTrue(any("finding" in l for l in fixer), fixer)
+        self.assertTrue(any("conflict" in l for l in resolver), resolver)
+
+    def test_the_editing_set_is_one_constant_and_each_of_its_agents_can_edit(self):
+        # T-5681 review: the confine, the wide check, the start and stop marks and the close fields all key on this set
+        self.assertEqual(set(c.EDITING_AGENTS), {"fm-builder", "fm-fixer", "fm-resolver"})
+        for name in c.EDITING_AGENTS:
+            text = read_text(os.path.join(AGENTS, name + ".md"))
+            self.assertRegex(text, r"(?m)^tools: .*Edit")
+            self.assertRegex(text, r"(?m)^tools: .*Write")
+
+    def test_the_lean_contracts_commit_as_they_go_and_say_what_is_left(self):
+        for name in ("fm-fixer", "fm-resolver"):
+            text = read_text(os.path.join(AGENTS, name + ".md"))
+            self.assertIn("Commit as you go", text, name)
+            self.assertIn("what is left", text, name)

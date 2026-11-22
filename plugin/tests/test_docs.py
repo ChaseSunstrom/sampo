@@ -19,8 +19,8 @@ CATEGORY_SKILLS = ("skill-writing", "problem-solving", "coverage")
 # T-1705: the rules map these plain words to the fm verbs, not the skills; initiative: no listing room left (T-2123)
 USER_ONLY = {"capture", "design-extract", "tidy", "doctor", "genesis", "initiative"}
 READ_ONLY_TOOLS = {"Read", "Grep", "Glob", "WebFetch", "WebSearch"}
-EDITING_AGENTS = {"fm-builder.md": {"Edit", "Write", "Bash"},  # T-0234: the exceptions, worktree-bound
-                  "fm-reproducer.md": {"Edit", "Write", "Bash"}}  # T-0608
+EDITING_AGENTS = {f"{a}.md": {"Edit", "Write", "Bash"}  # T-0234, T-5681: the exceptions, worktree-bound
+                  for a in (*c.EDITING_AGENTS, "fm-reproducer")}  # T-0608
 HOOK_EVENTS = {"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure", "PreCompact",
                "Stop", "TaskCompleted", "SubagentStart", "SubagentStop", "MessageDisplay", "Notification", "SessionEnd", "PermissionRequest",
                "PostModelSwitch", "PreModelSwitch"}

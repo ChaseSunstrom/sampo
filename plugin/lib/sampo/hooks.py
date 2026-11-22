@@ -3204,6 +3204,11 @@ def _pre_tool_use(raw):
                 print(stop, file=sys.stderr)
                 return 2
         if tool in ("Agent", "Task"):  # T-0320: subagents wait only while usage runs ahead of pace
+            why = _isolation_denial(pl)
+            if why:
+                print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                                         "permissionDecisionReason": why}}))
+                return 0
             try:
                 from sampo import budget as sbudget
                 sbudget.check_subagent()
@@ -3900,7 +3905,7 @@ def _builder_check_deny(pl, fmguard):
     The signal is the hook payload's: only a subagent's own calls carry an agent_id, and its agent_type says it is a
     builder. The CLI can't tell: the train's accept check, the main thread's hand runs, a headless run and every lane
     fixture in the tests run it in a lane too, with no agent_id (nor does a PreToolUse payload exist for them)."""
-    if pl.get("tool_name") != "Bash" or not pl.get("agent_id") or pl.get("agent_type") not in c.ns_names("fm-builder"):
+    if pl.get("tool_name") != "Bash" or not pl.get("agent_id") or pl.get("agent_type") not in c.EDITING_AGENT_NAMES:
         return None
     why = []
     if _runs_wide_check((pl.get("tool_input") or {}).get("command") or "", fmguard, cwd=pl.get("cwd"), why=why):
@@ -3908,6 +3913,20 @@ def _builder_check_deny(pl, fmguard):
                         "thread runs the affected check once at sampo lane accept, one lane at a time; run your own "
                         "tests instead: python3 plugin/tests/run.py test_<module> [-k <slice>] (T-4514); a CLEAN task's "
                         "behaviour lock is the bounded form: sampo check --evidence T-<id> --step 1 --lock (T-4648).")
+    return None
+
+
+def _isolation_denial(pl):
+    """T-5681 review: a fixer or resolver edits its lane's files, so it must be launched with its own worktree
+    (isolation "worktree"); a launch without it would edit the user's own checkout. Never raises: a payload it can't
+    read is let through, as the budget check lets it through."""
+    try:
+        ti = pl.get("tool_input") if isinstance(pl.get("tool_input"), dict) else {}
+        if str(ti.get("subagent_type") or "") in c.ISOLATED_AGENT_NAMES and ti.get("isolation") != "worktree":
+            return ('Sampo: an fm-fixer or fm-resolver launch needs isolation: "worktree", so it works in its own worktree '
+                    "of the lane and not in your checkout. Launch it again with isolation \"worktree\".")
+    except Exception:
+        log_error("PreToolUse", _tb())
     return None
 
 
@@ -4032,7 +4051,7 @@ def _guard_ctx(pl, fmguard, lanes=()):
                       state_fallbacks=c.state_fallbacks(), scratch=scratch,
                       allow=set(act.meta.get("allow") or []) if act else set(), task_id=act.id if act else None,
                       standing=set(meta.get("standing") or {}), trusted=bool(c.trusted()),
-                      confine=None if getattr(p, "lane", None) and _visiting(pl, p.lane) else c.builder_confine(p, act),
+                      confine=None if getattr(p, "lane", None) and _visiting(pl, p.lane) else c.builder_confine(p, act, pl.get("agent_type")),
                       unbriefed=p.root if p and not act and not _quiet() else None)  # T-0308: Bash writes too
     if lanes and ctx.unbriefed:
         ctx.briefed_lanes = tuple(lanes)
@@ -7397,7 +7416,7 @@ def subagent_context(pl):
     """T-3672: SubagentStart's synchronous half: the profile's short digest (profile.BRIEF_MAX bytes) so a subagent
     starts knowing the user too; a builder's brief already carries the longer one. T-4139: plus PASSING_SHAPES for a
     subagent started in a worktree of a managed project (_worktree_agent), never a scout or a reviewer in the main one."""
-    if pl.get("agent_type") in c.ns_names("fm-builder"):
+    if pl.get("agent_type") in c.ns_names("fm-builder"):  # T-5681: a fixer or resolver has no brief, so it gets these here
         return None
     try:
         from sampo import profile
@@ -7414,7 +7433,7 @@ def _mark_builder(pl, returned):
     """T-3145: a sampo:fm-builder's own start or stop marks the task whose lane is its worktree (agent-<id>), so the
     builder cap sees a returned builder even while the session that launched it (builder_proc) lives on."""
     aid = str(pl.get("agent_id") or "")
-    if pl.get("agent_type") not in c.ns_names("fm-builder") or not re.fullmatch(r"[\w-]{4,64}", aid):
+    if pl.get("agent_type") not in c.EDITING_AGENT_NAMES or not re.fullmatch(r"[\w-]{4,64}", aid):
         return
     def mine(b):  # open, and its lane is this builder's worktree
         return b and b.status not in c.CLOSED and str(b.meta.get("lane") or "").rstrip("/").endswith(f"agent-{aid}")
@@ -7456,7 +7475,7 @@ def _close_fields(pl):
     fields already recorded (a note in the Log instead): a scout echoing a README can't write them."""
     from sampo import lanes as slanes
     who = str(pl.get("agent_type") or "")
-    if not re.fullmatch(r"(?:[\w-]+:)?(?:fm-builder|general-purpose|claude)", who):
+    if not re.fullmatch(rf"(?:[\w-]+:)?(?:{'|'.join(c.EDITING_AGENTS)}|general-purpose|claude)", who):
         return
     got = slanes.close_fields(pl.get("last_assistant_message"), tail=True)
     if not got.get("id") or not slanes.close_text(got):
