@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- Monitor tool commands get the same Ward decision as Bash commands (Claude Code 2.1.314 runs Bash-matching hooks for Monitor too); a hook call with no command is a denial, and sampo doctor checks the Claude Code version (T-3360).
 - The lane pilot starts a conflict park's resolver when the land parks it, and a finished resolver run ticks the next waiting park, so parked lanes no longer wait for the land's end (T-5876).
 - sampo lane recover takes back a lane the land parked for a merge conflict as soon as its builder has returned, without the 15-minute wait or the live-launcher refusal, and its brief names sampo:fm-resolver (T-5765).
 - The nightly model bench (and `exam models run --night`) now asks only loopback or own-server profiles, skipping and logging every other one without sending it task text or a key (T-5376).
