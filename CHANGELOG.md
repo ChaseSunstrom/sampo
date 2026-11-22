@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- Sampo lane land and lane train lower their own niceness to 10 at the start (FOREMAN_LAND_NICE sets another level), so each close's criteria re-run no longer competes with builders or counts as foreground load in the lane gate (T-5527).
 - A red behind-verify now excuses classes its first parent also fails and classes green alone, one per class, and a conflicted revert settles itself when its classes pass on trunk, while sampo next names any red or conflict record with the command that settles it (T-5518).
 - Discovered and followup captures file up to 40 a day on a clean record (was 12), and a budget the user sets is their allowance, raising it or capping it (T-5722).
 - The state-move guard asks only about a command whose program runs Sampo, so a grep over plugin/lib or a commit message that names sampo passes with a HOME or TMPDIR assignment in front (T-5547).
