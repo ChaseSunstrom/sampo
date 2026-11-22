@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- `fm code --search N|auto` draws N candidate edits, checks each in a throwaway copy with the plan's own verify commands and keeps the first green, and `sampo exam run --search N` shows its fixed rate and wall time beside the frontier first try per scenario kind (T-3010).
 - An environment variable can no longer grant prove trust: under FOREMAN_STATE, a moved FOREMAN_HOME, a planted HOME or XDG state, no tree is trusted and `--yes-run` stays the only way to run; trust is kept only in the account's own private state folder (a user-private group's 0o775 counts), new state folders are made 0o700, and a yes that is not kept says why (T-2282).
 - In a live project, `sampo lane land --merged` checks the trunk with the test cache, as the behind verify does: the hourly tick's land had run all 12,000 tests uncached, queued behind the verify on the same code (T-5483).
 - The behind verify runs the whole suite uncached once a day (after 24 hours or 20 runs), not every 4 hours: 4 of a day's 7 verifies had run all 13,000 tests uncached, 2 to 4 hours each (T-5482).

@@ -386,6 +386,24 @@ class Grow(_Moons):
         with mock.patch.dict(os.environ, {"MOONS_LOCAL": ""}), mock.patch.object(models, "configured", return_value=(None, conf)):
             self.assertIsNone(self.ms._local(False), "an empty MOONS_LOCAL turns the local model off")
 
+    def test_local_switch_leaves_the_moon_fill_only_remote_own_boxes(self):
+        # T-5504: the hourly night's moons grow --local-only loaded Ollama on this machine after the user's stop
+        from sampo import models
+
+        def prof(name, base, model, **kw):
+            return {"name": name, "kind": "openai", "base_url": base, "model": model, "key_env": None, "context": 8192,
+                    "tools": False, **kw}
+        conf = {"loop": prof("loop", "http://127.0.0.1:8080/v1", "small"),
+                "mine": prof("mine", "https://gpu.example.com/v1", "qwen", own=True)}
+        env = {k: v for k, v in os.environ.items() if k != "MOONS_LOCAL"}
+        with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(models, "configured", return_value=(None, conf)), \
+                mock.patch.object(models, "_local", side_effect=lambda *a: iter([prof("ollama", "http://127.0.0.1:11434/v1", "gen")])), \
+                mock.patch.object(models, "embedding_profiles", return_value=[]), \
+                mock.patch.object(models, "systemone_profiles", return_value=[]), \
+                mock.patch.object(models, "local_off", return_value=True):
+            self.assertEqual([x["name"] for x in self.ms._generative(False)], ["mine"])
+            self.assertEqual(list(self.ms._generative(True)), [], "a sensitive project has no model at all then")
+
     def test_grow_tells_each_call_how_many_paid_calls_came_before(self):
         seen = []
 
