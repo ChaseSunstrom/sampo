@@ -925,6 +925,118 @@ class Lanes(ForemanTestCase):
             self.assertIn(want, text)
         self.assertNotIn("Use tabs", text)
 
+    def test_brief_carries_code(self):  # T-5498: the functions the steps name, their nearest test, one narrow command
+        src = "def helper(x):\n    return x + 1\n\n\ndef unrelated():\n    return 0\n\n\n"
+        big = "def huge_one(n):\n" + "".join(f"    n += {i}\n" for i in range(1200)) + "    return n\n"
+        for rel, text in (("pkg/mod.py", src + big), ("tests/test_mod.py", "import unittest\n")):
+            path = os.path.join(self.repo, rel)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                f.write(text)
+        subprocess.run(["git", "-C", self.repo, "add", "pkg/mod.py", "tests/test_mod.py"], check=True)
+        subprocess.run(["git", "-C", self.repo, "commit", "-qm", "the code and its test"], check=True)
+
+        def brief(title, ac):
+            tid = first(self.fm("task", "new", title, "--type", "FEATURE", "--tier", "S", "--ac", ac, "--scope",
+                                "pkg/mod.py", "--step", "Make helper return x + 2 and huge_one count n in pkg/mod.py",
+                                "--json").stdout)["id"]
+            with open(json.loads(self.fm("lane", "brief", tid, "--json").stdout)["path"]) as f:
+                return f.read()
+        text = brief("Helper", "helper returns x + 2 :: python3 -m unittest discover -s tests -p test_mod.py -k helper")
+        section = text.split("## Code to start from")[1].split("\n## ")[0]
+        self.assertIn("def helper(x):\n    return x + 1", section, "the scope function the steps name")
+        self.assertIn("def huge_one(n):", section, "a long function is carried up to its cap")
+        self.assertIn("cut", section, "and says where the rest is")
+        self.assertNotIn("def unrelated", section, "a function the steps don't name is not carried")
+        self.assertIn("tests/test_mod.py", section, "the nearest test")
+        self.assertIn("python3 -m unittest discover -s tests -p test_mod.py -k helper", section,
+                      "the first criterion's test command is the narrow one")
+        self.assertLessEqual(len(section.encode()), slanes.CODE_MAX, "the whole section stays under its cap")
+        plain = brief("Plain", "ok :: true")  # no test command on the criteria: the nearest test's module names one
+        self.assertIn("python3 -m unittest discover -s tests -p test_mod.py\n", plain)
+
+    def _commit_files(self, files, msg):  # T-5498 review: a helper for the code-section tests (files: {path: text})
+        for rel, text in files.items():
+            path = os.path.join(self.repo, rel)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text)
+        subprocess.run(["git", "-C", self.repo, "add", "--", *files], check=True)
+        subprocess.run(["git", "-C", self.repo, "commit", "-qm", msg], check=True)
+
+    def _task_brief(self, title, ac, step, scope):  # T-5498 review: the builder brief of a task over these scope files
+        args = [x for s in scope for x in ("--scope", s)]
+        self.fm("lane", "max", "20")  # the briefs are made, not run: a test that briefs several tasks lifts the cap of 2
+        tid = first(self.fm("task", "new", title, "--type", "FEATURE", "--tier", "S", "--ac", ac, *args, "--step", step,
+                            "--json").stdout)["id"]
+        with open(json.loads(self.fm("lane", "brief", tid, "--json").stdout)["path"], encoding="utf-8") as f:
+            return f.read()
+
+    def test_brief_code_redacts_a_key_before_it_is_cut(self):  # T-5498 review: redact the whole def, then cut it
+        key = "".join(f"MIIEow{i:02d}AAAA" + "Q" * 60 + "\n" for i in range(24))  # ~1.7 KB: past CODE_FN_MAX
+        pem = "-----BEGIN RSA PRIVATE KEY-----\n" + key + "-----END RSA PRIVATE KEY-----"
+        self._commit_files({"pkg/keys.py": f'def load_key():\n    return """{pem}"""\n'}, "a key literal")
+        text = self._task_brief("Keys", "load_key returns the key :: true", "Make load_key return the key in pkg/keys.py",
+                                ["pkg/keys.py"])
+        self.assertIn("def load_key():", text)
+        self.assertNotIn("MIIEow05AAAA", text, "no base64 line of the key reaches the brief, past the cut or before it")
+        self.assertNotIn("BEGIN RSA PRIVATE KEY", text)
+
+    def test_brief_code_skips_credential_files_and_redacts_keys(self):  # T-5498 review: a credential file is never read
+        self._commit_files({
+            "pkg/app.py": 'def make_client():\n    api_key = "sk-abcdef1234567890abcdef12"\n    return api_key\n',
+            ".env": "def make_env():\n    return 1\n",
+            "secrets.yaml": "def leak_all():\n    return 1\n",
+        }, "code and secrets")
+        text = self._task_brief("Client", "make_client, make_env and leak_all return values :: true",
+                                "Make make_client, make_env and leak_all return values in pkg/app.py, .env and secrets.yaml",
+                                ["pkg/app.py", ".env", "secrets.yaml"])
+        self.assertIn("def make_client():", text)
+        self.assertNotIn("def make_env", text, "a .env file's def line stays out of the brief")
+        self.assertNotIn("def leak_all", text, "a secrets.yaml file's def line stays out of the brief")
+        self.assertNotIn("sk-abcdef1234567890abcdef12", text, "an api_key literal in a normal function is redacted")
+        self.assertIn("[REDACTED]", text)
+
+    def test_brief_code_holds_its_fence_and_strips_escape_bytes(self):  # T-5498 review: a body can't close its fence
+        self._commit_files({"pkg/render.py": 'def render():\n    # \x1b[31mred\n    """\n```\n    """\n    return 1\n'},
+                           "a body with a fence and an escape")
+        text = self._task_brief("Render", "render returns 1 :: true", "Make render return 1 in pkg/render.py",
+                                ["pkg/render.py"])
+        self.assertIn("\n````\n", text, "the fence is longer than the backtick run inside the body")
+        self.assertIn("\n```\n", text, "and the body's own fence line is kept")
+        self.assertNotIn("\x1b", text, "an escape byte in a body is stripped before it prints")
+        self.assertIn("[31mred", text)
+
+    def test_brief_code_reads_a_big_file_by_its_regex(self):  # T-5498 review: past CODE_SRC_MAX the ast is skipped
+        pad = "".join(f"# pad {i}\n" for i in range(60000))  # ~0.7 MB: over the ast's cap, under the read cap
+        self._commit_files({"pkg/big.py": pad + "def huge_helper():\n    return 7\n"}, "a big file")
+        text = self._task_brief("Big", "huge_helper returns 7 :: true", "Make huge_helper return 7 in pkg/big.py",
+                                ["pkg/big.py"])
+        self.assertIn("def huge_helper():\n    return 7", text, "a big file's def still comes out, by the regex")
+
+    def test_brief_code_quotes_the_narrow_command_and_prints_only_a_python_runner(self):  # T-5498 review
+        self._commit_files({"pkg/mymod.py": "def tidy():\n    return 1\n", "my tests/test_mymod.py": "import unittest\n",
+                            "pkg/thing.py": "def thing():\n    return 1\n", "tests/test_thing.js": "// thing\n",
+                            "pkg/naïve.py": "def naive():\n    return 1\n", "tests/test_naïve.py": "import unittest\n"},
+                           "awkward names")  # a scope entry can't hold a space (the scope splits on one), a folder can
+        text = self._task_brief("Tidy", "tidy returns 1 :: true", "Make tidy return 1 in pkg/mymod.py", ["pkg/mymod.py"])
+        self.assertIn("Nearest test of pkg/mymod.py: my tests/test_mymod.py", text)
+        self.assertIn("python3 -m unittest discover -s 'my tests' -p test_mymod.py", text,
+                      "a folder with a space is shell-quoted in the one command")
+        js = self._task_brief("Thing", "thing returns 1 :: true", "Make thing return 1 in pkg/thing.py", ["pkg/thing.py"])
+        self.assertIn("Nearest test of pkg/thing.py: tests/test_thing.js", js)
+        self.assertNotIn("unittest discover -s tests -p test_thing.js", js, "a non-Python test gets no guessed runner")
+        nv = self._task_brief("Naive", "naive returns 1 :: true", "Make naive return 1 in pkg/naïve.py", ["pkg/naïve.py"])
+        self.assertIn("Nearest test of pkg/naïve.py: tests/test_naïve.py", nv, "ls-tree -z keeps a non-ASCII path whole")
+
+    def test_brief_code_ranks_backticked_and_underscored_names_first(self):  # T-5498 review: a common name can't crowd one out
+        commons = "".join(f"def {n}():\n    return 1\n\n\n" for n in ("get", "set", "run", "put", "add", "dele"))
+        self._commit_files({"pkg/cfg.py": commons + "def load_config():\n    return 2\n"}, "config and common names")
+        text = self._task_brief("Config", "load_config returns 2 :: true",
+                                "Make `load_config` read the file, and get, set, run, put, add and dele return values "
+                                "in pkg/cfg.py", ["pkg/cfg.py"])
+        self.assertIn("def load_config():", text, "the backticked name ranks ahead of the six common ones")
+
     def test_lane_friction_cap_unused_slot_and_a_gone_worktree(self):
         # T-1709: the drive compared to the default 2, not fm lane max; an unused brief and a gone worktree said nothing
         from sampo import hooks

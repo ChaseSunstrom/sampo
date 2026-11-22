@@ -185,6 +185,24 @@ class DesignLens(HookCase):
         self.assertIn("Functions changed", text)
         self.assertIn("m.py: f, g", text)
 
+    def test_prep_touched_functions_carry_their_bodies_within_a_cap(self):  # T-5498
+        from sampo import lanes
+        body = "def f():\n    return 1\n\n\ndef g():\n    return 0\n\n\n"
+        big = "def h():\n" + "".join(f"    x = {i}\n" for i in range(900)) + "    return x\n"
+        self.write("m.py", body + big)
+        subprocess.run(["git", "-C", self.repo, "add", "m.py"], check=True)
+        subprocess.run(["git", "-C", self.repo, "commit", "-qm", "m"], check=True)
+        self.prep()
+        self.write("m.py", body.replace("return 1", "return 2") + big.replace("    x = 0\n", "    x = 5\n"))
+        text = self.brief()[1]
+        self.assertIn("Touched functions", text)
+        self.assertIn("def f():\n    return 2", text, "the body as the new tree has it")
+        self.assertIn("def h():\n    x = 5", text)
+        self.assertNotIn("def g():", text, "a function the diff didn't touch is not carried")
+        self.assertIn("cut", text, "the long one is cut at its cap")
+        block = text.split("Touched functions")[1].split("\n## ")[0]  # the head's block, up to the lens sections
+        self.assertLessEqual(len(block.encode()), lanes.TOUCHED_MAX + 400, "the block stays under its cap")
+
     def test_hunk_header_text_is_plain_and_bounded(self):  # T-2312: repo text is data
         from sampo import lanes
         d = ("diff --git a/x.c b/x.c\n--- a/x.c\n+++ b/x.c\n@@ -1 +1 @@ int \x1b]0;pwn\x07evil" + "z" * 200 + "(void)\n"
