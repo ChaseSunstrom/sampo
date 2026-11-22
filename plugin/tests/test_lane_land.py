@@ -1021,6 +1021,55 @@ class ParkLines(LandCase):
         self.assertNotRegex(self.land("--first", a).stderr, "still building")
 
 
+class ParkMarks(LandCase):
+    """T-5852: a lane the land parks has its lane_stop at once, not at the land's end: four lanes parked at 07:20 by a
+    continuous land had no lane_stop at 07:54, so `sampo lane recover` refused them as "builder may be working"."""
+
+    def setUp(self):
+        super().setUp()
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(self.repo)
+        self.p = c.find_project(self.repo)
+
+    def test_park_marks_the_lane_stop_before_the_next_train_and_logs_once(self):
+        with open(os.path.join(self.repo, "same.txt"), "w") as f:
+            f.write("main\n")
+        a = self.lane(1, "same.txt", "lane\n", when=OLD)
+        self.git("add", "same.txt")
+        self.git("commit", "-qm", "main moves")
+        b = self.lane(2, "b.txt", when=OLD)
+        self.audited(a, b)
+        self.returned(a, "Lane one")
+        self.returned(b, "Lane two")
+        seen, real_train = [], train.train
+
+        def trained(p, main, ids, *args, **kw):
+            x = c.find_brief(p, a)
+            seen.append((list(ids), x.meta.get("lane_stop", ""), lanes.parked(x)))
+            return real_train(p, main, ids, *args, **kw)
+        with mock.patch.object(train, "train", trained), self.in_project():
+            got = train.land(self.p, self.repo, 1)
+        self.assertEqual([t for t, _ in got["parked"]], [a], got)
+        self.assertTrue(seen, "a train ran after the park")
+        ids, stop, parked = seen[0]
+        self.assertEqual(ids, [b])
+        self.assertTrue(stop.startswith("conflict "), f"marked before the train started: {stop!r}")
+        self.assertTrue(parked, "lanes.parked sees the park while the land still runs")
+        self.assertEqual(self.brief(a).section("Log").count("land: parked"), 1, "the end pass adds no second line")
+        self.assertEqual(self.brief(b).status, "done")
+
+    def test_park_marks_a_lane_a_train_left_out_once_too(self):
+        a, b = self.lane(1, "a.txt", when=OLD), self.lane(2, "BREAK", when=OLD)
+        self.audited(a, b)
+        self.returned(a, "Lane one")
+        self.returned(b, "Lane two")
+        with self.in_project():
+            got = train.land(self.p, self.repo, 2)
+        self.assertEqual([t for t, _ in got["parked"]], [b], got)
+        self.assertTrue(self.brief(b).meta.get("lane_stop", "").startswith("refused"), self.brief(b).meta)
+        self.assertEqual(self.brief(b).section("Log").count("land: parked"), 1)
+
+
 class ShipAndFirst(LandCase):
     """T-4252 review: a land that asks a detached ship after a train and also takes a --first id in the same run. The
     land's --first set and the ship request's flag were both named `asked` in _land(): the request replaced the set with

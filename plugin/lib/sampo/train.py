@@ -3671,9 +3671,27 @@ def _land_trains(p, main, batch, owed, closer=None):
             to_close(out, front=True)
         return bool(out)
 
+    marked = {}  # T-5852: {lane: (why, tip)} of each park already on the brief: the end pass marks only the rest
+
+    def mark_park(i, w):
+        """T-5852: the lane's lane_stop and Log line, written when the lane is parked, not at the land's end: a continuous
+        land parked four lanes at 07:20 and they had no lane_stop at 07:54, so `sampo lane recover` and the lane pilot
+        refused them as "builder may be working". A park already marked for the same reason at the same tip is not
+        written again (no second Log line); a failed write is left for the end pass, which marks what `marked` lacks."""
+        tip_ = tested.get(i, "")
+        if marked.get(i) == (w, tip_):
+            return
+        kind, arg = _park_kind(w)
+        lanes.stop_mark(p, i, kind, arg, log=f"land: parked: {c.fit(w, 300)}", tip=tip_)
+        marked[i] = (w, tip_)
+
     def note_park(pairs):  # T-4252: one line per lane left out, as it happens; plain() keeps a gate's output to one line
         for i, w in pairs:
             print(f"sampo lane land: parked {i}: {c.fit(c.plain(w), 400)}", file=sys.stderr, flush=True)
+            try:  # T-5852: marked at once; a lane that can't be marked never costs the land its other lanes
+                mark_park(i, w)
+            except Exception as e:
+                print(f"sampo lane land: {i}: its park is not marked yet: {c.fit(c.plain(str(e)), 160)}", file=sys.stderr, flush=True)
 
     held = set()  # T-4767: lanes the check hold left out: read again when a train starts or one is named --first
     checking, mine = set(), set()  # T-5561: lanes whose check this land started, and those still running (or waiting for a
@@ -3932,9 +3950,8 @@ def _land_trains(p, main, batch, owed, closer=None):
     else:
         to_close([t for t in left if t not in queued])  # one tried at a boundary was said there
     closer.join()  # T-5368: the land's last ship and its summary come after every close
-    for tid, why in parked:
-        kind, arg = _park_kind(why)
-        lanes.stop_mark(p, tid, kind, arg, log=f"land: parked: {c.fit(why, 300)}", tip=tested.get(tid, ""))
+    for tid, why in parked:  # T-5852: marked as each was parked (note_park); this pass writes only what that did not
+        mark_park(tid, why)
     _pilot_parks(p, parked)  # T-5766: the marks are on the briefs; each parked conflict gets its headless resolver
     try:
         last = ship(True) if landed and not restart else None  # the land's last ship spends the grant: a restart's successor does
