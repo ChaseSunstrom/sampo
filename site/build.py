@@ -596,7 +596,7 @@ def render_page(p, stats, pages):
     return layout(p["title"], desc_of(p, stats), "".join(parts), pages, p["slug"])
 
 
-def desc_of(p, stats):
+def desc_of(p: dict, stats: dict | None) -> str:
     """T-5035: a page's description; a callable one takes the stats, so a count in it is the build's and not typed."""
     return p["desc"](stats or {}) if callable(p["desc"]) else p["desc"]
 

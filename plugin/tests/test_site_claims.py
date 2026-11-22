@@ -23,7 +23,7 @@ NUM = r"(\d[\d,]*)"
 SWEPT = ("index.html", "cards.html", "genesis/index.html", "features")  # the pages whose counts the build knows
 
 
-def visible(page):
+def visible(page: str) -> str:
     """The reader's text: no script, style, svg or comments; the meta description is read too (a search result shows it)."""
     meta = re.findall(r'<meta (?:name|property)="(?:og:)?description" content="([^"]*)"', page)
     page = re.sub(r"(?is)<(script|style|svg|noscript)\b.*?</\1>|<!--.*?-->", " ", page)
@@ -38,7 +38,7 @@ WORDS["dozen"] = 12
 WORD = r"(?i:" + "|".join(sorted(WORDS, key=len, reverse=True)) + r")"  # a count in words: "Five", "twenty", "a dozen"
 
 
-def num(s):
+def num(s: str) -> int:
     return WORDS[s.lower()] if s.lower() in WORDS else int(s.replace(",", ""))
 
 
@@ -50,7 +50,8 @@ class SiteClaims(ForemanTestCase):
         out = os.path.join(cls.tmp.name, "o")
         p = subprocess.run([sys.executable, os.path.join(ROOT, "site", "build.py"), out], capture_output=True, text=True,
                            timeout=300)
-        assert p.returncode == 0, p.stderr
+        if p.returncode != 0:  # not an assert: python -O would strip it and let a failed build pass
+            raise AssertionError(p.stderr)
         cls.pages = {}
         for dp, _, names in os.walk(out):
             for n in names:
@@ -112,7 +113,7 @@ class SiteClaims(ForemanTestCase):
     def test_every_named_claim_equals_its_source(self):
         for name, pattern, want, where in self.claims():
             for rel in where:
-                found = re.findall(pattern, self.pages[rel], re.I)
+                found = re.findall(pattern, self.pages.get(rel, ""), re.I)  # a missing page fails below, by name
                 self.assertTrue(found, f"{rel} has no '{name}' claim to check ({pattern}); reworded or dropped?")
                 for hit in found:
                     got = [num(x) for x in (hit if isinstance(hit, tuple) else (hit,))]
@@ -147,12 +148,11 @@ class SiteClaims(ForemanTestCase):
                 self.assertIsNone(typed.search(line), f"{rel}:{n} types a count the build knows: {typed.search(line)}")
 
     def test_the_genesis_page_counts_its_levels_from_its_script(self):
-        words = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7}
-        text = self.pages["genesis/index.html"]
+        text = self.pages.get("genesis/index.html", "")
         said = re.search(r"\b(\w+) levels, one generation at a time", text, re.I)
         self.assertTrue(said, "the Genesis page lost its levels heading")
-        drawn = set(re.findall(r"Level (\d)", read_text(os.path.join(ROOT, "site", "genesis", "genesis.js"))))
-        self.assertEqual(words[said.group(1).lower()], len(drawn), f"the tower draws levels {sorted(drawn)}")
+        drawn = set(re.findall(r"Level (\d+)", read_text(os.path.join(ROOT, "site", "genesis", "genesis.js"))))
+        self.assertEqual(num(said.group(1)), len(drawn), f"the tower draws levels {sorted(drawn)}")
 
 
 if __name__ == "__main__":
