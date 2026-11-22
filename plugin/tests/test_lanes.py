@@ -894,6 +894,38 @@ class Lanes(ForemanTestCase):
         other = ({a, b} - set(briefed)).pop()
         self.assertEqual({x["id"]: x["reason"] for x in out["skipped"]}[other], f"scope overlaps {briefed[0]}")
 
+    def test_brief_ready_holds_running_scope(self):  # T-5479: a lane already out holds its scope, not only the batch
+        mk = lambda t: first(self.fm("task", "new", t, "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true",  # noqa: E731
+                                     "--step", "s", "--json").stdout)["id"]
+        self.fm("lane", "max", "3")
+        running, planned = mk("Running a"), mk("Planned b")
+        self.fm("task", "set", running, "scope=plugin/lib/sampo/lanes.py")
+        self.fm("task", "set", planned, "scope=plugin/lib/sampo/lanes.py")
+        p = c.find_project(self.repo)
+        b = c.find_brief(p, running)
+        b.meta["builder"] = c.now()  # a builder launched a moment ago: working, no lane dir yet
+        c.save_brief(p, b)
+        out = json.loads(self.fm("lane", "brief", "--ready", "--json").stdout)
+        self.assertNotIn(planned, {x["id"] for x in out["briefed"]})
+        self.assertEqual({x["id"]: x["reason"] for x in out["skipped"]}[planned], f"scope overlaps {running}")
+
+    def test_brief_ready_race_exempt(self):  # T-5479: a racing task is briefed beside a running lane that shares its file
+        mk = lambda t: first(self.fm("task", "new", t, "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true",  # noqa: E731
+                                     "--step", "s", "--json").stdout)["id"]
+        self.fm("lane", "max", "3")
+        running, racer = mk("Running c"), mk("Racer d")
+        self.fm("task", "set", running, "scope=plugin/lib/sampo/lanes.py")
+        self.fm("task", "set", racer, "scope=plugin/lib/sampo/lanes.py")
+        p = c.find_project(self.repo)
+        b = c.find_brief(p, running)
+        b.meta["builder"] = c.now()
+        c.save_brief(p, b)
+        r = c.find_brief(p, racer)
+        r.meta["race"] = running  # a race side: both sides edit the same files by design
+        c.save_brief(p, r)
+        out = json.loads(self.fm("lane", "brief", "--ready", "--json").stdout)
+        self.assertIn(racer, {x["id"] for x in out["briefed"]}, out)
+
     def test_brief_ready_lists_at_most_fifteen_skips_and_says_how_many_more(self):  # T-3293
         mk = lambda t, tier: first(self.fm("task", "new", t, "--type", "FEATURE", "--tier", tier, "--ac", "ok :: true",  # noqa: E731
                                            "--step", "s", "--json").stdout)["id"]

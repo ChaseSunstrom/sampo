@@ -2885,7 +2885,8 @@ def brief_ready(p, args):
     """T-3293: `fm lane brief --ready` briefs every planned S/M task that is ready now, each through builder_brief so
     every gate of the one-task brief holds: deps closed, no open lane, nothing waiting on the user, up to the free
     builder slots (or --limit N, never more than the slots). A task whose scope names a file another brief in this batch
-    already names is skipped. A refusal for the whole batch (the slots, the cap, host strain, the budget) stops the batch:
+    already names is skipped, and so is one whose scope names a file a builder already out (working) holds (T-5479:
+    "scope overlaps T-N"); a racing task is exempt, both its sides edit the same files by design. A refusal for the whole batch (the slots, the cap, host strain, the budget) stops the batch:
     the rest are "not tried" with that reason. Prints one block of launch lines and each skipped task with its reason;
     --json returns the briefs as a list the lead turns into parallel Agent calls."""
     import argparse
@@ -2938,6 +2939,10 @@ def brief_ready(p, args):
         return None
 
     briefed, skipped, claimed, stop = [], [], {}, None
+    for x in briefs:  # T-5479: a builder already out holds its scope: a planned task that overlaps it waits for its lane
+        if x.id in working:
+            for path in concrete(x):
+                claimed.setdefault(path, x.id)
     for b in todo:
         why = not_ready(b)  # the task's own reason first: an L task is an L task, whatever the batch says
         racing = bool(b.meta.get("race") or b.meta.get("race_of"))  # both sides edit the same files by design
