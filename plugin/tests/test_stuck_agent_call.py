@@ -16,11 +16,22 @@ from sampo import selfcheck
 CMD = "python3 plugin/tests/run.py test_slow"
 
 
-class StuckAgentCall(ForemanTestCase):
+class StuckKit:
+    """The helpers every class below shares, as a mixin (not a test case itself): a class that subclassed another test
+    class would run that class's tests again, subprocess hooks included."""
+
     def setUp(self):
         super().setUp()
         self.fm("init")
         self.p = c.find_project(self.repo)
+
+    def age_stamps(self, minutes=20):
+        for n in os.listdir(c.calls_dir()):
+            path = os.path.join(c.calls_dir(), n)
+            rec = json.load(open(path))
+            rec["at"] -= minutes * 60
+            with open(path, "w") as f:
+                json.dump(rec, f)
 
     def pre(self, tid="toolu_1", agent="agent-a", cmd=CMD, tool="Bash", **extra):
         pl = {"tool_name": tool, "tool_input": {"command": cmd, **extra.pop("ti", {})} if cmd else {}, "tool_use_id": tid}
@@ -38,6 +49,8 @@ class StuckAgentCall(ForemanTestCase):
     def stuck(self, minutes):
         return selfcheck.stuck_agent_calls(self.p, [], time.time() + minutes * 60)
 
+
+class StuckAgentCall(StuckKit, ForemanTestCase):
     def test_a_subagent_call_past_the_limit_is_named_with_agent_command_age_and_action(self):
         self.pre()
         self.assertIsNone(self.stuck(5), "a call five minutes in is an ordinary test run")
@@ -75,7 +88,7 @@ class StuckAgentCall(ForemanTestCase):
         self.assertIn("agent-b", hit)
         self.assertNotIn("agent-a", hit)
 
-    def test_only_a_subagents_foreground_bash_call_is_stamped(self):
+    def test_only_a_subagents_foreground_call_is_stamped(self):
         self.pre(agent=None)  # the main thread: its own turn is on screen
         self.pre(tid="toolu_3", ti={"run_in_background": True})  # returns at once
         self.assertIsNone(self.stuck(60))
@@ -117,7 +130,7 @@ class StuckAgentCall(ForemanTestCase):
         self.assertIsNone(c.typed_refuse(), "a plain test run types nothing: no switch refused")
 
 
-class StuckAgentCallReview(StuckAgentCall):
+class StuckAgentCallReview(StuckKit, ForemanTestCase):
     """The review's findings: a lane folder beside the repo, a second hang the same day, any tool, and a trigger."""
 
     def test_a_builder_in_a_lanes_sibling_folder_is_named(self):
@@ -174,29 +187,14 @@ class StuckAgentCallReview(StuckAgentCall):
 FAKE_TOKEN = "fake-token-0123456789abcdef-not-real"
 
 
-class StuckAgentCallSecond(ForemanTestCase):
+class StuckAgentCallSecond(StuckKit, ForemanTestCase):
     """The second review: a tick from a sibling lane, a secret in the command, a tick that never waits on a notifier."""
-
-    pre = StuckAgentCall.pre
-
-    def setUp(self):
-        super().setUp()
-        self.fm("init")
-        self.p = c.find_project(self.repo)
 
     def lane(self, name):
         path = f"{self.repo}.lanes/{name}"
         os.makedirs(os.path.dirname(path), exist_ok=True)
         subprocess.run(["git", "-C", self.repo, "worktree", "add", "-q", "-b", f"b-{name}", path], check=True)
         return path
-
-    def age_stamps(self, minutes=20):
-        for n in os.listdir(c.calls_dir()):
-            path = os.path.join(c.calls_dir(), n)
-            rec = json.load(open(path))
-            rec["at"] -= minutes * 60
-            with open(path, "w") as f:
-                json.dump(rec, f)
 
     def test_a_tick_from_one_lane_names_a_hang_in_a_sibling_lane(self):
         x, y = self.lane("T-1"), self.lane("T-2")
@@ -257,3 +255,117 @@ class StuckAgentCallSecond(ForemanTestCase):
         self.assertIn("agent-a", spawned[0][-1])
         alerts = os.path.join(self.p.dir, "alerts.jsonl")
         self.assertTrue(os.path.exists(alerts) and "agent-a" in open(alerts).read())
+
+
+class StuckAgentCallThird(StuckKit, ForemanTestCase):
+    """The third review (2026-11-21): the minute tick's subset run leaves the other checks' state alone, and the tick
+    runs on any PreToolUse (the main thread's too), after the guard has answered, and only with time left."""
+
+    def act_state(self):
+        with open(os.path.join(self.p.dir, "selfcheck-act.json"), encoding="utf-8") as f:
+            return json.load(f)
+
+    def run_acting(self, check, now, spawned, told):
+        return selfcheck.act(self.p, [], now, checks=(check,), spawn=lambda p, argv: spawned.append(argv) or 1,
+                             tell=lambda p, text: told.append(text))
+
+    def test_a_subset_run_keeps_the_other_checks_acted_and_first(self):
+        def landings(p, briefs, now):
+            return selfcheck.Hit("lanes wait", action=["true"])
+        now, spawned, told = time.time(), [], []
+        self.run_acting(landings, now, spawned, told)
+        self.run_acting(selfcheck.stuck_agent_calls, now + 60, spawned, told)  # the minute tick runs one check only
+        st = self.act_state()["landings"]
+        self.assertEqual(st.get("acted"), [now], "the action ledger of a check the tick did not run stays")
+        self.assertEqual(st.get("first"), now, "and so does when its finding began")
+        self.run_acting(landings, now + 600, spawned, told)
+        self.assertEqual(len(spawned), 1, "the 30-minute backoff still holds after a tick")
+        self.run_acting(selfcheck.stuck_agent_calls, now + selfcheck.ESCALATE_S, spawned, told)
+        self.run_acting(landings, now + selfcheck.ESCALATE_S + 1, spawned, told)
+        self.assertEqual(len(told), 1, "a finding that outlives 2 h escalates to a tell though a tick ran in between")
+
+    def test_a_check_that_ran_and_found_nothing_is_still_reset(self):
+        firing = [True]
+
+        def flicker(p, briefs, now):
+            return selfcheck.Hit("flicker", action=["true"]) if firing[0] else None
+        now, spawned, told = time.time(), [], []
+        self.run_acting(flicker, now, spawned, told)
+        self.assertIn("acted", self.act_state()["flicker"])
+        firing[0] = False
+        self.run_acting(flicker, now + 60, spawned, told)
+        st = self.act_state()["flicker"]
+        self.assertNotIn("acted", st, "resolved: a new finding starts fresh")
+        self.assertNotIn("first", st)
+
+    def test_a_lone_hang_is_told_by_the_main_threads_next_call(self):
+        self.pre()  # agent-a's call: the only subagent, so no other subagent call will tick
+        self.age_stamps()
+        try:
+            os.remove(os.path.join(self.p.dir, "stuck.tick"))  # a minute on
+        except OSError:
+            pass
+        self.pre(tid="toolu_main", agent=None, cmd="ls")  # the parent keeps working: its own call is the trigger
+        alerts = os.path.join(self.p.dir, "alerts.jsonl")
+        self.assertTrue(os.path.exists(alerts) and "agent-a" in open(alerts).read())
+
+    def raw(self, **extra):
+        return json.dumps(dict({"tool_name": "Bash", "tool_input": {"command": "ls"}, "tool_use_id": "toolu_t",
+                                "cwd": self.repo}, **extra))
+
+    def with_a_stamp(self):
+        c.stamp_call("toolu_x", agent="agent-a", command=CMD, cwd=self.repo, tool="Bash")
+
+    def test_the_tick_runs_after_the_guard_has_answered(self):
+        from sampo import hooks
+        self.with_a_stamp()
+        order = []
+        with mock.patch.object(hooks, "_pre_tool_use", lambda raw: order.append("guard") or 0), \
+                mock.patch.object(hooks, "_stuck_tick", lambda pl: order.append("tick")):
+            code = hooks._pre_typed(self.raw())
+        self.assertEqual((code, order), (0, ["guard", "tick"]))
+        order.clear()
+        with mock.patch.object(hooks, "_pre_tool_use", lambda raw: order.append("guard") or 0), \
+                mock.patch.object(hooks, "_stuck_tick", lambda pl: order.append("tick")):
+            hooks._pre_typed(self.raw(agent_id="agent-b"))
+        self.assertEqual(order, ["guard", "tick"], "a subagent's own call too")
+
+    def test_the_tick_gives_way_when_the_hook_has_no_time_left(self):
+        from sampo import hooks
+        self.with_a_stamp()
+        ticks = []
+        try:
+            with mock.patch.object(hooks, "_pre_tool_use", lambda raw: 0), \
+                    mock.patch.object(hooks, "_stuck_tick", lambda pl: ticks.append(pl)), \
+                    mock.patch.object(hooks, "_left", lambda: 0.2):
+                self.assertEqual(hooks._pre_typed(self.raw()), 0)
+            self.assertEqual(ticks, [], "a guard that took the deadline leaves no time for a git call")
+            self.assertIn("stuck_tick", hooks._TIMING.get("ran_out", []), "the skipped part is named in the hook's row")
+        finally:
+            hooks._TIMING.clear()
+
+    def test_a_tick_cut_by_the_deadline_never_costs_the_guards_answer(self):
+        from sampo import hooks
+
+        def cut(pl):
+            raise hooks._OutOfTime
+        self.with_a_stamp()
+        try:
+            with mock.patch.object(hooks, "_pre_tool_use", lambda raw: 0), mock.patch.object(hooks, "_stuck_tick", cut):
+                self.assertEqual(hooks._pre_typed(self.raw()), 0)
+            self.assertIn("stuck_tick", hooks._TIMING.get("ran_out", []))
+        finally:
+            hooks._TIMING.clear()
+
+    def test_no_call_stamp_no_tick(self):
+        from sampo import hooks
+        ticks = []
+        with mock.patch.object(hooks, "_pre_tool_use", lambda raw: 0), \
+                mock.patch.object(hooks, "_stuck_tick", lambda pl: ticks.append(pl)):
+            hooks._pre_typed(self.raw())
+        self.assertEqual(ticks, [], "nothing to be stuck: an ordinary call pays one directory listing, no project lookup")
+
+    def test_a_stamp_without_a_cwd_is_no_projects_hang(self):
+        c.stamp_call("toolu_e", agent="agent-z", command=CMD, cwd="", tool="Bash")
+        self.age_stamps()
+        self.assertIsNone(self.stuck(20), "it would show in every project")

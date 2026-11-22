@@ -2504,6 +2504,14 @@ def _typed_end(raw, event):
 
 
 def _pre_typed(raw):
+    """T-5045 review: a PreToolUse call: the guard behind its stamps (_pre_stamped), then, once the guard has answered and
+    only with time left in the hook's deadline, the stuck-call tick (_stuck_tick_after). The guard's code is returned."""
+    code = _pre_stamped(raw)
+    _stuck_tick_after(raw)
+    return code
+
+
+def _pre_stamped(raw):
     """T-4747: the guard (_pre_tool_use) behind a typing stamp. A Bash or Monitor command, a file write or an MCP tool
     that types into a terminal (_typing_call) is stamped as running before the guard looks at it; when the guard denies
     it (it never runs, so it types nothing) the stamp goes again. The stamp is logged as an event with the names matched
@@ -2555,6 +2563,38 @@ def _pre_typed(raw):
 _CALL_UNSTAMPED = ("Agent", "Task", "Monitor")  # these wait on others or run on by design: no 12-minute limit fits
 
 
+STUCK_TICK_MIN_S = 1.0  # T-5045 review: the tick (a git call for the main checkout, a few small reads) needs this much of the hook's deadline
+
+
+def _stuck_tick_after(raw):
+    """T-5045 review: the stuck-call tick for any PreToolUse (the main thread's too: a parent waiting on one hung builder
+    runs no subagent call of its own), run after the guard has answered and only with STUCK_TICK_MIN_S left before the
+    hook's deadline (named in the hook's row when skipped), cut at the deadline like a note builder. With no call stamp
+    anywhere (the common case) a call pays one directory listing: no parse, no project lookup. Never raises."""
+    token = None
+    try:
+        try:
+            if not os.listdir(c.calls_dir()):
+                return
+            left = _left()
+            if left < STUCK_TICK_MIN_S:
+                _skipped("stuck_tick")
+                return
+            pl = json.loads(raw)
+            if isinstance(pl, dict):
+                token = _arm(left)
+                _stuck_tick(pl)
+        finally:
+            _disarm(token)
+    except OSError:  # no calls folder: nothing is running
+        pass
+    except _OutOfTime:  # the alarm landed: the guard answered long ago, and the next call ticks again
+        _disarm(token)
+        _skipped("stuck_tick")
+    except Exception:
+        log_error("PreToolUse", _tb())
+
+
 def _stuck_tick(pl):
     """T-5045: a subagent's call is a moment a parent may be waiting with no Stop to come: at most once a minute per
     project, the stuck_agent_calls check runs (a stat and a few small files) and a hung call is told. Never raises."""
@@ -2576,10 +2616,11 @@ def _stuck_tick(pl):
 
 
 def _stamp_call(raw):
-    """T-5045: a subagent's foreground Bash call leaves a call stamp (core.stamp_call: agent, command, start) so a call that
-    hangs is named by the stuck_agent_calls self-check. The main thread's calls (no agent_id), background calls (they
-    return at once) and calls without a tool_use_id (nothing to clear them by) leave none. The key, or None; a broken
-    stamp is logged and the guard's answer stands."""
+    """T-5045: a subagent's foreground tool call (any tool bar Agent, Task and Monitor) leaves a call stamp
+    (core.stamp_call: agent, command, start) so a call that hangs is named by the stuck_agent_calls self-check. The main
+    thread's calls (no agent_id), background calls (they return at once) and calls without a tool_use_id (nothing to
+    clear them by) leave none. The key, or None; a broken stamp is logged and the guard's answer stands. The tick that
+    names a hang is not here: it follows the guard's answer (_stuck_tick_after)."""
     try:
         pl = json.loads(raw)
         ti = pl.get("tool_input") if isinstance(pl, dict) and isinstance(pl.get("tool_input"), dict) else {}
@@ -2590,7 +2631,6 @@ def _stamp_call(raw):
             return None
         c.stamp_call(tid, session=pl.get("session_id"), agent=pl.get("agent_id"), command=ti.get("command"),
                      cwd=_cwd(pl), tool=tool)
-        _stuck_tick(pl)
         return tid
     except Exception:
         log_error("PreToolUse", _tb())

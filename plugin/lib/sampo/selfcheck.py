@@ -222,11 +222,12 @@ STUCK_CALL_S = 12 * 60  # T-5045: a Bash call may run 10 min at most (its own ti
 
 
 def stuck_agent_calls(p, briefs, now):
-    """T-5045: a subagent's foreground Bash call running past STUCK_CALL_S (the PreToolUse stamp, core.stamp_call; a Post or
+    """T-5045: a subagent's foreground tool call running past STUCK_CALL_S (the PreToolUse stamp, core.stamp_call; a Post or
     the agent's end clears it) is named with agent, command and age, and what to do about it. This project's calls only:
     the stamp's cwd is under the project's root (a lane's worktree is), so another project's builder isn't named here.
     Any tool counts, bar Agent/Task/Monitor (they wait on others by design). A parent thread waits on it silently, so
-    nothing else would say it: besides the Stop sweep and the timer, any subagent's next call ticks this check (hooks._stuck_tick). Read uncached: a few small files."""
+    nothing else would say it: besides the Stop sweep and the timer, any tool call's PreToolUse (the main thread's too,
+    after the guard has answered) ticks this check once a minute (hooks._stuck_tick_after). Read uncached: a few small files."""
     from sampo import lanes
     real = os.path.realpath
     main = real(p.root or "")
@@ -235,8 +236,8 @@ def stuck_agent_calls(p, briefs, now):
     except Exception:  # noqa: BLE001 — git unreadable: this root's own homes
         pass
     homes = (main, *lanes._lane_homes(main))  # the repo, <repo>.lanes/ and <repo>/.claude/worktrees/, real paths
-    rows = [r for r in c.stuck_calls(STUCK_CALL_S, now)
-            if not r["cwd"] or any(real(r["cwd"]) == h or real(r["cwd"]).startswith(h + os.sep) for h in homes)]
+    rows = [r for r in c.stuck_calls(STUCK_CALL_S, now)  # a stamp with no cwd belongs to no project: it would show in every one
+            if r["cwd"] and any(real(r["cwd"]) == h or real(r["cwd"]).startswith(h + os.sep) for h in homes)]
     if not rows:
         return None
     # the command is the agent's text: a secret in it never reaches the alert, the log, the desktop or the user's command
@@ -689,7 +690,8 @@ def notify_detached(p, text):
 
 
 def act(p, briefs=None, now=None, checks=None, spawn=_spawn, tell=notify):
-    """Each hit's action run, or the user told, per the rules above: [(check, 'act' | 'tell', text)]."""
+    """Each hit's action run, or the user told, per the rules above: [(check, 'act' | 'tell', text)]. With `checks` (a
+    subset), only those checks' state is judged: a check that did not run keeps its ledger and when its finding began."""
     now = time.time() if now is None else now
     briefs = c.load_briefs(p) if briefs is None else briefs
     path = os.path.join(p.dir, "selfcheck-act.json")
@@ -699,6 +701,7 @@ def act(p, briefs=None, now=None, checks=None, spawn=_spawn, tell=notify):
     except (OSError, ValueError):
         st = {}
     out, seen = [], set()
+    ran = None if checks is None else {getattr(check, "__name__", "check") for check in checks}  # T-5045: a subset run (the hook's minute tick) judges only these
     for check in (CHECKS + LIVE if checks is None else checks):
         try:
             hit = check(p, briefs, now)
@@ -729,7 +732,7 @@ def act(p, briefs=None, now=None, checks=None, spawn=_spawn, tell=notify):
             c.log_event(p, "self_tell", data={"check": k, "text": c.plain(str(hit))[:300]})
             out.append((k, "tell", str(hit)))
     for k, s in st.items():
-        if k not in seen:  # resolved: a new finding starts fresh; when it was last told still holds the day's limit
+        if k not in seen and (ran is None or k in ran):  # resolved (a check that did not run says nothing): a new finding starts fresh; when it was last told still holds the day's limit
             st[k] = {key: s[key] for key in ("told", "level") if key in s}
     try:
         c.write_atomic(path, json.dumps(st))
