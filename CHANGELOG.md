@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- The Ward reads line 1 of a long script inside a small budget again: its whole-script search for a moved TMPDIR waits for a piece that holds mktemp (it cost 11 ms on 30000 lines up front), and ScriptScale's CPU bound scales by the runner's speed; CI on main was red at f16857a; (T-4976).
 - sampo uninstall now removes the fm and sampo links a marketplace install left in ~/.local/bin, and a plugin update repoints them instead of leaving them dangling (T-4867).
 - A step `sampo code` reworded for the plan gate after a one-way refusal is now watched while it runs: an untracked file it deletes or changes stops the run blocked with the file named, and a copy taken before the step is put back (T-4301).
 - Three avoidable steers of one root or concern in 7 days now file one FIX asking why the mechanism that should have caught it did not act, naming it and its last ledger firings, once per group per week, from `sampo steers --tick` (T-4191).
