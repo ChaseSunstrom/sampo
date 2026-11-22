@@ -13,9 +13,12 @@ import os
 import re
 import shutil
 import stat
+import sys
 import time
 
 from sampo import core as c
+from sampo import lanes
+from sampo.lanes import human
 
 ARCHIVE_AFTER_DAYS = 14
 INBOX_STALE_DAYS = 30
@@ -894,10 +897,366 @@ def _check_plugins():
     return out
 
 
+# ---------------------------------------------------------------- footprint (T-5951)
+
+REPORT_BUDGET_S = 60.0  # sampo tidy --report: one clock for the whole sizing; what it could not size is named
+REPORT_BUDGET_MAX_S = 3600.0
+TEXT_ITEMS = 5  # items the text report lists under a row (the biggest, then "+K more"); the JSON keeps every one
+
+
+def _tree(path, deadline):
+    """(bytes, files, newest mtime of a file) of `path` and everything below it, the path's own blocks counted; None when
+    `deadline` (a time.monotonic() value) passes first. The walk is lanes.dir_bytes: allocated blocks, a hard-linked file
+    once, a link sized as a link and never followed, a folder that can't be read counts as empty, a clock check per folder
+    and every WALK_CHECK_EVERY entries. A path that is gone is empty."""
+    if time.monotonic() >= deadline:
+        return None
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return 0, 0, 0.0
+    own = st.st_blocks * 512
+    if not stat.S_ISDIR(st.st_mode):
+        reg = stat.S_ISREG(st.st_mode)
+        return own, int(reg), st.st_mtime if reg else 0.0
+    got = lanes.dir_bytes(path, deadline, detail=True)
+    return None if got is None else (own + got[0], got[1], got[2])
+
+
+def _names(root, deadline):
+    """(names, complete) of the entries directly in the real folder `root`, scandir with the clock checked every
+    WALK_CHECK_EVERY entries: complete False when the deadline cut the listing short. None when `root` is not a real
+    folder (a link is never followed) or can't be read."""
+    try:
+        if not stat.S_ISDIR(os.lstat(root).st_mode):
+            return None
+        out = []
+        with os.scandir(root) as it:
+            for e in it:
+                if len(out) % lanes.WALK_CHECK_EVERY == 0 and time.monotonic() >= deadline:
+                    return sorted(out), False
+                out.append(e.name)
+        return sorted(out), True
+    except OSError:
+        return None
+
+
+def _item(path, tree, owner):
+    return {"path": path, "bytes": tree[0] if tree else None, "newest": (tree[2] or None) if tree else None, "owner": owner}
+
+
+def _entry_items(root, deadline, owner, pick=None):
+    """[item] of each entry directly in the folder `root` (`pick(path)` keeps some; `owner` is a text or a function of the
+    entry's name), `bytes` None for an entry the deadline cut off, and one such item for a listing it cut short. None when
+    `root` is not a real folder (a link is never followed)."""
+    got = _names(root, deadline)
+    if got is None:
+        return None
+    names, whole = got
+    out = []
+    for n in names:
+        path = os.path.join(root, n)
+        if pick is not None and not pick(path):
+            continue
+        out.append(_item(path, _tree(path, deadline), owner(n) if callable(owner) else owner))
+    if not whole:
+        out.append(_item(os.path.join(root, "..."), None, "the rest of the listing (time ran out)"))
+    return out
+
+
+def _row(kind, owner, cap, items, frees=None, frees_known=True):
+    """One kind's row. `frees`: what the cap would free (None: no cap); `frees_known` False when that sum is itself a
+    guess a deadline or an unreadable view cut short."""
+    items = sorted(items, key=lambda i: (i["bytes"] is None, -(i["bytes"] or 0), i["path"]))
+    left = sum(1 for i in items if i["bytes"] is None)
+    newest = max([i["newest"] for i in items if i["newest"]] or [0.0]) or None
+    return {"kind": kind, "bytes": sum(i["bytes"] or 0 for i in items), "count": len(items), "newest": newest,
+            "owner": owner, "cap": cap, "frees": frees, "complete": left == 0 and frees_known, "unsized": left,
+            "items": items}
+
+
+def _old_bytes(root, deadline, days, skip=()):
+    """(bytes, complete) of the entries directly in `root` last written more than `days` ago (what a tidy removal takes)."""
+    got = _names(root, deadline)
+    if got is None:
+        return 0, True
+    names, ok = got
+    cut, total = time.time() - days * 86400, 0
+    for n in names:
+        path = os.path.join(root, n)
+        try:
+            if n in skip or os.lstat(path).st_mtime >= cut:
+                continue
+        except OSError:
+            continue
+        t = _tree(path, deadline)
+        if t is None:
+            ok = False
+        else:
+            total += t[0]
+    return total, ok
+
+
+def _folder_row(kind, root, deadline, owner, cap, old=None, pick=None, item_owner=None):
+    items = _entry_items(root, deadline, item_owner or owner, pick)
+    if items is None:
+        return []
+    frees, known = old(deadline) if old else (None, True)
+    return [_row(kind, owner, cap, items, frees, known)]
+
+
+def _briefs(p):
+    """The project's briefs, [] when they can't be read (a broken record loses the owners, not the report)."""
+    try:
+        return c.load_briefs(p)
+    except Exception:
+        return []
+
+
+def _lane_owners(briefs):
+    """{real path of a lane folder: the task that names it} from the project's briefs: an open task is preferred, a
+    closed one is marked."""
+    out = {}
+    for b in sorted(briefs, key=lambda b: b.status in c.CLOSED, reverse=True):
+        if b.meta.get("lane"):
+            out[os.path.realpath(b.meta["lane"])] = f"{b.id}{' (closed)' if b.status in c.CLOSED else ''}"
+    return out
+
+
+def _cargo_rows(p, deadline, briefs):
+    """The project's lane cargo folders (what the cap prunes), sized once and handed to the cap's own dry run for what it
+    would free; and whatever else sits beside them (the gate's folders)."""
+    owners = _lane_owners(briefs)
+    root = lanes._lanes_root(p.slug)
+    if root is None:
+        return []
+    items, infos = [], {}
+    for _, path in lanes._lane_folders(root):
+        lane = lanes._lane_marker(path)
+        tid = owners.get(os.path.realpath(lane)) if lane else None
+        who = (f"lane {os.path.basename(lane)}" if lane else "no lane marker") + (f" ({tid})" if tid else "") \
+            + (" (lane gone)" if lane and not os.path.exists(lane) else "")
+        try:
+            info, size = lanes._cache_tree(path, deadline)
+        except lanes._SizingOut:
+            items.append(_item(path, None, who))
+            continue
+        used = info.get(path, (0, 0.0, True))[1]
+        infos[path] = (size, used)
+        items.append(_item(path, (size, 0, used), who))
+    rows = []
+    if items:
+        cap, frees, known, why = None, None, False, ""
+        if len(infos) == len(items):  # every folder sized: the cap's dry run reads nothing again, removes nothing
+            res = lanes.prune_cargo_cache(p, dry=True, deadline=deadline, sized=(infos, sum(v[0] for v in infos.values())))
+            cap, why = res["cap"], res["why"]
+            if not (res.get("out_of_time") or (why and not res["removed"])):
+                frees, known = sum(b for _, b in res["removed"]), True
+        text = f"cap {human(cap)}" if cap is not None else "cap unread"
+        if why:
+            text += f"; {why}"
+        rows.append(_row("cargo_lanes", p.slug, text, items, frees, known))
+    rows += _folder_row("cargo_gate", root, deadline, p.slug, "no cap", pick=lambda x: not lanes.LANE_FOLDER.match(os.path.basename(x)))
+    return rows
+
+
+def _worktree_rows(p, deadline, briefs):
+    """The project's lane worktrees (<repo>.lanes/*, <repo>/.claude/worktrees/*) with what a finished lane frees."""
+    owners = _lane_owners(briefs)
+    main = c.main_worktree(p.root) or p.root
+    if not os.path.isdir(main):
+        return []
+    real = os.path.realpath(main)
+    items = []
+    for home in (real + ".lanes", os.path.join(real, ".claude", "worktrees")):
+        items += _entry_items(home, deadline, lambda n, home=home: owners.get(os.path.realpath(os.path.join(home, n))) or "no task",
+                              pick=lambda x: os.path.isdir(x) and not os.path.islink(x)) or []
+    if not items:
+        return []
+    # what tidy --apply takes is finished_findings' set: a done lane's worktree goes with its task (stale), not here
+    done = lanes.finished(p, briefs, budget=max(0.0, deadline - time.monotonic()))
+    takes = [r for r in done if r["kind"] != "done_lane"]
+    known = time.monotonic() < deadline and all(r["bytes"] is not None for r in takes)  # a spent clock: the scan is partial
+    return [_row("lane_worktrees", p.slug, "finished lanes go with sampo tidy --apply", items,
+                 sum(r["bytes"] or 0 for r in takes), known)]
+
+
+def _backup_frees(d, deadline):
+    """(bytes, complete) of the backups tidy removes: all but the newest BACKUP_KEEP archives in `d`."""
+    got = _names(d, deadline)
+    if got is None:
+        return 0, True
+    names, ok = got
+    total = 0
+    for f in [f for f in names if f.endswith(".tar.gz")][:-BACKUP_KEEP]:
+        try:
+            total += os.lstat(os.path.join(d, f)).st_blocks * 512
+        except OSError:
+            pass
+    return total, ok
+
+
+def _record_rows(p, deadline):
+    """The project's own state folder: its backups (all but the newest BACKUP_KEEP go at the next tidy --apply) and the
+    rest of it (the record: briefs, ledger, views, research)."""
+    d = os.path.join(p.dir, "backups")
+    return (_folder_row("project_record", p.dir, deadline, p.slug, "no cap", pick=lambda x: os.path.basename(x) != "backups")
+            + _folder_row("project_backups", d, deadline, p.slug, f"the newest {BACKUP_KEEP} are kept",
+                          old=lambda dl: _backup_frees(d, dl)))
+
+
+def _run_cache_rows(projects, deadline):
+    """The test runner's cache (one file per repo, named by a hash of its git common dir), each file owned by the project
+    whose repo it is."""
+    import hashlib
+    base = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache")
+    keys = {}
+    for p in projects:
+        if time.monotonic() >= deadline:
+            break
+        dot = os.path.join(p.root, ".git")
+        common = os.path.realpath(dot) if os.path.isdir(dot) else \
+            (c._git(p.root, "rev-parse", "--path-format=absolute", "--git-common-dir", fail=None) if os.path.isdir(p.root) else None)
+        if common:
+            keys[hashlib.sha1(os.fsencode(os.path.realpath(common.strip()))).hexdigest()[:16]] = p.slug
+    who = lambda n: f"project {keys[n.split('.')[0]]}" if n.split(".")[0] in keys else "no project here"
+    return _folder_row("run_cache", os.path.join(base, "sampo", "run-cache"), deadline, "sampo check (the test runner)", "no cap",
+                       item_owner=who)
+
+
+def _machine_units(projects):
+    """[(weight, kind, function of a deadline -> rows)] of the folders that belong to no one project."""
+    state = c.state_dir()
+    base = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache")
+    registered = {p.slug for p, _ in c.all_projects()}
+    claimed = {"projects", "outputs", "logs", "snapshots", "ward-index", "lib-sources", "cache"}
+    return [
+        (2, "outputs", lambda d: _folder_row("outputs", os.path.join(state, "outputs"), d, "sessions' compact-output texts",
+                                             f"older than {SNAPSHOT_MAX_DAYS}d go with tidy --apply",
+                                             old=lambda dl: _old_bytes(os.path.join(state, "outputs"), dl, SNAPSHOT_MAX_DAYS,
+                                                                       skip=("shadow.jsonl",)))),
+        (1, "logs", lambda d: _folder_row("logs", os.path.join(state, "logs"), d, "hooks and long verbs",
+                                          f"stack dumps older than {STACKS_MAX_DAYS}d go with tidy --apply",
+                                          old=lambda dl: _old_bytes(os.path.join(state, "logs", "stacks"), dl, STACKS_MAX_DAYS))),
+        (1, "snapshots", lambda d: _folder_row("snapshots", os.path.join(state, "snapshots"), d, "sampo upgrade and rollback",
+                                               "rollback keeps the newest few of each kind; tidy takes none")),
+        (1, "ward_index", lambda d: _folder_row("ward_index", os.path.join(state, "ward-index"), d, "the guard's ward index", "no cap")),
+        (1, "lib_sources", lambda d: _folder_row("lib_sources", os.path.join(state, "lib-sources"), d, "sampo lib", "no cap")),
+        (1, "run_cache", lambda d: _run_cache_rows(projects, d)),
+        (3, "plugin_cache", lambda d: _folder_row("plugin_cache", os.path.join(os.path.expanduser("~"), ".claude", "plugins", "cache"),
+                                                  d, "Claude Code's plugin installs", "no cap")),
+        (4, "user_cache", lambda d: _folder_row("user_cache", os.path.join(base, "sampo"), d, "the user's cache folder for sampo",
+                                                "no cap", pick=lambda x: os.path.basename(x) != "run-cache")),
+        (6, "cargo_lanes_orphan", lambda d: _folder_row("cargo_lanes_orphan", os.path.join(state, "cache", c.CARGO_LANES), d,
+                                                        "no registered project", "no cap",
+                                                        pick=lambda x: os.path.basename(x) not in registered)),
+        (2, "state_cache", lambda d: _folder_row("state_cache", os.path.join(state, "cache"), d, "sampo's derived caches", "no cap",
+                                                 pick=lambda x: os.path.basename(x) != c.CARGO_LANES)),
+        (3, "state_other", lambda d: _folder_row("state_other", state, d, "sampo's own state", "no cap",
+                                                 pick=lambda x: os.path.basename(x) not in claimed)),
+    ]
+
+
+def footprint(projects: list, budget: float = REPORT_BUDGET_S) -> dict:
+    """T-5951: the disk Sampo's own paths hold, per project and for the machine: each kind's bytes, count (items), newest
+    use, owner, its cap and what the cap would free, plus totals by kind. Read-only: nothing is removed, no process is
+    touched. One clock of `budget` seconds covers it all, split by weight across the units (time a unit leaves unused
+    goes to the next); a unit or an item the clock cut off is named in `unsized`, its bytes a lower bound. Sizes are
+    allocated blocks, links never followed."""
+    t0 = time.monotonic()
+    end = t0 + max(0.0, budget)
+    units = []  # (weight, owner slug or None, kind, function of a deadline -> rows)
+    for p in projects:
+        memo = []  # the project's briefs: read once, by the first unit that needs them, then handed to the others
+        briefs = lambda p=p, memo=memo: (memo.append(_briefs(p)) if not memo else None) or memo[0]
+        units += [(10, p.slug, "cargo_lanes", lambda d, p=p, b=briefs: _cargo_rows(p, d, b())),
+                  (3, p.slug, "lane_worktrees", lambda d, p=p, b=briefs: _worktree_rows(p, d, b())),
+                  (2, p.slug, "project_record", lambda d, p=p: _record_rows(p, d))]
+    units += [(w, None, kind, fn) for w, kind, fn in _machine_units(projects)]
+    left_weight, unsized, rows_by = sum(u[0] for u in units), [], {}
+    for weight, slug, kind, fn in units:
+        now = time.monotonic()
+        share = max(0.0, end - now) * weight / left_weight
+        left_weight -= weight
+        label = slug or "machine"
+        if end - now <= 0:
+            unsized.append(f"{kind} ({label}): not looked at")
+            continue
+        try:
+            rows = fn(now + share)
+        except Exception as e:  # one unit's trouble must not lose the rest of the report
+            unsized.append(f"{kind} ({label}): could not be read ({type(e).__name__})")
+            continue
+        for r in rows:
+            if r["unsized"]:
+                unsized.append(f"{r['kind']} ({label}): {r['unsized']} of {r['count']} not sized")
+            elif not r["complete"]:
+                unsized.append(f"{r['kind']} ({label}): what its cap frees is not known")
+        rows_by.setdefault(slug, []).extend(rows)
+    order = lambda rows: sorted(rows, key=lambda r: (-r["bytes"], r["kind"]))
+    projects_out = sorted(({"slug": p.slug, "bytes": sum(r["bytes"] for r in rows_by.get(p.slug, [])),
+                            "rows": order(rows_by.get(p.slug, []))} for p in projects), key=lambda x: (-x["bytes"], x["slug"]))
+    machine = rows_by.get(None, [])
+    every = [r for x in projects_out for r in x["rows"]] + machine
+    kinds = {}
+    for r in every:
+        k = kinds.setdefault(r["kind"], {"kind": r["kind"], "bytes": 0, "count": 0, "frees": None})
+        k["bytes"] += r["bytes"]
+        k["count"] += r["count"]
+        if r["frees"] is not None:
+            k["frees"] = (k["frees"] or 0) + r["frees"]
+    return {"budget_s": budget, "elapsed_s": round(time.monotonic() - t0, 2),
+            "kinds": sorted(kinds.values(), key=lambda k: (-k["bytes"], k["kind"])),
+            "machine": {"bytes": sum(r["bytes"] for r in machine), "rows": order(machine)},
+            "projects": projects_out, "total_bytes": sum(r["bytes"] for r in every),
+            "total_frees": sum(r["frees"] or 0 for r in every), "unsized": unsized}
+
+
+def _ago(t, now):
+    if not t:
+        return "-"
+    s = max(0, now - t)
+    return f"{int(s // 60)}m" if s < 3600 else f"{int(s // 3600)}h" if s < 172800 else f"{int(s // 86400)}d"
+
+
+def render_footprint(r: dict) -> str:
+    """The text of `sampo tidy --report`: totals by kind, then each project's rows and the machine's, each row with its
+    TEXT_ITEMS biggest paths (size, newest use, owner) and "+K more" (the JSON has every one)."""
+    now = time.time()
+    shown = lambda x: [f"      {human(i['bytes']) if i['bytes'] is not None else '?':>10} {_ago(i.get('newest'), now):>7}  "
+                       f"{i['owner']}  {i['path']}" for i in x.get("items", [])[:TEXT_ITEMS]] \
+        + ([f"      +{len(x['items']) - TEXT_ITEMS} more"] if len(x.get("items", [])) > TEXT_ITEMS else [])
+    frees = lambda x: "-" if x is None else human(x)
+    head = f"{'kind':<20} {'n':>5} {'size':>10} {'newest':>7} {'frees':>10}  owner / cap"
+    row = lambda x: (f"{x['kind']:<20} {x['count']:>5} {human(x['bytes']):>10} {_ago(x.get('newest'), now):>7} "
+                     f"{frees(x['frees']):>10}" + (f"  {x['owner']} / {x['cap']}" if "owner" in x else "")
+                     + ("" if x.get("complete", True) else "  (not fully sized)"))
+    out = [f"Sampo footprint: {human(r['total_bytes'])} in {len(r['projects'])} project(s) and the machine; the caps would "
+           f"free {human(r['total_frees'])} (read in {r['elapsed_s']}s of {r['budget_s']:g}s)", "", "By kind", head]
+    out += [row(k) for k in r["kinds"]]
+    out += [f"{'Total':<20} {'':>5} {human(r['total_bytes']):>10} {'':>7} {human(r['total_frees']):>10}"]
+    for title, section in [(f"Project {x['slug']}", x) for x in r["projects"]] + [("Machine", r["machine"])]:
+        out += ["", f"{title}: {human(section['bytes'])}"]
+        for x in section["rows"]:
+            out += ["  " + row(x)] + shown(x)
+        out += [] if section["rows"] else ["  (nothing found)"]
+    if r["unsized"]:
+        out += ["", "Could not size (the time budget ran out; sizes above are lower bounds):"] + [f"  {u}" for u in r["unsized"]]
+    return "\n".join(out)
+
+
 # ---------------------------------------------------------------- command
 
 def cmd_tidy(args):
     from sampo import cli
+    if getattr(args, "report", False) or getattr(args, "budget", None) is not None:
+        if not getattr(args, "report", False) or args.apply:
+            print("sampo tidy --report only reads (no --apply); --budget belongs to --report", file=sys.stderr)
+            return 2
+        budget = REPORT_BUDGET_S if args.budget is None else min(REPORT_BUDGET_MAX_S, max(0.0, args.budget))
+        rep = footprint([p for p, _ in c.all_projects()], budget)
+        print(json.dumps(rep, indent=2, ensure_ascii=False) if args.json else render_footprint(rep))
+        return 0
     projects = [p for p, _ in c.all_projects()] if args.all else [cli.resolve(args)]
     actions, findings = [], []
     lanes = getattr(args, "lanes_only", False)  # T-1071: what fm night runs: nothing but closed tasks' lanes

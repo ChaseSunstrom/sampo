@@ -7203,11 +7203,12 @@ def human(n):
 WALK_CHECK_EVERY = 256  # a size walk looks at its clock every this many entries
 
 
-def dir_bytes(path, deadline=None):
+def dir_bytes(path, deadline=None, detail=False):
     """Disk a folder holds (allocated blocks, symlinks not followed, a hard-linked file once), or None when
     `deadline` (a time.monotonic() value) passes first: checked at every folder and every WALK_CHECK_EVERY entries (one
-    folder of a million files is no single unbounded step)."""
-    total, seen, todo, n = 0, set(), [path], 0
+    folder of a million files is no single unbounded step). `detail` (T-5951, sampo tidy --report) returns
+    (bytes, regular files, newest file mtime) instead of the bytes."""
+    total, seen, todo, n, files, newest = 0, set(), [path], 0, 0, 0.0
     while todo:
         if deadline is not None and time.monotonic() >= deadline:
             return None
@@ -7226,11 +7227,13 @@ def dir_bytes(path, deadline=None):
                                 continue
                             seen.add((st.st_dev, st.st_ino))
                         total += st.st_blocks * 512
+                        if _stat.S_ISREG(st.st_mode):
+                            files, newest = files + 1, max(newest, st.st_mtime)
                     except OSError:
                         pass
         except OSError:
             pass
-    return total
+    return (total, files, newest) if detail else total
 
 
 def _worktrees(main):
@@ -7836,13 +7839,15 @@ def cargo_effective_cap(size, cap=None, short=None):
     return cap, False
 
 
-def prune_cargo_cache(p, cap=None, now=None, held=None, budget=None, dry=False, deadline=None, free=None, floor=None):
+def prune_cargo_cache(p, cap=None, now=None, held=None, budget=None, dry=False, deadline=None, free=None, floor=None,
+                      sized=None):
     """T-4717, T-4764: bring this project's lane cargo folders (core.cargo_lanes_base of the registered project: no
     other folder, never a link, never one that resolves outside Sampo's cache) under their cap, whole folders, the
     least recently used first (a lane whose task is still open after the others: _open_task_lanes). Never a folder used in the last hour, never one a live process holds (its cwd or open
     file is in it, or in its lane's worktree), never one with a `.cargo-lock` a cargo build holds (held or unreadable =
     skipped; the holders are read once, after the sizing, unless `held` is given), never a link or a path outside
-    the cache. When the open files can't be read (no /proc) or the sizing runs out of `budget`, nothing is removed and
+    the cache. `sized` (({folder path: (bytes, newest use)}, total), what _lane_infos returns) is a sizing the caller already did
+    (T-5951: the report sizes each folder once, for its table and for what the cap frees). When the open files can't be read (no /proc) or the sizing runs out of `budget`, nothing is removed and
     `why` says so (`unsized` too for the latter). `deadline` (a time.monotonic() value) bounds the whole run, the
     sizing, the reading of the holders and each removal: when it passes the rest is left (`out_of_time`, `why` names
     what stays, for `sampo tidy --apply`). `dry` reports what would go. T-5874: when the state disk's free space
@@ -7865,7 +7870,7 @@ def prune_cargo_cache(p, cap=None, now=None, held=None, budget=None, dry=False, 
     else:
         bounded = True
     try:
-        infos, total = _lane_infos(root, deadline)
+        infos, total = sized if sized is not None else _lane_infos(root, deadline)  # T-5951: sampo tidy --report sized them
     except _SizingOut:
         res["why"] = "sizing the cache ran out of time: nothing removed"
         res["unsized"] = res["out_of_time"] = True

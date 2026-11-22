@@ -1,13 +1,19 @@
 """fm tidy: seeded rot is found in a dry run; --apply archives without losing anything (§12 scenario 9)."""
+import hashlib
 import json
 import os
 import re
 import shutil
 import time
+import types
+import unittest.mock
 
-from helpers import ForemanTestCase, read_text
+from helpers import ForemanTestCase, git_repo, read_text
+from test_disk_pressure import DiskCase
 
 from sampo import core as c
+from sampo import lanes
+from sampo import tidy
 
 
 def age(p, tid, days, status=None):
@@ -711,4 +717,265 @@ class ExamWork(TidyCase):
         self.tidy("--apply")
         self.assertTrue(os.path.isfile(os.path.join(outside, "sc1", "big.txt")))
         self.assertFalse(os.path.exists(os.path.join(outside, "PRUNED")))
+
+
+BLOCK = 8192  # a fake file is whole blocks, so the sizes a test expects are exact on any filesystem
+HOUR = 3600
+
+
+def put(path, blocks=1, hours_old=0.0):
+    """A fake file of `blocks` * 8 KB, last written `hours_old` hours ago."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(b"\0" * BLOCK * blocks)
+    then = time.time() - hours_old * HOUR
+    os.utime(path, (then, then))
+    return path
+
+
+class Footprint(DiskCase):
+    """T-5951: sampo tidy --report sizes every Sampo-owned kind per project and machine-wide, with count, newest use,
+    owner and what its cap would free, inside a time budget that names what it could not size."""
+
+    def setUp(self):
+        super().setUp()
+        patch = unittest.mock.patch.dict(os.environ, {"HOME": self.fake_home, "SAMPO_CARGO_CAP_BYTES": "1"})
+        patch.start()
+        self.addCleanup(patch.stop)
+        os.environ.pop("XDG_CACHE_HOME", None)
+        self.state = c.state_dir()
+        self.slug = self.p.slug
+        self.repo2 = git_repo(self.tmp, "other")
+        self.fm("init", cwd=self.repo2)
+        self.p2 = c.find_project(self.repo2)
+        self.projects = [p for p, _ in c.all_projects()]
+
+    def cargo(self, p, root, name, blocks, hours_old):
+        """A lane cargo folder of project p for the lane `name` (a lane path that need not exist), last used hours_old ago."""
+        lane = os.path.join(root, name)
+        path = c.cargo_lane_dir(p.slug, lane)
+        put(os.path.join(path, "debug", "deps", "x.rlib"), blocks, hours_old)
+        mark = os.path.join(path, c.CARGO_LANE_MARK)
+        with open(mark, "w") as f:
+            f.write(os.path.realpath(lane) + "\n")
+        then = time.time() - hours_old * HOUR
+        os.utime(mark, (then, then))
+        return path
+
+    def report(self, **kw):
+        kw.setdefault("budget", 120)
+        return tidy.footprint(self.projects, **kw)
+
+    def rows(self, report, slug=None):
+        """{kind: row} of one project, or of the machine when slug is None."""
+        if slug is None:
+            return {r["kind"]: r for r in report["machine"]["rows"]}
+        return {r["kind"]: r for pr in report["projects"] if pr["slug"] == slug for r in pr["rows"]}
+
+    def disk(self, folder):
+        total = 0
+        for top, dirs, files in os.walk(folder):
+            total += sum(os.lstat(os.path.join(top, n)).st_blocks * 512 for n in dirs + files)
+        return total
+
+    def size(self, path):
+        return os.lstat(path).st_blocks * 512
+
+    def seed(self):
+        """Every kind, in two projects and on the machine. Returns the files a cap would take."""
+        s = types.SimpleNamespace()
+        s.a1 = self.cargo(self.p, self.lane_root, "a-old", 1, 100)
+        s.a2 = self.cargo(self.p, self.lane_root, "a-mid", 2, 50)
+        s.a3 = self.cargo(self.p, self.lane_root, "a-new", 3, 10)
+        s.b1 = self.cargo(self.p2, self.repo2 + ".lanes", "b-only", 1, 5)
+        self.fm("task", "new", "an open one", "--type", "FIX", "--tier", "S")
+        s.open = self.lane("open-lane", size=4000)
+        s.done = self.lane("done-lane", size=60000, merged=True)
+        b = c.load_briefs(self.p)[0]
+        b.meta["lane"] = os.path.realpath(s.open)
+        c.save_brief(self.p, b, touch=False)
+        s.tid = b.id
+        s.backups = [put(os.path.join(self.p.dir, "backups", f"2026110{i}T000000Z.tar.gz"), 1 + i, 30 - i) for i in range(7)]
+        s.old_out = put(os.path.join(self.state, "outputs", "old.txt"), 1, 24 * 20)
+        s.new_out = put(os.path.join(self.state, "outputs", "new.txt"), 2, 1)
+        s.old_stack = put(os.path.join(self.state, "logs", "stacks", "old-stack.txt"), 1, 24 * 20)
+        put(os.path.join(self.state, "logs", "hooks.log"), 1, 2)
+        put(os.path.join(self.state, "snapshots", "1.2.3-x.tar.gz"), 4, 24 * 3)
+        put(os.path.join(self.state, "ward-index", "ward-index-aa.json"), 2, 6)
+        put(os.path.join(self.state, "lib-sources", "lib", "one.py"), 1, 7)
+        common = os.path.realpath(os.path.join(self.repo, ".git"))
+        key = hashlib.sha1(os.fsencode(common)).hexdigest()[:16]
+        s.run_cache = put(os.path.join(self.fake_home, ".cache", "sampo", "run-cache", key + ".json"), 2, 3)
+        put(os.path.join(self.fake_home, ".cache", "sampo", "cargo-target", "debug", "x.rlib"), 5, 80)
+        put(os.path.join(self.fake_home, ".claude", "plugins", "cache", "mk", "pl", "x.md"), 3, 40)
+        put(os.path.join(self.state, "cache", c.CARGO_LANES, "gone-project-123456", "lane-0123456789", "x"), 2, 9)
+        return s
+
+    def test_every_kind_is_sized_per_project_with_count_newest_and_owner(self):
+        s = self.seed()
+        r = self.report()
+        self.assertEqual({pr["slug"] for pr in r["projects"]}, {self.slug, self.p2.slug})
+        a = self.rows(r, self.slug)
+        infos, total = lanes._lane_infos(lanes._lanes_root(self.slug), time.monotonic() + 30)
+        self.assertEqual(a["cargo_lanes"]["bytes"], total)
+        self.assertEqual(a["cargo_lanes"]["count"], 3)
+        self.assertAlmostEqual(a["cargo_lanes"]["newest"], time.time() - 10 * HOUR, delta=120)
+        self.assertEqual(a["cargo_lanes"]["owner"], self.slug)
+        self.assertEqual(a["cargo_lanes"]["items"][0]["bytes"], infos[s.a3][0], "the biggest first")
+        self.assertEqual(a["lane_worktrees"]["count"], 2)
+        self.assertEqual(a["lane_worktrees"]["bytes"], self.disk(s.open) + self.disk(s.done))
+        owners = {os.path.basename(i["path"]): i["owner"] for i in a["lane_worktrees"]["items"]}
+        self.assertIn(s.tid, owners["open-lane"], "a lane's owner is the task that names it")
+        self.assertIn("no task", owners["done-lane"])
+        self.assertEqual(a["project_backups"]["count"], 7)
+        self.assertEqual(a["project_backups"]["bytes"], sum(self.size(f) for f in s.backups))
+        self.assertGreater(a["project_record"]["bytes"], 0)
+        b = self.rows(r, self.p2.slug)
+        self.assertEqual(b["cargo_lanes"]["count"], 1)
+        self.assertNotIn("lane_worktrees", b, "a project with no lane worktree lists none")
+
+    def test_machine_wide_kinds_are_sized_and_the_run_cache_names_its_project(self):
+        s = self.seed()
+        m = self.rows(self.report())
+        for kind, folder in (("outputs", "outputs"), ("logs", "logs"), ("snapshots", "snapshots"),
+                             ("ward_index", "ward-index"), ("lib_sources", "lib-sources")):
+            self.assertEqual(m[kind]["bytes"], self.disk(os.path.join(self.state, folder)), kind)
+            self.assertGreater(m[kind]["count"], 0, kind)
+            self.assertTrue(m[kind]["complete"], kind)
+        self.assertAlmostEqual(m["snapshots"]["newest"], time.time() - 72 * HOUR, delta=120)
+        self.assertEqual(m["run_cache"]["bytes"], self.disk(os.path.join(self.fake_home, ".cache", "sampo", "run-cache")))
+        self.assertIn(self.slug, m["run_cache"]["items"][0]["owner"])
+        self.assertEqual(m["plugin_cache"]["bytes"], self.disk(os.path.join(self.fake_home, ".claude", "plugins", "cache")))
+        target = os.path.join(self.fake_home, ".cache", "sampo", "cargo-target")
+        self.assertEqual(m["user_cache"]["bytes"], self.disk(target) + self.size(target), "the user's other cache folders")
+        self.assertEqual(m["cargo_lanes_orphan"]["count"], 1, "a cargo folder of no registered project is the machine's")
+
+    def test_each_cap_says_what_it_frees(self):
+        s = self.seed()
+        infos, total = lanes._lane_infos(lanes._lanes_root(self.slug), time.monotonic() + 30)
+        cap = total - infos[s.a1][0] - infos[s.a2][0]
+        with unittest.mock.patch.dict(os.environ, {"SAMPO_CARGO_CAP_BYTES": str(cap)}):
+            r = self.report()
+        a, m = self.rows(r, self.slug), self.rows(r)
+        self.assertEqual(a["cargo_lanes"]["frees"], infos[s.a1][0] + infos[s.a2][0], "the cap takes the oldest first")
+        self.assertIn(tidy.human(cap), a["cargo_lanes"]["cap"])
+        done = lanes.finished(self.p, c.load_briefs(self.p))
+        self.assertEqual([os.path.basename(x["path"]) for x in done], ["done-lane"])
+        self.assertEqual(a["lane_worktrees"]["frees"], done[0]["bytes"], "a finished lane is what tidy --apply takes")
+        self.assertEqual(a["project_backups"]["frees"], sum(self.size(f) for f in s.backups[:2]), "all but the newest five")
+        self.assertEqual(m["outputs"]["frees"], self.size(s.old_out), "outputs older than a week")
+        self.assertEqual(m["logs"]["frees"], self.size(s.old_stack), "stack dumps older than 14 days")
+        self.assertIsNone(m["ward_index"]["frees"], "a kind with no cap frees nothing it can name")
+        self.assertIn("no cap", m["ward_index"]["cap"])
+        self.assertEqual(self.rows(r, self.p2.slug)["cargo_lanes"]["frees"], 0, "under its cap")
+        self.assertEqual(r["total_frees"], sum(x["frees"] or 0 for rows in (a, m, self.rows(r, self.p2.slug)) for x in rows.values()))
+
+    def test_totals_are_by_kind_and_in_all_and_nothing_counts_twice(self):
+        self.seed()
+        r = self.report()
+        every = [x for pr in r["projects"] for x in pr["rows"]] + r["machine"]["rows"]
+        self.assertEqual(r["total_bytes"], sum(x["bytes"] for x in every))
+        for k in r["kinds"]:
+            mine = [x for x in every if x["kind"] == k["kind"]]
+            self.assertEqual(k["bytes"], sum(x["bytes"] for x in mine), k["kind"])
+            self.assertEqual(k["count"], sum(x["count"] for x in mine), k["kind"])
+        self.assertEqual(sum(pr["bytes"] for pr in r["projects"]) + r["machine"]["bytes"], r["total_bytes"])
+        self.assertEqual([k["bytes"] for k in r["kinds"]], sorted((k["bytes"] for k in r["kinds"]), reverse=True))
+        self.assertEqual(r["unsized"], [], "with room to work nothing is left unsized")
+
+    def test_a_spent_budget_names_what_it_could_not_size_and_still_answers(self):
+        self.seed()
+        r = self.report(budget=0)
+        self.assertTrue(r["unsized"])
+        for x in [x for pr in r["projects"] for x in pr["rows"]] + r["machine"]["rows"]:
+            self.assertFalse(x["complete"], x["kind"])
+        self.assertIn("cargo_lanes", " ".join(r["unsized"]))
+        self.assertIn(self.slug, " ".join(r["unsized"]))
+
+    def test_the_text_lists_the_top_paths_with_size_age_owner_and_the_json_keeps_all(self):
+        self.seed()
+        for i in range(15):
+            put(os.path.join(self.state, "outputs", f"many-{i:02d}.txt"), 1 + i, 2)
+        r = self.report()
+        row = self.rows(r)["outputs"]
+        self.assertEqual(len(row["items"]), row["count"], "the JSON keeps every item")
+        self.assertGreaterEqual(row["count"], 15)
+        text = tidy.render_footprint(r)
+        biggest = max(row["items"], key=lambda i: i["bytes"])
+        line = next(ln for ln in text.splitlines() if biggest["path"] in ln)
+        self.assertIn(tidy.human(biggest["bytes"]), line)
+        self.assertIn(biggest["owner"], line)
+        self.assertRegex(line, r"\b2h\b")
+        self.assertIn(f"+{row['count'] - tidy.TEXT_ITEMS} more", text)
+        self.assertNotIn(row["items"][-1]["path"], text, "only the top few are printed")
+
+    def test_a_worktree_scan_that_ran_out_midway_leaves_the_row_incomplete(self):
+        self.seed()
+
+        def slow(p, briefs, budget=None, **kw):
+            time.sleep(budget + 0.05)  # the scan uses its whole share and finds nothing
+            return []
+        with unittest.mock.patch.object(lanes, "finished", side_effect=slow):
+            r = self.report(budget=3)
+        row = self.rows(r, self.slug)["lane_worktrees"]
+        self.assertFalse(row["complete"])
+        self.assertIn("lane_worktrees", " ".join(r["unsized"]))
+
+    def test_the_headline_counts_what_tidy_takes_not_a_done_lane_or_a_snapshot(self):
+        s = self.seed()
+        fake = [{"path": s.open, "kind": "done_lane", "bytes": 9 * BLOCK},
+                {"path": s.done, "kind": "no_task_lane", "bytes": 4 * BLOCK}]
+        with unittest.mock.patch.object(lanes, "finished", return_value=fake):
+            r = self.report()
+        self.assertEqual(self.rows(r, self.slug)["lane_worktrees"]["frees"], 4 * BLOCK, "a done lane goes with its task")
+        self.assertIsNone(self.rows(r)["snapshots"]["frees"], "rollback keeps its own: tidy takes none")
+
+    def test_a_listing_the_clock_cut_short_is_named_not_silently_shortened(self):
+        folder = os.path.join(self.tmp, "wide")
+        for i in range(600):
+            put(os.path.join(folder, f"f{i}"), 1, 1)
+        with unittest.mock.patch.object(tidy, "_tree", return_value=(0, 0, 0.0)):
+            items = tidy._entry_items(folder, time.monotonic() - 1, "x")
+        self.assertLess(len(items), 600)
+        self.assertEqual(sum(1 for i in items if i["bytes"] is None), 1, "one item names the cut")
+        self.assertIsNone(items[-1]["bytes"])
+
+    def test_a_size_walk_cut_off_midway_marks_the_row_a_lower_bound(self):
+        self.seed()
+        with unittest.mock.patch.object(tidy, "_tree", return_value=None), \
+                unittest.mock.patch.object(lanes, "_cache_tree", side_effect=lanes._SizingOut()):
+            r = self.report()
+        text = " ".join(r["unsized"])
+        self.assertIn("cargo_lanes", text)
+        self.assertIn("not sized", text)
+        row = self.rows(r, self.slug)["cargo_lanes"]
+        self.assertFalse(row["complete"])
+        self.assertEqual(row["bytes"], 0)
+        self.assertIsNone(row["frees"])
+
+    def test_a_link_is_never_followed_and_nothing_is_changed(self):
+        s = self.seed()
+        outside = put(os.path.join(self.tmp, "outside", "huge.bin"), 50)
+        os.symlink(os.path.dirname(outside), os.path.join(self.state, "outputs", "link"))
+        os.symlink(outside, os.path.join(s.open, "link.bin"))
+        before = sorted(os.path.join(t, n) for t, ds, fs in os.walk(self.tmp) for n in ds + fs)
+        r = self.report()
+        self.assertLess(self.rows(r)["outputs"]["bytes"], 50 * BLOCK)
+        self.assertLess(self.rows(r, self.slug)["lane_worktrees"]["bytes"], 50 * BLOCK)
+        self.assertEqual(sorted(os.path.join(t, n) for t, ds, fs in os.walk(self.tmp) for n in ds + fs), before)
+
+    def test_the_cli_prints_a_table_and_json_and_refuses_apply(self):
+        s = self.seed()
+        out = self.fm("tidy", "--report", env={"HOME": self.fake_home}).stdout
+        for word in ("cargo_lanes", "lane_worktrees", "outputs", "run_cache", self.slug, self.p2.slug, "Total", "frees"):
+            self.assertIn(word, out)
+        doc = json.loads(self.fm("tidy", "--report", "--json", env={"HOME": self.fake_home}).stdout)
+        self.assertEqual(sorted(doc), ["budget_s", "elapsed_s", "kinds", "machine", "projects", "total_bytes",
+                                       "total_frees", "unsized"])
+        self.assertEqual(doc["unsized"], [])
+        spent = self.fm("tidy", "--report", "--budget", "0", env={"HOME": self.fake_home}).stdout
+        self.assertIn("Could not size", spent)
+        bad = self.fm("tidy", "--report", "--apply", env={"HOME": self.fake_home}, check=False)
+        self.assertNotEqual(bad.returncode, 0)
+        self.assertTrue(os.path.isfile(s.old_out), "a report removes nothing")
 

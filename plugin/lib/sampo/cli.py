@@ -11227,6 +11227,11 @@ def _build_parser(only=None):
     s.add_argument("--all", action="store_true")
     s.add_argument("--lanes-only", action="store_true", help="only worktrees and branches of closed tasks (what sampo night runs)")
     s.add_argument("--plugins", action="store_true", help="also report plugin footprint (slow: runs claude plugin details)")
+    s.add_argument("--report", action="store_true", help="read-only: the disk each Sampo-owned kind holds in every project and "
+                                                         "machine-wide (size, count, newest use, owner, what its cap would free); "
+                                                         "--json for the data (T-5951)")
+    s.add_argument("--budget", type=float, default=None, metavar="SECONDS",
+                   help="--report: the time it may spend sizing (default 60); what it could not size is named")
 
     s = add("blocked", lazy("sampo.blocked", "cmd_blocked"), tier=("Project and settings", 945),
             help="blocked work never sits: review frees each blocked task whose waited-on tasks closed or that only "
