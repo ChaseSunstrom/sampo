@@ -118,6 +118,10 @@ REVIEWED = {
               "moves it", "sampo/jeffexport.py::jeff_home"),
     **_review("write", "the plugin-folder migration rewrites settings.json and the plugin files under this folder; "
               "CLAUDE_CONFIG_DIR moves it", "sampo/pluginmove.py::config_dir"),
+    **_review("write", "makes the empty 0700 folder ~/.cache/sampo/children that a headless child's fresh cwd goes under, "
+              "when XDG_RUNTIME_DIR is not a safe folder of ours; never /tmp, so the real home's cache is the point (T-5706, "
+              "T-5997). Nothing else is written there, and a test that reaches it leaves one empty folder",
+              "sampo/ideas.py::safe_root"),
     **_review("write", "returns the folder of the systemd user units sampo serve installs; XDG_CONFIG_HOME moves it",
               "sampo/serve.py::unit_dir"),
     **_review("write", "returns Claude Code's settings folder, which sampo install and doctor repair rewrite; "

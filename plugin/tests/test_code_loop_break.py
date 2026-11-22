@@ -251,13 +251,20 @@ class Frontier(CodeCase):
     run: --small, a profile marked small, an own profile, or a local (loopback) endpoint, which is where the read-forever
     loop was seen (jarvis, ollama: small is unset there). A cloud profile explores freely and only gets the seen-set note."""
     def cloud(self, name):
-        """The fake's profile moved to 0.0.0.0, which connects here but is no loopback address: a remote host to the gate."""
+        """The fake's profile moved to a remote host name (T-5997: 0.0.0.0 is a loopback spelling since T-5884, so it is a
+        local profile now). The name never resolves: the call goes through an HTTP proxy that is the fake itself."""
         path = os.path.join(self.home, "models.json")
         with open(path) as fh:
             conf = json.load(fh)
-        conf["profiles"][name]["base_url"] = conf["profiles"][name]["base_url"].replace("127.0.0.1", "0.0.0.0")
+        port = conf["profiles"][name]["base_url"].rsplit(":", 1)[1].split("/")[0]
+        conf["profiles"][name]["base_url"] = f"http://cloud.example.invalid:{port}/v1"
         with open(path, "w") as fh:
             json.dump(conf, fh)
+        proxy = f"http://127.0.0.1:{port}"
+        self.proxy_env = {"http_proxy": proxy, "HTTP_PROXY": proxy, "no_proxy": "", "NO_PROXY": ""}
+
+    def env(self, extra=None):
+        return super().env({**getattr(self, "proxy_env", {}), **(extra or {})})
 
     def test_guided_a_local_profile_without_small_is_forced_after_the_budget(self):
         f = self.serve("anthropic", plan(), *SEARCHES, EDIT, call("done", summary="x"), name="jarvis")

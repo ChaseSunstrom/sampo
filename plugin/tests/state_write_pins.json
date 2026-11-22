@@ -433,6 +433,12 @@
 ],
 1
 ],
+"sampo/ideas.py::safe_root": [
+[
+"expanduser"
+],
+1
+],
 "sampo/jeffexport.py::jeff_home": [
 [
 "expanduser"
