@@ -52,18 +52,20 @@ REVIEWED = {
               "fmguard.py::check_bash", "sampo/hooks.py::_cd_path", "sampo/hooks.py::_credential_read",
               "sampo/hooks.py::_guard_ctx", "sampo/hooks.py::_rule_hits", "sampo/hooks.py::_ui_changed",
               "sampo/cli.py::_argv", "sampo/cli.py::_guard_ctx", "sampo/cli.py::_queue_preview",
-              "sampo/cli.py::_without_secrets", "sampo/core.py::_until_path", "sampo/core.py::lint_verify",
+              "sampo/core.py::_until_path", "sampo/core.py::lint_verify",
               "sampo/core.py::undo_ok", "sampo/core.py::unrunnable", "sampo/doors.py::_ctx", "sampo/doors.py::_full",
               "sampo/edit.py::_check", "sampo/lanes.py::land_holds", "sampo/recall.py::explain", "sampo/replay.py::_ctx",
               "sampo/replay.py::_store_cwd", "sampo/replay.py::resolve_cwd", "sampo/replay.py::mine",
               "sampo/replay.py::score", "sampo/replay.py::verdicts", "sampo/risk.py::_names", "sampo/risk.py::_rewrite",
               "sampo/risk.py::_targets", "sampo/oracle.py::disagreements", "sampo/oracle.py::ran_in",
               "sampo/smith.py::Run.hidden", "sampo/smith.py::Run.judge", "sampo/smith.py::_snapshot",
-              "sampo/smith.py::_strict", "sampo/map.py::ran_tests", "sampo/board.py::part_tests", "sampo/deps.py::_grep",
+              "sampo/smith.py::_strict", "sampo/board.py::part_tests", "sampo/deps.py::_grep",
               "sampo/landlock.py::writable_for", "sampo/long.py::_activity", "sampo/tidy.py::dead_paths",
               "sampo/sync.py::_from_mirror", "sampo/rune.py::card", "sampo/settings.py::_guard_block",
               "sampo/callcards.py::<module>", "sampo/callcards.py::_system_reads", "sampo/homemove.py::_parent",
-              "sampo/sandbox.py::_homes", "sampo/secrets.py::_claude"),
+              "sampo/sandbox.py::_homes", "sampo/secrets.py::_claude", "sampo/bench.py::_forms",
+              "sampo/hooks.py::_cargo_note.place", "sampo/lanes.py::is_credential", "sampo/localruns.py::rows_path",
+              "sampo/smith.py::search_tree_refusal"),  # T-5553: the path a command names is only compared or read
     **_review("read", "takes the account's login or home name to scrub or recognize it in text; never opens a path under it",
               "sampo/core.py::redact_local", "sampo/profile.py::_home", "sampo/profile.py::_logins", "sampo/page.py::_private",
               "sampo/readme.py::private_hits", "sampo/lake.py::collect", "sampo/sync.py::_namer"),
@@ -82,7 +84,10 @@ REVIEWED = {
               "sampo/doctor.py::check_rule_conflicts", "sampo/doctor.py::check_rules_symlink",
               "sampo/doctor.py::check_sampo_link", "sampo/doctor.py::check_usage_burn", "sampo/doctor.py::cmd_wiring",
               "sampo/doctor.py::instruction_files", "sampo/doctor.py::rule_files", "sampo/doctor.py::run_all",
-              "sampo/hooks.py::session_context"),
+              "sampo/hooks.py::session_context", "sampo/bench.py::_audit", "sampo/bench.py::_transcript_asks"),
+    **_review("read", "asks where a folder is, or what the account's home is, and only checks it (the default state folder's "
+              "name, the account database's home, a cache folder under XDG_CACHE_HOME or ~/.cache); nothing is opened for "
+              "writing", "sampo/core.py::_default_home", "sampo/prove.py::_unreal_reason", "sampo/map.py::_run_cache"),
     **_review("mixed", "the function writes the state folder (FOREMAN_HOME, XDG_STATE_HOME: sandboxed in a test) or a temp "
               "folder it makes; the real home is only read, or it is the temporary HOME the function sets for a child",
               "sampo/cli.py::_attachment", "sampo/cli.py::_sign_receipt", "sampo/cli.py::cmd_audit",
@@ -112,6 +117,9 @@ REVIEWED = {
               "no home or env to move it; helpers.py does not move HOME (T-4198, T-4333)", "sampo/modelup.py::codex_newest"),
     **_review("write", "the home the native fast path installs and looks up cargo files in: the account's, never the "
               "caller's $HOME; fastbuild's callers pass home= to a test", "sampo/fastbuild.py::account_home"),
+    **_review("write", "expands the checkout a user names (`sampo update --repo PATH`, a ~ as the shell would) or the one this "
+              "sampo runs from, and writes that install's own files; it is not state. Every test names a temp checkout "
+              "(test_update's --repo and its temp roots)", "sampo/update.py::run"),
 }
 
 
@@ -261,6 +269,7 @@ def parsed(**files):
 
 class StateWriteInventory(unittest.TestCase):
     def test_every_real_home_derivation_in_the_library_is_reviewed(self):
+        self.maxDiff = None  # the whole list of findings, not a cut of it
         found = inventory(lib_trees())
         self.assertGreater(len(found), 50, "the walk found about 120: a walk that finds none is broken, not clean")
         self.assertEqual(judge(found, REVIEWED, PINS), [])

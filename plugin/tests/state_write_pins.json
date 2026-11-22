@@ -53,7 +53,25 @@
 ],
 1
 ],
+"sampo/bench.py::_audit": [
+[
+"expanduser"
+],
+1
+],
 "sampo/bench.py::_compactions": [
+[
+"expanduser"
+],
+1
+],
+"sampo/bench.py::_forms": [
+[
+"expanduser"
+],
+1
+],
+"sampo/bench.py::_transcript_asks": [
 [
 "expanduser"
 ],
@@ -119,12 +137,6 @@
 ],
 1
 ],
-"sampo/cli.py::_without_secrets": [
-[
-"expanduser"
-],
-1
-],
 "sampo/cli.py::cmd_audit": [
 [
 "expanduser"
@@ -132,6 +144,12 @@
 1
 ],
 "sampo/core.py::_cargo_config_files": [
+[
+"expanduser"
+],
+1
+],
+"sampo/core.py::_default_home": [
 [
 "expanduser"
 ],
@@ -355,6 +373,12 @@
 ],
 1
 ],
+"sampo/hooks.py::_cargo_note.place": [
+[
+"expanduser"
+],
+1
+],
 "sampo/hooks.py::_cd_path": [
 [
 "expanduser"
@@ -409,7 +433,19 @@
 ],
 1
 ],
+"sampo/lanes.py::is_credential": [
+[
+"expanduser"
+],
+1
+],
 "sampo/lanes.py::land_holds": [
+[
+"expanduser"
+],
+1
+],
+"sampo/localruns.py::rows_path": [
 [
 "expanduser"
 ],
@@ -421,7 +457,7 @@
 ],
 1
 ],
-"sampo/map.py::ran_tests": [
+"sampo/map.py::_run_cache": [
 [
 "expanduser"
 ],
@@ -485,6 +521,12 @@
 "sampo/profile.py::_logins": [
 [
 "expanduser"
+],
+1
+],
+"sampo/prove.py::_unreal_reason": [
+[
+"getpwuid"
 ],
 1
 ],
@@ -688,6 +730,12 @@
 ],
 1
 ],
+"sampo/smith.py::search_tree_refusal": [
+[
+"expanduser"
+],
+1
+],
 "sampo/sync.py::_from_mirror": [
 [
 "expanduser"
@@ -713,6 +761,12 @@
 1
 ],
 "sampo/tidy.py::memory_dir": [
+[
+"expanduser"
+],
+1
+],
+"sampo/update.py::run": [
 [
 "expanduser"
 ],

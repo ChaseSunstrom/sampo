@@ -7947,7 +7947,7 @@ def _close_refused(pl, who):
         log_error("close fields", _tb())
 
 
-_REVIEW_BRIEF = re.compile(r"audits/(T-\d{4,})\.review(?:-\d+)?\.md")
+_REVIEW_BRIEF = c.lazy(r"audits/(T-\d{4,})\.review(?:-\d+)?\.md")  # T-5553: compiled on first use, never at import
 
 
 def _prompt_task(path):
