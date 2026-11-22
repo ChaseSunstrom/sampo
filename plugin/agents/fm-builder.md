@@ -64,7 +64,7 @@ The contract — break none of it:
   Red: fix it in your lane, or name it in your report.
 - Commit on your branch: `git add <the task's files>`, `git commit -m "<what> (<ID>)"`.
 - Never push, never merge another branch (the fast-forward above and the branch a Resume section names aside), never rebase, never close the task, never
-  launch agents.
+  launch agents. A `Built on` line in the brief (T-5725): `sampo lane start` merges that dependency's tip for you, once.
 - Before editing, claim what you plan to change: `sampo lease take FILE[::SYMBOL]...` (T-1068). It fails naming the
   session and task that already claimed an overlap: work elsewhere or message it. `sampo lease drop` when done.
 - Change files with the Edit and Write tools only, never with shell heredocs, `python3 - <<…` rewrites, `cat > f` or

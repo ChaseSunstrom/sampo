@@ -308,6 +308,18 @@ class Order(Base):
         self.assertEqual([x["id"] for x in last["wave"]], [kids["c3"]])
         self.assertIn(self.tip(tid), self.brief_text(kids["c3"]), "the third lane starts from the branch with both landed")
 
+    def test_order_brief_ready_briefs_a_big_child_that_has_depends_on(self):  # T-5725 review round 2
+        tid, kids = self.big()
+        big.branch(self.p, c.find_brief(self.p, tid))
+        self.land(tid, kids["c1"])
+        self.land(tid, kids["c2"])
+        self.assertTrue(self.meta(kids["c3"]).get("depends_on"), "the child comes after its siblings: it has depends_on")
+        r = self.fm("lane", "brief", "--ready", "--json", check=False)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)  # a KeyError on the stack answer crashed the batch
+        out = json.loads(r.stdout)
+        self.assertIn(kids["c3"], [x["id"] for x in out["briefed"]], f"c3 is briefed from the branch: {out['skipped']}")
+        self.assertIn(self.tip(tid), self.brief_text(kids["c3"]))
+
     def test_order_a_reverted_landing_is_not_landed_and_holds_its_dependent_again(self):
         tid, kids = self.big()
         big.branch(self.p, c.find_brief(self.p, tid))

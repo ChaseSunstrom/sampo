@@ -696,10 +696,29 @@ def live_mode(p):
     return c.read_meta(p).get("train_mode") == "live"  # set per project: sampo lane mode live|gated
 
 
+def _dep_hold(p, b, main):
+    """T-5725 review: why the land leaves out a lane stacked on another lane (meta stacked_on: built on that lane's
+    unlanded tip), or None. Its commits carry the dependency's, so landing it first would put them on main unreviewed and
+    unchecked, whatever land_key's order says: it waits until the dependency's tip is an ancestor of main. A dependency
+    with no brief or no branch (landed and cleaned up) holds nothing; so does a dropped one, whose unmerged branch survives
+    `lane rm` and never lands; git unable to say holds nothing either."""
+    dep_id = str((b.meta or {}).get("stacked_on") or "")
+    if not dep_id:
+        return None
+    dep = next((x for x in c.load_briefs(p) if x.id == dep_id), None)
+    tip = _lane_tip(main, dep) if dep and dep.status != "dropped" else ""
+    if not tip or _git(main, "merge-base", "--is-ancestor", tip, "HEAD").returncode != 1:
+        return None
+    return f"held: built on {dep_id}, whose lane tip is not on main yet; it joins once {dep_id} has landed"
+
+
 def _lane_hold(p, b, sha, main):
-    """Why the land leaves this lane out at `sha`, or None. Gated: its own check running, queued, red or missing
+    """Why the land leaves this lane out at `sha`, or None. A lane stacked on an unlanded dependency waits for it
+    (_dep_hold, T-5725). Gated: its own check running, queued, red or missing
     (_check_hold, _unchecked). Live (T-5444): only a red check that its current checker gave; the behind suite judges
     the rest after the merge."""
+    if dep := _dep_hold(p, b, main):
+        return dep
     why = _check_hold(b, sha, main) or (None if live_mode(p) else _unchecked(b, sha, main))
     if why and live_mode(p) and not (why.startswith("held: check red") and "has changed since it ran" not in why):
         return None
@@ -5006,6 +5025,8 @@ def accept(p, b, main, args):
              + (f" ({', '.join(sorted({lens for lens, _, _ in rows}))})" if rows else "")
              + (f", {len(rows) - added} already on the brief" if added < len(rows) else "")
              + (f"; counted from audits after the lane tip: {', '.join(sorted(counted))}" if counted else "") + "."]
+    if stale := lanes.stale_stack(p, b):  # T-5725 review: the dependency this lane is stacked on has a newer tip
+        lines.append(f"  {stale}")
     lines += [f"  the close will be refused: {g}" + ("" if g.startswith("no red→green proof") else
                                                      " (add it to the brief's Close fields before the land closes it)")
               for g in _close_gaps(b)]  # T-4209: the proof is recorded in the lane (sampo task prove), not a Close field

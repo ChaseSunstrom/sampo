@@ -8994,6 +8994,9 @@ def cmd_audit(args):
         head += "\nPre-audit (mechanical; confirm or dismiss each, then review the rest):\n" + "\n".join(
             f"- {x}" for x in found)
     from sampo import lanes
+    stale = lanes.stale_stack(p, b)  # T-5725 review: the dependency moved on after this lane was built on it
+    if stale:
+        head += "\n" + stale
     changed = lanes.functions_changed(_without_secrets(p.root, zsrc if split else zero))  # no credential file's lines
     fns = lanes.functions_line(changed)
     if fns:
@@ -9026,7 +9029,7 @@ def cmd_audit(args):
     for lens in lenses:
         if lens == "self":
             blocks.append("=== self (main thread) ===\n" + ref[ref.index("**self**"):].strip()
-                          + "".join(f"\n- pre-audit: {x}" for x in found) + steps)
+                          + "".join(f"\n- pre-audit: {x}" for x in found) + (f"\n- {stale}" if stale else "") + steps)
             continue
         context, prompt = templates[lens]
         extra = ""

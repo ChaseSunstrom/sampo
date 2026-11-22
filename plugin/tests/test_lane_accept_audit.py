@@ -9,6 +9,7 @@ one of the command's own option strings, and no words left over. The real comman
 import contextlib
 import io
 import os
+import subprocess
 import types
 import unittest
 from unittest import mock
@@ -139,6 +140,56 @@ class CloseStillRefuses(AuditCase):
         code, text = self.accept(*self.AUDIT)
         self.assertEqual(code, 0, text)
         self.assertNotIn("no red→green proof", text)
+
+
+class StackedBaseMovedOn(AuditCase):
+    """T-5725 review: a stacked lane's base is its dependency's tip at brief time; the dependency may get another commit."""
+
+    def stack(self):  # lane 1 is stacked on lane 2's tip (the brief's base), then lane 2 commits again
+        dep = self.lane(2, "dep.txt", when=OLD)
+        dpath = os.path.join(self.tmp, "lane2")
+        lpath = os.path.join(self.tmp, "lane1")
+        subprocess.run(["git", "-C", lpath, "merge", "-q", "--no-edit", f"foreman/lane2"], check=True, capture_output=True)
+        b = c.find_brief(self.p, self.tid)
+        b.meta["stacked_on"] = dep
+        b.meta["depends_on"] = [dep]
+        b.meta["big_base"] = subprocess.run(["git", "-C", dpath, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+        c.save_brief(self.p, b)
+        d = c.find_brief(self.p, dep)
+        d.meta["lane"] = dpath
+        c.save_brief(self.p, d)
+        return dep, dpath
+
+    def review(self):
+        out = io.StringIO()
+        here = os.getcwd()
+        os.chdir(self.repo)
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                cli.main(["audit", "prep", self.tid])
+        finally:
+            os.chdir(here)
+        with open(os.path.join(self.p.dir, "audits", f"{self.tid}.review.md"), encoding="utf-8") as f:
+            return out.getvalue() + f.read()
+
+    def test_review_and_accept_name_the_merge_when_the_dependency_moved_on(self):
+        dep, dpath = self.stack()
+        audit = ("--audit", "intent", "read the diff", "no findings")
+        code, text = self.accept(*audit)
+        self.assertNotIn("Stale base", text, "the dependency's tip is in this lane: nothing to say")
+        self.assertNotIn("Stale base", self.review())
+        with open(os.path.join(dpath, "more.txt"), "w") as f:
+            f.write("later\n")
+        subprocess.run(["git", "-C", dpath, "add", "more.txt"], check=True)
+        subprocess.run(["git", "-C", dpath, "commit", "-qm", "dep again"], check=True, capture_output=True)
+        tip = subprocess.run(["git", "-C", dpath, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+        code, text = self.accept(*audit)
+        self.assertIn("Stale base", text)
+        self.assertIn(f"git merge {tip}", text)
+        self.assertIn(dep, text)
+        review = self.review()
+        self.assertIn("Stale base", review)
+        self.assertIn(f"git merge {tip}", review)
 
 
 if __name__ == "__main__":

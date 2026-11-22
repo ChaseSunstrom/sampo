@@ -776,8 +776,72 @@ class Lanes(ForemanTestCase):
         self.fm("task", "set", tid, "approved=true")
         return tid
 
+    def _returned(self, tid):  # T-5725 review: the builder reported (a stopped builder with no mark is "stopped, unreported")
+        p = c.find_project(self.repo)
+        b = c.find_brief(p, tid)
+        b.meta["builder_returned"] = c.now()
+        c.save_brief(p, b)
+
+    def _set_meta(self, tid, **meta):
+        p = c.find_project(self.repo)
+        b = c.find_brief(p, tid)
+        b.meta.update(meta)
+        c.save_brief(p, b)
+
+    def test_a_dependency_whose_builder_stopped_unreported_is_not_built_on(self):  # T-5725 review: a WIP commit is not a return
+        dep, _ = self.finished_builder()  # a dead builder, its WIP committed, no return mark
+        tid = self._dependent(dep)
+        r = self.fm("lane", "brief", tid, check=False)
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        said = " ".join((r.stderr + r.stdout).split())
+        self.assertIn(f"{tid} waits on {dep}", said)
+        self.assertIn("stopped, unreported", said)
+        self._returned(dep)
+        self.assertEqual(self.fm("lane", "brief", tid, check=False).returncode, 0, "once it reports, it is built on")
+
+    def test_dependencies_on_diverging_tips_are_refused_and_on_one_line_collapse_to_the_newest(self):  # T-5725 review
+        a, apath = self.finished_builder()
+        b, bpath = self.finished_builder(wip="other.py")  # both fork from main: two lines of history
+        self._returned(a)
+        self._returned(b)
+        tid = self._dependent(a)
+        self._set_meta(tid, depends_on=[a, b])
+        r = self.fm("lane", "brief", tid, check=False)
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("a lane starts from one base", " ".join((r.stderr + r.stdout).split()))
+        self.git("merge", "-q", "--no-edit", self.git("rev-parse", "HEAD", cwd=apath).strip(), cwd=bpath)  # b now holds a
+        text = read_text(json.loads(self.fm("lane", "brief", tid, "--json").stdout)["path"])
+        tip = self.git("rev-parse", "HEAD", cwd=bpath).strip()
+        self.assertRegex(text.rpartition(slanes.CONTRACT_HEADING)[2], rf"Start from the main checkout's commit {tip}\b")
+        self.assertIn(f"## Built on {b}", text)
+        self.assertIn(a, text.partition(f"## Built on {b}")[2].partition("\n## ")[0], "the covered dependency is named")
+
+    def test_an_inferred_dependency_is_never_built_on(self):  # T-5725 review: a guess (fm relate) must not pick a base
+        dep, _ = self.finished_builder()
+        self._returned(dep)
+        tid = self._dependent(dep)
+        self._set_meta(tid, depends_on=[], inferred_deps=[dep])
+        text = read_text(json.loads(self.fm("lane", "brief", tid, "--json").stdout)["path"])
+        self.assertNotIn("## Built on", text)
+        head = self.git("rev-parse", "HEAD", cwd=self.repo).strip()
+        self.assertIn(f"Start from the main checkout's commit {head}", text.rpartition(slanes.CONTRACT_HEADING)[2])
+
+    def test_a_second_lane_start_of_a_stacked_lane_does_not_blame_main(self):  # T-5725 review
+        dep, dpath = self.finished_builder()
+        self._returned(dep)
+        tid = self._dependent(dep)
+        self.fm("lane", "brief", tid)
+        wt = os.path.join(self.tmp, "builder-wt")
+        self.git("worktree", "add", "-q", "-b", "worktree-x", wt, cwd=self.repo)
+        self.fm("lane", "start", tid, cwd=wt)
+        self.git("commit", "-q", "--allow-empty", "-m", "its own work", cwd=wt)
+        again = self.fm("lane", "start", tid, cwd=wt).stdout
+        self.assertNotIn("main moved on", again)
+        self.assertIn(f"built on {dep}", again)
+
     def test_stacked_base_names_a_finished_dependency_s_tip_and_lane_start_brings_it_in(self):  # T-5725: T-5708 called a verb T-5706 adds
         dep, dpath = self.finished_builder()
+        self._returned(dep)
         tip = self.git("rev-parse", "HEAD", cwd=dpath).strip()
         self.git("commit", "-q", "--allow-empty", "-m", "main moved on", cwd=self.repo)  # the worktree below forks past the dep
         tid = self._dependent(dep)
@@ -805,6 +869,7 @@ class Lanes(ForemanTestCase):
 
     def test_stacked_base_fast_forwards_when_the_lane_is_behind_the_tip(self):  # T-5725
         dep, dpath = self.finished_builder()
+        self._returned(dep)
         tip = self.git("rev-parse", "HEAD", cwd=dpath).strip()
         tid = self._dependent(dep)
         self.fm("lane", "brief", tid)
@@ -815,6 +880,7 @@ class Lanes(ForemanTestCase):
 
     def test_stacked_base_stops_without_focus_when_the_tip_does_not_merge(self):  # T-5725
         dep, dpath = self.finished_builder()
+        self._returned(dep)
         tid = self._dependent(dep)
         self.fm("lane", "brief", tid)
         with open(os.path.join(self.repo, "wip.py"), "w") as f:  # main's own wip.py: the dependency's add conflicts
@@ -855,7 +921,7 @@ class Lanes(ForemanTestCase):
         head = self.git("rev-parse", "HEAD", cwd=self.repo).strip()
         self.assertIn(f"Start from the main checkout's commit {head}", text.rpartition(slanes.CONTRACT_HEADING)[2])
 
-    def _lane_editing(self, rel, old, new):  # T-5725: an unlanded lane whose commit rewrites a line of `rel`
+    def _lane_editing(self, rel, old, new, when=None):  # T-5725: an unlanded lane whose commit rewrites a line of `rel`
         tid = first(self.fm("task", "new", "Other lane", "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true", "--step",
                             "s", "--json").stdout)["id"]
         path = json.loads(self.fm("lane", "new", tid, "--json").stdout)["path"]
@@ -863,15 +929,61 @@ class Lanes(ForemanTestCase):
             text = f.read()
         with open(os.path.join(path, rel), "w", encoding="utf-8") as f:
             f.write(text.replace(old, new))
-        self.git("commit", "-qam", "edit", cwd=path)
+        env = {**os.environ, "GIT_AUTHOR_DATE": when, "GIT_COMMITTER_DATE": when} if when else None
+        subprocess.run(["git", "-C", path, "commit", "-qam", "edit"], check=True, env=env)
         return tid
+
+    def _overlap(self, title, step, rel="pkg/mod.py"):  # T-5725 review: the overlap warnings of a new task over rel, in process
+        self.fm("lane", "max", "20")
+        tid = first(self.fm("task", "new", title, "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true",
+                            "--scope", rel, "--step", step, "--json").stdout)["id"]
+        p = c.find_project(self.repo)
+        main = c.main_worktree(p.root) or p.root
+        base = self.git("rev-parse", "HEAD", cwd=self.repo).strip()
+        return slanes.lane_fn_overlap(p, c.find_brief(p, tid), main, base, c.load_briefs(p))
+
+    def test_overlap_scan_reads_the_newest_lanes_first_and_says_how_many_it_left_out(self):  # T-5725 review
+        self._commit_files({"pkg/mod.py": "def target_fn(x):\n    return x + 1\n"}, "mod")
+        old = self._lane_editing("pkg/mod.py", "x + 1", "x + 2", when="2026-01-01T00:00:00")  # the lowest id, the oldest
+        mid = self._lane_editing("pkg/mod.py", "x + 1", "x + 3", when="2026-01-02T00:00:00")
+        new = self._lane_editing("pkg/mod.py", "x + 1", "x + 4")
+        with mock.patch.object(slanes, "LANE_OVERLAP_MAX", 2):
+            said = "\n".join(self._overlap("Rework target_fn", "Make target_fn return x + 9 in pkg/mod.py"))
+        self.assertIn(new, said)
+        self.assertIn(mid, said)
+        self.assertNotIn(old, said.replace("1 lane not scanned", ""), "the oldest lane is the one left out")
+        self.assertIn("1 lane not scanned", said)
+        with mock.patch.object(slanes, "LANE_OVERLAP_MAX", 5):
+            self.assertNotIn("not scanned", "\n".join(self._overlap("Rework again", "Make target_fn return x + 8 in pkg/mod.py")))
+
+    def test_overlap_reads_a_file_whose_name_git_quotes(self):  # T-5725 review round 2: the diff header was parsed by a regex
+        for rel in ("pkg/mód.py", 'pkg/a"b.py'):  # (a tab can't be a --scope path: shlex splits it)
+            with self.subTest(rel):
+                self._commit_files({rel: "def target_fn(x):\n    return x + 1\n"}, "mod")
+                busy = self._lane_editing(rel, "x + 1", "x + 2")
+                said = "\n".join(self._overlap("Rework target_fn", f"Make target_fn return x + 9 in {rel}", rel=rel))
+                self.assertIn(busy, said, "git writes this name quoted in a diff header: the lane's edit is still seen")
+                self.assertIn("target_fn", said)
+
+    def test_overlap_names_only_strong_names_and_never_a_class_span(self):  # T-5725 review: start/check/run and a whole class
+        self._commit_files({"pkg/mod.py": "class Widget:\n    def start(self):\n        return 1\n\n    def stop_now(self):\n"
+                                          "        return 2\n"}, "mod")
+        self._lane_editing("pkg/mod.py", "return 1", "return 11")
+        self.assertEqual(self._overlap("Rework Widget start", "Make the Widget start return 5 in pkg/mod.py"), [],
+                         "a common word and a class name warn nothing")
+        self.assertEqual(self._overlap("Rework `Widget`", "Make `Widget` do more in pkg/mod.py"), [],
+                         "a backticked class is still a span of every method")
+        said = "\n".join(self._overlap("Rework start", "Make `start` return 5 in pkg/mod.py"))
+        self.assertIn("start", said)
+        self.assertEqual(self._overlap("Rework stop_now", "Make stop_now return 5 in pkg/mod.py"), [],
+                         "a method the other lane left alone")
 
     def test_overlap_warn_names_the_unlanded_lane_that_changes_a_function_the_scope_names(self):  # T-5725
         self._commit_files({"pkg/mod.py": "def target(x):\n    return x + 1\n\n\ndef other(x):\n    return x - 1\n"}, "mod")
         busy = self._lane_editing("pkg/mod.py", "return x + 1", "return x + 2")
         self.fm("lane", "max", "20")
         tid = first(self.fm("task", "new", "Rework target", "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true",
-                            "--scope", "pkg/mod.py", "--step", "Make target return x + 3 in pkg/mod.py", "--json").stdout)["id"]
+                            "--scope", "pkg/mod.py", "--step", "Make `target` return x + 3 in pkg/mod.py", "--json").stdout)["id"]
         r = self.fm("lane", "brief", tid)
         lines = [ln for ln in (r.stdout + r.stderr).splitlines() if busy in ln]
         self.assertEqual(len(lines), 1, r.stdout + r.stderr)
@@ -880,7 +992,7 @@ class Lanes(ForemanTestCase):
         self.assertIn("pkg/mod.py", lines[0])
         # a scope that names a function the other lane left alone is not warned about
         tid2 = first(self.fm("task", "new", "Rework other", "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true",
-                             "--scope", "pkg/mod.py", "--step", "Make other return x - 3 in pkg/mod.py",
+                             "--scope", "pkg/mod.py", "--step", "Make `other` return x - 3 in pkg/mod.py",
                              "--json").stdout)["id"]
         r2 = self.fm("lane", "brief", tid2)
         self.assertNotIn(busy, r2.stdout + r2.stderr)
@@ -994,10 +1106,10 @@ class Lanes(ForemanTestCase):
         p = c.find_project(self.repo)
         real = slanes.builder_brief
 
-        def flaky(p_, task, args):
+        def flaky(p_, task, args, **kw):
             if task.id == a:
                 raise RuntimeError("boom")
-            return real(p_, task, args)
+            return real(p_, task, args, **kw)
         buf = io.StringIO()
         with unittest.mock.patch.object(slanes, "builder_brief", side_effect=flaky), contextlib.redirect_stdout(buf):
             slanes.brief_ready(p, argparse.Namespace(limit=None, json=True))
@@ -1498,11 +1610,11 @@ class Lanes(ForemanTestCase):
             f.write("x = 1\n")
         return tid, path
 
-    def finished_builder(self, when="2026-01-01T00:00:00"):
+    def finished_builder(self, when="2026-01-01T00:00:00", wip="wip.py"):
         """T-2038: a stopped builder whose work is committed in its lane at `when`, the tree clean."""
         os.environ["FM_STALL_CACHE_S"] = "0"
         self.addCleanup(os.environ.pop, "FM_STALL_CACHE_S", None)
-        tid, path = self.stopped_builder()
+        tid, path = self.stopped_builder(wip=wip)
         env = {**os.environ, "GIT_AUTHOR_DATE": when, "GIT_COMMITTER_DATE": when}
         subprocess.run(["git", "-C", path, "add", "-A"], check=True)
         subprocess.run(["git", "-C", path, "commit", "-qm", "built"], check=True, env=env)

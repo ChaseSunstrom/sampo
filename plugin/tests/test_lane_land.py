@@ -1357,6 +1357,70 @@ class OffTrain(LandCase):
         self.assertLess(got["waited"], 10, got)
 
 
+class StackedDependent(LandCase):
+    """T-5725 review: a lane built on another lane's tip carries that lane's commits; landed first, it puts them on main
+    unreviewed and unchecked. The land holds it until the dependency's tip is on main, whatever land_key's order says."""
+
+    def stacked(self):
+        """Lane 1 (the older task: land_key sorts it first) is stacked on lane 2."""
+        top = self.lane(1, "top.txt", when=OLD)  # the first made: T-0001
+        dep = self.lane(2, "dep.txt", when=OLD)
+        one = os.path.join(self.tmp, "lane1")
+        subprocess.run(["git", "-C", one, "merge", "-q", "--no-edit", "foreman/lane2"], check=True, capture_output=True,
+                       env=dict(os.environ, GIT_AUTHOR_DATE=OLD, GIT_COMMITTER_DATE=OLD))  # old: the lane is quiet
+        self.record_clean_run(top)  # its tip moved by the merge
+        p = c.find_project(self.repo)
+        b = c.find_brief(p, top)
+        b.meta["stacked_on"] = dep
+        c.save_brief(p, b)
+        return dep, top
+
+    def test_the_dependent_sorts_ahead_of_its_dependency_and_the_land_holds_it_until_the_dependency_is_on_main(self):
+        dep, top = self.stacked()
+        p = c.find_project(self.repo)
+        bd, bt = c.find_brief(p, dep), c.find_brief(p, top)
+        self.assertLess(train.land_key(bt), train.land_key(bd), "the premise: the order puts the dependent first")
+        tip = train._lane_tip(self.repo, bt)
+        why = train._lane_hold(p, bt, tip, self.repo)
+        self.assertIsNotNone(why)
+        self.assertIn(dep, why)
+        self.assertIsNone(train._lane_hold(p, bd, train._lane_tip(self.repo, bd), self.repo), "the dependency is not held")
+        self.git("merge", "-q", "--no-edit", "foreman/lane2")
+        self.assertIsNone(train._lane_hold(p, bt, tip, self.repo), "the dependency's tip is on main: no hold")
+
+    def test_a_land_trains_the_dependency_before_the_dependent_that_sorts_ahead_of_it(self):
+        dep, top = self.stacked()
+        self.audited(dep, top)
+        self.returned(dep, "Dep lane")
+        self.returned(top, "Top lane")
+        r = self.land()
+        self.assertEqual(self.brief(dep).status, "done", r.stdout + r.stderr)
+        self.assertEqual(self.brief(top).status, "done", r.stdout + r.stderr)
+        subjects = self.git("log", "--format=%s").splitlines()  # newest first
+        self.assertGreater(subjects.index(f"Dep lane ({dep})"), subjects.index(f"Top lane ({top})"), subjects)
+        self.assertRegex(r.stderr, rf"{top}: held: built on {dep}")
+
+    def test_a_dependency_that_is_gone_holds_nothing(self):
+        dep, top = self.stacked()
+        p = c.find_project(self.repo)
+        bt = c.find_brief(p, top)
+        bt.meta["stacked_on"] = "T-9876"
+        c.save_brief(p, bt)
+        self.assertIsNone(train._lane_hold(p, bt, train._lane_tip(self.repo, bt), self.repo))
+
+    def test_a_dropped_dependency_holds_nothing_though_its_branch_survives(self):  # T-5725 review round 2
+        dep, top = self.stacked()
+        p = c.find_project(self.repo)
+        bt = c.find_brief(p, top)
+        self.assertIsNotNone(train._lane_hold(p, bt, train._lane_tip(self.repo, bt), self.repo), "the premise: held first")
+        self.fm("task", "drop", dep, "--reason", "not wanted", "--force")  # its unmerged branch stays: the tip is not on main, and never will be
+        self.assertEqual(self.brief(dep).status, "dropped")
+        p = c.find_project(self.repo)
+        bt = c.find_brief(p, top)
+        self.assertIsNone(train._lane_hold(p, bt, train._lane_tip(self.repo, bt), self.repo),
+                          "a dropped dependency never lands: holding for it holds forever")
+
+
 class AcceptDuringMerge(LandCase):
     """T-5816: a land started while a `sampo lane merge` (a train) holds the train lock found it held and exited with a
     refusal in land.log. Accept queues the lane (first_ids) and starts no land, saying the merge is running."""
