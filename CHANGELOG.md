@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- sampo selfcheck files one 'Wire or retire' capture a day for a feature with no real use in 14 days (T-5710).
 - A live train runs the repo-shape classes once on the merged batch before anything lands, so a red or cut batch lands nothing (T-5590).
 - MASTER.md's 34 over-long file-map index lines are cut to their first words and a shard link, and a doc test refuses a new one over 160 characters, so MASTER keeps 21 KB of room (T-5361).
 - The land's merged-lane set no longer rebinds the check-start set, so a stale lane's check the land started is waited for again, and the CloseFields test follows the builder-only close-field recorder (T-5984).
