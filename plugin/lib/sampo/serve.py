@@ -337,7 +337,7 @@ def _next_runnable(p, skip, told, fit=False):
                 cost.check_cap(p, b)
             except Exception:
                 pass  # a cap that can't be read never stops a run
-        why = c.waits_on_user(b, pending, autonomy)
+        why = c.waits_on_user(b, pending, autonomy, p.root)
         if why:
             if b.id not in told:
                 told.add(b.id)
@@ -442,7 +442,7 @@ def _batch(p, head, skip, n, running=None):
 
     def free(b):
         return (b.tier in ("S", "M") and b.status == "planned" and b.meta.get("scope") and b.id not in skip
-                and not c.waits_on_user(b, pending, autonomy)
+                and not c.waits_on_user(b, pending, autonomy, p.root)
                 and all(d in by_id and by_id[d].status in c.CLOSED for d in c._deps(b)))  # T-0383: inferred too
     if (n < 2 and running is None) or not free(head):
         return [head] if running is None else []

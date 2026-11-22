@@ -870,7 +870,7 @@ def view(p):
 
     def item(s):
         b = by_id.get(s["id"])
-        waits = c.waits_on_user(b, pending, autonomy) if b else None
+        waits = c.waits_on_user(b, pending, autonomy, p.root) if b else None
         out = {"id": s["id"], "type": s["type"], "tier": s["tier"], "title": s["title"], "status": s["status"],
                "source": s.get("source"), "waits": waits, "steps_done": s["steps_done"], "steps_total": s["steps_total"],
                "age_days": round(c.age_days(s.get("created")) or 0, 1)}

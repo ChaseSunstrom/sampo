@@ -1288,7 +1288,7 @@ def cmd_task(args):
         try:  # T-2346: the plan's one-way steps, each undone or parked; T-2345: how each assumption was checked
             from sampo import doors as sdoors
             fresh = c.find_brief(p, b.id) or b
-            assumed, doors = _assumption_tally(fresh), sdoors.tally(fresh)
+            assumed, doors = _assumption_tally(fresh), sdoors.tally(fresh, p.root)
         except Exception:  # a receipt line never fails the close
             assumed = doors = ""
         return out(args, dict(c.brief_summary(b), doc_drift=notes, verified=grade, unverified=guessed, doors=doors,
@@ -5056,7 +5056,7 @@ def _plan_left(p, planned):
     left, text = {}, []
     for x in planned:
         b = c.find_brief(p, x.id) or x
-        gaps = list(dict.fromkeys(c.plan_gaps(b, "full" if c.at_least(b.tier, "L") else c.effective_autonomy(p))))
+        gaps = list(dict.fromkeys(c.plan_gaps(b, "full" if c.at_least(b.tier, "L") else c.effective_autonomy(p), p.root)))
         entry, lines, others, rival = c.plan_skeleton(b, gaps)
         if not (lines or others or rival):
             continue
@@ -5384,7 +5384,7 @@ def _focus_refusal(p, target):
         # T-2355: a queue- or lane-routed trigger's work lands on a branch; once briefed, main focuses it to close
         raise c.PolicyError(f"{target.id} came from a trigger routed to the queue or a lane: it starts in a lane, "
                             f"never on main: sampo lane brief {target.id}")
-    gaps = [] if target.status in ("active", "verifying") else c.plan_gaps(target, c.effective_autonomy(p))
+    gaps = [] if target.status in ("active", "verifying") else c.plan_gaps(target, c.effective_autonomy(p), p.root)
     if gaps:
         c.log_plan_gate_refused(p, gaps, task=target.id, where="focus")  # T-5887
         raise c.PolicyError(f"{target.id} isn't planned enough to start: missing {', '.join(gaps)} "
@@ -5832,7 +5832,7 @@ def _queue_preview(p, args, order, briefs):
     act = c.active_brief(briefs, p.lane)
     items = []
     for b in [x for x in order if x is not act] + c.rank_inbox(briefs):
-        needs = [w for w in [c.waits_on_user(b, pending, autonomy)] if w]
+        needs = [w for w in [c.waits_on_user(b, pending, autonomy, p.root)] if w]
         core = any("core" in fmguard.classify_write(os.path.join(p.root, re.split(r"[*?\[]", g)[0]), ctx)
                    for g in b.meta.get("scope") or [])
         if core and "core" not in standing:

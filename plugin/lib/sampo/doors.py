@@ -233,10 +233,10 @@ def brief_gaps(p, b):
             continue
         if kind == "step":
             step = next((s for s in b.steps() if str(s.n) == n and not s.done), None)
-            if step is not None and not c.undo_ok(step.text, c.earlier_steps(b, step.n)):
+            if step is not None and not c.undo_ok(step.text, c.earlier_steps(b, step.n), p.root):
                 out.append(c.door_gap(f"step {n}"))
         elif kind == "verify" and acs.get(n):  # focus parks a root verify door too (gate), so the brief refuses it
-            if not c.undo_ok(acs[n]) and c.door_hash(acs[n]) not in undone:
+            if not c.undo_ok(acs[n], (), p.root) and c.door_hash(acs[n]) not in undone:
                 out.append(c.door_gap(f"verify {n}"))
     return out
 
@@ -252,7 +252,7 @@ _ENV = re.compile(r"(?i)\bgit\b(?!\s+(?:status|rev-parse)\b)|\bconfig\b|fsmonito
 _CONFIG = re.compile(r"(?:^|/)\.[^/]+$|(?:rc|\.cfg|\.ini|\.toml|\.conf)$|(?:^|/)\.git(?:/|$)")  # a dotfile, a config, anything under .git
 
 
-def check_only(text, before=()):
+def check_only(text, before, root):
     """T-5890: whether a step (its text before any 'Undo:') provably only reads, so 'Undo: nothing changes' is true of it.
     It needs a `command` in ticks and every segment of it (&&, ||, ;, |) must pass fmguard.read_only (no write flag,
     redirect, substitution, assignment or backgrounding) and write no target of its own. Of git only status and rev-parse
@@ -278,7 +278,7 @@ def check_only(text, before=()):
         if re.search(r"[\"'\\]", cmd):
             return False  # a quoted or escaped word reads differently to a split on spaces than to the guard's tokenizer
         for seg in re.split(r"&&|\|\||[;|\n]", cmd):
-            if seg.strip() and not fmguard.read_only(seg):
+            if seg.strip() and not fmguard.read_only(seg, root):
                 return False
         for part in fmguard._split(fmguard._tokens(cmd)):  # the guard's own argv, so git is git however it is written
             if part.argv and part.argv[0] == "git" and part.argv[1:2] not in (["status"], ["rev-parse"]):
@@ -295,7 +295,7 @@ def autofill_undo(p, b):
     for s in b.steps():
         d = rows.get(f"step {s.n}")
         before = c.earlier_steps(b, s.n)
-        if s.done or not d or d["door"] != "local" or not d["root"] or c.undo_ok(s.text, before) or not check_only(s.text, before):
+        if s.done or not d or d["door"] != "local" or not d["root"] or c.undo_ok(s.text, before, p.root) or not check_only(s.text, before, p.root):
             continue
         try:
             b.edit_step(s.n, f"{s.text.split('Undo:', 1)[0].rstrip().rstrip('.')}. Undo: {c.CHECK_UNDO} (check-only step)")  # replace a bare "Undo: none", never stack a second
@@ -536,7 +536,7 @@ def gate(p, tid):
             continue
         head = text.split("Undo:", 1)[0]
         (doors if kind == "step" else door_acs).append(n)
-        if c.undo_ok(text, c.earlier_steps(b, n) if kind == "step" else ()) or (kind == "verify" and _h(text) in undone):  # a real way back is there already
+        if c.undo_ok(text, c.earlier_steps(b, n) if kind == "step" else (), p.root) or (kind == "verify" and _h(text) in undone):  # a real way back is there already
             continue
         if d["root"]:
             undo, why = None, "it names the repo itself or a folder above it, which a copy can't cover"
@@ -586,7 +586,7 @@ def gate(p, tid):
                     f"{c.fit(' '.join(b.section('Interpretation').split()) or 'one reading, not named by the request', 300)}",
                     "ran the step without a copy", "costly")
             c.log_event(p, "door_park", task=tid, data={"door": "one-way", "step": text[:120]}, session=cli.session())
-    return c.door_park(c.find_brief(p, tid)) if park else None
+    return c.door_park(c.find_brief(p, tid), p.root) if park else None
 
 
 def check(p, tid):
@@ -602,17 +602,17 @@ def check(p, tid):
     except Exception as e:  # noqa: BLE001
         raise c.PolicyError(f"{tid}: the one-way door check failed ({type(e).__name__}: {e}); fix that, or write an "
                             f"'Undo: cp -a SNAPSHOT/. .' line on the step by hand")
-    if b.status in ("active", "verifying") and (gaps := c.door_gaps(c.find_brief(p, tid))):
+    if b.status in ("active", "verifying") and (gaps := c.door_gaps(c.find_brief(p, tid), p.root)):
         raise c.PolicyError(f"{tid} has a one-way step on untracked data and needs {', '.join(gaps)}")
 
 
-def tally(b):
+def tally(b, root):
     """T-2346: the finish receipt's one line on the plan's local one-way steps: each undone (its Undo line's restore)
     or parked (no way back, left for the final report); '' when the plan had none."""
     marked = c.door_marked(b)
     if not marked:
         return ""
     steps = {s.n: s.text for s in b.steps()}
-    parts = [f"step {n} undone ({c.fit(steps[n].split('Undo:', 1)[1].strip(), 60)})" if c.undo_ok(steps.get(n, ""))
+    parts = [f"step {n} undone ({c.fit(steps[n].split('Undo:', 1)[1].strip(), 60)})" if c.undo_ok(steps.get(n, ""), (), root)
              else f"step {n} parked" for n in marked]
     return f"Doors: {len(marked)} one-way step{'' if len(marked) == 1 else 's'}: " + ", ".join(parts)

@@ -6576,6 +6576,7 @@ _GIT_READS = {"status", "log", "diff", "show", "blame", "rev-parse", "ls-files",
 _FM_KEEPS = {"capture", "decide", "status", "which", "find", "outline", "queue", "inbox", "next", "focus"}
 _FM_TASK_KEEPS = {"log", "new", "set", "show", "list", "ls"}
 _GIT_BAD = ("-o", "--output", "--ext-diff", "--textconv", "--open-files-in-pager", "-O")
+_GIT_DRIVER_BAD = ("--show-signature", "--config-env", "--git-dir", "--work-tree", "--exec-path", "--upload-pack")  # T-5916
 
 
 def _bad_flag(args, bad):
@@ -6593,14 +6594,100 @@ def _bad_flag(args, bad):
     return False
 
 
-def read_only(cmd):
+# T-5916: a git read (diff, log, show, blame, status…) runs a program the repo's CONFIG names: a diff driver's textconv or
+# command, a filter's clean/process program, core.fsmonitor, core.pager, gpg.program with log.showSignature. A clone ships
+# no config (only .gitattributes, and an attribute naming an undefined driver is inert), so a git read is auto-approved only
+# when every key of the repo's own scopes (local, worktree, command, and any unknown scope) is on this allow-list of inert
+# keys. The global and system scopes are the user's own and stay trusted. include.path is no inert key: an include's
+# keys are listed (--includes) under the scope of the file that includes them, and the include itself refuses.
+# submodule.* is no inert key: an initialized submodule has its own config (.git/modules/N/config) that this list never
+# shows, and status or a worktree diff starts a child git there, so a repo with a submodule gets the dialog. core.sshcommand
+# and merge.*.driver stay: no git read verb runs either (ssh is for fetch and push, a merge driver for merge).
+_GIT_INERT_KEY = lazy(r"core\.(?:repositoryformatversion|filemode|bare|logallrefupdates|fsync|ignorecase|precomposeunicode"
+                      r"|symlinks|sshcommand|autocrlf|eol|safecrlf)|remote\..+\.(?:url|pushurl|fetch|push|tagopt|prune)"
+                      r"|branch\..+\.(?:remote|merge|rebase|pushremote)|merge\..+\.(?:name|driver)|user\.(?:name|email)"
+                      r"|gc\.(?:auto|autodetach|autopacklimit|pruneexpire|reflogexpire|reflogexpireunreachable)"
+                      r"|maintenance\.auto|extensions\.(?:worktreeconfig|objectformat)|init\.defaultbranch"
+                      r"|(?:foreman|sampo)\..+", re.I)
+_GIT_TRUSTED_SCOPES = ("system", "global")
+_GIT_CONFIG_TIMEOUT = 2.0  # seconds; a git config call is about 1 ms, a hung one fails closed
+# Hooks no git read can fire (a commit, rebase, push, merge, checkout or mail step runs each). A read refreshes the index, which
+# fires post-index-change, so an executable in the hooks folder that is not one of these refuses the auto-approval.
+_GIT_QUIET_HOOKS = frozenset(("pre-commit", "prepare-commit-msg", "commit-msg", "post-commit", "pre-rebase", "post-rewrite",
+                              "pre-push", "post-merge", "post-checkout", "pre-merge-commit", "reference-transaction",
+                              "push-to-checkout", "pre-auto-gc", "applypatch-msg", "pre-applypatch", "post-applypatch",
+                              "sendemail-validate"))
+
+
+# The GIT_* names an environment may hold under an auto-approved git read: none names a program or moves git's config or repo
+# (GIT_CONFIG_GLOBAL can point into the repo and read as the trusted global scope; GIT_EXTERNAL_DIFF, GIT_PAGER, GIT_EXEC_PATH,
+# GIT_SSH_COMMAND, GIT_ASKPASS name a program). GIT_EDITOR is what Claude Code's own environment sets, and only a commit or
+# rebase opens an editor.
+_GIT_INERT_ENV = frozenset(("GIT_TERMINAL_PROMPT", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL",
+                            "GIT_AUTHOR_DATE", "GIT_COMMITTER_DATE", "GIT_OPTIONAL_LOCKS", "GIT_PROTOCOL_FROM_USER", "GIT_FLUSH",
+                            "GIT_EDITOR"))
+
+
+def _git_env_plain(env=None):
+    """T-5916: False when the environment holds a GIT_* name not in _GIT_INERT_ENV (an allow-list: a name git adds later is
+    refused until it is listed). Names only: a value is never read."""
+    return all(k in _GIT_INERT_ENV for k in (os.environ if env is None else env) if k.upper().startswith("GIT_"))
+
+
+def _git_hooks_inert(cwd):
+    """T-5916: whether the repo's hooks folder (`git rev-parse --git-path hooks`, which follows core.hooksPath) holds no
+    executable file but a _GIT_QUIET_HOOKS one (a .sample is never run). No folder is fine; any error fails closed."""
+    import subprocess
+    try:
+        r = subprocess.run(["git", "rev-parse", "--git-path", "hooks"], cwd=cwd, capture_output=True, text=True,
+                           timeout=_GIT_CONFIG_TIMEOUT, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return False
+    path = r.stdout.strip()
+    if r.returncode != 0 or not path:
+        return False
+    try:
+        with os.scandir(os.path.join(cwd, path)) as it:
+            return all(e.name in _GIT_QUIET_HOOKS or e.name.endswith(".sample") or not e.is_file()
+                       or not os.access(e.path, os.X_OK) for e in it)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+
+
+def _git_config_inert(cwd):
+    """T-5916: whether the git repo `cwd` is in has only inert config in its own scopes (_GIT_INERT_KEY). Runs one
+    `git config --list --includes --name-only --show-scope` in cwd (the folder a bare `git …` command would run in;
+    read_only refuses --git-dir, --work-tree, -C and GIT_* prefixes, so no other repo is targeted). Fails closed: a git
+    that can't run, times out, exits non-zero or prints a line it can't read is False."""
+    import subprocess
+    try:
+        r = subprocess.run(["git", "config", "--list", "--includes", "--name-only", "--show-scope"], cwd=cwd,
+                           capture_output=True, text=True, timeout=_GIT_CONFIG_TIMEOUT, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return False
+    if r.returncode != 0:
+        return False
+    for line in r.stdout.splitlines():
+        scope, tab, key = line.partition("\t")
+        if not tab or not scope or not key:
+            return False
+        if scope not in _GIT_TRUSTED_SCOPES and not _GIT_INERT_KEY.fullmatch(key):
+            return False
+    return True
+
+
+def read_only(cmd, cwd=None):
     """T-0974: True when the whole command only reads: every part a _READS program (or a reading git subcommand)
     without its writing flags, nothing redirected but to /dev/null, nothing substituted, expanded, backgrounded or
-    assigned.
+    assigned. T-5916: a git part also needs the repo's own config inert (_git_config_inert, checked once, in `cwd`, the
+    folder the command runs in; the process's own when None).
     Conservative on purpose: anything it doesn't know gets Claude Code's own dialog."""
     if not cmd.strip() or any(x in cmd.strip() for x in ("`", "$", "<(", ">(", "\n")):  # review: $VAR can print a secret
         return False
     parts = _split(_tokens(cmd))
+    inert = None
     for x in parts:
         if x.procsub or x.feeds or x.depth or any(r != "/dev/null" for r in x.redirs) or x.op not in ("", ";", "&&", "||", "|"):
             return False
@@ -6609,7 +6696,16 @@ def read_only(cmd):
             return False
         if argv[0] == "git":
             sub = argv[1] if len(argv) > 1 else ""
-            if sub not in _GIT_READS or _bad_flag(argv[2:], _GIT_BAD if sub == "grep" else _GIT_BAD[:4]):
+            # every word is scanned for the hard refusals, wherever it stands: no flag's value is skipped, so a value-taking
+            # flag (--until, --src-prefix) can't hide one. -c is git's own option only (git log -c and grep -c are reads).
+            # git ls-files -o is --others, a list of files; git grep's -o and -O differ again, so each verb has its own list
+            bad = _GIT_BAD if sub == "grep" else _GIT_BAD[1:4] + _GIT_DRIVER_BAD if sub == "ls-files" else _GIT_BAD[:4] + _GIT_DRIVER_BAD
+            if sub not in _GIT_READS or _bad_flag(argv[2:], bad) or (sub not in ("grep", "ls-files") and "-c" in argv[2:]):
+                return False
+            if inert is None:  # one check per command, however many git parts it holds
+                here = cwd or os.getcwd()
+                inert = _git_env_plain() and _git_config_inert(here) and _git_hooks_inert(here)
+            if not inert:
                 return False
             continue
         bad = _READS.get(argv[0])
@@ -6620,13 +6716,13 @@ def read_only(cmd):
     return bool(parts)
 
 
-def _keeps_folders(c, argv):
+def _keeps_folders(c, argv, cwd=None):
     """T-1924 review: True when a command can't remove, rename or relink a folder, so a later cd into one that exists
     still lands (`mv ../d ../e; cd ../d` stays where it was): cd, mkdir without a mode, a _READS program or reading git,
     substituting only reads, nothing fed or process-substituted."""
     text = " ".join(list(c.argv) + list(c.redirs))
     if c.feeds or c.procsub or re.search(r"`|[<>]\(", text) or not all(
-            read_only(b) for b in _subst_bodies(text, tails=False)):
+            read_only(b, cwd) for b in _subst_bodies(text, tails=False)):
         return False
     if not argv or argv[0] in ("cd", "pushd", "popd"):
         return True
@@ -8741,7 +8837,7 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
                 maybe = [_with_vars(a, known) for a in args[:1]] or ["$OLDPWD"]  # $(…) whose words split off) anywhere
                 if args[:1] and args[0] in _CDS and not _PART.sub("", w0[0]):
                     cdn, cda, unsure = args[0], args[1:], True  # $X cd D: X empty, eval or builtin moves it to D
-        gone = gone or not _keeps_folders(c, argv)
+        gone = gone or not _keeps_folders(c, argv, ctx.cwd)
         if name == "mkdir" and "-p" in args:  # a folder this command makes takes a cd as surely as one that exists,
             made.update(d for d in (os.path.normpath(_expand(_with_vars(a, known), ctx)) for a in args)  # when its
                         if os.path.isabs(d) and "$" not in d and _makeable(d))  # nearest existing folder lets it be made

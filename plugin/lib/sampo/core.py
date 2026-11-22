@@ -6239,15 +6239,31 @@ def earlier_steps(b, n):
     return [s.text for s in b.steps() if s.n < n]
 
 
-def undo_ok(text, before=()):
+NO_CWD = os.path.join(os.sep, "sampo-no-such-cwd")  # T-5916: where a git read is judged when the cwd is gone: git can't run there
+
+
+def _cwd_root(root):
+    """T-5916: the folder a git read is judged in: root, else this process's cwd, resolved only here (a step that needs a
+    git read judged, never every plan_gaps/waits_on_user call). A deleted cwd (a shell left in a removed worktree) gives
+    NO_CWD, a folder that does not exist, so read_only fails closed (the door stays shut) and nothing raises."""
+    if root:
+        return root
+    try:
+        return os.getcwd()
+    except OSError:
+        return NO_CWD
+
+
+def undo_ok(text, before, root):
     """T-2342 review: whether a step's 'Undo:' line is a real way back: a restore command (cp, mv, rsync, tar, unzip) that
     names a source that exists. 'none', 'n/a' and an empty line are not one; fm's own line (cp -a SNAPSHOT/. REPO/) is.
-    before: the earlier open steps' texts, for the check-only line (earlier_steps)."""
+    before: the earlier open steps' texts, for the check-only line (earlier_steps). root (T-5916, required: a missing one
+    is a TypeError, not a quiet os.getcwd()): the project folder a git read is judged in; a caller with no project passes its cwd."""
     if "Undo:" not in text:
         return False
     if text.split("Undo:", 1)[1].strip().lower().startswith(CHECK_UNDO):  # T-5890: only for a step that really only reads
         from sampo import doors
-        return doors.check_only(text, before)
+        return doors.check_only(text, before, _cwd_root(root))  # T-5916: root, the project folder a git read is judged in
     try:
         words = shlex.split(text.split("Undo:", 1)[1].strip())
     except ValueError:
@@ -6261,11 +6277,12 @@ def undo_ok(text, before=()):
     return any(os.path.lexists(os.path.expandvars(os.path.expanduser(s))) for s in srcs)
 
 
-def _door_open(b):
-    """[(label, text)] for each marked one-way step with no real Undo line, and each marked verify command with no snapshot."""
+def _door_open(b, root):
+    """[(label, text)] for each marked one-way step with no real Undo line, and each marked verify command with no snapshot.
+    root: the project folder (T-5916), where an Undo line's git read is judged."""
     marked, acs, undone = door_marked(b), door_marked(b, "door_acs"), [str(x) for x in b.meta.get("door_undone") or []]
     out = [(f"step {s.n}", s.text) for s in (b.steps() if marked else ()) if s.n in marked and not s.done
-           and not undo_ok(s.text, earlier_steps(b, s.n))]
+           and not undo_ok(s.text, earlier_steps(b, s.n), root)]
     for a in b.acceptance() if acs else ():  # T-3573: unmarked (nearly every task): no section read
         cmd = verify_of(a.text)
         if a.n in acs and cmd and not a.checked and door_hash(cmd) not in undone:
@@ -6273,11 +6290,11 @@ def _door_open(b):
     return out
 
 
-def door_park(b):
+def door_park(b, root):
     """T-2342: 'one-way and ambiguous: <step>' while a step fm focus marked as a local one-way door has no real Undo line,
     or a marked verify command has no snapshot (the drive and fm run skip it; the final report carries its costly
     decision), else None. A real Undo line, a done step or a checked criterion lifts it."""
-    for label, text in _door_open(b):
+    for label, text in _door_open(b, root):
         return f"one-way and ambiguous: {label}: {text.strip()}"
     return None
 
@@ -6289,18 +6306,19 @@ def door_gap(label):
             f"a {label} that doesn't delete untracked data (or name the path in the request, plainly)")
 
 
-def door_gaps(b):
+def door_gaps(b, root):
     """T-2342: the Undo line each marked one-way step still needs before fm focus lets the task start."""
-    return [door_gap(label) for label, _ in _door_open(b)]
+    return [door_gap(label) for label, _ in _door_open(b, root)]
 
 
-def waits_on_user(b, pending, autonomy="standard"):
-    """Why a task can't be worked without the user (drive and fm run both skip it), else None."""
+def waits_on_user(b, pending, autonomy="standard", root=None):
+    """Why a task can't be worked without the user (drive and fm run both skip it), else None. root (T-5916): the project
+    folder (p.root) a one-way step's Undo git read is judged in; none: this process's cwd (_cwd_root)."""
     if b.id in pending:
         return "pending approval"
     if b.meta.get("cost_cap") and str(b.meta.get("cap_hit")) == str(b.meta["cost_cap"]):  # T-1127: fmcost.check_cap
         return "cost cap hit"
-    return door_park(b) or ("plan approval" if needs_approval(b, autonomy) else None)
+    return door_park(b, root) or ("plan approval" if needs_approval(b, autonomy) else None)
 
 
 # followed by text (a word, a flag, `code`, a quote; T-2285); "1) …" is hollow
@@ -6746,8 +6764,9 @@ def _empty_shape(name, b):
     return _EMPTY_SHAPE[name].format(id=b.id, bar=bar, sensitive=", 80% on a sensitive scope" if bar < RACE_BAR else "")
 
 
-def plan_gaps(b, autonomy="standard"):
-    """What a brief still needs before work may start (fm focus refuses until this is empty)."""
+def plan_gaps(b, autonomy="standard", root=None):
+    """What a brief still needs before work may start (fm focus refuses until this is empty). root (T-5916): the project
+    folder (p.root) an Undo line's git read is judged in; none: this process's cwd (_cwd_root)."""
     gaps = []
     if is_big(b.tier):  # T-4221: a big task starts with a full plan whose structure code checks
         from sampo import big
@@ -6780,7 +6799,7 @@ def plan_gaps(b, autonomy="standard"):
         gaps += [f"verify command on criterion {a.n}" for a in acs if "verify with" not in a.text]
     if not b.steps():
         gaps.append("step")
-    gaps += door_gaps(b)
+    gaps += door_gaps(b, root)  # T-5916: p.root from a caller with a project, else the cwd (_cwd_root, only when a step needs it)
     if needs_approval(b, autonomy):
         why = plain(str(b.meta.get("confirm_why") or ""))[:160] or "a child found this request in an old session"
         gaps.append(f"the user's yes (sampo ask {b.id} confirm: {why})"  # T-1750: why this one waits

@@ -21,8 +21,9 @@ def _path():
     return os.path.join(c.state_dir(), STORE)
 
 
-def klass(tool, inp):
-    """(class, read only): a tool's name, or for Bash its program and subcommand as an allow-rule pattern."""
+def klass(tool, inp, cwd=None):
+    """(class, read only): a tool's name, or for Bash its program and subcommand as an allow-rule pattern. T-5916: cwd is
+    the folder the call runs in, where a git read's repo config is judged (the process's own when None)."""
     if tool != "Bash":
         return str(tool or "?"), tool in READ_TOOLS
     import fmguard
@@ -30,7 +31,7 @@ def klass(tool, inp):
     words = cmd.split()
     prog = os.path.basename(words[0]) if words else ""
     sub = words[1] if len(words) > 1 and re.fullmatch(r"[a-z][\w-]*", words[1]) else ""
-    return f"Bash({prog}{' ' + sub if sub else ''} *)", bool(cmd) and fmguard.read_only(cmd)
+    return f"Bash({prog}{' ' + sub if sub else ''} *)", bool(cmd) and fmguard.read_only(cmd, cwd)
 
 
 def _tail_ids(n=200):
@@ -62,7 +63,7 @@ def record(ev, pl):
         if ev == "done" and isinstance(pl.get("duration_ms"), (int, float)):
             row["ms"] = max(0, int(pl["duration_ms"]))  # the tool's own run, taken out of the person's time
         if ev == "ask":
-            cls, ro = klass(pl.get("tool_name"), pl.get("tool_input"))
+            cls, ro = klass(pl.get("tool_name"), pl.get("tool_input"), pl.get("cwd") or None)
             row.update(cls=c.fit(c.plain(cls), 120), ro=bool(ro))
         os.makedirs(os.path.dirname(_path()), exist_ok=True)
         c.append_line(_path(), json.dumps(row) + "\n")

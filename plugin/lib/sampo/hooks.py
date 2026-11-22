@@ -5349,7 +5349,7 @@ def permission_request(pl):
     with fm approve-reads on, answer it for a command that only reads (T-0974)."""
     import fmguard
     cmd = (pl.get("tool_input") or {}).get("command") or "" if pl.get("tool_name") == "Bash" else ""
-    if cmd and fmguard.read_only(cmd):
+    if cmd and fmguard.read_only(cmd, _cwd(pl)):  # T-5916: a git part checks the repo the call runs in
         p = c.find_project(_cwd(pl))
         if p and c.read_meta(p).get("approve_reads"):
             c.log_event(p, "read_approved", data={"cmd": c.fit(cmd, 200)}, session=pl.get("session_id"))
@@ -5435,7 +5435,7 @@ def _rules_down_allows(pl):
         return False
     import fmguard
     cmd = str((pl.get("tool_input") or {}).get("command") or "")
-    return fmguard.read_only(cmd) or fmguard.is_rule_list(cmd)
+    return fmguard.read_only(cmd, _cwd(pl)) or fmguard.is_rule_list(cmd)
 
 
 def _rule_hits(pl, p):
@@ -7709,7 +7709,7 @@ def _drive_push(p, sd, briefs, pl, g, saved=True):
         if hit:
             return _line(f"Sampo drive: cost cap hit on {wb.id}: sampo checkpoint, then tell the user",
                          [f" (they raise it: sampo task set {wb.id} cost_cap=…)"])
-    if c.waits_on_user(wb, waiting, sd.get("autonomy") or "standard"):  # T-1061: "slow" gates M too
+    if c.waits_on_user(wb, waiting, sd.get("autonomy") or "standard", p.root):  # T-1061: "slow" gates M too
         return None  # waiting on the user's approval (AUTONOMY standard)
     running, scanned, closes, cis = scan()
     if sd["active"] and not _headless() and not any(work["id"] in ids for k, ids in closes.items() if k in running) \
@@ -7990,7 +7990,7 @@ def _unplanned(ids, briefs, p, most=3):
         auto = c.effective_autonomy(p)
         for i in ids[:SIDE_PLAN_READ]:
             b = by_id.get(i)
-            if b is not None and b.status not in c.CLOSED and c.plan_gaps(b, auto):
+            if b is not None and b.status not in c.CLOSED and c.plan_gaps(b, auto, p.root):
                 out.append(i)
                 if len(out) >= most:
                     break

@@ -926,7 +926,7 @@ def extras(p, briefs=None):
     picks = [e.get("data") or {} for e in c.ledger_events(p, ("race_pick",))]
     judged = [d for d in picks if d.get("stated") is not None]
     parked = [b.id for b in (briefs if briefs is not None else c.load_briefs(p))
-              if b.status not in c.CLOSED and c.door_park(b)]
+              if b.status not in c.CLOSED and c.door_park(b, p.root)]
     return {"races": {"run": len(picks), "judged": len(judged), "first_lost": sum(1 for d in judged if not d.get("first_won"))},
             "doors_parked": parked}
 
@@ -936,7 +936,7 @@ def priced_doors(p, briefs=None):
     days since its newest door_park event (None without one) and the open tasks that depend on it. Reads the ledger,
     so only fm decide --review calls it (never the band)."""
     briefs = c.load_briefs(p) if briefs is None else briefs
-    parked = [(b, c.door_park(b)) for b in briefs if b.status not in c.CLOSED]
+    parked = [(b, c.door_park(b, p.root)) for b in briefs if b.status not in c.CLOSED]
     parked = [(b, why) for b, why in parked if why]
     if not parked:
         return []

@@ -2226,7 +2226,7 @@ def _ready(p, b, n=2):
     if c.at_least(b.tier, "L") and b.meta.get("explore") and c.needs_approval(b, c.effective_autonomy(p)):
         raise c.PolicyError(f"{b.id} is an explore item that isn't approved: the user's yes comes before any spike "
                             f"(fm task set {b.id} approved=true after it)")
-    gaps = c.plan_gaps(b, "full" if c.at_least(b.tier, "L") else c.effective_autonomy(p))
+    gaps = c.plan_gaps(b, "full" if c.at_least(b.tier, "L") else c.effective_autonomy(p), p.root)
     if gaps:
         raise c.PolicyError(f"{b.id} isn't planned enough for a builder: missing {', '.join(gaps)} (fm task set/ac/step)")
     if not [v for _, v in b.verify_cmds() if v]:
@@ -3722,7 +3722,7 @@ def _batch_ready(p, cands, concrete, overlap, autonomy):
         if len(members) < 2:
             continue
         def gate(stand):  # the plan gate on the host before it exists: a refused host burns no id
-            gaps = c.plan_gaps(stand, autonomy)
+            gaps = c.plan_gaps(stand, autonomy, p.root)
             return "the batch host isn't planned enough: " + ", ".join(gaps) if gaps else None
         try:
             host, ids = cli._make_batch(p, [m.id for m in members], None, tier="S", gate=gate)
@@ -3868,7 +3868,7 @@ def brief_ready(p, args):
                      if (d not in by_id or by_id[d].status not in c.CLOSED) and d not in (sb.stack[2] if sb.stack else [])]
         if waits:
             return "waits on " + ", ".join(waits)
-        gaps = c.plan_gaps(b, autonomy)
+        gaps = c.plan_gaps(b, autonomy, p.root)
         if gaps:
             return f"isn't planned enough: missing {', '.join(gaps)}"
         return None
@@ -4623,7 +4623,7 @@ def _plan_refusal(p, b, gaps):
     if asked and running and not (lines or others or [g for g in rival if g not in asked]):
         if _rival_wait(p, b.id, RIVAL_WAIT):  # it landed: judged again, its open lines are the next gaps
             b = c.find_brief(p, b.id) or b
-            gaps = list(dict.fromkeys([*c.plan_gaps(b, c.effective_autonomy(p)), *_door_gaps(p, b)]))
+            gaps = list(dict.fromkeys([*c.plan_gaps(b, c.effective_autonomy(p), p.root), *_door_gaps(p, b)]))
             return _plan_refusal(p, b, gaps) if gaps else ""
         why = re.search(r"\(([^;)]*)", asked[0])
         return (f"{b.id} waits on its cold rival read ({why.group(1) if why else 'the plan asks for one'}): pending, started "
@@ -4706,11 +4706,11 @@ def builder_brief(p, b, args, resume_branch=None, after="", stacked=None):
                    if unreported else f"each is a finished lane not landed, and a lane starts from one base: land one "
                    f"first (sampo lane land --bg), then brief {b.id}"))
     # T-4821: focus's door gaps for a root door, read with no write (after the cheap refusals)
-    gaps = list(dict.fromkeys([*c.plan_gaps(b, c.effective_autonomy(p)), *_door_gaps(p, b)]))
+    gaps = list(dict.fromkeys([*c.plan_gaps(b, c.effective_autonomy(p), p.root), *_door_gaps(p, b)]))
     if gaps:  # T-0823: the builder's first act is fm focus, which refuses these
         b, filled = _autofill(p, b)  # T-5890: what a tool can settle (a worded percent, a check-only step's Undo) is filled
         if filled:
-            gaps = list(dict.fromkeys([*c.plan_gaps(b, c.effective_autonomy(p)), *_door_gaps(p, b)]))
+            gaps = list(dict.fromkeys([*c.plan_gaps(b, c.effective_autonomy(p), p.root), *_door_gaps(p, b)]))
     if gaps:
         said = _plan_refusal(p, b, gaps)  # T-5728: every gap at once, the skeleton file, the rival read started
         if said:

@@ -2167,6 +2167,44 @@ class PlanAutoFill(ForemanTestCase):
     """T-5890: what a tool can settle itself is filled, not refused: 'confidence 70%' is the choice's percent, a step that
     only reads or runs a check gets its Undo line; a plan missing a real option is still refused."""
 
+    def check_only(self, text, before=()):
+        from sampo import doors
+        return doors.check_only(text, before, self.repo)  # T-5916: the folder is required, here the test repo
+
+    def undo_ok(self, text, before=()):
+        return c.undo_ok(text, before, self.repo)
+
+    def test_a_deleted_cwd_shuts_the_door_on_a_git_read_and_never_raises(self):
+        # T-5916 round 6: no root and no cwd (a shell left in a removed worktree): a brief with no marked step is judged as
+        # before, a marked git-read step reports the door shut, and nothing raises FileNotFoundError
+        from unittest import mock
+        tid = self.task(AUTOFILL_AP + "Choice 3 (90%): one round.", step="Run `git status`. Undo: nothing changes (check-only step)")
+        b = c.find_brief(self.p, tid)
+        with mock.patch.object(os, "getcwd", side_effect=FileNotFoundError("gone")):
+            self.assertIsNone(c.waits_on_user(b, set()))
+            self.assertFalse([g for g in c.plan_gaps(b) if "Undo" in g])
+            b.meta["doors"] = ["1"]  # what fm focus records for a local one-way step
+            self.assertIn("one-way and ambiguous", c.waits_on_user(b, set()) or "")
+            self.assertTrue([g for g in c.plan_gaps(b) if "Undo" in g and "step 1" in g])
+        self.assertIsNone(c.waits_on_user(b, set(), root=self.repo), "with a root the same step is a real way back")
+        self.assertFalse([g for g in c.plan_gaps(b, root=self.repo) if "Undo" in g])
+
+    def test_the_folder_a_git_read_is_judged_in_is_required_not_a_default(self):
+        # T-5916 round 5: a caller that forgot its root is a TypeError, never a quiet os.getcwd()
+        from sampo import doors
+        line = "Run `git status`. Undo: nothing changes (check-only step)"
+        with self.assertRaises(TypeError):
+            c.undo_ok(line)
+        with self.assertRaises(TypeError):
+            c.undo_ok(line, ())
+        with self.assertRaises(TypeError):
+            doors.check_only("Run `git status`")
+        with self.assertRaises(TypeError):
+            c.door_park(None)
+        with self.assertRaises(TypeError):
+            c.door_gaps(None)
+        self.assertTrue(c.undo_ok(line, (), self.repo))
+
     def task(self, approach, step="read the gate", new=False):
         """An M task whose Approach and step are set after `task new`, which fills them itself (new=True: given to it)."""
         args = ["task", "new", "Fill the plan", "--type", "FIX", "--tier", "M", "--raw", "fill the plan",
@@ -2218,7 +2256,7 @@ class PlanAutoFill(ForemanTestCase):
         self.assertTrue(any("Undo" in n and "step 1" in n for n in notes), notes)
         self.assertIn("Undo: nothing changes", b.steps()[0].text)
         self.assertEqual(doors.brief_gaps(self.p, b), [])
-        self.assertEqual(c.door_gaps(b), [])
+        self.assertEqual(c.door_gaps(b, self.repo), [])
 
     def test_a_step_that_changes_something_is_not_given_an_undo_line(self):
         from sampo import doors
@@ -2227,13 +2265,13 @@ class PlanAutoFill(ForemanTestCase):
         self.assertEqual(notes, [])
         self.assertTrue(doors.brief_gaps(self.p, b), "a real one-way step keeps its gap")
         typed = "Delete the old rows under ./ and replace them. Undo: nothing changes"
-        self.assertFalse(c.undo_ok(typed), "the words alone never lift a step that changes something")
-        self.assertTrue(c.undo_ok(AUTOFILL_STEP + ". Undo: nothing changes (check-only step)"))
+        self.assertFalse(self.undo_ok(typed), "the words alone never lift a step that changes something")
+        self.assertTrue(self.undo_ok(AUTOFILL_STEP + ". Undo: nothing changes (check-only step)"))
         for cmd in ("git diff --output=x.txt", "rg --pre ./run.sh foo", "grep foo a > b", "cat a | sh", "sort -o a a",
                     "python3 tool.py", "git status && rm -f x"):  # a reader that writes, a redirect, a program off the list
-            self.assertFalse(doors.check_only(f"Run `{cmd}`"), cmd)
-        self.assertFalse(doors.check_only("Run the check and delete the output"), "no command in ticks")
-        self.assertFalse(doors.check_only("Delete the logs, then run `git status`"), "a destroy word outside the ticks")
+            self.assertFalse(self.check_only(f"Run `{cmd}`"), cmd)
+        self.assertFalse(self.check_only("Run the check and delete the output"), "no command in ticks")
+        self.assertFalse(self.check_only("Delete the logs, then run `git status`"), "a destroy word outside the ticks")
 
     def test_check_only_refuses_a_runner_flag_that_writes_a_background_and_a_prose_write(self):
         # T-5890 round 2: pytest --basetemp wipes DIR, a lone & backgrounds the next command, and the words around the ticks act too
@@ -2244,8 +2282,8 @@ class PlanAutoFill(ForemanTestCase):
                      "Run `grep -rn remove ./src`, then rmdir ./src/old",
                      "Run `grep -rn x ./src`, then unlink ./src/a, chmod 000 ./src, kill 1, git push, dd of=./x",
                      "Run `grep -rn x ./src` and look at ./data/rows.csv"):
-            self.assertFalse(doors.check_only(step), step)
-        self.assertTrue(doors.check_only("Run `git status && grep -rn x ./src`"))
+            self.assertFalse(self.check_only(step), step)
+        self.assertTrue(self.check_only("Run `git status && grep -rn x ./src`"))
 
     def test_check_only_refuses_a_pointer_that_is_not_exactly_dot_slash_a_program_in_prose_an_at_file_and_a_foreign_runner(self):
         # T-5890 round 3
@@ -2254,20 +2292,20 @@ class PlanAutoFill(ForemanTestCase):
                      "Run `grep -rn x ./`, then rsync -a ./ ../old/", "Run `grep -rn x ./` and tar the result",
                      "Run `grep -rn x ./`, then pull and publish", "Run `grep -rn x ./` then curl it",
                      "Run `ls ./` and look at ../", "Run `ls ./` and look at /", "Run `ls ./` and look at /."):
-            self.assertFalse(doors.check_only(step), step)
+            self.assertFalse(self.check_only(step), step)
 
     def test_a_test_run_never_gets_an_undo_line_and_an_earlier_config_step_blocks_a_reader(self):
         # T-5890 round 4: conftest.py, config, plugins and the environment make a test run execute repo code, so only readers qualify
         from sampo import doors
         for cmd in ("pytest -q", "python3 plugin/tests/run.py x", "python -m pytest -q", "python3 -m unittest", "pytest -k Replace"):
-            self.assertFalse(doors.check_only(f"Run `{cmd}`"), cmd)
-            self.assertFalse(c.undo_ok(f"Run `{cmd}`. Undo: nothing changes (check-only step)"), cmd)
-        self.assertFalse(doors.check_only("Run `grep -rn remove ./`, then revert ./ to HEAD"), "a path in the prose")
-        self.assertTrue(doors.check_only("Run `grep -rn x ./src`."), "a reader and a closing dot")
-        self.assertFalse(doors.check_only("Run `grep -rn x ./src` from ./"), "even a pointer in the prose")
-        self.assertTrue(doors.check_only("Run `git status`", before=["Add a test file tests/test_a.py"]))
+            self.assertFalse(self.check_only(f"Run `{cmd}`"), cmd)
+            self.assertFalse(self.undo_ok(f"Run `{cmd}`. Undo: nothing changes (check-only step)"), cmd)
+        self.assertFalse(self.check_only("Run `grep -rn remove ./`, then revert ./ to HEAD"), "a path in the prose")
+        self.assertTrue(self.check_only("Run `grep -rn x ./src`."), "a reader and a closing dot")
+        self.assertFalse(self.check_only("Run `grep -rn x ./src` from ./"), "even a pointer in the prose")
+        self.assertTrue(self.check_only("Run `git status`", before=["Add a test file tests/test_a.py"]))
         for earlier in ("Write `.gitattributes` with a diff driver", "Set up ./.git/config", "Edit ci/tox.ini", "Create .ripgreprc"):
-            self.assertFalse(doors.check_only("Run `git diff`", before=[earlier]), earlier)
+            self.assertFalse(self.check_only("Run `git diff`", before=[earlier]), earlier)
         tid = self.task(AUTOFILL_AP + "Choice 3 (90%): one round.", step="Write `.gitattributes` with a diff driver")
         self.fm("task", "step", tid, "add", AUTOFILL_STEP)
         b, notes = self.fill(tid)
@@ -2278,10 +2316,10 @@ class PlanAutoFill(ForemanTestCase):
         from sampo import doors
         for verb in ("revert everything", "fix the rows", "create a file", "generate the index", "change the data",
                      "reformat it", "build it", "overwrite it", "rename it", "wipe the cache"):
-            self.assertFalse(doors.check_only(f"Run `grep -rn remove ./`, then {verb}"), verb)
+            self.assertFalse(self.check_only(f"Run `grep -rn remove ./`, then {verb}"), verb)
         for ok in ("Run `grep -rn x ./src` and `git status`", "Run `ls`, then check that it is 2 of 3 in the list.",
                    "Read `git status` for each step"):
-            self.assertTrue(doors.check_only(ok), ok)
+            self.assertTrue(self.check_only(ok), ok)
         tid = self.task(AUTOFILL_AP + "Choice 3 (90%): one round.", step="Run `grep -rn Replace ./` and `git status`")  # the word makes it read as a one-way door
         b, notes = self.fill(tid)
         self.assertIn("Undo: nothing changes", b.steps()[0].text, notes)
@@ -2299,27 +2337,27 @@ class PlanAutoFill(ForemanTestCase):
         self.assertEqual(len(c.earlier_steps(b, 2)), 1, "a done step is scanned too")
         for cmd in ("git diff", "git log -p", "git show HEAD", "git blame x", "git grep foo", "git -c core.pager=cat status",
                     "git --no-pager diff --no-ext-diff --no-textconv"):
-            self.assertFalse(doors.check_only(f"Run `{cmd}`"), cmd)
+            self.assertFalse(self.check_only(f"Run `{cmd}`"), cmd)
         for cmd in ("git status", "git rev-parse HEAD", "git status && git rev-parse --show-toplevel"):
-            self.assertTrue(doors.check_only(f"Run `{cmd}`"), cmd)
+            self.assertTrue(self.check_only(f"Run `{cmd}`"), cmd)
         for earlier in ("Run `git config diff.external ./x`", "git config core.pager less", "Run `PAGER=./x ls`",
                         "export GIT_EXTERNAL_DIFF=./x"):
-            self.assertFalse(doors.check_only("Run `git status`", before=[earlier]), earlier)
+            self.assertFalse(self.check_only("Run `git status`", before=[earlier]), earlier)
 
     def test_the_git_subcommand_is_read_the_way_the_guard_reads_it_and_a_quote_or_backslash_is_refused(self):
         # T-5890 round 6: `"git" diff` and `g\it log` are git to the guard's tokenizer, so the subcommand comes from its argv
         from sampo import doors
         for cmd in ('"git" diff', "'git' log -p", "g\\it log", 'git "diff"', "git dif\\f", 'git "status"', "ls 'a'", "grep x a\\b"):
-            self.assertFalse(doors.check_only(f"Run `{cmd}`"), cmd)
-        self.assertTrue(doors.check_only("Run `git status`"))
+            self.assertFalse(self.check_only(f"Run `{cmd}`"), cmd)
+        self.assertTrue(self.check_only("Run `git status`"))
 
     def test_an_earlier_step_that_mentions_git_beyond_status_config_or_a_hook_blocks_a_reader(self):
         # T-5890 round 6: `git -C x config`, `git -c a=b diff` and the like dodge a pattern, so any git but status/rev-parse blocks
         from sampo import doors
         for earlier in ("Run `git -C x config diff.external ./t`", "Run `git -c core.pager=./t log`", "Run `git diff`",
                         "Set config in the repo", "Point core.fsmonitor at a script", "Set core.hooksPath to ./h", "Use git alias x"):
-            self.assertFalse(doors.check_only("Run `git status`", before=[earlier]), earlier)
-        self.assertTrue(doors.check_only("Run `git status`", before=["Run `git status`", "Run `git rev-parse HEAD`", "Add a test"]))
+            self.assertFalse(self.check_only("Run `git status`", before=[earlier]), earlier)
+        self.assertTrue(self.check_only("Run `git status`", before=["Run `git status`", "Run `git rev-parse HEAD`", "Add a test"]))
 
     def test_a_percent_of_something_else_in_parentheses_is_never_the_choices(self):
         for wording in ("Choice 3: one pass (95% of rows kept).", "Choice 3: one pass (95 percent of rows kept).",
@@ -2335,7 +2373,7 @@ class PlanAutoFill(ForemanTestCase):
         text = b.steps()[0].text
         self.assertEqual(text.count("Undo:"), 1, text)
         self.assertNotIn("Undo: none", text)
-        self.assertTrue(c.undo_ok(text), text)
+        self.assertTrue(self.undo_ok(text), text)
         c.save_brief(self.p, b)  # the caller saves; a second run reads what the first wrote
         b2, notes2 = self.fill(tid)
         self.assertEqual(notes2, [])

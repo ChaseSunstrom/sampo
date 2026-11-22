@@ -176,8 +176,8 @@ class DoorGate(DoorBase):
                          ("cp -a /no/such/dir/. /repo/", False), (f"cp -a {keep}/. /repo/", True)):
             with self.subTest(undo=undo):
                 b.edit_step(1, f"delete data/old.csv. Undo: {undo}")
-                self.assertEqual(c.door_gaps(b) == [], ok)
-                self.assertEqual(c.door_park(b) is None, ok)
+                self.assertEqual(c.door_gaps(b, self.repo) == [], ok)
+                self.assertEqual(c.door_park(b, self.repo) is None, ok)
 
     def test_a_request_names_a_path_only_by_whole_token_with_a_destroy_verb_and_no_negation(self):
         from sampo import doors as sdoors
@@ -193,11 +193,11 @@ class DoorGate(DoorBase):
         tid = self.brief("delete data/old.csv")
         b = c.find_brief(self.p, tid)
         b.meta["doors"] = [1]  # what fm focus records for a local one-way step
-        self.assertTrue([g for g in c.door_gaps(b) if "Undo" in g and "step 1" in g])
+        self.assertTrue([g for g in c.door_gaps(b, self.repo) if "Undo" in g and "step 1" in g])
         snap = os.path.join(self.tmp, "snap")  # T-2438: the undo source must exist; /snap is a snapd dir, not on every host
         os.makedirs(snap)
         b.edit_step(1, f"delete data/old.csv. Undo: cp -a {snap}/. /repo/")
-        self.assertEqual(c.door_gaps(b), [])
+        self.assertEqual(c.door_gaps(b, self.repo), [])
 
     def test_a_local_one_way_step_needs_the_rival_read(self):
         os.environ["FOREMAN_NO_RIVAL"] = "0"
@@ -245,7 +245,7 @@ class DoorPark(DoorBase):
         self.assertNotIn("Doors:", self.fm("task", "finish", plain, "--audit", "self", "--run", "true").stdout)
         b = c.find_brief(self.p, plain)
         b.meta["doors"] = ["1"]  # a marked step with no way back: parked
-        self.assertEqual(sdoors.tally(b), "Doors: 1 one-way step: step 1 parked")
+        self.assertEqual(sdoors.tally(b, self.repo), "Doors: 1 one-way step: step 1 parked")
 
     def test_the_final_report_prices_each_parked_door_by_days_and_what_waits_behind_it(self):
         # T-2347 (Mission 5 inbox): fm decide --review names each parked task, how long it waited, what it blocks
@@ -360,7 +360,7 @@ class DoorPark(DoorBase):
         steps = [s.text for s in c.find_brief(self.p, tid).steps()]
         for s in steps:
             self.assertRegex(s, r"Undo: (mkdir -p \S+ && )?cp -a")  # a folder is made first: BSD cp has no -T
-            self.assertTrue(c.undo_ok(s), s)
+            self.assertTrue(c.undo_ok(s, (), self.repo), s)
         self.assertIsNone(self.waits(tid))
         before = sorted(os.path.join(dp, n) for dp, _, fn in os.walk(self.repo) if ".git" not in dp for n in fn)
         import shutil
@@ -394,7 +394,7 @@ class DoorPark(DoorBase):
         self.fm("focus", tid)
         for s in (x.text for x in c.find_brief(self.p, tid).steps()):
             undo = s.split("Undo: ", 1)[1]
-            self.assertTrue(c.undo_ok(s), s)
+            self.assertTrue(c.undo_ok(s, (), self.repo), s)
             for part in undo.split(" && "):
                 flags = [w for w in part.split() if w.startswith("-") and w != "--"]
                 self.assertEqual(flags, ["-a"] if part.startswith("cp") else ["-p"], part)

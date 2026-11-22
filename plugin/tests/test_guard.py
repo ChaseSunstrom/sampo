@@ -4919,3 +4919,261 @@ class NativeBuild(GuardCase):
             ("CARGO_TARGET_DIR={home}/.cache/sampo/cargo-target cargo build --profile lane", None),
             ("cargo build --target-dir /tmp/t", None),
         ], lambda cmd: self.bash(cmd, cwd=self.native))
+
+
+class GitDrivers(unittest.TestCase):
+    """T-5916: a git read runs the programs the repo's CONFIG names (diff textconv/command, filter clean/process,
+    core.fsmonitor, core.pager, gpg.program with log.showSignature); a clone ships only .gitattributes, so read_only
+    gates on the repo's own config being inert and refuses every git read when it is not."""
+
+    CMDS = ("git diff", "git diff HEAD~1 -- a.py", "git blame a.py", "git status", "git log", "git log -p", "git show HEAD")
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="fm-gitdrivers-")
+        cls.repo = git_repo(cls.tmp, "app")
+        cls.marker = os.path.join(cls.tmp, "ran")
+        cls.script = os.path.join(cls.tmp, "plant.sh")
+        with open(cls.script, "w") as f:  # records that it ran, then passes its input through
+            f.write('#!/bin/sh\necho ran >> "%s"\n[ -n "$1" ] && cat "$1" || cat\n' % cls.marker)
+        os.chmod(cls.script, 0o755)
+        # the attribute a hostile clone ships; with no config naming the driver or filter it is inert
+        with open(os.path.join(cls.repo, ".gitattributes"), "w") as f:
+            f.write("*.py diff=evil filter=evil\n")
+        for text in ("x = 1\n", "x = 2\n"):
+            with open(os.path.join(cls.repo, "a.py"), "w") as f:
+                f.write(text)
+            subprocess.run(["git", "-C", cls.repo, "add", "."], check=True)
+            subprocess.run(["git", "-C", cls.repo, "commit", "-qm", "c"], check=True)
+        with open(os.path.join(cls.repo, "a.py"), "w") as f:  # dirty in the worktree, so a plain diff/status reads it
+            f.write("x = 3\n")
+        with open(os.path.join(cls.repo, ".git", "config")) as f:
+            cls.clean_config = f.read()
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, True)
+
+    def setUp(self):
+        self.addCleanup(self.restore)
+        self.restore()
+
+    def restore(self):
+        with open(os.path.join(self.repo, ".git", "config"), "w") as f:
+            f.write(self.clean_config)
+        for name in ("config.worktree", ):
+            if os.path.exists(os.path.join(self.repo, ".git", name)):
+                os.remove(os.path.join(self.repo, ".git", name))
+        if os.path.exists(self.marker):
+            os.remove(self.marker)
+
+    def plant(self, text):
+        with open(os.path.join(self.repo, ".git", "config"), "a") as f:
+            f.write(text)
+
+    def ran(self, cmd):
+        subprocess.run(shlex.split(cmd), cwd=self.repo, capture_output=True, stdin=subprocess.DEVNULL, timeout=30)
+        return os.path.exists(self.marker)
+
+    def routes(self):
+        s = self.script
+        extra = os.path.join(self.tmp, "extra.cfg")
+        with open(extra, "w") as f:
+            f.write('[diff "evil"]\n\ttextconv = %s\n[filter "evil"]\n\tclean = %s\n' % (s, s))
+        return {
+            "textconv": '[diff "evil"]\n\ttextconv = %s\n' % s,
+            "diff command": '[diff "evil"]\n\tcommand = %s\n' % s,
+            "filter clean": '[filter "evil"]\n\tclean = %s %%f\n' % s,
+            "filter process": '[filter "evil"]\n\tprocess = %s\n' % s,
+            "fsmonitor": "[core]\n\tfsmonitor = %s\n" % s,
+            "pager": "[core]\n\tpager = %s\n" % s,
+            "external diff": "[diff]\n\texternal = %s\n" % s,
+            "showSignature": "[log]\n\tshowSignature = true\n[gpg]\n\tprogram = %s\n" % s,
+            "include": "[include]\n\tpath = %s\n" % extra,
+            "includeIf": '[includeIf "gitdir:%s/"]\n\tpath = %s\n' % (self.repo, extra),
+            "unknown key": "[evil]\n\tthing = 1\n",
+        }
+
+    def test_every_config_route_is_refused_for_every_read(self):
+        for name, text in self.routes().items():
+            self.restore()
+            self.plant(text)
+            for cmd in self.CMDS:
+                with self.subTest(route=name, cmd=cmd):
+                    self.assertFalse(g.read_only(cmd, self.repo))
+        self.assertFalse(os.path.exists(self.marker))  # the guard judged each without running one
+
+    def test_worktree_scope_is_refused(self):
+        self.plant("[extensions]\n\tworktreeConfig = true\n")
+        with open(os.path.join(self.repo, ".git", "config.worktree"), "w") as f:
+            f.write("[core]\n\tfsmonitor = %s\n" % self.script)
+        for cmd in self.CMDS:
+            with self.subTest(cmd=cmd):
+                self.assertFalse(g.read_only(cmd, self.repo))
+
+    def test_the_plants_are_live(self):
+        """The routes above are real: git itself runs the planted program for these, so a refusal is a refusal of code."""
+        for text, cmd in ((self.routes()["textconv"], "git diff HEAD~1 -- a.py"), (self.routes()["filter clean"], "git diff"),
+                          (self.routes()["fsmonitor"], "git status")):
+            self.restore()
+            self.plant(text)
+            with self.subTest(cmd=cmd):
+                self.assertTrue(self.ran(cmd), "the planted program did not run, the route tests nothing")
+
+    def test_clean_and_allow_listed_config_passes_and_runs_nothing(self):
+        self.plant('[remote "origin"]\n\turl = https://example.com/x.git\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n'
+                   '[branch "main"]\n\tremote = origin\n\tmerge = refs/heads/main\n[core]\n\tfilemode = true\n')
+        for cmd in self.CMDS + ("git diff --stat", "git log --oneline -n 3", "git blame -L1,2 a.py", "git ls-files", "git grep x",
+                                "git rev-parse HEAD", "git describe --always", "git shortlog -s", "git status && git diff | head"):
+            with self.subTest(cmd=cmd):
+                self.assertTrue(g.read_only(cmd, self.repo))
+        for cmd in self.CMDS:  # and with the attribute shipped but no config naming it, git runs nothing
+            self.ran(cmd)
+        self.assertFalse(os.path.exists(self.marker))
+
+    def test_hard_refusals_are_scanned_on_every_word(self):
+        for cmd in ("git log -p --until --textconv", "git log --until x --ext-diff", "git log --src-prefix --ext-diff -p",
+                    "git diff --dst-prefix --textconv a b", "git log --since 1.day --output=x", "git show --show-signature",
+                    "git log --show-sig", "git diff --ext HEAD", "git -c core.pager=x log", "git log -c -p --ext-diff",
+                    "git diff --config-env=core.pager=X", "git --git-dir=/x log", "git log --git-dir /x",
+                    "git grep --open-files-in-pager=x y", "git diff -o x"):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(g.read_only(cmd, self.repo))
+
+    def test_global_and_system_scope_stay_trusted(self):
+        glob = os.path.join(self.tmp, "global.cfg")
+        with open(glob, "w") as f:
+            f.write("[core]\n\tpager = less\n[diff \"x\"]\n\ttextconv = cat\n")
+        home = os.path.join(self.tmp, "home")  # the user's own ~/.gitconfig, found the way git finds it
+        os.makedirs(home, exist_ok=True)
+        os.replace(glob, os.path.join(home, ".gitconfig"))
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_CONFIG")}
+        env.update(HOME=home, XDG_CONFIG_HOME=os.path.join(home, ".config"))
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertTrue(g.read_only("git diff", self.repo))
+
+    def test_environment_that_moves_git_config_or_repo_is_refused(self):
+        """T-5916 round 3: GIT_CONFIG_GLOBAL can point into the repo and then read as the trusted global scope."""
+        for var in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_COUNT", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_PARAMETERS",
+                    "GIT_DIR", "GIT_WORK_TREE"):
+            with self.subTest(var=var), mock.patch.dict(os.environ, {var: "/dev/null"}):
+                self.assertFalse(g.read_only("git status", self.repo))
+        self.assertTrue(g.read_only("git status", self.repo))
+
+    def test_environment_is_an_allow_list_of_inert_git_names(self):
+        """T-5916 round 4: any GIT_* name off the short list refuses, so a program-naming one (GIT_EXTERNAL_DIFF,
+        GIT_PAGER) can't run under an auto-allow; the names the hook really has and the inert ones pass."""
+        for var in ("GIT_EXTERNAL_DIFF", "GIT_PAGER", "GIT_EXEC_PATH", "GIT_SSH_COMMAND", "GIT_ASKPASS", "GIT_INDEX_FILE",
+                    "GIT_SOMETHING_NEW"):
+            for cmd in ("git diff", "git status", "git log"):
+                with self.subTest(var=var, cmd=cmd), mock.patch.dict(os.environ, {var: self.script}):
+                    self.assertFalse(g.read_only(cmd, self.repo))
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        env.update(GIT_EDITOR="true", GIT_TERMINAL_PROMPT="0", GIT_AUTHOR_NAME="a", GIT_COMMITTER_DATE="1 +0000",
+                   GIT_OPTIONAL_LOCKS="0", GIT_PROTOCOL_FROM_USER="0", GIT_FLUSH="1")
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertTrue(g.read_only("git diff", self.repo))
+        self.assertFalse(os.path.exists(self.marker))
+
+    def test_submodule_keys_and_an_initialized_submodule_are_refused(self):
+        self.plant('[submodule "s"]\n\turl = https://example.com/s.git\n\tactive = true\n')
+        self.assertFalse(g.read_only("git status", self.repo))
+        sub = git_repo(self.tmp, "lib")
+        top = git_repo(self.tmp, "withsub")
+        subprocess.run(["git", "-C", top, "-c", "protocol.file.allow=always", "submodule", "add", "-q", sub, "s"],
+                       check=True, capture_output=True, stdin=subprocess.DEVNULL)
+        self.assertFalse(g.read_only("git status", top))  # its .git/config now holds submodule.s.url
+        mods = [os.path.join(r, "config") for r, d, f in os.walk(os.path.join(top, ".git", "modules")) if "config" in f]
+        self.assertTrue(mods)
+        with open(mods[0], "a") as f:  # the child's own config, which the parent's config list never shows
+            f.write("[core]\n\tfsmonitor = %s\n" % self.script)
+        for cmd in ("git status", "git diff"):
+            self.assertFalse(g.read_only(cmd, top))
+        subprocess.run(["git", "-C", top, "status"], capture_output=True, stdin=subprocess.DEVNULL, timeout=30)
+        self.assertTrue(os.path.exists(self.marker), "git status does start the child's fsmonitor: the refusal is of code")
+
+    def hook(self, name, mode=0o755):
+        d = os.path.join(self.repo, ".git", "hooks")
+        os.makedirs(d, exist_ok=True)
+        p = os.path.join(d, name)
+        with open(p, "w") as f:
+            f.write('#!/bin/sh\necho ran >> "%s"\n' % self.marker)
+        os.chmod(p, mode)
+        self.addCleanup(lambda: os.path.exists(p) and os.remove(p))
+
+    def test_a_hook_a_read_can_fire_is_refused_and_one_it_cannot_is_not(self):
+        self.hook("post-index-change")  # fires when status or diff refreshes the index
+        for cmd in self.CMDS:
+            with self.subTest(cmd=cmd):
+                self.assertFalse(g.read_only(cmd, self.repo))
+        with open(os.path.join(self.repo, "a.py"), "w") as f:  # same text, new stat data: the refresh writes the index
+            f.write("x = 3\n")
+        self.ran("git status")
+        self.assertTrue(os.path.exists(self.marker), "git status fires post-index-change: the refusal is of code")
+
+    def test_unlisted_hooks_are_refused_and_listed_or_inert_ones_pass(self):
+        self.hook("pre-commit")
+        self.hook("post-checkout")
+        self.hook("pre-push")
+        self.hook("reference-transaction")
+        self.hook("sendemail-validate")
+        self.hook("fsmonitor-watchman.sample")
+        self.hook("post-update", 0o644)  # not executable: git never runs it
+        self.assertTrue(g.read_only("git status", self.repo))
+        self.hook("post-update")  # any executable not on the list is refused, named or not by git as one a read fires
+        self.assertFalse(g.read_only("git log", self.repo))
+
+    def test_core_hookspath_is_refused(self):
+        self.plant("[core]\n\thooksPath = %s\n" % self.tmp)
+        self.assertFalse(g.read_only("git status", self.repo))
+
+    def test_ls_files_others_is_a_read_but_output_flags_are_not(self):
+        for cmd in ("git ls-files -o", "git ls-files --others --exclude-standard", "git ls-files -oz"):
+            with self.subTest(cmd=cmd):
+                self.assertTrue(g.read_only(cmd, self.repo))
+        for cmd in ("git diff -o x", "git log -o", "git status -o", "git ls-files --output=x", "git ls-files --textconv"):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(g.read_only(cmd, self.repo))
+
+    def test_common_benign_keys_pass(self):
+        self.plant("[core]\n\tautocrlf = input\n\teol = lf\n\tsafecrlf = warn\n[gc]\n\tauto = 0\n\tautodetach = false\n"
+                   "\tautopacklimit = 5\n\tpruneexpire = now\n\treflogexpire = 90.days\n\treflogexpireunreachable = 30.days\n"
+                   '[merge "m"]\n\tname = m\n\tdriver = true\n[core]\n\tsshcommand = ssh -i k\n')
+        self.assertTrue(g.read_only("git status", self.repo))
+
+    def test_callers_pass_the_folder_they_judge(self):
+        """T-5916 round 3: a bare read_only(cmd) judges the process's own cwd, so the three other callers pass theirs."""
+        from sampo import anergy, doors
+        self.plant('[diff "evil"]\n\ttextconv = %s\n' % self.script)
+        here = os.getcwd()
+        self.assertFalse(anergy.klass("Bash", {"command": "git status"}, self.repo)[1])
+        self.assertTrue(anergy.klass("Bash", {"command": "ls"}, self.repo)[1])
+        self.restore()
+        self.assertTrue(anergy.klass("Bash", {"command": "git status"}, self.repo)[1])
+        self.assertEqual(os.getcwd(), here)
+        with mock.patch.object(g, "read_only", return_value=True) as ro:
+            self.assertTrue(doors.check_only("Run `git status`", (), self.repo))
+        self.assertTrue(ro.call_args_list)
+        self.assertTrue(all(call.args[1:] == (self.repo,) for call in ro.call_args_list), ro.call_args_list)
+
+    def test_fails_closed(self):
+        self.assertFalse(g.read_only("git status", os.path.join(self.tmp, "missing")))  # no such folder
+        with mock.patch.object(subprocess, "run", side_effect=subprocess.TimeoutExpired("git", 2)):
+            self.assertFalse(g.read_only("git status", self.repo))
+        with mock.patch.object(subprocess, "run", side_effect=FileNotFoundError("git")):
+            self.assertFalse(g.read_only("git status", self.repo))
+        for out, code in (("local\n", 0), ("garbage\n", 0), ("\tcore.bare\n", 0), ("local\tcore.bare\n", 128)):
+            with mock.patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], code, out, "")):
+                with self.subTest(out=out, code=code):
+                    self.assertFalse(g.read_only("git status", self.repo))
+        with mock.patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "local\tcore.bare\n", "")):
+            self.assertTrue(g.read_only("git status", self.repo))  # the same mock with a good line passes
+
+    def test_one_config_call_per_command_and_none_for_other_programs(self):
+        with mock.patch.object(subprocess, "run", wraps=subprocess.run) as run:
+            self.assertTrue(g.read_only("git status && git diff | git log -n 1", self.repo))
+            self.assertEqual(run.call_count, 2)  # the config list and the hooks folder, once for all three git parts
+            run.reset_mock()
+            self.assertTrue(g.read_only("ls | wc -l", self.repo))
+            self.assertFalse(g.read_only("git push", self.repo))
+            self.assertEqual(run.call_count, 0)
