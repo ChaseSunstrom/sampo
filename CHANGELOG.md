@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- test_deadfeatures follows T-5613's rows: a call through _record_call writes via cli and counts as real, a test or bench call and a row with no via do not, and deadfeatures reads callcards' origin tuples directly (T-5990).
 - sampo lane land starts a stale lane's affected check itself and trains the lane once that check is green, at most three at once (T-5561).
 - `fm lane pilot` reviews a returned lane headless and accepts it when every lens is clean, printing one line otherwise (T-5706).
 - Added review-fix and merge-conflict agents with short contracts, so these jobs no longer launch a general-purpose agent that re-reads the whole skill each turn (T-5681).
