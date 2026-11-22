@@ -509,7 +509,7 @@ class Times(ShipCase):
             self.assertGreaterEqual(e["data"]["seconds"], 0)
             self.assertRegex(e["data"]["sha"], r"^[0-9a-f]{40}$")
 
-    def test_times_status_shows_the_last_lands_accept_to_live_median(self):
+    def test_times_status_shows_the_last_lands_accept_to_pushed_median(self):
         self.open(9)
         ids = self.lanes_ready(2)
         for tid, ago in zip(ids, (600, 1200)):

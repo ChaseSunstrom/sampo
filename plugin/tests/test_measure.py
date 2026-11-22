@@ -103,10 +103,13 @@ class Measure(ForemanTestCase):
     def test_unknown_name_is_a_usage_error_listing_the_registered_names(self):
         got = self.run_measure("accept-to-nowhere")
         self.assertEqual(got.returncode, 1)
+        self.assertIn(f"registered: {', '.join(sorted(measure.MEASURES))}", got.stderr)
+
+    def test_each_registered_name_runs_through_the_verb_under_its_own_name(self):
         for name in measure.MEASURES:
-            self.assertIn(name, got.stderr)
-        self.assertIn("accept-to-live", measure.MEASURES)
-        self.assertIn("accept-to-pushed", measure.MEASURES)
+            got = self.run_measure(name, "--json")
+            self.assertEqual(got.returncode, 0, name)
+            self.assertEqual(json.loads(got.stdout)["name"], name)
 
     def test_no_name_lists_the_names_too(self):
         got = self.run_measure()
