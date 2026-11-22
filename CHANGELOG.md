@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- A confined worker's git grants now come from a Sampo-side anchor of the worktree's git dir and common dir and the worktree is checked against it, so a deleted, rewritten or fabricated .git, a forged commondir or gitdir, or an objects link is refused and reaches no grant; a grant over a home cache that would cover the state folder is refused and an env folder under the home outside the n… (T-5974).
 - Ward's credential guard now reads Grep, Glob, LS, LSP, NotebookRead, ReadMcpResourceTool and filesystem MCP tools as it reads Read, with a test holding every file-reading tool to guarded or allowlisted (T-5987).
 - The lane pilot's --json answer for one lane is now one compact line {tid, outcome, rounds, why}, so the trigger reads accepted and changes-needed answers instead of logging 'no JSON answer', and a reviewer with no verdict names its bounded reason in the error (T-6011).
 - sampo cost --cpu prints test CPU seconds per landed lane by origin (builder, land, verify, ship, probe) and what reuse saved, and the land gate and the ship skip a class already green at the same import closure and name it (T-6006).
