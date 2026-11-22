@@ -1,8 +1,11 @@
 """T-0723: the diff a reviewer reads (fm audit prep) leaves out what it needn't read in full: a change repeated in
 synced copies, the far end of long context lines, fixtures and lockfiles. Changed lines always stay whole."""
+import contextlib
+import io
 import json
 import os
 import subprocess
+import time
 
 from helpers import ForemanTestCase
 from test_hooks import HookCase
@@ -1102,3 +1105,207 @@ class BriefSize(HookCase):
             context, prompt = templates[lens]
             self.assertIn(f"## {lens}\nContext: {context}", brief)
             self.assertIn(prompt, brief, f"the {lens} lens's instructions")
+
+
+KILL = ("import os\nimport signal\n\n\ndef stop_{n}(proc):\n    pid = proc.pid\n    os.killpg(pid, signal.SIGKILL)  # TODO tidy {n}\n"
+        "\n\ndef label_{n}(proc):\n    return str(proc.pid)\n\n\ndef again_{n}(proc):\n    return label_{n}(proc)\n")
+LENS_PASS = ("LENSES: cost: one import per guard process and one ls-remote of at most 15 s per killed ship x ~100 agents, "
+             "so a few hundred ms and one network call per ship, none when nothing was killed; "
+             "error: fails closed, a parse error or an unknown remote blocks or leaves the grant spent, and the refusal "
+             "names the word it stopped on; races: a push landing between the before and after ls-remote leaves the grant "
+             "spent, a second ship at once reads the same grant and one of them is refused; test: test_x.Grant.test_y, red "
+             "on the start tree, and test_x.Grant.test_z for the refusal; input: argv words are parsed, never run, and a "
+             "$, backtick, glob or brace word is refused, so a remote's answer is only ever compared, never executed")
+
+
+class BriefSizeReal(HookCase):
+    """T-6005: the briefs of three real lanes (their shape: the lenses, the past findings per lens, the past nits, the
+    pre-audit lines, the destructive sinks, the files against the steps, the builder's lens pass; none of their text)
+    run 14,000 to 19,000 characters inline. What grows with the diff goes to ID.context.md, named by path: each brief is
+    under 8,000 characters and still carries every lens's instructions and the checklists' path."""
+
+    LENS_NAMES = ("intent", "adversary", "edge", "operator", "maintainer")
+    # the real lanes' inputs, measured in characters (no text): the pre-audit lines, the sinks, the files against the steps, the
+    # past nits, the functions changed, the builder's lens pass and the past findings summed over the lenses. A fixture must
+    # carry at least 80% of each, or it proves the limit on a lighter lane than the ones that broke it.
+    REAL = {"T-5980": {"pre": 726, "sinks": 1242, "steps": 443, "nits": 1757, "fns": 365, "lens": 793,
+                       # the past findings: PAST_FINDINGS (6) lines per lens, each cut at 200 characters, over 5 lenses (the real
+                       # lane's sections ran 9,467 characters with each lens's own instructions between them)
+                       "past": 6000},
+            "T-5982": {"pre": 778, "sinks": 1040, "steps": 577, "nits": 1914},
+            "T-5985": {"pre": 1037, "sinks": 1841, "steps": 920, "nits": 2066}}
+
+    def write(self, rel, text):
+        path = os.path.join(self.repo, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(text)
+
+    def lane(self, tier, files, big, nits, past, security, only_lenses=(), extra=()):
+        """One lane as the real ones were: `files` changed source files (each with a destructive sink and a TODO), `big`
+        files past 200 KB, `nits` earlier findings on its files, `past` earlier findings per lens. -> the prep's json."""
+        self.fm("init")
+        self.write("README.md", "base\n")
+        subprocess.run(["git", "-C", self.repo, "add", "-A"], check=True)
+        subprocess.run(["git", "-C", self.repo, "commit", "-qm", "base"], check=True)
+        tid = self.task(tier=tier, scope=["plugin/lib/sampo/mod_0.py"], steps=("parse the words", "give the grant back"))
+        project = c.find_project(self.repo)
+        with open(os.path.join(project.dir, "cards.json"), "w") as f:  # the task used a stack card
+            json.dump({tid: ["dynamodb"]}, f)
+        for n in range(files):
+            body = KILL.format(n=n) + ("import subprocess\n\nsubprocess.run(['git', 'push'])\n" if security and n == 0 else "")
+            self.write(f"plugin/lib/sampo/mod_{n}.py", body)
+        for n in range(big):
+            self.write(f"plugin/lib/sampo/big_{n}.py", "x = 1\n" * 35000)
+        self.write("plugin/tests/test_mod.py", "import unittest\nfrom unittest import mock\n\n\nclass T(unittest.TestCase):\n"
+                   "    def test_a(self):\n        with mock.patch('subprocess.Popen') as popen:\n            popen.return_value.wait.return_value = 0\n")
+        os.makedirs(os.path.join(project.dir, "research"), exist_ok=True)
+        for lens in self.LENS_NAMES:
+            lines = [f"HIGH plugin/lib/sampo/{lens}_{k}.py:{k + 10} — the {lens} weakness number {k}: " + "a long reason " * 14
+                     for k in range(past)]
+            with open(os.path.join(project.dir, "research", f"t0001-r1-{lens}.md"), "w") as f:
+                f.write("\n".join(lines) + "\n")
+        old = json.loads(self.fm("task", "new", "An earlier pass", "--type", "FIX", "--tier", "S", "--ac", "x :: true",
+                                 "--step", "x", "--json").stdout)["id"]
+        for k in range(nits):
+            self.fm("task", "finding", old, "edge", "confirmed", f"plugin/lib/sampo/mod_{k % max(files, 1)}.py: "
+                    + f"an earlier nit number {k} " + "with a long reason " * 12)
+        self.fm("task", "set", tid, "--section", "Close fields", "--text", LENS_PASS)
+        only = [x for n in only_lenses for x in ("--lens", n)]
+        return json.loads(self.fm("audit", "prep", tid, "--json", *only, *extra,
+                                  env={"SAMPO_REVIEW_DEPTH": "full"}).stdout), tid, project
+
+    def check(self, tier, files, big, nits, past, security, real=None):
+        data, tid, project = self.lane(tier, files, big, nits, past, security)
+        for key, size in (self.REAL[real] if real else {}).items():
+            self.assertGreaterEqual(data["part_chars"].get(key, 0), 0.8 * size, f"{real}: the {key} part is lighter than the real one")
+        with open(os.path.join(c.PLUGIN_ROOT, "skills", "intake", "references", "audit.md"), encoding="utf-8") as f:
+            templates = {m.group(1): (m.group(2), m.group(3)) for m in cli._LENS_TPL.finditer(f.read())}
+        ctx_path = data["context"]
+        self.assertRegex(os.path.basename(ctx_path), rf"^{tid}\.context-[0-9a-f]{{10}}\.md$")
+        with open(ctx_path, encoding="utf-8") as f:
+            ctx = f.read()
+        total = 0
+        for path in data["briefs"]:
+            with open(path, encoding="utf-8") as f:
+                brief = f.read()
+            total += len(brief)
+            self.assertLess(len(brief), 8000, f"{os.path.basename(path)} is {len(brief)} characters")
+            self.assertIn(data["review"], brief)
+            self.assertIn(data["tests"], brief)
+            self.assertIn(f"{tid}.checklists.md", brief)
+            self.assertIn(ctx_path, brief, "what moved out is named by its path")
+            for lens in [x for x in data["lenses"] if x != "self"]:
+                context, prompt = templates[lens]
+                self.assertIn(f"## {lens}\nContext: {context}", brief)
+                self.assertIn(prompt, brief, f"the {lens} lens's instructions")
+            self.assertIn("Builder's own lens pass", brief, "the builder's claims stay in the brief")
+            self.assertIn("is yours to clear", brief)
+        self.assertGreater(total + len(ctx), 14000, "the fixture is the size the real briefs were")
+        for lens in self.LENS_NAMES:
+            self.assertIn(f"## Past findings: {lens}\n- plugin/lib/sampo/{lens}_0.py", ctx.replace("HIGH ", ""), lens)
+        with open(data["brief"], encoding="utf-8") as f:
+            first = f.read()
+        self.assertIn("## Past nits", ctx)
+        # mandatory reading stays inline while it fits, else it is in the context file under its heading
+        for heading, inline in (("## Destructive sinks", "Destructive sinks (mechanical, from the diff: each added"),
+                                ("## Pre-audit", "Pre-audit (mechanical; confirm or dismiss each, then review"),
+                                ("## Files vs steps", "## Files vs steps\n")):
+            self.assertTrue(heading in ctx or inline in first, heading)
+        return data, ctx
+
+    def test_a_security_lane_with_five_lenses_and_six_past_findings_each_is_under_8000(self):  # the T-5980 shape
+        data, ctx = self.check("M", files=6, big=3, nits=12, past=6, security=True, real="T-5980")
+        self.assertEqual(data["lenses"][:1], ["intent"], data["lenses"])
+        with open(data["brief"], encoding="utf-8") as f:
+            self.assertIn(".threat.md", f.read())
+
+    def test_a_lane_with_a_self_block_and_the_reviewers_is_under_8000(self):  # the T-5982 shape
+        data, ctx = self.check("S", files=7, big=4, nits=12, past=4, security=False, real="T-5982")
+        self.assertEqual(data["lenses"][0], "self")
+        with open(data["brief"], encoding="utf-8") as f:
+            brief = f.read()
+        self.assertIn("=== self (main thread) ===", brief)
+        self.assertIn("## Session audit", brief, "the end-of-queue instruction is never cut")
+        self.assertEqual(brief.count("Context file:"), 2, "the self block and the reviewer's head each name the context file")
+
+    def test_a_lane_with_twelve_files_nine_sinks_and_eleven_pre_audit_lines_is_under_8000(self):  # the T-5985 shape
+        self.check("M", files=12, big=6, nits=12, past=6, security=False, real="T-5985")
+
+    def test_the_sinks_and_the_pre_audit_stay_inline_while_they_fit(self):
+        data, tid, project = self.lane("M", files=4, big=4, nits=12, past=4, security=False, only_lenses=("intent", "edge"))
+        with open(data["brief"], encoding="utf-8") as f:
+            brief = f.read()
+        self.assertIn("Pre-audit (mechanical; confirm or dismiss each", brief)
+        self.assertIn("Destructive sinks (mechanical, from the diff: each added", brief)
+        self.assertIn("killpg", brief, "the sink lines are mandatory reading: not behind a pointer")
+        with open(data["context"], encoding="utf-8") as f:
+            ctx = f.read()
+        self.assertNotIn("## Destructive sinks", ctx)
+        self.assertNotIn("## Pre-audit", ctx)
+        self.assertIn("## Past nits", ctx, "the history went first")
+
+    def test_a_self_only_lane_with_spills_names_the_context_file_in_its_one_block(self):  # the T-5982 and T-5985 real shape
+        data, tid, project = self.lane("S", files=30, big=4, nits=40, past=4, security=False, only_lenses=("self",))
+        self.assertEqual(data["lenses"], ["self"])
+        with open(data["brief"], encoding="utf-8") as f:
+            brief = f.read()
+        self.assertNotIn("=== review", brief)
+        self.assertIn(data["context"], brief, "a reader of the self block alone can find what moved")
+        self.assertLess(len(brief), 8000)
+        with open(data["context"], encoding="utf-8") as f:
+            self.assertIn("## Past nits", f.read())
+
+    def test_a_failed_sink_scan_still_reaches_every_brief(self):
+        from unittest import mock
+
+        from sampo import sinks
+        data, tid, project = self.lane("M", files=7, big=4, nits=12, past=4, security=False)
+        old = os.getcwd()
+        os.chdir(self.repo)
+        try:
+            with mock.patch.dict(os.environ, {"FOREMAN_HOME": self.home, "FOREMAN_INHIBITED": "1", "SAMPO_REVIEW_DEPTH": "full"}), \
+                    mock.patch.object(sinks, "scan_pairs", side_effect=ValueError("boom")), \
+                    contextlib.redirect_stdout(io.StringIO()) as out:
+                cli.main(["audit", "prep", tid, "--json"])
+        finally:
+            os.chdir(old)
+        data = json.loads(out.getvalue())
+        self.assertEqual(data["sinks_error"], "ValueError")
+        for path in data["briefs"]:
+            with open(path, encoding="utf-8") as f:
+                brief = f.read()
+            self.assertIn("the scan failed (ValueError)", brief)
+            self.assertIn("grep the diff for kill", brief)
+            self.assertLess(len(brief), 8000)
+
+    def test_a_brief_still_over_the_limit_after_the_spill_says_so_in_the_output(self):
+        data, tid, project = self.lane("M", files=2, big=0, nits=1, past=1, security=False, only_lenses=("intent", "edge"),
+                                       extra=("--note", "n" * 9000))
+        self.assertGreater(data["brief_chars"], cli.BRIEF_MAX)
+        out = self.fm("audit", "prep", tid, "--note", "n" * 9000, env={"SAMPO_REVIEW_DEPTH": "full"}).stdout
+        self.assertIn("Warning: the longest brief is", out)
+
+    def test_a_later_prep_never_removes_the_context_file_an_earlier_brief_names(self):
+        data, tid, project = self.lane("M", files=7, big=4, nits=12, past=4, security=False)
+        first = data["context"]
+        self.write("plugin/lib/sampo/mod_new.py", KILL.format(n=99))  # another diff: another context file
+        again = json.loads(self.fm("audit", "prep", tid, "--json", env={"SAMPO_REVIEW_DEPTH": "full"}).stdout)
+        self.assertNotEqual(again["context"], first, "named by its text")
+        self.assertTrue(os.path.exists(first), "the first brief still names it")
+        self.assertTrue(os.path.exists(again["context"]))
+        old = time.time() - 3 * 86400
+        os.utime(first, (old, old))  # a day old and not named by the newest prep: pruned by the next one
+        json.loads(self.fm("audit", "prep", tid, "--json", env={"SAMPO_REVIEW_DEPTH": "full"}).stdout)
+        self.assertFalse(os.path.exists(first))
+        self.assertTrue(os.path.exists(again["context"]))
+
+    def test_a_small_lane_keeps_everything_inline_and_leaves_no_context_file(self):
+        data, tid, project = self.lane("M", files=1, big=0, nits=1, past=1, security=False, only_lenses=("intent", "edge"))
+        with open(data["brief"], encoding="utf-8") as f:
+            brief = f.read()
+        self.assertLess(len(brief), cli.BRIEF_MAX)
+        self.assertIn("Past nits on these files (earlier reviews found these here", brief)
+        self.assertIn("Destructive sinks (mechanical, from the diff: each added", brief)
+        self.assertEqual(data["context"], "")
+        self.assertEqual([x for x in os.listdir(os.path.join(project.dir, "audits")) if ".context" in x], [])

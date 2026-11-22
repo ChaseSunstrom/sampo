@@ -305,6 +305,62 @@ class AuditRun(HookCase):
         self.assertEqual([(s, at) for s, at, _ in found], [("HIGH", "a.py:3"), ("LOW", "b.py:1")])
         self.assertEqual(auditrun.parse("intent", edge_reply), (None, []), "a reply with no section for its lens")
 
+    def spilled_lane(self):
+        """A lane whose brief spills to ID.context-*.md: twelve changed files each with a kill, earlier findings per lens."""
+        for n in range(12):
+            with open(os.path.join(self.repo, f"mod_{n}.py"), "w") as f:
+                f.write(f"import os\n\n\ndef stop_{n}(proc):\n    os.killpg(proc.pid, 9)  # TODO tidy {n}\n")
+        os.makedirs(os.path.join(self.project().dir, "research"), exist_ok=True)
+        for lens in ("intent", "adversary", "edge"):
+            with open(os.path.join(self.project().dir, "research", f"t0001-r1-{lens}.md"), "w") as f:
+                f.write("\n".join(f"HIGH mod_{k}.py:{k + 3} — the {lens} weakness {k}: " + "a long reason " * 12
+                                  for k in range(6)) + "\n")
+        for k in range(12):
+            self.fm("task", "finding", self.tid, "edge", "confirmed", f"mod_{k}.py: an earlier nit {k} " + "with a long reason " * 12)
+
+    def test_a_spilled_briefs_context_and_checklists_are_in_each_reviewers_prompt(self):  # T-6005 review item 2
+        """claude -p runs in an empty folder with --add-dir <lane> and never reads audits/: what the brief names by path
+        there (the context file, the checklists) is appended to the prompt, bounded and named; --add-dir stays the lane."""
+        self.spilled_lane()
+        self.run_audit(env={"SAMPO_REVIEW_DEPTH": "full"})
+        audits = os.path.join(self.project().dir, "audits")
+        (ctx,) = [x for x in os.listdir(audits) if x.startswith(f"{self.tid}.context-")]
+        with open(os.path.join(audits, ctx), encoding="utf-8") as f:
+            context = f.read()
+        self.assertIn("## Destructive sinks", context, "the fixture spilled its sinks")
+        with open(os.path.join(audits, f"{self.tid}.checklists.md"), encoding="utf-8") as f:
+            checklists = f.read()
+        calls = self.calls()
+        self.assertEqual(len(calls), 5)
+        for call in calls:
+            prompt = call["stdin"]
+            self.assertIn(os.path.join(audits, ctx), prompt, "the context file is named")
+            self.assertIn("os.killpg(proc.pid, 9)", prompt, "the spilled sinks are in the prompt")
+            self.assertIn("## Past findings: edge", prompt, "the spilled past findings are in the prompt")
+            self.assertIn(checklists.strip().splitlines()[0], prompt, "the checklist text is in the prompt")
+            a = call["args"]
+            self.assertEqual([x for x in a if x.startswith(audits)], [], "audits/ is never an --add-dir")
+            self.assertEqual(a.count("--add-dir"), 1)
+            self.assertTrue(prompt.rstrip().endswith("or `## " + call["lens"] + ": changes needed`."), "the closing line stays last")
+            self.assertLess(prompt.index("=== end of"), prompt.index("Review only the lens:"), "the named files come before the lens line")
+
+    def test_a_file_the_brief_names_is_inlined_to_a_bound_and_only_from_this_tasks_audits_folder(self):  # T-6005 review item 2
+        self.spilled_lane()
+        audits = os.path.join(self.project().dir, "audits")
+        self.run_audit("--lens", "edge", env={"SAMPO_REVIEW_DEPTH": "full"})
+        with open(os.path.join(audits, f"{self.tid}.checklists.md"), "a", encoding="utf-8") as f:
+            f.write("\n" + "padding line\n" * 6000)  # prep rewrites it on the next run; bound what a file may add
+        outside = os.path.join(self.tmp, "secret.md")
+        with open(outside, "w") as f:
+            f.write("TOP SECRET NOT A REVIEW FILE\n")
+        from sampo import auditrun
+        brief = f"Checklists: {os.path.join(audits, self.tid + '.checklists.md')}\nTests: {outside}\n"
+        text = auditrun.named_files(self.project(), self.tid, brief)
+        self.assertIn("padding line", text)
+        self.assertIn("cut at", text, "a file over its bound says it was cut")
+        self.assertLess(len(text), 60000)
+        self.assertNotIn("TOP SECRET", text, "a path outside this task's audits folder is never read")
+
     def test_a_ui_diff_adds_the_design_reviewer(self):  # T-1501
         with open(os.path.join(self.repo, "page.html"), "w") as f:
             f.write("<button>Go</button>\n")
