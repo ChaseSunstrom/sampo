@@ -35,10 +35,12 @@ BACKSTOPS = [("bench.py", "_turn"), ("kalevala.py", "session_argv"), ("kalevala.
 
 
 def claude_p_argv(node):
-    """True for a list or tuple literal that starts `claude -p`: a headless model call."""
+    """True for a list or tuple literal that starts `claude -p`: a headless model call. T-5706: a starred run of flags
+    between them (`["claude", *READ_ONLY_FLAGS, "-p", ...]`) does not hide it."""
     if not isinstance(node, (ast.List, ast.Tuple)) or len(node.elts) < 2:
         return False
-    first, second = node.elts[0], node.elts[1]
+    plain = [e for e in node.elts[1:] if not isinstance(e, ast.Starred)]
+    first, second = node.elts[0], (plain[0] if plain else node.elts[1])
     return (isinstance(first, ast.Constant) and first.value == "claude"
             and isinstance(second, ast.Constant) and second.value == "-p")
 

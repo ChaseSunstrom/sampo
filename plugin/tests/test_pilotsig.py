@@ -26,6 +26,14 @@ def put(root, rel, text):
     return path
 
 
+def headless_env(lane, main=None):
+    """The environment _claude_env gives a pilot's claude: the marker, the lane and the project (main checkout) it belongs to."""
+    from sampo import core
+    lane = os.path.realpath(lane)
+    return {"FOREMAN_PILOT_HEADLESS": "1", "FOREMAN_PILOT_LANE": lane,
+            "FOREMAN_PILOT_MAIN": main or os.path.realpath(core._gitfile_main(lane) or "/")}
+
+
 class LaneCase(ForemanTestCase):
     """A repo with a plugin, and a lane worktree under <repo>/.claude/worktrees (a Claude config-style folder)."""
     def setUp(self):
@@ -82,8 +90,10 @@ class ConflictEdit(LaneCase):
         real = subprocess.Popen
         proc = mock.Mock(pid=4242)
         proc.wait.return_value = 0
+        from sampo import ideas
         with mock.patch.object(pilotsig, "_note_claude", return_value=True), \
-                mock.patch.object(pilotsig, "_kill_group"), \
+                mock.patch.object(ideas, "_unsafe_ancestor", return_value=""), \
+                mock.patch.object(pilotsig, "_kill_group"), mock.patch.object(os, "killpg"), mock.patch.object(os, "kill"), \
                 mock.patch.object(pilotsig, "__file__", self.own), \
                 mock.patch.object(pilotsig.subprocess, "Popen",  # the claude is a stub; the git calls are real
                                   side_effect=lambda argv, **kw: proc if "--agent" in argv else real(argv, **kw)) as popen:
@@ -100,7 +110,7 @@ class ConflictEdit(LaneCase):
         def said(path):
             return self.hook("PreToolUse", {"tool_name": "Edit", "cwd": self.lane,
                                             "tool_input": {"file_path": path, "old_string": "a", "new_string": "b"}},
-                             env={"FOREMAN_PILOT_HEADLESS": "1", "FOREMAN_PILOT_LANE": os.path.realpath(self.lane)}).stdout
+                             env=headless_env(self.lane)).stdout
         self.conflict()
         self.assertNotIn("blocked", said(lane_file), "the resolver's own lane's conflicted file")
         self.assertIn("blocked confine", said(main_file), "the same edit outside the lane")
@@ -123,7 +133,7 @@ class HeadlessEdit(LaneCase):
                 mock.patch.object(ideas, "config_dir_problem", return_value=""), \
                 mock.patch.object(pilotsig, "_guard_denies", return_value=guard), \
                 mock.patch.object(pilotsig, "_note_claude", return_value=True), \
-                mock.patch.object(pilotsig, "_kill_group"), \
+                mock.patch.object(pilotsig, "_kill_group"), mock.patch.object(os, "killpg"), mock.patch.object(os, "kill"), \
                 mock.patch.object(pilotsig.subprocess, "Popen",
                                   side_effect=lambda argv, **kw: proc if "--agent" in argv else real(argv, **kw)) as popen:
             pilotsig._headless(None, "T-0001", lane, "sampo:fm-resolver", "go", 30.0)
@@ -135,7 +145,7 @@ class HeadlessEdit(LaneCase):
     def said(self, tool, cwd=None, env="lane", **tool_input):
         """The PreToolUse hook's answer to `tool` from a bypass main session of the pilot: its environment as _claude_env
         sets it (env "lane": the marker and the lane; "marker": the marker alone; a dict: exactly that)."""
-        e = {"lane": {"FOREMAN_PILOT_HEADLESS": "1", "FOREMAN_PILOT_LANE": os.path.realpath(self.lane)},
+        e = {"lane": headless_env(self.lane),
              "marker": {"FOREMAN_PILOT_HEADLESS": "1"}}.get(env, env) if isinstance(env, str) else env
         return self.hook("PreToolUse", {"tool_name": tool, "cwd": cwd or self.lane, "permission_mode": "bypassPermissions",
                                         "tool_input": tool_input}, env=e).stdout
@@ -189,7 +199,7 @@ class HeadlessEdit(LaneCase):
     def test_a_confine_root_survives_main_worktree_failing_and_find_project_raising(self):
         from sampo import core, hooks
         lane = os.path.realpath(self.lane)
-        env = {"FOREMAN_PILOT_HEADLESS": "1", "FOREMAN_PILOT_LANE": lane}
+        env = headless_env(lane)
         with mock.patch.dict(os.environ, env):
             for failing in (lambda gr: None, mock.Mock(side_effect=OSError("git timed out"))):
                 with mock.patch.object(core, "main_worktree", failing):
@@ -212,7 +222,7 @@ class HeadlessEdit(LaneCase):
         lane = os.path.realpath(self.lane)
         scratch = os.path.join(self.tmp, "scratch-cwd")
         os.makedirs(scratch)
-        env = {"FOREMAN_PILOT_HEADLESS": "1", "FOREMAN_PILOT_LANE": lane}
+        env = headless_env(lane)
 
         def ctx_at(cwd):
             ctx, p, act = hooks._guard_ctx({"cwd": cwd, "tool_name": "Bash", "tool_input": {}}, fmguard)
@@ -235,6 +245,61 @@ class HeadlessEdit(LaneCase):
         for path in self.outside_writes().values():
             self.assertIn("confine", fmguard.classify_write(path, ctx))
         self.assertNotIn("confine", fmguard.classify_write(os.path.join(lane, "new.py"), ctx))
+
+    def other_projects_lane(self):
+        """A second repo with a linked worktree: another project's lane, as a path and its main checkout."""
+        other = os.path.join(self.tmp, "other-project")
+        os.makedirs(other)
+        git(other, "init", "-q")
+        put(other, "a.txt", "a\n")
+        git(other, "add", "-A")
+        git(other, "-c", "user.email=x@x", "-c", "user.name=x", "commit", "-qm", "a")
+        lane = os.path.join(self.tmp, "other-lane")
+        git(other, "worktree", "add", "-q", "-b", "other-lane", lane)
+        return os.path.realpath(lane), os.path.realpath(other)
+
+    def test_a_child_that_names_another_projects_lane_keeps_its_own_project(self):
+        """T-5706 final round (2): FOREMAN_PILOT_LANE alone must not move the guard to another project: the lane is accepted
+        only when it belongs to the main checkout the pilot pinned (FOREMAN_PILOT_MAIN)."""
+        import fmguard
+
+        from sampo import core, hooks
+        theirs, their_main = self.other_projects_lane()
+        mine = os.path.realpath(self.lane)
+        env = headless_env(mine)
+        env["FOREMAN_PILOT_LANE"] = theirs  # the child's own export: its lane is another project's worktree
+        scratch = os.path.join(self.tmp, "scratch-cwd")
+        os.makedirs(scratch)
+        with mock.patch.dict(os.environ, env):
+            self.assertIsNone(core.headless_lane(), "another project's lane is no lane of this pilot's")
+            self.assertEqual(core._headless_confine(), (core.NO_LANE, "/"), "nothing is inside it: every path is refused")
+            self.assertEqual(hooks._project_cwd({"cwd": scratch}), hooks._cwd({"cwd": scratch}),
+                             "the project is looked up from the payload's cwd")
+            ctx, p, act = hooks._guard_ctx({"cwd": scratch, "tool_name": "Write", "tool_input": {}}, fmguard)
+            self.assertNotEqual(os.path.realpath(getattr(p, "root", "") or ""), their_main, "never the other project")
+            self.assertNotEqual(ctx.project_root, theirs)
+        for path in (os.path.join(theirs, "n.py"), os.path.join(mine, "n.py")):
+            for tool_input in ({"file_path": path, "content": "x"},):
+                self.assertIn("blocked", self.said("Write", cwd=scratch, env=env, **tool_input), path)
+        with mock.patch.dict(os.environ, {k: v for k, v in env.items() if k != "FOREMAN_PILOT_MAIN"}):
+            self.assertIsNone(core.headless_lane(), "no pin is no lane")
+        with mock.patch.dict(os.environ, headless_env(mine)):
+            self.assertEqual(core.headless_lane(), mine, "its own lane, with its own pin, is the lane")
+        with mock.patch.dict(os.environ, dict(headless_env(mine), FOREMAN_PILOT_MAIN=their_main)):
+            self.assertIsNone(core.headless_lane(), "a pin that is not this lane's project")
+
+    def test_the_pilot_pins_its_own_project_whatever_it_inherited(self):
+        theirs, their_main = self.other_projects_lane()
+        with mock.patch.dict(os.environ, {"FOREMAN_PILOT_MAIN": their_main, "FOREMAN_PILOT_LANE": theirs}):
+            env = pilotsig._claude_env(self.lane, "sampo:fm-resolver")
+        self.assertEqual(env["FOREMAN_PILOT_MAIN"], os.path.realpath(self.repo))
+        self.assertEqual(env["FOREMAN_PILOT_LANE"], os.path.realpath(self.lane))
+        with mock.patch.dict(os.environ, {"FOREMAN_PILOT_MAIN": their_main}):
+            self.assertNotIn("FOREMAN_PILOT_MAIN", pilotsig._claude_env(None), "no lane, no pin")
+
+    def test_a_command_cannot_set_the_pinned_project_either(self):
+        for text in ("FOREMAN_PILOT_MAIN=/x sampo status", "export FOREMAN_PILOT_MAIN=/x"):
+            self.assertIn('"permissionDecision": "deny"', self.said("Bash", command=text), text)
 
     def test_a_command_cannot_set_the_lane_the_run_is_confined_to(self):
         for text in ("FOREMAN_PILOT_LANE=/ sampo status", "env FOREMAN_PILOT_LANE=/ sampo lane list", "export FOREMAN_PILOT_LANE=/"):
@@ -415,7 +480,7 @@ class LaneConfig(LaneCase):
                 mock.patch.object(ideas, "_unsafe_ancestor", return_value=""), \
                 mock.patch.object(pilotsig, "_guard_denies", return_value=True), \
                 mock.patch.object(pilotsig, "_note_claude", return_value=True), \
-                mock.patch.object(pilotsig, "_kill_group"), \
+                mock.patch.object(pilotsig, "_kill_group"), mock.patch.object(os, "killpg"), mock.patch.object(os, "kill"), \
                 mock.patch.object(pilotsig.subprocess, "Popen", side_effect=fake) as popen:  # the test's tmp is under /tmp: its chain is not ours
             pilotsig._headless(None, "T-0001", self.lane, "sampo:fm-resolver", "go", 30.0)
         run = next(x for x in popen.call_args_list if "--agent" in x[0][0])

@@ -89,7 +89,7 @@ def _quiet():
 def _lite(raw):
     """T-0963: fm posture lite marks a project where only the guard's hook runs; any doubt reads as full."""
     try:
-        p = c.find_project(_cwd(json.loads(raw) if raw.strip() else {}))
+        p = c.find_project(_project_cwd(json.loads(raw) if raw.strip() else {}))  # T-5706: a pilot's scratch cwd finds its lane's project
         return bool(p) and c.read_meta(p).get("posture") == "lite"
     except Exception:
         return False
@@ -6433,7 +6433,7 @@ def _lane_lock_cleared(pl):
         rows = lanes.clear_on_lock_failure(_cwd(pl), pl.get("error"))
         done = [r for r in rows if r["state"] == "removed"]
         if done:
-            p = c.find_project(c.main_worktree(c.git_root(_cwd(pl))) or _cwd(pl))
+            p = c.find_project(c.main_worktree(c.git_root(_cwd(pl))) or _project_cwd(pl))
             if p:
                 c.log_event(p, "index_lock_removed", None, {"why": "; ".join(lanes.git_lock_lines(done))[:300]},
                             session=pl.get("session_id"))
@@ -8244,7 +8244,7 @@ def _worktree_agent(pl):
     try:
         cwd = _cwd(pl)
         root = c.git_root(cwd) if cwd else None
-        return bool(root) and os.path.isfile(os.path.join(root, ".git")) and c.find_project(cwd) is not None
+        return bool(root) and os.path.isfile(os.path.join(root, ".git")) and c.find_project(_project_cwd(pl)) is not None
     except Exception:
         log_error("SubagentStart", _tb())
         return False

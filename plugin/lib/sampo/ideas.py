@@ -103,12 +103,42 @@ def _tail(s, n):
 READ_ONLY_FLAGS = ("--disable-slash-commands",)  # T-5706 round 6: no skill or slash command from any folder (an --add-dir lane's too)
 
 
+CLAUDE_STUB_ENV = "FOREMAN_PILOT_CLAUDE"  # pilotsig.CLAUDE_ENV: a test's stand-in for claude, one file under the state dir
+
+
+def _is_claude(word):
+    """Whether one argv word names the claude program: a path whose last part is `claude`, or the file FOREMAN_PILOT_CLAUDE
+    names (pilotsig.claude_cmd's output, a stub of any name, compared by real path)."""
+    word = str(word)
+    if os.path.basename(word) == "claude":
+        return True
+    stub = os.environ.get(CLAUDE_STUB_ENV)
+    return bool(stub) and os.path.realpath(word) == os.path.realpath(stub)
+
+
+def claude_at(argv):
+    """The index of the claude program in a launch argv, or None when it is not one: argv[0], or the word after an `env`
+    wrapper (`env claude ...`, `/usr/bin/env -i FOO=1 claude ...`: its options and NAME=value words are skipped). Anything
+    else (a shell line, a runner that merely names claude later in its words) is not found: it is not a direct launch."""
+    words = [str(a) for a in argv]
+    if not words:
+        return None
+    i = 0
+    if os.path.basename(words[0]) == "env":
+        i = 1
+        while i < len(words) and (words[i].startswith("-") or "=" in words[i].split(os.sep)[0]):
+            i += 2 if words[i] in ("-u", "--unset", "-C", "--chdir", "-S") else 1
+    return i if i < len(words) and _is_claude(words[i]) else None
+
+
 def harden(argv):
-    """argv with READ_ONLY_FLAGS after `claude -p`'s name when it is a claude launch and lacks them: whatever built a
-    read-only child's argv, the launcher adds what keeps a lane's skills and commands out. Any other argv is returned as is."""
+    """argv with READ_ONLY_FLAGS after the claude program's name when it is a claude launch (claude_at: bare, by path,
+    behind `env`, or the stub claude_cmd names) and lacks them: whatever built a read-only child's argv, the launcher adds
+    what keeps a lane's skills and commands out. Any other argv is returned as is."""
     argv = list(argv)
-    if argv and os.path.basename(str(argv[0])) == "claude":
-        argv[1:1] = [f for f in READ_ONLY_FLAGS if f not in argv]
+    at = claude_at(argv)
+    if at is not None:
+        argv[at + 1:at + 1] = [f for f in READ_ONLY_FLAGS if f not in argv]
     return argv
 
 

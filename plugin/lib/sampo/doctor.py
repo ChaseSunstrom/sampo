@@ -1151,6 +1151,28 @@ def check_risk_off(p):
         Result("risk budget", "PASS", "the risk budget is on")
 
 
+def check_child_launch():
+    """T-5706 final round (4): whether Sampo's headless children (the audit reviewers, research, the lane pilot, ideas) can
+    start: a folder of ours with no swappable parent to run them in (ideas.safe_root), a CLAUDE_CONFIG_DIR that is ours when
+    set, and no CLAUDE.md, .claude or .mcp.json in that folder's parents that someone else wrote. Each refusal names the
+    path that caused it; a WARN here is a run that would refuse to start, not a broken install."""
+    from sampo import ideas
+    try:
+        root = ideas.safe_root()
+    except OSError as e:
+        return Result("child launch", "WARN", f"{e}: audit run, research and the lane pilot refuse to start; make that "
+                                              "folder ours and unwritable by others, or set XDG_RUNTIME_DIR to one that is")
+    bad = ideas.config_dir_problem()
+    if bad:
+        return Result("child launch", "WARN", f"CLAUDE_CONFIG_DIR {bad} is not a folder of ours with a safe chain above "
+                                              "it: headless children refuse to start")
+    planted = ideas._memory_in_chain(root)
+    if planted:
+        return Result("child launch", "WARN", f"{planted} would load as configuration in every headless child's folder "
+                                              f"(under {root}): remove it, or it is not yours to leave there")
+    return Result("child launch", "PASS", f"children run under {root}")
+
+
 def check_pause():
     """T-4190: a pause is on: who set it and who lifts it (the user's stays theirs; a session's own `sampo pause off`)."""
     line = c.pause_line()
@@ -3576,6 +3598,7 @@ def run_all(full=False, accept_supply=False):
     results.append(check_night_timers(here))
     results.append(check_risk_off(here))
     results.append(check_pause())
+    results.append(check_child_launch())
     results.append(check_private_terms())
     results.append(check_anergy())
     results.append(check_predictions(here))

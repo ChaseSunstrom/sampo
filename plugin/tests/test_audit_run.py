@@ -234,6 +234,32 @@ class AuditRun(HookCase):
         self.assertIn(real, call["stdin"], "the brief names the lane's absolute path")
         self.assertFalse(os.path.exists(os.path.join(lane, "pwned")), "no lane hook ran")
 
+    def test_the_reviewer_reads_nothing_outside_its_folder_and_the_lane(self):  # T-5706 final round (3)
+        """The reviewer has Read, Grep and Glob, a scratch cwd, no project and no HEADLESS_ENV. (a) its permission mode is
+        dontAsk, set by flag so the user's defaultMode cannot widen it: a read outside the working folders needs an approval
+        nobody gives; (b) the Ward's credential-read rule (its hook matches Read alone) still refuses a Read of a
+        credential from such a cwd with no project; (c) Grep and Glob are not the Ward's, so --disallowedTools carries a
+        Read deny rule (which Claude Code applies to Grep and Glob) for every credential folder and file the Ward names."""
+        from sampo import hooks
+        self.run_audit("--lens", "edge")
+        (call,) = self.calls()
+        a = call["args"]
+        self.assertEqual(a[a.index("--permission-mode") + 1], "dontAsk")
+        for bad in ("--allowedTools", "--allowed-tools", "--dangerously-skip-permissions"):
+            self.assertNotIn(bad, a)
+        denied = a[a.index("--disallowedTools") + 1:]
+        denied = denied[:next((i for i, x in enumerate(denied) if x.startswith("--")), len(denied))]
+        want = [f"Read(~/{d}/**)" for d in hooks._CRED_DIRS] + [f"Read(~/{f})" for f in hooks._CRED_FILES]
+        self.assertEqual(denied, want)
+        scratch = os.path.join(self.tmp, "reviewer-cwd")
+        os.makedirs(scratch)
+        home = os.path.expanduser("~")
+        for rel in (hooks._CRED_DIRS[0] + "/id_rsa", hooks._CRED_DIRS[1] + "/credentials", hooks._CRED_FILES[4], hooks._CRED_FILES[0]):
+            with self.subTest(read=rel):
+                out = self.hook("PreToolUse", {"tool_name": "Read", "cwd": scratch,
+                                               "tool_input": {"file_path": os.path.join(home, rel)}}).stdout
+                self.assertIn('"permissionDecision": "deny"', out, "the guard refuses a credential read with no project")
+
     def test_each_run_gets_a_fresh_private_folder_that_is_removed(self):  # T-5706 rounds 5 and 6
         from sampo import ideas
         self.run_audit("--lens", "edge")

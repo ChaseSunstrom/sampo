@@ -3423,14 +3423,24 @@ PILOT_LANE_ENV = "FOREMAN_PILOT_LANE"  # T-5889: and names the lane (its real pa
 NO_LANE = "/.sampo-pilot-lane-unresolved"  # the confine root when the pilot's lane can't be read: with main "/", every path is outside
 
 
+PILOT_MAIN_ENV = "FOREMAN_PILOT_MAIN"  # T-5706 final round: and the main checkout that lane belongs to, pinned by the pilot at the start
+
+
 def headless_lane():
     """T-5889 round 2: the real path of the lane the pilot's headless claude was started in (PILOT_LANE_ENV), or None when it
-    is unset, empty, relative, not a folder, or not a linked worktree's root (a `.git` file)."""
+    is unset, empty, relative, not a folder, or not a linked worktree's root (a `.git` file). T-5706 final round: and only
+    a lane of the project the pilot pinned (PILOT_MAIN_ENV, the main checkout its own lane belongs to): a child that points
+    FOREMAN_PILOT_LANE at another project's worktree finds no lane (the refuse-everything pair), not that project, and no
+    pin is no lane. The lane's owner is read from its `.git` file (no git process)."""
     raw = os.environ.get(PILOT_LANE_ENV) or ""
-    if not raw or not os.path.isabs(raw):
+    pin = os.environ.get(PILOT_MAIN_ENV) or ""
+    if not raw or not os.path.isabs(raw) or not pin or not os.path.isabs(pin):
         return None
     lane = os.path.realpath(raw)
-    return lane if os.path.isdir(lane) and os.path.isfile(os.path.join(lane, ".git")) else None
+    if not (os.path.isdir(lane) and os.path.isfile(os.path.join(lane, ".git"))):
+        return None
+    own = _gitfile_main(lane)
+    return lane if own and os.path.realpath(own) == os.path.realpath(pin) else None
 
 
 def _gitfile_main(lane):

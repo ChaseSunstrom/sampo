@@ -578,6 +578,10 @@ def _claude_env(lane=None, agent=""):
     ideas.sanitize_env(env, read_only=False)  # T-5970, T-5706 round 6: the switch that loads CLAUDE.md from an --add-dir folder
     env[c.HEADLESS_ENV] = "1"
     env[c.PILOT_LANE_ENV] = os.path.realpath(lane) if lane else ""  # T-5889: the guard's confine root, whatever the cwd; never the pilot's own
+    env.pop(c.PILOT_MAIN_ENV, None)  # the project it belongs to, read from the lane's .git file: core.headless_lane takes no lane of another
+    own = c._gitfile_main(os.path.realpath(lane)) if lane else None
+    if own:
+        env[c.PILOT_MAIN_ENV] = os.path.realpath(own)
     if agent in c.ns_names("fm-resolver") or _unmerged(lane):
         env["SAMPO_LANE_CHILD"] = "1"
     return env
