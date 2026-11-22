@@ -78,6 +78,11 @@ def _files(p):
     return [os.path.join(recover._dir(p), n) for n in names if n.startswith(f"{KIND}-") and n.endswith(".json")]
 
 
+def _began_before_boot(e):
+    up, start = recover.btime(), e.get("start")
+    return bool(up) and isinstance(start, (int, float)) and start < up
+
+
 def state(e, now_boot=None):
     """running | ended | gone (its pid is dead, or the machine rebooted since it was registered, without an end)."""
     if e.get("end"):
@@ -85,6 +90,8 @@ def state(e, now_boot=None):
     now_boot = recover.boot() if now_boot is None else now_boot
     if now_boot and e.get("boot") and e["boot"] != now_boot:
         return "gone"
+    if not now_boot and _began_before_boot(e):
+        return "gone"  # no boot id here: the boot time is the only sign of a reboot
     pid = e.get("pid")
     return "gone" if isinstance(pid, int) and not _alive(pid) else "running"
 

@@ -84,6 +84,31 @@ class Jobsreg(ForemanTestCase):
         by = {r["id"]: r["state"] for r in jobsreg.rows(self.p)}
         self.assertEqual((by[gone["id"]], by[free["id"]]), ("gone", "running"))
 
+    def age(self, jid, seconds):
+        """Rewrite a registered entry as if it had started `seconds` ago."""
+        path = os.path.join(recover._dir(self.p), f"manual-{jid}.json")
+        with open(path, encoding="utf-8") as fh:
+            e = json.load(fh)
+        e["start"] = time.time() - seconds
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(e, fh)
+
+    def test_with_no_boot_id_a_pidless_job_from_before_the_boot_reads_gone(self):
+        os.remove(self.boot)  # no boot id here: the boot time (btime, 100 s ago in setUp) is the reboot marker
+        old = jobsreg.add(self.p, "old", "w")
+        self.age(old["id"], 200)
+        new = jobsreg.add(self.p, "new", "w")
+        by = {r["id"]: r["state"] for r in jobsreg.rows(self.p)}
+        self.assertEqual((by[old["id"]], by[new["id"]]), ("gone", "running"))
+
+    def test_with_no_boot_id_pidless_jobs_from_before_the_boot_do_not_fill_the_cap(self):
+        os.remove(self.boot)
+        with mock.patch.object(jobsreg, "MAX_LIVE", 2):
+            for name in ("a", "b"):
+                self.age(jobsreg.add(self.p, name, "w")["id"], 200)
+            jobsreg.add(self.p, "c", "w")  # refused if the two from before the boot still count as running
+        self.assertEqual(sorted(r["state"] for r in jobsreg.rows(self.p)), ["gone", "gone", "running"])
+
     def test_end_records_the_result_and_a_second_end_keeps_the_first(self):
         e = jobsreg.add(self.p, "build", "w", pid=os.getpid())
         done = jobsreg.end(self.p, e["id"][:4], "built in 90s")
@@ -168,7 +193,7 @@ class Jobsreg(ForemanTestCase):
         self.assertEqual((out["name"], out["why"], out["kind"]), ("nightly import", "feeds the board", "manual"))
         listed = json.loads(self.fm("jobs", "--json").stdout)["jobs"]
         self.assertEqual([(r["id"], r["state"]) for r in listed], [(out["id"], "running")])
-        self.assertIn("feeds the board", self.fm("jobs").stdout)
+        self.assertRegex(self.fm("jobs").stdout, rf"(?m)^{out['id']}  running +\d+s  nightly import · feeds the board pid {os.getpid()}$")
         self.assertIn("Ended", self.fm("jobs", "end", out["id"], "all", "good").stdout)
         (r,) = json.loads(self.fm("jobs", "ls", "--json").stdout)["jobs"]
         self.assertEqual((r["state"], r["result"]), ("ended", "all good"))
