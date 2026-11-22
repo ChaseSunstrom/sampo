@@ -4411,6 +4411,11 @@ class Run:
                                 f"fm code --resume {self.tid} carries on")
             self.check_cap(name)
             self.turns += 1
+            try:  # T-5769: the keeper's decision on record in this run's journal; never a reason to stop a run
+                from sampo import keeper
+                keeper.code_tick(self, name, msgs, profile)
+            except Exception:
+                pass
             sent = fit(self, profile, self.sight(name, msgs, profile))
             self.cut = {x.get("content") for x, y in zip(msgs, sent)  # T-4177: what this send no longer carries whole
                         if _is_result(x) and str(y.get("content")).startswith("(older result cut")}

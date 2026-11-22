@@ -422,6 +422,78 @@ class OutputsReread(HookCase):
         self.assertEqual({k["kind"]: k["reread_tokens"] for k in got["parts"]}["main tool input"], round(tool_in / 4))
 
 
+class LeadCacheRead(HookCase):
+    """T-5769: `sampo cost --lead`: the lead's cache-read tokens per turn (median), the 24 h before and the 24 h after the
+    keeper's first compact. The lead is the main thread: a subagent's turns are left out."""
+
+    def _rig(self, first_ago_h):
+        self.fm("init")
+        cfg = os.path.join(self.tmp, "cfg")
+        folder = os.path.join(cfg, "projects", "".join(ch if ch.isalnum() else "-" for ch in self.repo))
+        os.makedirs(folder)
+        now = datetime.datetime.now(datetime.timezone.utc)
+        self.now, self.cfg, self.folder = now, cfg, folder
+        if first_ago_h is not None:
+            os.makedirs(os.path.join(self.home, "state"), exist_ok=True)
+            with open(os.path.join(self.home, "state", "keeper.json"), "w") as f:
+                json.dump({"first": (now - datetime.timedelta(hours=first_ago_h)).timestamp(), "panes": {}}, f)
+
+    def _turns(self, name, hours_ago_and_reads, sidechain=False):
+        rows = []
+        for i, (h, reads, *made) in enumerate(hours_ago_and_reads):
+            ts = (self.now - datetime.timedelta(hours=h)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+            row = {"type": "assistant", "timestamp": ts, "sessionId": "lead-1", "message": {
+                "id": f"{name}-{i}", "usage": {"input_tokens": 5, "cache_read_input_tokens": reads, "output_tokens": 9,
+                                               "cache_creation_input_tokens": made[0] if made else 0},
+                "content": []}}
+            rows.append(row)
+        where = os.path.join(self.folder, "lead-1", "subagents") if sidechain else self.folder
+        os.makedirs(where, exist_ok=True)
+        with open(os.path.join(where, name + ".jsonl"), "w") as f:
+            f.write("\n".join(json.dumps(r) for r in rows) + "\n")
+
+    def test_lead_cache_read_median_before_and_after_the_first_compact(self):
+        self._rig(first_ago_h=6)
+        self._turns("lead-1", [(20, 300000, 4000), (12, 280000, 6000), (10, 320000, 5000),
+                               (3, 90000, 30000), (2, 110000, 10000), (1, 100000, 20000)])
+        self._turns("agent-1", [(2, 900000), (3, 900000)], sidechain=True)  # a subagent's context isn't the lead's
+        got = self.fm_json("cost", "--lead", env={"CLAUDE_CONFIG_DIR": self.cfg})
+        self.assertEqual(got["before"], {"turns": 3, "median_cache_read": 300000, "median_cache_creation": 5000})
+        self.assertEqual(got["after"], {"turns": 3, "median_cache_read": 100000, "median_cache_creation": 20000},
+                         "cache-creation tokens beside the reads: a compact rewrites the cache once, and that is a cost")
+        self.assertAlmostEqual(got["change_pct"], -66.7, places=1)
+        text = self.fm("cost", "--lead", env={"CLAUDE_CONFIG_DIR": self.cfg}).stdout
+        self.assertIn("cache creation", text)
+
+    def test_lead_cache_read_with_no_projects_folder_is_a_sentence_not_a_traceback(self):
+        self.fm("init")
+        proc = self.fm("cost", "--lead", env={"CLAUDE_CONFIG_DIR": os.path.join(self.tmp, "none")})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertNotIn("Traceback", proc.stderr)
+        self.assertIn("no compact", proc.stdout)
+        got = json.loads(self.fm("cost", "--lead", "--json", env={"CLAUDE_CONFIG_DIR": os.path.join(self.tmp, "none")}).stdout)
+        self.assertEqual(got["last_24h"], {"turns": 0, "median_cache_read": None, "median_cache_creation": None})
+
+    def test_lead_cache_read_window_is_24_hours_each_side(self):
+        self._rig(first_ago_h=30)
+        self._turns("lead-1", [(70, 111), (50, 400000), (31, 200000), (29, 50000), (7, 60000), (4, 70000)])
+        got = self.fm_json("cost", "--lead", env={"CLAUDE_CONFIG_DIR": self.cfg})
+        self.assertEqual(got["before"]["turns"], 2)  # the turn 70 h back is out
+        self.assertEqual(got["before"]["median_cache_read"], 300000)
+        self.assertEqual(got["after"]["turns"], 2)  # the turn 4 h back is past 24 h after
+        self.assertEqual(got["after"]["median_cache_read"], 55000)
+
+    def test_lead_cache_read_before_the_keeper_has_compacted_anything(self):
+        self._rig(first_ago_h=None)
+        self._turns("lead-1", [(2, 100000), (1, 300000)])
+        got = self.fm_json("cost", "--lead", env={"CLAUDE_CONFIG_DIR": self.cfg})
+        self.assertIsNone(got["first_compact"])
+        self.assertEqual(got["last_24h"]["turns"], 2)
+        self.assertEqual(got["last_24h"]["median_cache_read"], 200000)
+        text = self.fm("cost", "--lead", env={"CLAUDE_CONFIG_DIR": self.cfg}).stdout
+        self.assertIn("no compact", text)
+
+
 if __name__ == "__main__":
     import unittest
     unittest.main()

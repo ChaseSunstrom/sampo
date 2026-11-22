@@ -5610,9 +5610,27 @@ def cmd_checkpoint(args):
         + (f"\nNotes:\n{notes}" if notes else ""))
 
 
+def resume_line(p, r=None):
+    """T-5769: the resume point as one clean line, up to 300 characters: what a `/compact` is told to keep. The active
+    task with its step, else the next of the queue. Never a second line, an escape or a control character: the text is
+    typed into a pane."""
+    r = r or c.resume_info(p)
+    if r["id"]:
+        step = f"step {r['step']['n']}/{r['step']['of']}: {r['step']['text']}" if r["step"] else \
+            f"{r['steps_done']}/{r['steps_total']} steps done"
+        line = f"Keep {r['id']} {r['title']} ({step}); the brief has the rest."
+    else:
+        queue = c.state_dict(p)["queue"][:2]
+        line = "Keep: no active task" + (f"; next in the queue: {'; '.join(q['id'] + ' ' + str(q.get('title') or '') for q in queue)}"
+                                         if queue else "") + "."
+    return c.fit(re.sub(r"\s+", " ", re.sub(r"[\x00-\x1f\x7f-\x9f]", " ", line)).strip(), 300)
+
+
 def cmd_resume(args):
     p = resolve(args)
     r = c.resume_info(p)
+    if getattr(args, "line", False):  # T-5769: the keeper's focus for /compact
+        return out(args, {"line": resume_line(p, r)}, resume_line(p, r))
     from sampo import mandate
     try:
         goal = mandate.goal_line(p)  # T-2139
@@ -10228,6 +10246,8 @@ def _build_parser(only=None):
     s.add_argument("--task", metavar="ID", help="one task: spent, its cap and the forecast from similar tasks (T-1083)")
     s.add_argument("--refresh-cache", action="store_true", help=argparse.SUPPRESS)  # the Stop hook's detached refresh
     s.add_argument("--sweep", action="store_true", help=argparse.SUPPRESS)  # T-1810: the Stop hook's detached sweep
+    s.add_argument("--lead", action="store_true", help="the lead's cache-read tokens per turn (median), 24 h before and "
+                   "24 h after the keeper's first compact (T-5769)")
     s.add_argument("--sessions", action="store_true",
                    help="per session: turns, context per turn, the cache read/write/output split and cache busts")
     s.add_argument("--outputs", action="store_true", help="context by how often later calls re-read it: share of cache "
@@ -10559,6 +10579,8 @@ def _build_parser(only=None):
     s.add_argument("--note", type=int, metavar="N", help="mark unaccounted clause N as handled (answered, or no task)")
     s.add_argument("--show", action="store_true", help="the unaccounted clauses of the last request")
     s = add("resume", cmd_resume, tier=("Every task", 120), help="print the resume point, and re-run the last green check for drift")
+    s.add_argument("--line", action="store_true", help="one line only (the active task and step, else the queue's next): "
+                   "the focus the keeper types after /compact (T-5769)")
     s.add_argument("--no-check", action="store_true", help="don't re-run the last green check (T-0649)")
 
     s = add("queue", cmd_queue, tier=("Every task", 130), help="ordered queue")
@@ -12129,6 +12151,14 @@ def _build_parser(only=None):
                  "local off|on keeps the models served on this machine unused")
     s.add_argument("words", nargs="*", help="status | newest on|off | pin NAME|off | local off|on")
     s.add_argument("--codex", action="store_true", help="pin the Codex model instead of Claude's")
+    s = add("keeper", lazy("sampo.keeper", "cmd_keeper"), tier=("Project and settings", 832),
+            help="the context keeper: an idle lead pane at a task boundary with context over 60%% is typed /compact and the "
+                 "resume line, once per 30 minutes (the Stop hook runs it too); --dry shows what it would do (T-5769)")
+    s.add_argument("--dry", action="store_true", help="type nothing and record nothing: say what each session would get")
+    s.add_argument("--session", default=None, help="that session alone (the Stop hook's detached run)")
+    s.add_argument("--delay", type=float, default=0.0, help="wait this many seconds first, for the turn's spinner to clear")
+    s.add_argument("--poll", type=float, default=5.0, help="seconds between looks while the pane is busy")
+    s.add_argument("--tries", type=int, default=6, help="looks at a busy pane before giving up")
     s = add("uninstall-user", lazy("sampo.setup", "cmd_uninstall"), tier=("Internal (hooks and installer)", 1340), help="undo install-user from the manifest")
     s.add_argument("--dry-run", action="store_true")
     by_title = {}

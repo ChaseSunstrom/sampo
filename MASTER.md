@@ -320,6 +320,8 @@ One line per module, so two changes to different modules never touch the same li
 - `fmvsearch` (T-3010: a shim for `sampo.vsearch`, the policy of `sampo code --search N|auto` and… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmwatch` (`sampo ui --demo`: a canned view from `ui-demo.json` with every key… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmmodelup` (T-3742: `sampo models`), models stay newest and best: settings keep an alias, a refusal fallback… [→ files-lib-4](docs/map/files-lib-4.md)
+- `fmkeeper` (T-5769: `sampo keeper [--dry]`, the context keeper: an idle lead at a task boundary over 60% is typed `/compact` + `sampo resume --line`… [→ files-lib-4](docs/map/files-lib-4.md)
+- `fmtmuxpane` (T-5769: the one place that types into a tmux pane: idle check, Claude Code check, safe send… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmwhich` (T-1699: `sampo which TASK`, the skills, playbooks and commands that… [→ files-lib-8](docs/map/files-lib-8.md)
 - `fmwired` (T-5016: `sampo wired`, the public functions no verb or hook reaches, as file:line rows, from a static… [→ files-lib-8](docs/map/files-lib-8.md)
 - `fmworkflowlint` (T-2564, `sampo/workflowlint.py`): a local actionlint with no install and no network… [→ files-lib-5](docs/map/files-lib-5.md)

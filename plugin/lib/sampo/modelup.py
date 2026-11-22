@@ -13,7 +13,6 @@ models.json (`newest`, `pin`, `pin_codex`); per-session records in state/models/
 import json
 import os
 import re
-import subprocess
 import time
 
 from sampo import core as c
@@ -294,25 +293,9 @@ def _scan(sid, st, path):
     _down(st, frm, to, "transcript")
 
 
-def _headless():
-    return bool(os.environ.get("FOREMAN_DRIVE_TASK")) or os.environ.get("CLAUDE_CODE_ENTRYPOINT") == "sdk-cli"
-
-
-def _prompt_empty(pane):
-    try:
-        out = subprocess.run(["tmux", "capture-pane", "-p", "-t", pane], capture_output=True, text=True, timeout=5)
-    except (OSError, subprocess.SubprocessError):
-        return False
-    for ln in reversed(out.stdout.splitlines()[-12:]):
-        m = re.match(r"^\s*[│|]?\s*[>❯]\s*(.*?)\s*[│|]?\s*$", ln)
-        if m:
-            return not m.group(1)
-    return False  # no prompt in sight: busy, or not a Claude Code pane
-
-
 def _send(sid):
     """Switch the session up through the channel it has; the channel's name, or None when it has none right now."""
-    if _headless():  # a host that runs the SDK registers an inbox here and forwards each line to Claude Code's stdin
+    if c.headless():  # a host that runs the SDK registers an inbox here and forwards each line to Claude Code's stdin
         inbox = os.path.join(_dir(), "sdk", re.sub(r"[^\w.-]", "_", str(sid))[:80] + ".jsonl")
         if not os.path.isfile(inbox):
             return None
@@ -323,15 +306,12 @@ def _send(sid):
         return "sdk"
     try:
         with open(os.path.join(c.state_dir(), "sessions", re.sub(r"[^\w.-]", "_", str(sid)) + ".json"), encoding="utf-8") as f:
-            pane = (json.load(f) or {}).get("tmux_pane")
+            snap = json.load(f)
+        pane = snap.get("tmux_pane")
     except (OSError, ValueError, AttributeError):
         return None
-    if not pane or not re.fullmatch(r"%\d+", str(pane)) or not _prompt_empty(pane):
-        return None
-    try:
-        subprocess.run(["tmux", "send-keys", "-t", pane, "-l", WAY_BACK], capture_output=True, timeout=10, check=True)
-        subprocess.run(["tmux", "send-keys", "-t", pane, "Enter"], capture_output=True, timeout=10, check=True)
-    except (OSError, subprocess.SubprocessError):
+    from sampo import tmuxpane  # T-5794: the live Claude Code's idle screen, as the keeper checks it, not a bare prompt glyph
+    if not tmuxpane.valid(pane) or not tmuxpane.ready(pane, snap)[0] or not tmuxpane.send(pane, WAY_BACK):
         return None
     return "tmux"
 

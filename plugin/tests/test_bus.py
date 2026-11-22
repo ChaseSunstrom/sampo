@@ -5,6 +5,7 @@ import os
 import time
 
 from test_hooks import HookCase, parse
+from test_keeper import KeeperRig, live_child
 
 from sampo import bus, core as c
 
@@ -213,25 +214,6 @@ class Watch(Base):
                       hooks._other_session({"id": "sess-first", "seen": now, "pid": 4242}, "sess-b", 999) or "")
         self.assertIn("Another Claude Code session",
                       hooks._other_session({"id": "sess-first", "seen": now}, "sess-b", None) or "", "unknown: as before")
-
-    def test_wake_prefers_a_fresh_watcher_over_tmux(self):
-        import time
-        from sampo import bus as sbus
-        bin_ = os.path.join(self.tmp, "bin")
-        os.makedirs(bin_)
-        log = os.path.join(self.tmp, "tmux.log")
-        with open(os.path.join(bin_, "tmux"), "w") as f:
-            f.write(f"#!/bin/sh\necho \"$@\" >> {log}\n")
-        os.chmod(os.path.join(bin_, "tmux"), 0o755)
-        env = {"PATH": bin_ + os.pathsep + os.environ["PATH"]}
-        self.snap("sess-w", tmux_pane="%7")
-        beat = os.path.join(sbus._dir(), "watch-sess-w")
-        open(beat, "w").close()
-        self.assertIn("woke 1", self.fm("bus", "send", "sess-w", "hi", "--wake", env=env).stdout)
-        self.assertFalse(os.path.exists(log), "the watcher delivers it: nothing typed into tmux")
-        os.utime(beat, (time.time() - 60, time.time() - 60))
-        self.assertIn("woke 1", self.fm("bus", "send", "sess-w", "hi again", "--wake", env=env).stdout)
-        self.assertTrue(os.path.exists(log), "a stale watcher: tmux stays the fallback")
 
     def test_the_monitor_entry_uses_only_the_keys_claude_code_reads(self):
         # strict keys, and `claude plugin validate --strict` doesn't check them
@@ -735,3 +717,61 @@ class NoProcfs(HookCase):  # T-2492: macOS has no /proc, so a process's start ti
         self.assertEqual(self.comm("node\n", "node --no-warnings /usr/local/bin/claude --resume\n"), ("claude", 2))
         self.assertEqual(self.comm("/bin/bash\n", "/bin/bash ./build.sh claude\n"), ("bash", 2))
         self.assertEqual(self.comm("/Users/me/.local/bin/claude\n"), ("claude", 1))
+
+
+class WakeStrict(KeeperRig, HookCase):
+    """T-5794: bus.wake types a line into a pane, so it asks what the keeper asks first: the pane runs the Claude Code the
+    snapshot names (tmuxpane.claude_here) and its screen is Claude Code's own, idle (state strict). A fake tmux logs every
+    call; nothing here touches a real pane."""
+
+    def woke(self):
+        out = self.fm("bus", "send", "lead-1", "hi", "--wake", env=self.env).stdout
+        return "woke 1" in out
+
+    def test_wake_prefers_a_fresh_watcher_over_tmux(self):
+        # T-0777, and T-5794: a stale watcher leaves tmux the fallback, a live Claude Code pane
+        beat = os.path.join(bus._dir(), "watch-lead-1")
+        self.snap()
+        open(beat, "w").close()
+        self.assertTrue(self.woke())
+        self.assertEqual(self.keys(), [], "the watcher delivers it: nothing typed into tmux")
+        os.utime(beat, (time.time() - 60, time.time() - 60))
+        self.assertTrue(self.woke())
+        self.assertEqual(len(self.keys()), 2, "a stale watcher: tmux stays the fallback")
+
+    def test_wake_types_only_into_the_live_claude_pane_claude_here(self):
+        self.snap()
+        self.assertTrue(self.woke())
+        self.assertEqual(len(self.keys()), 2, self.keys())
+        self.assertIn("Sampo mail waiting", self.keys()[0])
+
+    def test_wake_types_nothing_into_a_bash_pane_claude_here(self):
+        self.snap()
+        self.runs("bash")
+        self.assertFalse(self.woke())
+        self.assertEqual(self.keys(), [])
+
+    def test_wake_types_nothing_on_a_pid_mismatch_claude_here(self):
+        other, _ = live_child(self)  # a live claude-looking process that is not the snapshot's, nor its parent
+        self.snap()
+        self.runs("claude", pid=other.pid)
+        self.assertFalse(self.woke())
+        self.assertEqual(self.keys(), [])
+
+    def test_wake_types_nothing_on_a_reused_pid_claude_here(self):
+        self.snap(claude_start="1")
+        self.assertFalse(self.woke())
+        self.assertEqual(self.keys(), [])
+
+    def test_wake_types_nothing_without_a_claude_pid_in_the_snapshot_claude_here(self):
+        self.snap(pid=None)
+        self.assertFalse(self.woke())
+        self.assertEqual(self.keys(), [])
+
+    def test_wake_types_nothing_into_a_screen_that_is_no_claude_code_claude_here(self):
+        self.snap()
+        for screen in ("user@host:~$ \n", "some output\n\n❯ \n", "some output\n\n❯ half typed\n  ? for shortcuts\n",
+                       "Do you want to proceed?\n  1. Yes\n  2. No\n  esc to cancel\n"):
+            self.show_raw(screen)  # a shell, a bare prompt glyph, typed text, a dialog
+            self.assertFalse(self.woke(), screen)
+        self.assertEqual(self.keys(), [])

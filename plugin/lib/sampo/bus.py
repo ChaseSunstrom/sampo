@@ -124,20 +124,16 @@ def watched(sid):
 
 def wake(sid):
     """Wake an idle session to read its mail: its watcher (fm bus watch) prints the mail itself; else one short line
-    typed into its tmux pane (the statusline recorded it). False when neither is known."""
+    typed into its tmux pane (the statusline recorded it), only once the pane is the session's live Claude Code with an
+    empty input box (T-5794: tmuxpane.ready, as the keeper asks). False when neither is known or safe."""
     if watched(sid):
         return True
+    from sampo import tmuxpane
     snap = _snapshot(sid)
     pane = (snap or {}).get("tmux_pane")
-    if not pane or not re.fullmatch(r"%\d+", str(pane)):
+    if not tmuxpane.valid(pane) or not tmuxpane.ready(pane, snap)[0]:
         return False
-    try:
-        subprocess.run(["tmux", "send-keys", "-t", pane, "-l", "Sampo mail waiting: read it (fm bus read) and act on it"],
-                       capture_output=True, timeout=10, check=True)
-        subprocess.run(["tmux", "send-keys", "-t", pane, "Enter"], capture_output=True, timeout=10, check=True)
-        return True
-    except (OSError, subprocess.SubprocessError):
-        return False
+    return tmuxpane.send(pane, "Sampo mail waiting: read it (fm bus read) and act on it")
 
 
 # ---------------------------------------------------------------- sessions

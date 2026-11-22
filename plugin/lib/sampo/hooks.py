@@ -6219,6 +6219,17 @@ def stop(pl):
     except Exception:
         log_error("Stop", _tb())
     mark("modelup")
+    if not (out and out.get("decision") == "block"):
+        try:  # T-5769: the context keeper: an idle lead over 60% at a task boundary is compacted (typed in its tmux pane,
+            # else this line for the user); at most one per 30 minutes, and a snapshot with no reading costs one file read
+            from sampo import keeper
+            line = keeper.after_stop(pl)
+            if line:
+                out = dict(out or {})
+                out["systemMessage"] = "\n".join(filter(None, [out.get("systemMessage"), line]))
+        except Exception:
+            log_error("Stop", _tb())
+        mark("keeper")
     if out and out.get("decision") == "block" and _headless():
         out["reason"] += PRINT_LAST
     return out
@@ -6709,7 +6720,7 @@ def _queue_line(p, briefs):  # T-2374: the install grants waiting on the user, f
 
 
 def _headless():
-    return os.environ.get("FOREMAN_DRIVE_TASK") or os.environ.get("CLAUDE_CODE_ENTRYPOINT") == "sdk-cli"
+    return c.headless()
 
 
 def _asks(text):

@@ -1211,6 +1211,48 @@ def context_text(weeks, top=6):
             + "\n".join(rows))
 
 
+def lead_cache_read(folder, first=None, now=None):
+    """T-5769: the lead's cache-read tokens per turn (the median), for the 24 h before and the 24 h after the keeper's
+    first compact (`first`, epoch seconds); with none yet, the last 24 h. The lead is the main thread: a subagent's
+    turns are left out. Medians, so one long turn doesn't move the figure."""
+    now, day = now or time.time(), 86400
+    since = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime((first - day) if first else now - day))
+    reads = []
+    for ts, _, u, *_k in scan(folder, since, sidechains=False)[0] if os.path.isdir(folder) else []:
+        t = _epoch(ts)
+        if t is not None:
+            reads.append((t, u.get("cache_read_input_tokens") or 0, u.get("cache_creation_input_tokens") or 0))
+
+    def side(lo, hi):
+        rows = [(r, w) for t, r, w in reads if lo <= t < hi]
+        med = lambda vals: int(statistics.median(vals)) if vals else None  # noqa: E731
+        return {"turns": len(rows), "median_cache_read": med([r for r, _ in rows]),
+                "median_cache_creation": med([w for _, w in rows])}
+    if not first:
+        return {"first_compact": None, "last_24h": side(now - day, now + 1)}
+    before, after = side(first - day, first), side(first, first + day)
+    change = None
+    if before["median_cache_read"] and after["median_cache_read"] is not None:
+        change = round((after["median_cache_read"] - before["median_cache_read"]) * 100 / before["median_cache_read"], 1)
+    return {"first_compact": first, "before": before, "after": after, "change_pct": change}
+
+
+def _lead(folder, cli, args):
+    from sampo import keeper
+    r = lead_cache_read(folder, keeper.first_compact())
+    if not r["first_compact"]:
+        d = r["last_24h"]
+        return cli.out(args, r, f"Lead cache read per turn, last 24 h: {d['median_cache_read']} (median of {d['turns']} "
+                                f"turns), cache creation {d['median_cache_creation']}; no compact by the keeper yet, so "
+                                "nothing to compare.")
+    b, a = r["before"], r["after"]
+    return cli.out(args, r, f"Lead cache read per turn (median), 24 h each side of the keeper's first compact: before "
+                            f"{b['median_cache_read']} ({b['turns']} turns), after {a['median_cache_read']} ({a['turns']} turns)"
+                            + (f", {r['change_pct']:+}%." if r["change_pct"] is not None else ".")
+                            + f" With cache creation per turn (median) before {b['median_cache_creation']}, after "
+                              f"{a['median_cache_creation']}: a compact rewrites the cache once, so it shows here.")
+
+
 def cmd_cost(args):
     from sampo import cli
     p = cli.resolve(args)
@@ -1237,6 +1279,8 @@ def cmd_cost(args):
     if getattr(args, "forecast", False):
         return _forecast(args, cli)
     folder = transcripts_dir(p.root)
+    if getattr(args, "lead", False):  # T-5769: a harness with no Claude Code transcripts (sampo code) reads zero turns
+        return _lead(folder, cli, args)
     if not os.path.isdir(folder):
         raise cli.UsageError(f"no Claude Code transcripts for this project at {folder}")
     if getattr(args, "outputs", False):

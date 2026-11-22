@@ -6146,9 +6146,9 @@ class StageClock(ForemanTestCase):
             row = json.loads(f.readline())
         self.assertEqual(row["event"], "Stop")
         stages = [k for k, v in row.items() if isinstance(v, float) and k not in ("start", "imports", "after", "total")]
-        for k in ("spawns", "briefs", "state", "lock", "gates", "drive", "holds", "save", "modelup"):
+        for k in ("spawns", "briefs", "state", "lock", "gates", "drive", "holds", "save", "modelup", "keeper"):
             self.assertIn(k, stages, row)
-        self.assertEqual(stages[-1], "modelup", "marks in the order the call reached them")
+        self.assertEqual(stages[-1], "keeper", "marks in the order the call reached them")  # T-5769: the keeper's mark follows modelup
         self.assertLess(stages.index("spawns"), stages.index("briefs"))
         self.assertLess(stages.index("lock"), stages.index("drive"))
         self.assertAlmostEqual(row["total"], sum(v for k, v in row.items() if isinstance(v, float) and k != "total"),
@@ -6333,3 +6333,123 @@ class StageClock(ForemanTestCase):
         from sampo import hooks
         with unittest.mock.patch.object(hooks, "stage_ms", side_effect=OSError("no /proc")):
             hooks._stage_done()  # no raise
+
+
+class CompactLine(HookCase):
+    """T-5769: the lead's idle Stop at a task boundary with the context over 60%: in a tmux pane the keeper types the
+    /compact (nothing printed); without one the Stop hook prints the same line for the user or the session to run."""
+
+    HEADLESS = {"CLAUDE_CODE_ENTRYPOINT": "sdk-cli", "FOREMAN_BENCH": "1"}
+
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        self.queued = self.task("Fix the login", focus=False)
+        self.fm("drive", "off")  # a drive would block the Stop with its own push: this is the lead that idles at the boundary
+        self.sessions = os.path.join(self.home, "state", "sessions")
+        os.makedirs(self.sessions, exist_ok=True)
+        self.bin, self.log = os.path.join(self.tmp, "fakebin"), os.path.join(self.tmp, "tmux.log")
+        self.cmd_file = os.path.join(self.tmp, "pane_cmd.txt")
+        os.makedirs(self.bin)
+        with open(os.path.join(self.bin, "tmux"), "w") as f:  # the pane: Claude Code's footer under an empty box, run by this test
+            f.write(f'#!/bin/sh\necho "$@" >> "{self.log}"\n'
+                    f'if [ "$1" = capture-pane ]; then printf "\\n❯ \\n  ? for shortcuts\\n"; fi\n'
+                    f'if [ "$1" = display-message ]; then cat "{self.cmd_file}"; fi\n')
+        os.chmod(os.path.join(self.bin, "tmux"), 0o755)
+        self.runs("claude")
+        self.env = {"PATH": self.bin + os.pathsep + os.environ["PATH"]}
+        self.claude = subprocess.Popen(["sleep", "600"])  # the claude the snapshot names: a child of this test, as a shell's
+        self.addCleanup(self.claude.wait)
+        self.addCleanup(self.claude.kill)
+
+    def runs(self, command):
+        """What `tmux display-message` says of the pane: its foreground command and its first process (this test)."""
+        with open(self.cmd_file, "w") as f:
+            f.write(f"{command}\t{os.getpid()}\n")
+
+    def snap(self, pct=72, pane=None):
+        from sampo import bus
+        body = {"ts": c.now(), "session_id": "sess-1", "cwd": self.repo, "context_pct": pct, "context_size": 200000,
+                "claude_pid": self.claude.pid, "claude_start": bus._proc(self.claude.pid)[1]}
+        if pane:
+            body["tmux_pane"] = pane
+        with open(os.path.join(self.sessions, "sess-1.json"), "w") as f:
+            json.dump(body, f)
+
+    def stop(self):
+        return self.hook("Stop", {"stop_hook_active": False, "last_assistant_message": "Done."}, env=self.env)
+
+    def keys(self):
+        return [ln for ln in read_text(self.log).splitlines() if ln.startswith("send-keys")] if os.path.exists(self.log) else []
+
+    def test_compact_line_is_printed_without_tmux_over_sixty_percent(self):
+        self.snap()
+        msg = (parse(self.stop()) or {}).get("systemMessage", "")
+        self.assertIn("/compact", msg)
+        self.assertIn(self.queued, msg, "the focus is the resume line")
+        self.assertIn("72%", msg)
+
+    def test_compact_line_once_per_thirty_minutes(self):
+        self.snap()
+        self.assertIn("/compact", (parse(self.stop()) or {}).get("systemMessage", ""))
+        self.assertNotIn("/compact", (parse(self.stop()) or {}).get("systemMessage", ""))
+
+    def test_compact_line_not_at_sixty_or_below(self):
+        self.snap(pct=60)
+        self.assertNotIn("/compact", self.stop().stdout)
+
+    def test_compact_line_not_mid_task(self):
+        self.task("Another task")  # focused
+        self.snap()
+        self.assertNotIn("/compact", self.stop().stdout)
+
+    def test_compact_line_not_for_a_headless_run(self):
+        self.snap()
+        self.assertNotIn("/compact", self.hook("Stop", {"stop_hook_active": False, "last_assistant_message": "Done."},
+                                               env=self.HEADLESS).stdout)
+        self.assertEqual(self.keys(), [])
+
+    def test_compact_line_a_headless_run_records_the_decision_as_a_row(self):
+        """T-5769 review, harness parity: nobody reads a headless run's screen, so the same decision (over 60%, no task
+        open) is recorded in the ledger, with how "headless"; nothing is typed or printed, and `first` stays unset (no
+        compact happened)."""
+        path = os.path.join(self.tmp, "headless.jsonl")
+        use = {"type": "assistant", "message": {"id": "m1", "content": [], "usage": {
+            "input_tokens": 10, "cache_read_input_tokens": 150000, "cache_creation_input_tokens": 0, "output_tokens": 5}}}
+        with open(path, "w") as f:
+            f.write(json.dumps(use) + "\n")
+        pl = {"stop_hook_active": False, "last_assistant_message": "Done.", "transcript_path": path}
+        out = self.hook("Stop", pl, env={**self.env, **self.HEADLESS})
+        self.assertNotIn("/compact", out.stdout)
+        rows = [e for e in c.ledger_tail(self.project(), 200) if e["event"] == "keeper_compact"]
+        self.assertEqual(len(rows), 1, rows)
+        self.assertIn("headless", json.dumps(rows[0]))
+        self.assertEqual(self.keys(), [])
+        with open(os.path.join(self.home, "state", "keeper.json")) as f:
+            self.assertFalse(json.load(f).get("first"))
+        self.hook("Stop", pl, env={**self.env, **self.HEADLESS})
+        self.assertEqual(len([e for e in c.ledger_tail(self.project(), 200) if e["event"] == "keeper_compact"]), 1,
+                         "once per thirty minutes")
+
+    def test_compact_line_in_a_tmux_pane_is_typed_not_printed(self):
+        self.snap(pane="%7")
+        out = self.stop()
+        self.assertNotIn("/compact", out.stdout)
+        keys = self.keys()
+        self.assertEqual(len(keys), 2, keys)
+        self.assertTrue(keys[0].startswith("send-keys -t %7 -l /compact "), keys[0])
+
+    def test_compact_line_in_a_pane_that_is_not_claude_is_printed_not_typed(self):
+        """A pane whose foreground command is a shell is no place to type: nothing is sent, and the line is shown
+        instead (the session has a pane, but the keeper can't use it)."""
+        self.runs("bash")
+        self.snap(pane="%7")
+        out = self.stop()
+        self.assertEqual(self.keys(), [])
+        self.assertIn("/compact", (parse(out) or {}).get("systemMessage", ""))
+
+    def test_compact_line_without_tmux_records_first_so_cost_lead_can_measure(self):
+        self.snap()
+        self.stop()
+        with open(os.path.join(self.home, "state", "keeper.json")) as f:
+            self.assertTrue(json.load(f).get("first"))

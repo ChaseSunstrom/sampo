@@ -519,6 +519,12 @@ def in_state(path):
     return os.path.realpath(path).startswith(os.path.realpath(state_dir()) + os.sep)
 
 
+def headless():
+    """T-5769: this process runs under an unattended driver (a drive-task worker, or the SDK's `claude -p`): nobody sits
+    at a pane to type into or to read a printed line. The one test hooks and modelup used to spell each its own way."""
+    return bool(os.environ.get("FOREMAN_DRIVE_TASK")) or os.environ.get("CLAUDE_CODE_ENTRYPOINT") == "sdk-cli"
+
+
 def state_dir():
     """FOREMAN_STATE, else <foreman home>/state. When that isn't writable (Claude Code's Bash sandbox, claude plugin
     eval, read-only containers) state moves to a per-user fallback, once: existing state is copied across and a marker
