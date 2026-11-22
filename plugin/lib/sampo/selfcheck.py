@@ -653,6 +653,16 @@ def feature_fit(p, briefs, now):
 
 CHECKS += (feature_fit,)  # its own line: another lane's check joins the tuple above without a conflict
 
+
+def dead_feature(p, briefs, now):
+    """T-5710: a feature that declared a real-use signal, landed 7 or more days ago, and has no real use in the last 14
+    days: one 'Wire or retire: X' capture a day, the worst first (deadfeatures.hit: a card counts its real calls only)."""
+    from sampo import deadfeatures
+    return deadfeatures.hit(p, briefs, now)
+
+
+CHECKS += (dead_feature,)  # its own line: another lane's check joins the tuple above without a conflict
+
 # T-4118: findings act or tell, with drive on or off (night.tick runs act: the Stop hook's sweep and the hourly timer).
 # An action runs detached at most once per ACT_BACKOFF_S and ACT_PER_DAY times a day per check; a tell, an action that
 # couldn't start, or one whose finding outlives ESCALATE_S reaches the user once a day per check, sooner only when its

@@ -231,6 +231,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmoracle` (T-1553: the guard's oracle, a line run in a throwaway bwrap sandbox… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmorders` (`sampo orders`: standing orders that capture a task on a schedule… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmoutcomes` (`sampo outcomes`: each finished task's fate — reverted, fixed… [→ files-lib-3](docs/map/files-lib-3.md)
+- `fmdeadfeatures` (T-5710: a feature that declared a real-use signal, landed 7+ days ago and has no real use in 14 days is one `Wire or retire: X` capture a day, worst first; a calling card counts only the calls whose `via` is a real origin (a row with no `via` is unknown, not real)… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmoutside` (`sampo landscape`, `sampo deps`: the outside view… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmpage` + `page.html`… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmplace` (T-5011: `place_capture` says where a capture belongs: new, join, merge or duplicate, with its task… [→ files-lib-3](docs/map/files-lib-3.md)
