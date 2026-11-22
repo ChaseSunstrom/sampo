@@ -7983,12 +7983,15 @@ def next_for(p, briefs=None, checks=True, concerns=None):
         # this often); not in the prompt note, whose 400 characters it would crowd out (review)
         try:
             from sampo import selfcheck
-            seen = [x for x in selfcheck.lines(p, briefs)
-                    if not ("→ sampo ship" in x and "main lacks" in action)]  # review: ship_waiting said it
+            leads, seen = selfcheck.split(p, briefs)  # T-5709: the leads say first, before the action
+            leads = [x for x in leads if not ("→ sampo ship" in x and "main lacks" in action)]
+            seen = [x for x in seen if not ("→ sampo ship" in x and "main lacks" in action)]  # review: ship_waiting said it
         except Exception:  # noqa: BLE001 — a self-check never costs the next action
-            seen = []
+            leads, seen = [], []
         if seen:
             action += " · self-check: " + " · ".join(seen)
+        if leads:
+            action = f"{' · '.join(leads)} — {action}"
     if link:  # T-4217: the top concern and its task are the required action, said first (moved here from fm next)
         from sampo import concerns as cn
         action = f"the user is waiting on {cn.lead(link)} — {action}"

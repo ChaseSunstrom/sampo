@@ -1,0 +1,58 @@
+[
+  {
+    "name": "usage_run_out",
+    "label": "usage run-out vs reset",
+    "reader": "usage_run_out",
+    "target": 0,
+    "unit": "h before the weekly reset",
+    "higher_is_worse": true,
+    "why": "weekly usage on pace to run out before its reset: the burn forecast (state/burn.json, cost.burn_findings)"
+  },
+  {
+    "name": "accept_to_merge",
+    "label": "accept-to-merge minutes",
+    "reader": "accept_to_merge",
+    "target": 30,
+    "unit": "min, median over 14 days",
+    "higher_is_worse": true,
+    "provisional": true,
+    "why": "from a brief's accepted_at to its lane_landed event; 30 min is a starting value, provisional until the numbers are seen (T-5709)"
+  },
+  {
+    "name": "rework_rounds",
+    "label": "builder rework rounds",
+    "reader": "rework_rounds",
+    "target": 1.0,
+    "unit": "changes-asked rounds per landed lane, 14 days",
+    "higher_is_worse": true,
+    "why": "changes_asked ledger events per landed task: a builder that needs more than one round is rework"
+  },
+  {
+    "name": "tokens_per_change",
+    "label": "tokens per landed change",
+    "reader": "tokens_per_change",
+    "target": 3000000,
+    "unit": "input-equivalent tokens per landed task, 14 days",
+    "higher_is_worse": true,
+    "provisional": true,
+    "why": "the cost cache's per-task tokens (cost.cache_as_is) over the tasks that landed; 3,000,000 is a starting value, provisional until the numbers are seen (T-5709)"
+  },
+  {
+    "name": "sampo_vs_bare",
+    "label": "Sampo overhead vs bare Claude Code",
+    "reader": "sampo_vs_bare",
+    "target": 0.5,
+    "unit": "x plain Claude Code's cost per landed change (bench)",
+    "higher_is_worse": true,
+    "why": "Sampo's cost per landed change against plain Claude Code's (the bench's bare arm); 0.5 is an assumption to confirm (T-5709)"
+  },
+  {
+    "name": "cpu",
+    "label": "CPU vs goal",
+    "reader": "cpu",
+    "target": 10,
+    "unit": "% of the machine's cores, Sampo's sessions over 10 min",
+    "higher_is_worse": true,
+    "why": "the CPU goal (cpu.GOAL): the sessions' samples in state/cpu.json over WINDOW_S"
+  }
+]

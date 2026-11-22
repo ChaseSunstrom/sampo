@@ -8028,6 +8028,9 @@ def _reviewer_return(p, tid, pl, msg, asked_at=None):
             b.meta["changes_asked"] = aid or "fm-reviewer"
             b.meta["changes_asked_at"] = asked_at or c.now()
             b.meta["changes_asked_tree"] = now
+            # T-5709: one ledger row per ask, so the rework-rounds target counts the rounds (targets._derive)
+            c.log_event(p, "changes_asked", task=tid, session=pl.get("session_id"),
+                        data={"who": aid or "fm-reviewer", "tree": now[:12]})
         else:
             briefed = b.meta.get("review_tree") or ""
             if not briefed or briefed != now:  # the review judged another tree than the one there is now: nothing counts

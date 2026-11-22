@@ -7,7 +7,6 @@ import calendar
 import collections
 import json
 import os
-import re
 import time
 
 from sampo import core as c
@@ -20,11 +19,18 @@ OPEN = ("captured", "planned", "active", "verifying")  # deferred: the user said
 
 class Hit(str):
     """T-4118: a check's line that also acts (action: argv run detached, at the lowest priority) or tells the user
-    (tell; level: told again the same day only when it rises). A plain str only prints, as before."""
-    def __new__(cls, text, action=None, tell=False, level=0):
+    (tell; level: told again the same day only when it rises). A plain str only prints, as before.
+    T-5709: lead sorts the line first in sampo next, before its action (a regressed firm outcome target, the run-out
+    forecast); target names the outcome target whose filing the action is (claimed once a day before it runs)."""
+    def __new__(cls, text, action=None, tell=False, level=0, lead=False, target=None):
         s = super().__new__(cls, text)
-        s.action, s.tell, s.level = list(action) if action else None, bool(tell), level
+        s.action, s.tell, s.level, s.lead = list(action) if action else None, bool(tell), level, bool(lead)
+        s.target = target
         return s
+
+
+def _lead(h):
+    return bool(getattr(h, "lead", False))
 
 
 def _fm(*args):
@@ -393,17 +399,39 @@ CHECKS += (cpu_goal,)
 
 def usage_burn(p, briefs, now):
     """T-4118: the usage-burn scan's run-out forecast (cost.burn_findings, state/burn.json, the last day): burn.json
-    said 'on pace to run out 93 h before its reset' for hours and nothing told the user (the steer audit, T-4115)."""
-    try:
-        with open(os.path.join(c.state_dir(), "burn.json"), encoding="utf-8") as f:
-            d = json.load(f)
-    except (OSError, ValueError):
+    said 'on pace to run out 93 h before its reset' for hours and nothing told the user (the steer audit, T-4115).
+    T-5709: the forecast's one freshness rule (targets.run_out_forecast); it files a discovered task once a day, and leads."""
+    from sampo import targets
+    r = targets.run_out_forecast(now)
+    if r is None or r[0] is None:
         return None
-    if now - float(d.get("ts") or 0) > 86400:
-        return None
-    for row in d.get("found") or []:
-        if row and "run out" in str(row[0]):
-            return Hit(f"{row[0]} → {row[1]}" if len(row) > 1 else str(row[0]), tell=True)
+    text, hours = r
+    if targets.filed_recently(p, "usage_run_out", now) or hours is None:
+        return Hit(text, tell=True, lead=True)  # filed today already, or no hours to file with: said, not filed
+    title = f"{targets.PREFIX}usage_run_out {hours:g} h before reset"
+    return Hit(text, action=_fm("capture", "--source", "discovered", title), tell=True, lead=True, target="usage_run_out")
+
+
+def _over(r):
+    """How far past its target a regressed row is, as a fraction of the target (the worst leads)."""
+    return (r["actual"] - r["target"]) / (abs(r["target"]) or 1)
+
+
+def targets_regressed(p, briefs, now):
+    """T-5709: a firm outcome target (plugin/data/targets.json) past its target files a discovered task with its numbers,
+    once a day per target, and leads sampo next. A provisional one only tells (no action, no lead): its target is a
+    starting value. Usage run-out is usage_burn's (it files its own, above)."""
+    from sampo import targets
+    targets.refresh(p, now)
+    rows = [r for r in targets.evaluate(p, now)
+            if r["status"] == "regressed" and r["name"] != "usage_run_out" and not targets.filed_recently(p, r["name"], now)]
+    firm = [r for r in rows if not r["provisional"]]
+    if firm:
+        worst = max(firm, key=_over)
+        title = targets.title(worst)
+        return Hit(title, action=_fm("capture", "--source", "discovered", title), lead=True, target=worst["name"])
+    if rows:
+        return Hit(targets.title(max(rows, key=_over)), tell=True)
     return None
 
 
@@ -488,13 +516,28 @@ def _disk_held(p, briefs, now):
 
 
 CHECKS += (usage_burn, stale_beats, stale_stats, pause_lingers, disk_low)
+CHECKS += (targets_regressed,)  # T-5709: its own line, so other lanes' checks join without a conflict
 
 
 def lines(p, briefs=None, now=None):
     """The checks' hits, cached CACHE_S (a hook calls this on every Stop). A check that can't read its source is
     skipped, never a crash."""
+    return _ordered(p, briefs, now)
+
+
+def split(p, briefs=None, now=None):
+    """(leads, others): the lines of lines() that lead (a firm regressed target, the run-out forecast) and the rest, each
+    in lines()' order. sampo next puts the leads before its action and the others after it (T-5709)."""
+    hits = _ordered(p, briefs, now)
+    return [h for h in hits if _lead(h)], [h for h in hits if not _lead(h)]
+
+
+def _ordered(p, briefs, now):
     now = time.time() if now is None else now
-    return _cached(p, briefs, now) + _run(LIVE, p, briefs, now)
+    cached, live = _cached(p, briefs, now), _run(LIVE, p, briefs, now)
+    # T-5709: the leads first, the cached lines then the live ones (each group keeps its own order)
+    return ([h for h in live if _lead(h)] + [h for h in cached if _lead(h)]
+            + [h for h in cached if not _lead(h)] + [h for h in live if not _lead(h)])
 
 
 def _run(checks, p, briefs, now):
@@ -515,12 +558,15 @@ def _cached(p, briefs, now):
         with open(path, encoding="utf-8") as f:
             d = json.load(f)
         if 0 <= now - float(d.get("at", 0)) < CACHE_S:
-            return list(d.get("lines") or [])
-    except (OSError, ValueError, TypeError, AttributeError):
+            # T-5709: a line is {text, lead}; an older cache's plain string is a line that leads nothing
+            return [Hit(x["text"], lead=x.get("lead")) if isinstance(x, dict) else Hit(str(x))
+                    for x in d.get("lines") or [] if isinstance(x, (dict, str))]
+    except (OSError, ValueError, TypeError, AttributeError, KeyError):
         pass
     out = _run(CHECKS, p, c.load_briefs(p) if briefs is None else briefs, now)
+    out.sort(key=lambda h: not _lead(h))  # T-5709: stable: the leads first, each group in the checks' order
     try:
-        c.write_atomic(path, json.dumps({"at": now, "lines": out}))
+        c.write_atomic(path, json.dumps({"at": now, "lines": [{"text": str(h), "lead": _lead(h)} for h in out]}))
     except OSError:
         pass
     return out
@@ -689,6 +735,16 @@ def notify_detached(p, text):
     _spawn(p, [sys.executable, "-I", "-c", _DELIVER_PY, lib, p.root, c.plain(text)[:300]])
 
 
+def _may_file(p, hit, now):
+    """A hit that files for an outcome target files only when that target has not filed in the last day. The record is
+    written here, before the action runs: a capture that folds into another, or is held or refused, still counts (T-5709)."""
+    target = getattr(hit, "target", None)
+    if not target:
+        return True
+    from sampo import targets
+    return targets.claim_filing(p, target, now)
+
+
 def act(p, briefs=None, now=None, checks=None, spawn=_spawn, tell=notify):
     """Each hit's action run, or the user told, per the rules above: [(check, 'act' | 'tell', text)]. With `checks` (a
     subset), only those checks' state is judged: a check that did not run keeps its ledger and when its finding began."""
@@ -717,7 +773,7 @@ def act(p, briefs=None, now=None, checks=None, spawn=_spawn, tell=notify):
         say, action = getattr(hit, "tell", False), getattr(hit, "action", None)
         if action:
             day = [t for t in s.get("acted") or [] if now - t < 86400]
-            if (not day or now - day[-1] >= ACT_BACKOFF_S) and len(day) < ACT_PER_DAY:
+            if (not day or now - day[-1] >= ACT_BACKOFF_S) and len(day) < ACT_PER_DAY and _may_file(p, hit, now):
                 pid = spawn(p, action)
                 day.append(now)
                 c.log_event(p, "self_act", data={"check": k, "cmd": c.plain(" ".join(action))[:200], "pid": pid})

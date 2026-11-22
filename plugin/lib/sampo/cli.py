@@ -11224,6 +11224,12 @@ def _build_parser(only=None):
                                             "idle: on or off")
     s.add_argument("--window", type=float, default=5.0, help="show: seconds to measure (default 5)")
 
+    s = add("targets", lazy("sampo.targets", "cmd_targets"), tier=("Project and settings", 778),
+            help="the outcome targets (plugin/data/targets.json): each one's actual, its target and ok | regressed | "
+                 "unmeasured (usage run-out vs reset, accept-to-merge minutes, builder rework rounds, tokens per landed "
+                 "change, Sampo's cost vs bare Claude Code, CPU); a regressed one files a discovered task once a day "
+                 "and leads sampo next (T-5709)")
+
     s = add("profile", lazy("sampo.profile", "cmd_profile"), tier=("Project and settings", 776),
             help="the user's machine-local profile (state/profile/, git-ignored): built from Claude's user and feedback "
                  "memories and a seed, scrubbed of hosts, logins and home paths; every session, subagent, builder brief "

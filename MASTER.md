@@ -170,6 +170,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmgenesis`… [→ files-lib-7](docs/map/files-lib-7.md)
 - `fmkickoff` (`sampo kickoff ID [--json]`, T-3291: a task's plan dry-run before its first edit, from the brief… [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmkalevala_giant` (T-5014, T-4337's slice: a Kalevala generation as a GIANT task, one XL milestone per tower… [→ files-lib-2](docs/map/files-lib-2.md)
+- `fmtargets` (T-5709, `sampo targets [--json]`, the shim for `sampo.targets`): the outcome targets in plugin/data/targets.json, each with a bounded reader of one state file (burn.json, cpu.json, targets.json, refreshed at most every 5 min by the self-check) and its actual, its target and ok | regressed | unmeasured; a regressed one files `sampo capture --source discovered` with its numbers once a day and leads `sampo next`
 - `fmkalevala_levels` (T-5013: the shim for `sampo.kalevala_levels`, one generic level type… [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmkalevala_landed` (T-5025: `sampo/kalevala_landed.py`, what `kalevala select` records of a gen's GIANT task: each… [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmgrants` (T-2374: the install-grant queue [→ files-lib-7](docs/map/files-lib-7.md)
