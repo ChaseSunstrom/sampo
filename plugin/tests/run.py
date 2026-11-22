@@ -106,6 +106,7 @@ OPERATOR_SWITCHES.add("NO_CPU_IDLE")  # T-4988: helpers set it so no test idles 
 OPERATOR_SWITCHES.add("SLOT_LOW")  # T-4570: the post-merge verify's runs yield slots to waiting builders; never a test's
 OPERATOR_SWITCHES.add("NO_LEFTOVER_SCAN")  # T-4720: the test base sets it itself; a caller's never reaches a test of the scan
 OPERATOR_SWITCHES.add("CARGO_CAP_BYTES")  # T-4717: the operator's cap on the shared cargo cache; a test sets its own
+OPERATOR_SWITCHES.add("CARGO_FREE_FLOOR_BYTES")  # T-5874: the free-space floor that shrinks that cap; a test sets its own
 OPERATOR_SWITCHES.add("CARGO_SHARED")  # T-4717: the operator's off switch for the shared cargo target; a test sets its own
 OPERATOR_SWITCHES.add("KNOWN_RED_MIN")  # T-4269: how long a red class's record is believed; a nested run's is its own
 OPERATOR_SWITCHES.add("EVIDENCE_TREE")  # T-3536: the tree an evidence run started on, for the command it runs; a test never inherits it

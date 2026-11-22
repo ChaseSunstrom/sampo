@@ -2736,6 +2736,29 @@ def cargo_cap_bytes(total=None, environ=None):
     return int(min(total * 0.10, CARGO_CAP_MAX))
 
 
+CARGO_FREE_FLOOR_VAR = "SAMPO_CARGO_FREE_FLOOR_BYTES"
+CARGO_FREE_FLOOR = 15 * 10**9  # T-5874: free space on the state disk below which the lane folders' cap shrinks by the shortfall
+
+
+def cargo_free_floor(environ=None):
+    """T-5874: the free space (bytes) the state disk should keep: SAMPO_CARGO_FREE_FLOOR_BYTES when it is a whole number
+    >= 0 (0 turns the floor off), else CARGO_FREE_FLOOR."""
+    environ = os.environ if environ is None else environ
+    try:
+        n = int(str(environ.get("FOREMAN_" + CARGO_FREE_FLOOR_VAR[6:]) or environ.get(CARGO_FREE_FLOOR_VAR) or "").strip())
+    except ValueError:
+        return CARGO_FREE_FLOOR
+    return n if n >= 0 else CARGO_FREE_FLOOR
+
+
+def cargo_free_shortfall(free, environ=None, floor=None):
+    """T-5874: how many bytes the state disk's free space (`free`: the caller reads it, through lanes.disk_usage, which
+    FOREMAN_DISK_FREE pins) is under the floor (`floor`, else cargo_free_floor); 0 when it is over. Arithmetic only.
+    On 2026-11-22 65 GB of lane folders sat under a 91 GB cap (a tenth of the disk) while the disk had 5 GB free: the
+    cap alone never reacted to free space."""
+    return max(0, int((cargo_free_floor(environ) if floor is None else floor) - free))
+
+
 def cargo_config_ours(path):
     """T-4717: whether a cargo config file is one Sampo wrote for a lane (its first line is CARGO_MARK, or T-4717's)."""
     try:

@@ -7050,7 +7050,11 @@ def lane_build_output(p, skip=(), budget=SIZE_BUDGET_S, spent=None):
     details = [f"{os.path.basename(path)} target {human(size)}" for path, size in sorted(rows, key=lambda r: -r[1])]
     details += [f"lane {name} cargo folder {human(size)}" for name, size in sorted(folders, key=lambda r: -r[1])]
     if folders:
-        details.append(f"cargo lane folders {human(own)} of {human(c.cargo_cap_bytes())} cap per project")
+        base, short = c.cargo_cap_bytes(), cargo_shortfall()
+        eff, shrunk = cargo_effective_cap(own, base, short)  # T-5874
+        details.append(f"cargo lane folders {human(own)}: cap {human(base)}, shrunk to {human(eff)}: free disk under its floor "
+                       f"of {human(c.cargo_free_floor())}" if shrunk else
+                       f"cargo lane folders {human(own)} of {human(base)} cap per project")
     if gate:
         details.append(f"gate cargo folder {human(gate)} (one gate or train run at a time builds in it, a run beside it in a private "
                        f"folder; outside the lane cap; sampo tidy --apply removes it when unused for {GATE_UNUSED_DAYS} days "
@@ -7298,7 +7302,28 @@ def _open_task_lanes(p):
         return set()
 
 
-def prune_cargo_cache(p, cap=None, now=None, held=None, budget=None, dry=False, deadline=None):
+def cargo_shortfall(free=None, floor=None):
+    """T-5874: bytes the state disk's free space is under the floor (core.cargo_free_floor): `free` when given, else
+    disk_usage() (FOREMAN_DISK_FREE pins it); 0 when over, or when the disk can't be read."""
+    if free is None:
+        try:
+            free = disk_usage().free
+        except OSError:
+            return 0
+    return c.cargo_free_shortfall(free, floor=floor)
+
+
+def cargo_effective_cap(size, cap=None, short=None):
+    """T-5874: (cap, shrunk): the lane folders' cap for `size` bytes held, min(cap, size - shortfall) when the free-space
+    floor bites (`short`, read when not given). `cap` is core.cargo_cap_bytes when not given."""
+    cap = c.cargo_cap_bytes() if cap is None else cap
+    short = cargo_shortfall() if short is None else short
+    if short and size - short < cap:
+        return max(0, size - short), True
+    return cap, False
+
+
+def prune_cargo_cache(p, cap=None, now=None, held=None, budget=None, dry=False, deadline=None, free=None, floor=None):
     """T-4717, T-4764: bring this project's lane cargo folders (core.cargo_lanes_base of the registered project: no
     other folder, never a link, never one that resolves outside Sampo's cache) under their cap, whole folders, the
     least recently used first (a lane whose task is still open after the others: _open_task_lanes). Never a folder used in the last hour, never one a live process holds (its cwd or open
@@ -7307,12 +7332,15 @@ def prune_cargo_cache(p, cap=None, now=None, held=None, budget=None, dry=False, 
     the cache. When the open files can't be read (no /proc) or the sizing runs out of `budget`, nothing is removed and
     `why` says so (`unsized` too for the latter). `deadline` (a time.monotonic() value) bounds the whole run, the
     sizing, the reading of the holders and each removal: when it passes the rest is left (`out_of_time`, `why` names
-    what stays, for `sampo tidy --apply`). `dry` reports what would go. {before, after, cap, removed: [(folder name,
-    bytes)], skipped: [(name, why)], why}. The project's own target/ and the lanes' worktrees are other folders:
+    what stays, for `sampo tidy --apply`). `dry` reports what would go. T-5874: when the state disk's free space
+    (`free`, read by disk_usage(), FOREMAN_DISK_FREE pins it, when not given and no explicit `cap` is) is under the floor (`floor`, default core.cargo_free_floor),
+    the effective cap is min(cap, size - shortfall) (`cap` in the result, `floor` True), the same rules deciding what
+    may go. {before, after, cap, floor, removed: [(folder name, bytes)], skipped: [(name, why)], why}. The project's own target/ and the lanes' worktrees are other folders:
     never read here."""
+    explicit = cap is not None
     cap = c.cargo_cap_bytes() if cap is None else cap
     now = time.time() if now is None else now
-    res = {"before": 0, "after": 0, "cap": cap, "removed": [], "skipped": [], "why": ""}
+    res = {"before": 0, "after": 0, "cap": cap, "removed": [], "skipped": [], "why": "", "floor": False, "short": 0}
     root = _lanes_root(p.slug)
     if root is None:
         if os.path.islink(c.cargo_lanes_base(p.slug)):
@@ -7330,6 +7358,10 @@ def prune_cargo_cache(p, cap=None, now=None, held=None, budget=None, dry=False, 
         res["unsized"] = res["out_of_time"] = True
         return res
     res["before"] = res["after"] = total
+    if free is not None or not explicit:  # T-5874: an explicit cap alone reads nothing from the disk
+        res["short"] = short = cargo_shortfall(free, floor)
+        cap, res["floor"] = cargo_effective_cap(total, cap, short)
+        res["cap"] = cap
     if total <= cap:
         return res
     reread = held is None and not bounded and not dry  # tidy's unbounded run looks again before each later removal
@@ -7757,8 +7789,14 @@ def auto_prune(p, force=False, budget=AUTO_PRUNE_BUDGET_S, held=None):
         if r["removed"]:
             names = [n for n, _ in r["removed"]]
             more = f" and {len(names) - 3} more" if len(names) > 3 else ""
-            parts.append(f"Cargo: the lane folders were over their cap of {human(r['cap'])}: pruned {len(names)} "
+            why = (f"free disk under its floor of {human(c.cargo_free_floor())}: the cap shrank to {human(r['cap'])}"
+                   if r.get("floor") else f"the lane folders were over their cap of {human(r['cap'])}")  # T-5874
+            parts.append(f"Cargo: {why}: pruned {len(names)} "
                          f"({human(sum(n for _, n in r['removed']))}; the least recently used first): {', '.join(names[:3])}{more}")
+        elif r.get("floor") and r["before"] > 0 and not r.get("out_of_time"):  # T-5874: short of free space, nothing may go
+            parts.append(f"Cargo: free disk under its floor of {human(c.cargo_free_floor())} (short by {human(r['short'])}), "
+                         "but no lane cargo folder can go now (used in the last hour, held by a process or a build, or not removable)"
+                         + (f" ({r['why']})" if r["why"] else ""))
         if r.get("out_of_time"):
             left = [n for n, _ in r["skipped"] if n] if r["skipped"] else []
             parts.append("Cargo: the lane folders may be over their cap: the check ran out of its "
@@ -7900,7 +7938,9 @@ def cargo_cache_findings(p, apply, actions, finding, skip=()):
                            "run sampo tidy again when the machine is quieter"))
     if r["before"] > r["cap"]:
         item = finding(p.slug, "cargo_cache", "action",
-                       f"lane cargo folders {human(r['before'])} are over their cap of {human(r['cap'])} (whole folders, "
+                       f"lane cargo folders {human(r['before'])} are over their cap of {human(r['cap'])}"
+                       + (f" (shrunk from {human(c.cargo_cap_bytes())}: free disk under its floor of "
+                          f"{human(c.cargo_free_floor())})" if r.get("floor") else "") + " (whole folders, "
                        "least recently used first; none used in the last hour or held by a process)",
                        "sampo tidy --apply prunes them oldest-first to the cap", auto=True, bytes=r["before"], cap=r["cap"])
         out.append(item)

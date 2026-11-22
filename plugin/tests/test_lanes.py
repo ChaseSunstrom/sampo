@@ -5555,5 +5555,146 @@ class DefectClassesCached(ForemanTestCase):
         self.assertNotIn("other:", text)
 
 
+import test_cargo_disk as tcd  # noqa: E402  (T-5874: its case class, not its tests, is the base here)
+
+
+class FreeFloor(tcd.RustCase):
+    """T-5874: the lane cargo folders' cap also shrinks when the state disk's free space is under CARGO_FREE_FLOOR: a
+    tenth of the disk never reacted to free space (65 GB of folders under a 91 GB cap, 5 GB free). The free figure is
+    injected: no test here reads the real disk."""
+
+    def setUp(self):
+        super().setUp()
+        self.size = 0
+
+    def folders(self, *ages):
+        """One folder per age (hours), of equal blocks, the same size each: returns (paths, one folder's bytes)."""
+        paths = [self.cfolder(f"f-{i}", age, blocks=6) for i, age in enumerate(ages)]
+        sizes, _ = self.sizes()
+        self.assertEqual(len(set(sizes.values())), 1, "equal folders")
+        return paths, next(iter(sizes.values()))
+
+    def test_the_cap_shrinks_by_the_shortfall_and_the_least_recently_used_go_first(self):
+        paths, s = self.folders(30, 20, 10, 5)
+        floor = 15 * s
+        self.cap(100 * s)  # the cap alone would keep all four
+        r = self.prune(free=floor - 2 * s, floor=floor)  # 2 folders short of the floor
+        self.assertEqual(self.removed(r), self.names(paths[0], paths[1]), "the two least recently used")
+        self.assertEqual(r["after"], 2 * s)
+        self.assertEqual(r["cap"], 2 * s, "the effective cap is named")
+        self.assertTrue(r["floor"])
+
+    def test_free_over_the_floor_removes_nothing(self):
+        paths, s = self.folders(30, 20, 10, 5)
+        floor = 15 * s
+        self.cap(100 * s)
+        for free in (floor, floor + 5 * s):
+            r = self.prune(free=free, floor=floor)
+            self.assertEqual(r["removed"], [], free)
+            self.assertFalse(r["floor"])
+        self.assertTrue(all(os.path.isdir(x) for x in paths))
+
+    def test_the_smaller_of_the_cap_and_the_shrunk_size_rules(self):
+        paths, s = self.folders(30, 20, 10, 5)
+        self.cap(3 * s)  # the cap keeps three; the shortfall of one folder keeps three too
+        r = self.prune(free=14 * s, floor=15 * s)
+        self.assertEqual(self.removed(r), self.names(paths[0]))
+        self.cap(2 * s)  # a cap of two beats a shortfall of one
+        r = self.prune(free=14 * s, floor=15 * s)
+        self.assertEqual(r["after"], 2 * s)
+        self.assertEqual(self.removed(r), self.names(paths[1]))
+
+    def test_a_folder_used_in_the_last_hour_or_held_stays_whatever_the_shortfall(self):
+        paths, s = self.folders(30, 0.5, 20, 10)
+        held = [os.path.join(paths[2], "debug", "deps", "x.rlib")]  # a live process has a file open in the 20 h one
+        self.cap(100 * s)
+        r = self.prune(free=0, floor=10**6 * s, held=held)  # the shortfall is more than the disk holds
+        self.assertEqual(self.removed(r), self.names(paths[0], paths[3]))
+        self.assertTrue(os.path.isdir(paths[1]), "used 30 minutes ago")
+        self.assertTrue(os.path.isdir(paths[2]), "held")
+        self.assertIn(os.path.basename(paths[2]), [n for n, _ in r["skipped"]])
+        self.assertGreater(r["after"], r["cap"], "what is left is not removable")
+
+    def test_a_dry_run_names_what_would_go(self):
+        paths, s = self.folders(30, 20)
+        self.cap(100 * s)
+        r = self.prune(free=0, floor=s, dry=True)
+        self.assertEqual(self.removed(r), self.names(paths[0]))
+        self.assertTrue(all(os.path.isdir(x) for x in paths))
+
+    def pin(self, free, floor):
+        """The state disk's free space pinned the way the other disk tests do (FOREMAN_DISK_FREE), and the floor set."""
+        return unittest.mock.patch.dict(os.environ, {"FOREMAN_DISK_FREE": f"{free}/1000e9",
+                                                      "FOREMAN_CARGO_FREE_FLOOR_BYTES": str(floor)})
+
+    def test_an_explicit_cap_alone_never_reads_the_disk(self):
+        paths, s = self.folders(30, 20)
+        with self.pin(0, 15 * s), unittest.mock.patch.object(slanes, "disk_usage",
+                                                             side_effect=AssertionError("read the disk")):
+            r = self.prune(cap=100 * s)
+        self.assertEqual(r["removed"], [])
+        self.assertFalse(r["floor"])
+
+    def test_the_floor_defaults_to_15_gb_and_the_environment_overrides_it(self):
+        self.assertEqual(c.CARGO_FREE_FLOOR, 15 * 10**9)
+        self.assertEqual(c.cargo_free_floor(environ={}), 15 * 10**9)
+        self.assertEqual(c.cargo_free_floor(environ={"SAMPO_CARGO_FREE_FLOOR_BYTES": "7000"}), 7000)
+        self.assertEqual(c.cargo_free_floor(environ={"SAMPO_CARGO_FREE_FLOOR_BYTES": "0"}), 0, "0 turns it off")
+        for bad in ("", "x", "-3"):
+            self.assertEqual(c.cargo_free_floor(environ={"SAMPO_CARGO_FREE_FLOOR_BYTES": bad}), 15 * 10**9, bad)
+        self.assertEqual(c.cargo_free_shortfall(free=5 * 10**9, environ={}), 10 * 10**9)
+        self.assertEqual(c.cargo_free_shortfall(free=20 * 10**9, environ={}), 0)
+
+    def test_the_default_reads_the_free_space_of_the_state_disk(self):
+        paths, s = self.folders(30, 20, 10)
+        self.cap(100 * s)
+        with self.pin(0, 2 * s):  # the pinned reading doctor, pulse and the train use
+            r = self.prune()
+        self.assertEqual(self.removed(r), self.names(paths[0], paths[1]))
+        with self.pin(10**9, 2 * s):  # more free than the floor
+            self.assertEqual(self.prune()["removed"], [])
+
+    def test_the_auto_prune_line_says_the_disk_was_under_its_floor(self):
+        paths, s = self.folders(30, 20)
+        self.cap(100 * s)
+        with self.pin(0, s):
+            line = slanes.auto_prune(self.p, held=[])
+        self.assertIn("free disk under its floor", line)
+        self.assertNotIn("over their cap", line)
+        self.assertFalse(os.path.exists(paths[0]))
+        self.cap(1)
+        line = slanes.auto_prune(self.p, force=True, held=[])
+        self.assertIn("over their cap", line)
+        self.assertNotIn("free disk", line)
+
+    def test_under_the_floor_with_nothing_removable_the_line_names_the_shortfall(self):
+        paths, s = self.folders(0.5, 0.2)  # both used in the last hour
+        self.cap(100 * s)
+        with self.pin(0, 7 * s):
+            line = slanes.auto_prune(self.p, held=[])
+            again = slanes.auto_prune(self.p, held=[])
+        self.assertIn("free disk under its floor", line)
+        self.assertIn(f"short by {slanes.human(7 * s)}", line)
+        self.assertIn("no lane cargo folder can go", line)
+        self.assertNotIn("\n", line)
+        self.assertEqual(again, "", "a second look so soon says nothing more")
+        self.assertTrue(all(os.path.isdir(x) for x in paths))
+        with self.pin(10**9, 7 * s):  # over the floor: nothing to say
+            self.assertEqual(slanes.auto_prune(self.p, force=True, held=[]), "")
+
+    def test_doctor_shows_the_shrunk_cap_and_why(self):
+        paths, s = self.folders(30, 20)
+        self.cap(100 * s)
+        with self.pin(0, s):
+            r = tcd.d.check_disk(self.tmp, self.low, [(self.p, {})])
+        own = 2 * s
+        self.assertIn(f"cargo lane folders {slanes.human(own)}: cap {slanes.human(100 * s)}, shrunk to "
+                      f"{slanes.human(own - s)}: free disk under its floor of {slanes.human(s)}", r.detail)
+        with self.pin(10**9, s):
+            r = tcd.d.check_disk(self.tmp, self.low, [(self.p, {})])
+        self.assertIn(f"of {slanes.human(100 * s)} cap per project", r.detail)
+        self.assertNotIn("shrunk", r.detail)
+
+
 if __name__ == "__main__":
     unittest.main()
