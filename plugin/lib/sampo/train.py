@@ -50,6 +50,9 @@ _FRAME = re.compile(r'^\s*File ".*", line \d+.*$', re.M)  # a traceback frame: t
 _stem = lambda t: os.path.basename(t).rsplit(".", 1)[0]  # noqa: E731  a test file's module name
 
 
+_WEDGED = object()  # T-5937: build()'s merge found its scratch tree there but unable to reset
+
+
 class _Lost(Exception):
     """T-4728: a scratch worktree the train made is no longer a worktree: something else removed it."""
 
@@ -567,14 +570,127 @@ def _union_map(wt, files):
     return doubled
 
 
-_TEST_FILE = re.compile(r"plugin/tests/[^/\0]+\.py")
 _MARK_LINE = re.compile(rb"(?:<{7}|\|{7}|={7}|>{7})(?: |$)")  # a conflict marker line (after its newline is cut)
-TESTS_KEY = "+tests"  # T-5824: kept[lane id + TESTS_KEY] = the test files the lane's merge resolved by keeping both insertions
+UNION_KEY = "+union"  # T-5824, T-5937: kept[lane id + UNION_KEY] = the .py files the lane's merge resolved by keeping both insertions
+_LIB_PY = re.compile(r"plugin/lib/[^\0]+\.py")  # T-5937: a lib union is proved by the tests the file reaches
+_PY_FILE = re.compile(r"plugin/(?:lib|tests)/[^\0]+\.py")
 
 
-def _tests_only(files):
-    """T-5824: True when there are conflicted files and every one is a plugin/tests/*.py file."""
-    return bool(files) and all(_TEST_FILE.fullmatch(f) for f in files)
+def _py_file(f):
+    """T-5937: True for a .py file of plugin/lib or plugin/tests, the files whose pure insertions are unioned (a hook
+    or bin script such as fmguard.py is not: it parks as before)."""
+    return bool(_PY_FILE.fullmatch(f))
+
+
+def _unionable(files):
+    """T-5937: True when there are conflicted files and each is a map file (_MAP_FILE) or a plugin/lib or plugin/tests
+    .py file: the set _merge_in tries to resolve by keeping both sides (the map merge, the insertion union), a mix of
+    both kinds included."""
+    return bool(files) and all(_MAP_FILE.fullmatch(f) or _py_file(f) for f in files)
+
+
+def _refused_clash(repo, a, b):
+    """T-5937: None when merging commit `b` into `a` (git merge-tree, no tree written to the work folder) does not conflict
+    or every conflict is one the train resolves itself: a map file, or a .py file whose three stages _insertion_union
+    unions. Else (the conflicted files, why): why is '' for a file the train never unions, else the words for a .py file
+    it would not (the same lines edited, a union that does not compile or repeats a name). So a clash the train would
+    park is known before any criteria or gate run, and a pure insertion is left to _merge_in."""
+    r = subprocess.run(["git", "-C", repo, "merge-tree", "--write-tree", "-z", "--no-messages", a, b],
+                       capture_output=True, text=True, errors="surrogateescape")
+    if r.returncode != 1:
+        return None
+    stages, parts = {}, r.stdout.split("\0")[1:]  # the first is the merged tree
+    for rec in parts:
+        if not rec:
+            break
+        head, _, path = rec.partition("\t")
+        fields = head.split()
+        if len(fields) == 3:
+            stages.setdefault(path, {})[fields[2]] = (fields[0], fields[1])
+    files = sorted(stages)
+    if not _unionable(files):
+        return files, ""
+    for f in files:
+        if not _py_file(f):
+            continue
+        got, texts = stages[f], []
+        if sorted(got) != ["1", "2", "3"] or any(m not in ("100644", "100755") for m, _ in got.values()):
+            return files, "a .py file deleted on one side or not a plain file"
+        for n in ("2", "1", "3"):
+            out = subprocess.run(["git", "-C", repo, "cat-file", "blob", got[n][1]], capture_output=True)
+            if out.returncode:
+                return files, "a .py file that could not be read"
+            texts.append(out.stdout)
+        if _insertion_union(*texts) is None:
+            return files, "not a pure insertion on both sides that compiles with no repeated name"
+    return None
+
+
+def _union_proof(p, wt, before, files):
+    """T-5937: '' when the tests the unioned lib `files` reach (cli.affected on the merge in `wt`, since `before`, only those
+    files) ran green there, else why not: no affected command or test found, a timeout, a run of no test, or red. A lib
+    union that compiles can still break behaviour, and a live train runs no gate: this is its only test of the union."""
+    from sampo import cli
+    if p is None:
+        return "no project to find their tests in"
+    try:
+        cmd, tests, _ = cli.affected(c.Project(p.slug, wt, p.dir, p.lane), since=before, only=sorted(files))
+    except Exception as e:
+        return f"no affected tests could be found: {str(e)[:100]}"
+    if not cmd or not tests:
+        return "no test of theirs was found"
+    cwd, cmd, _ = c.normalize_verify(wt, cmd)
+    env, _ = cli._venv_env(wt, cpu_env(p), cmd)
+    code, out = c.run_command(cwd, cmd, c.load_scaled(900), priority=True, env=env)
+    if code == 0:
+        return ""
+    bad = sorted(set(_failed(out)))
+    if code not in (124, 5) and bad:  # as _probe_once: a flake is green on a rerun, a class red on `before` too is the base's
+        again = pm_rerun_cmd(wt, bad) or cmd  # the red classes alone where the runner names them, else the command again
+        code2, out2 = c.run_command(cwd, again, c.load_scaled(900), priority=True, env=env)
+        if not code2:
+            return ""  # green on a rerun of the merged tree: a flake, not the union's
+        named = set(_failed(out2))
+        if named:  # only the classes red twice are blamed; a rerun that names only other classes cleared these: a flake
+            bad = sorted(set(bad) & named)
+            if not bad:
+                return ""  # a rerun that names no class stays red as it was
+        merged = _git(wt, "rev-parse", "HEAD").stdout.strip()
+        if _git(wt, "reset", "-q", "--hard", before).returncode:
+            raise _Lost(wt)
+        try:
+            code3, out3 = c.run_command(cwd, pm_rerun_cmd(wt, bad) or cmd, c.load_scaled(900), priority=True, env=env)
+            based = set(_failed(out3)) if code3 else set()
+        finally:
+            if _git(wt, "reset", "-q", "--hard", merged).returncode or _git(wt, "clean", "-fdq").returncode:
+                raise _Lost(wt)
+        bad = [k for k in bad if k not in based]
+        return f"failing {c.joinmore(bad, 4)}" if bad else ""
+    return {124: "their tests timed out", 5: "their run found no test"}.get(code) or (
+        f"failing {c.joinmore(bad, 4)}" if bad else f"their tests fail: exit {code}")
+
+
+_UNION_PROOFS = {}  # T-5937: (project dir, merged tree sha, files) -> _union_proof's answer, for the land's life
+
+
+def _proved(p, wt, before, files):
+    """T-5937: _union_proof's answer for the merge committed in `wt`, kept per (project, merged tree, files): a build is
+    repeated (the first, each bisection rebuild, a batch check) and each distinct union that proved green is proved once.
+    Only green is kept: the key holds no test command or environment, so a red (or a timeout, or a run of no test, which
+    may be a busy machine's) is proved again. The dict holds the last 256 unions. The files the test run left in `wt` are
+    cleaned after every proof, so no later gate judges them; a clean that fails is a lost tree (_Lost)."""
+    tree = _git(wt, "rev-parse", "HEAD^{tree}").stdout.strip()
+    key = (getattr(p, "dir", None), tree, tuple(sorted(files)))
+    if tree and key in _UNION_PROOFS:
+        return _UNION_PROOFS[key]
+    why = _union_proof(p, wt, before, files)
+    if _git(wt, "clean", "-fdq").returncode:
+        raise _Lost(wt)
+    if tree and p is not None and not why:
+        if len(_UNION_PROOFS) >= 256:
+            _UNION_PROOFS.pop(next(iter(_UNION_PROOFS)))
+        _UNION_PROOFS[key] = why
+    return why
 
 
 def _bound(source):
@@ -690,15 +806,20 @@ def _insertion_union(ours, base, theirs):
         return None
     if have is None or a is None or z is None:
         return None
+    try:  # T-5937: a full compile, not the parse alone: `x = 1` then `global x` in one body parses but does not compile
+        compile(merged, "<union>", "exec", dont_inherit=True)
+    except (SyntaxError, ValueError, RecursionError):
+        return None
     if any(have.count(n) > max(a.count(n), z.count(n)) for n in set(have)):
         return None
     return merged
 
 
-def _union_tests(wt, files):
-    """T-5824: resolve the merge in `wt`, conflicted only in test files `files`: each file's three index stages through
-    _insertion_union. All results are read first and written only when every one is a union (a plain file, all three
-    stages present). The list of files, or None leaving the merge as it was, for the caller to abort."""
+def _union_files(wt, files):
+    """T-5824, T-5937: resolve the merge in `wt`, conflicted in the .py files `files` (plugin/lib code or tests): each
+    file's three index stages through _insertion_union. All results are read first and written only when every one is a
+    union (a plain file, all three stages present). The list of files, or None leaving the merge as it was, for the
+    caller to abort."""
     stages = {}  # path: {stage: mode}
     for rec in _git(wt, "ls-files", "-u", "-z").stdout.split("\0"):
         head, _, path = rec.partition("\t")
@@ -709,7 +830,7 @@ def _union_tests(wt, files):
     for f in files:
         got = stages.get(f, {})
         if sorted(got) != ["1", "2", "3"] or any(m not in ("100644", "100755") for m in got.values()) \
-                or os.path.islink(os.path.join(wt, f)):
+                or _plain_file(wt, f) is None:  # T-5937: any .py file now, so the link checks every union has (T-5836)
             return None
         texts = []
         for n in ("2", "1", "3"):
@@ -722,38 +843,60 @@ def _union_tests(wt, files):
             return None
         done[f] = text
     for f, data in done.items():
-        with open(os.path.join(wt, f), "wb") as fh:
-            fh.write(data)
-        if _git(wt, "add", "--", f).returncode:
+        if not _write_plain(wt, f, data) or _git(wt, "add", "--", f).returncode:
             return None
     return sorted(done)
 
 
-def _merge_in(wt, b, tip, log, kept=None, moved=None):
+def _merge_in(wt, b, tip, log, kept=None, moved=None, p=None):
     """Merge `tip` into the scratch tree; a conflict is aborted and logged (id, files). The new head sha or None.
     T-4375: a conflict only in docs/map/*.md entries is resolved keeping both sides' lines, the files recorded in
-    `kept` (lane id: files) for the train to say and follow up. T-5824: a conflict only in plugin/tests/*.py files where
-    every hunk is a pure insertion (both sides only added lines at that spot) keeps ours then theirs, the files recorded
-    in `kept` under the lane id + TESTS_KEY; the train's gate judges the result as it does any merge. T-5381: map entries
-    moved to keep a file under its cap are recorded in `moved` (lane id: [str])."""
+    `kept` (lane id: files) for the train to say and follow up. T-5824, T-5937: a conflict only in .py files (plugin/lib
+    code and tests) and map files, where every .py hunk is a pure insertion (both sides only added lines at that spot)
+    and the union compiles and binds no top-level name twice, keeps ours then theirs, the .py files recorded
+    in `kept` under the lane id + UNION_KEY; the train's gate judges the result as it does any merge. T-5937: a union
+    of a plugin/lib file is also proved by the tests that file reaches (_union_proof, project `p`), run on the merged
+    commit before it is kept (once per distinct union: _proved): red, a timeout or no test found parks the lane. The
+    `test_union` ledger event and the `test_merged` key of the train's result keep the names T-5824 gave them, when
+    only test files were unioned: other readers (ledger consumers, `sampo lane report`, the tests) look for those exact
+    names, and the files they list now include lib files too. T-5381: map entries moved to keep a file under its cap
+    are recorded in `moved` (lane id: [str])."""
     ident = ("-c", "user.name=sampo", "-c", "user.email=sampo@localhost")
     msg = f"Merge {b.id}: {b.title}"
     if kept is not None:
         kept.pop(b.id, None)
-        kept.pop(b.id + TESTS_KEY, None)
+        kept.pop(b.id + UNION_KEY, None)
     before = _git(wt, "rev-parse", "HEAD").stdout.strip()
     r = _git(wt, *ident, "merge", "--no-ff", "-m", msg, tip)
     if not r.returncode:
         return _over_cap(wt, b, before, log, moved)
     files = [f for f in _git(wt, "diff", "--name-only", "--diff-filter=U", "-z").stdout.split("\0") if f]
-    doubled = _union_map(wt, files) if kept is not None and _map_only(files) else None
-    unioned = _union_tests(wt, files) if kept is not None and doubled is None and _tests_only(files) else None
-    if unioned is not None and not _git(wt, *ident, "commit", "-m", msg).returncode:
-        kept[b.id + TESTS_KEY] = unioned
-        return _over_cap(wt, b, before, log, moved)
-    if doubled is not None and not _git(wt, *ident, "commit", "-m", msg).returncode:
+    doubled = unioned = None
+    if kept is not None and _unionable(files):  # T-5937: map files and .py files in one set; any refusal aborts all
+        maps, pys = [f for f in files if not _py_file(f)], [f for f in files if _py_file(f)]
+        doubled = _union_map(wt, maps) if maps else []
+        unioned = _union_files(wt, pys) if pys and doubled is not None else []
+        if doubled is None or unioned is None:
+            doubled = unioned = None
+    if unioned is not None and doubled is not None and not _git(wt, *ident, "commit", "-m", msg).returncode:
+        libs = [f for f in unioned if _LIB_PY.fullmatch(f)]
+        try:
+            why = _proved(p, wt, before, libs) if libs else ""
+            if why:  # T-5937: a union that compiles can still break behaviour: only its own tests say it does not
+                if _git(wt, "reset", "-q", "--hard", before).returncode or _git(wt, "clean", "-fdq").returncode:
+                    raise _Lost(wt)  # a tree that will not reset is lost, not a lane left out for a conflict
+        except _Lost:
+            if not os.path.exists(os.path.join(wt, ".git")):
+                return None  # gone under the merge: the callers' loss checks (build's wt_gone, _lost_check) take it from here
+            raise
+        if why:
+            log.append((b.id, f"its union keeping both sides' added lines in {c.joinmore(libs, 4)} fails the tests that "
+                              f"file reaches: {why}"))
+            return None
         if doubled:  # T-5472: only a line kept twice needs a read; a clean key-aware merge needs none
             kept[b.id] = sorted(doubled)
+        if unioned:
+            kept[b.id + UNION_KEY] = unioned
         return _over_cap(wt, b, before, log, moved)
     _git(wt, "merge", "--abort")
     log.append((b.id, "conflicts with an earlier lane in the train" + (f": {c.joinmore(files, 8)}" if files else "")))
@@ -1019,11 +1162,10 @@ def _probe(p, main, base, b, tip, notes, tests=True):
     classes rerun once on base+lane (green: a flake) and then on the bare base (red there too: the base's); each goes
     on to the gates with a line in `notes`."""
     from sampo import cli
-    r = _git(main, "merge-tree", "--write-tree", "--name-only", "--no-messages", base, tip)
-    if r.returncode == 1:  # 1 is a conflict; any other failure (an old git) leaves it to the train's own merge
-        files = [f for f in r.stdout.splitlines()[1:] if f]  # the first line is the merged tree
-        if not _map_only(files):  # T-4375: a clash only in map entries is merged keeping both sides, by the train
-            return "conflicts with the base" + (f": {c.joinmore(files, 8)}" if files else "")
+    refused = _refused_clash(main, base, tip)  # an old git without merge-tree: None, left to the train's own merge
+    if refused:  # T-4375, T-5937: a clash only in map entries and unionable .py insertions is the train's to merge
+        files, why = refused
+        return "conflicts with the base" + (f": {c.joinmore(files, 8)}" if files else "") + (f" ({why})" if why else "")
     if not tests:  # T-3770: the gate runs this lane's affected tests itself, and a red gate names its lane (T-3602)
         return ""
 
@@ -2095,26 +2237,32 @@ def _run(p, main, ids, defer_verify=False, judged=None):
         """T-4728: True when the scratch tree's folder is no longer a worktree (its .git file is gone with it)."""
         return not os.path.exists(os.path.join(wt, ".git"))
 
-    def ensure_wt():
+    def ensure_wt(wedged=False):
         """T-4728: the scratch tree is the train's own, yet something else removed it (2026-11-15: a probe then ran in a folder
         that was not there and the train stopped on "base probe inconclusive ... exit 127"). Said by what it is: the first loss
         rebuilds the tree once, in a new folder at the commit it had reached (every state of it is a commit, kept by the
-        repo), and the train goes on; a second loss stops it, nothing landed. Only the train's own folders are ever removed."""
+        repo), and the train goes on; a second loss stops it, nothing landed. Only the train's own folders are ever removed.
+        T-5937: `wedged` rebuilds a tree that is still there but would not reset (_merge_in raised _Lost): not a loss of the
+        tree, so it does not count toward the second-loss stop; build() bounds it to two rebuilds a lane."""
         nonlocal wt
-        if not wt_gone():
+        if not wedged and not wt_gone():
             return
-        lost[0] += 1
-        c.log_event(p, "lane_train_wt_gone", data={"n": lost[0], "at": head[0][:9], **c.scratch_loss(wt)})  # T-4735
-        if lost[0] > 1:
-            raise c.PolicyError(f"{WT_GONE} again, at {head[0][:9]}: the second loss in this train, so it stops here with "
-                                "nothing landed and no lane blamed; run it again")
+        if wedged:
+            c.log_event(p, "lane_train_wt_wedged", data={"at": head[0][:9]})
+        else:
+            lost[0] += 1
+            c.log_event(p, "lane_train_wt_gone", data={"n": lost[0], "at": head[0][:9], **c.scratch_loss(wt)})  # T-4735
+            if lost[0] > 1:
+                raise c.PolicyError(f"{WT_GONE} again, at {head[0][:9]}: the second loss in this train, so it stops here with "
+                                    "nothing landed and no lane blamed; run it again")
         new = c.scratch_tree("sampo-train-", main)  # a fresh path: the dead registration is the finally's to prune
         olds.append(new)  # the finally removes each folder the train made, and only those
         r = _git(main, "worktree", "add", "-q", "--detach", new, head[0])
         if r.returncode:
             raise c.PolicyError(f"{WT_GONE}, and it could not be rebuilt at {head[0][:9]}: {r.stderr.strip()[:300]}")
         wt = new
-        notes.append(("gate", f"{WT_GONE}; rebuilt it once at {head[0][:9]} and went on"))
+        notes.append(("gate", f"a scratch tree would not reset; rebuilt it at {head[0][:9]} and went on" if wedged else
+                      f"{WT_GONE}; rebuilt it once at {head[0][:9]} and went on"))
 
     def here():
         ensure_wt()
@@ -2152,6 +2300,13 @@ def _run(p, main, ids, defer_verify=False, judged=None):
             passed[key] = row
         return row, True
 
+    def merge1(b, tip):
+        """_merge_in on the scratch tree; _WEDGED when it raised _Lost for a tree that is still there (T-5937)."""
+        try:
+            return _merge_in(wt, b, tip, left, kept_maps, moved_maps, p)
+        except _Lost:
+            return None if wt_gone() else _WEDGED
+
     def build(start, lanes):
         """Reset the scratch tree to `start`, merge `lanes`; [(brief, sha after)] of those that merged."""
         reset(start)
@@ -2159,11 +2314,24 @@ def _run(p, main, ids, defer_verify=False, judged=None):
         for b, tip in lanes:
             n = len(left)
             ensure_wt()
-            sha = _merge_in(wt, b, tip, left, kept_maps, moved_maps)
+            sha = merge1(b, tip)
+            if sha is _WEDGED:  # T-5937: the tree is there but will not reset: a new one at head[0], one retry, then this lane only
+                del left[n:]
+                ensure_wt(wedged=True)
+                sha = merge1(b, tip)
+                if sha is _WEDGED:
+                    del left[n:]
+                    left.append((b.id, "its scratch tree would not reset after the tests of its union ran, twice: left "
+                                       "out for that, not for a conflict; run it again"))
+                    ensure_wt(wedged=True)  # the lanes after it merge on a tree that works
+                    sha = None
             if not sha and wt_gone():  # T-4728: the tree went under the merge: that is no conflict, and no lane is left out for it
                 del left[n:]
                 ensure_wt()  # a second loss stops the train here
-                sha = _merge_in(wt, b, tip, left, kept_maps, moved_maps)
+                sha = merge1(b, tip)
+                if sha is _WEDGED:
+                    ensure_wt(wedged=True)
+                    sha = None
                 if not sha and wt_gone():
                     ensure_wt()
             if sha:
@@ -2621,7 +2789,7 @@ def _run(p, main, ids, defer_verify=False, judged=None):
         lanes.log_landed(p, ",".join(ids_in), base, tip)  # T-4805: only now it landed; ship and release read it to skip these
         maps =[(i, kept_maps[i]) for i in ids_in if i in kept_maps]  # T-4375: only the lanes that landed this way
         map_task = _map_follow_up(p, maps) if maps else ""
-        unions = [(i, kept_maps[i + TESTS_KEY]) for i in ids_in if i + TESTS_KEY in kept_maps]  # T-5824
+        unions = [(i, kept_maps[i + UNION_KEY]) for i in ids_in if i + UNION_KEY in kept_maps]  # T-5824
         if unions:
             c.log_event(p, "test_union", data={"lanes": {i: fs for i, fs in unions}})
         part = next((r["affected"] for r in green if r.get("affected")), None) or (live and "live")  # T-5444: verified behind
@@ -4091,10 +4259,10 @@ def _land_trains(p, main, batch, owed, closer=None):
             pipes.discard(b.id)
             if pipeline_lane(main, tested[b.id]):
                 pipes.add(b.id)
-            r = _git(main, "merge-tree", "--write-tree", "--name-only", "--no-messages", "HEAD", tested[b.id] or "HEAD")
-            files = [f for f in r.stdout.splitlines()[1:] if f] if r.returncode == 1 else []
-            if r.returncode == 1 and not _map_only(files):  # T-4375: a map-only clash is the train's to merge
-                parked.append((b.id, f"conflicts with {branch}" + (f": {c.joinmore(files, 8)}" if files else "")))
+            if refused := _refused_clash(main, "HEAD", tested[b.id] or "HEAD"):  # T-4375, T-5937: a map clash and a .py insertion are the train's to merge
+                files, why = refused
+                parked.append((b.id, f"conflicts with {branch}" + (f": {c.joinmore(files, 8)}" if files else "")
+                               + (f" ({why})" if why else "")))
                 note_park(parked[-1:])  # T-4252: said now, not at the land's end
             else:
                 ready.append(b.id)
@@ -5816,7 +5984,7 @@ def _batch_once(p, main, b, tip, peers, run, base):
         merged, log = [], []
         for x, t in [(b, tip), *peers]:
             _lost_check(wt)
-            if _merge_in(wt, x, t, log, kept={}):
+            if _merge_in(wt, x, t, log, kept={}, p=p):
                 merged.append((x, t))
             elif x.id == b.id:
                 _lost_check(wt)
@@ -6241,7 +6409,7 @@ def _shape_batch_once(p, main, b, tip, peers, run, base):
         merged, log = [], []
         for x, t in [(b, tip), *peers]:
             _lost_check(wt)
-            if _merge_in(wt, x, t, log, kept={}):
+            if _merge_in(wt, x, t, log, kept={}, p=p):
                 merged.append((x, t))
             elif x.id == b.id:
                 _lost_check(wt)

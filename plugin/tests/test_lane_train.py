@@ -740,9 +740,9 @@ class Train(TrainCase):
         self.assertIn(f"left out {b}: conflicts with an earlier lane in the train: {self.TESTF}", r.stdout)
         self.assertEqual(self.read(self.TESTF).count("class Same"), 1)
 
-    def test_insertion_union_parks_a_conflict_in_a_file_that_is_not_a_test(self):
-        """T-5824: the same append-append clash in plugin/lib code parks: only plugin/tests/*.py is unioned."""
-        code = "plugin/lib/thing.py"
+    def test_insertion_union_parks_a_conflict_in_a_file_that_is_not_python(self):
+        """T-5824, T-5937: the same append-append clash in a non-python file parks: only .py and map files are unioned."""
+        code = "plugin/lib/thing.txt"
         self.map_base(code, "x = 1\n")
         a = self.lane(1, code, "x = 1\ny = 2\n")
         b = self.lane(2, code, "x = 1\nz = 3\n")

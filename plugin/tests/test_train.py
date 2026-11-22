@@ -21,7 +21,7 @@ from unittest import mock
 import test_lane_land
 from test_accept_check import AcceptCase, stub
 from test_express_lane import ExpressBase
-from test_lane_train import TrainCase
+from test_lane_train import AffectedBase, TrainCase
 from test_postmerge import PmCase
 
 from sampo import cli
@@ -561,6 +561,339 @@ class ExpressTrainsTogether(ExpressBase):
         self.assertIn(f"{ids[1]} is express (performance, security or urgent): it trains next, first in the train, ahead of the ordinary lanes",
                       r.stderr)
 
+
+class InsertionUnionLib(AffectedBase):
+    """T-5937: a lane whose conflicts are pure insertions in .py files of plugin/lib and plugin/tests (mixed with map
+    files) merges without parking when each unioned file compiles, binds no top-level name twice, and the tests a lib
+    file reaches pass on the union. The fixture's rule test (test_doctor) is the one a lib change reaches: it is red
+    when plugin/lib/xthing.py holds BOOM."""
+    LIB = "plugin/lib/xthing.py"
+    BASE = "def old():\n    return 0\n"
+    DOCTOR = ("import os\nimport unittest\n\n\nclass Doctor(unittest.TestCase):\n    def test_it(self):\n"
+              "        if os.path.exists('plugin/lib/xthing.py'):\n"
+              "            with open('plugin/lib/xthing.py') as f:\n                self.assertNotIn('BOOM', f.read())\n")
+
+    def setUp(self):
+        super().setUp()
+        self.commit("plugin/tests/test_doctor.py", self.DOCTOR)
+
+    @staticmethod
+    def fn(name, body="1"):
+        return f"\n\ndef {name}():\n    return {body}\n"
+
+    def commit(self, name, text, cwd=None):
+        path = os.path.join(cwd or self.repo, name)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(text)
+        self.git("add", name, cwd=cwd)
+        self.git("commit", "-qm", f"write {name}", cwd=cwd)
+
+    def based(self, name=LIB, text=BASE):
+        self.commit(name, text)
+
+    def also(self, n, name, text):
+        """One more file in lane n's commit history."""
+        self.commit(name, text, cwd=os.path.join(self.tmp, f"lane{n}"))
+
+    def read(self, name):
+        with open(os.path.join(self.repo, name)) as f:
+            return f.read()
+
+    def parked(self, r, tid, files=LIB):
+        self.assertIn(f"left out {tid}: conflicts with an earlier lane in the train: {files}", r.stdout + r.stderr)
+
+    def test_two_lanes_that_each_append_a_function_to_a_lib_file_both_land(self):
+        self.based()
+        a = self.lane(1, self.LIB, self.BASE + self.fn("lane_one"))
+        b = self.lane(2, self.LIB, self.BASE + self.fn("lane_two", "2"))
+        r = self.train(a, b)
+        self.assertNotIn("left out", r.stdout)
+        for tid in (a, b):
+            self.assertTrue(self.meta(tid)["lane_stop"].startswith("merged"), r.stdout)
+        self.assertEqual(self.read(self.LIB), self.BASE + self.fn("lane_one") + self.fn("lane_two", "2"))
+        self.assertIn(f"merged {b} keeping both sides' added lines in {self.LIB}", r.stdout)
+        self.assertEqual(self.git("ls-files", "-u"), "")
+
+    def test_a_lane_and_a_trunk_that_moved_under_it_each_adding_a_function_at_one_spot_merge(self):
+        self.based()
+        a = self.lane(1, self.LIB, self.BASE + self.fn("lane_one"))
+        self.commit(self.LIB, self.BASE + self.fn("trunk_two", "2"))
+        r = self.train(a)
+        self.assertNotIn("left out", r.stdout)
+        self.assertTrue(self.meta(a)["lane_stop"].startswith("merged"), r.stdout + r.stderr)
+        text = self.read(self.LIB)
+        self.assertIn("def lane_one", text)
+        self.assertIn("def trunk_two", text)
+        self.assertEqual(self.git("ls-files", "-u"), "")
+
+    def test_a_lib_file_a_test_file_and_a_map_entry_in_one_conflict_set_all_union(self):
+        tf, mp = "plugin/tests/test_xthing.py", "docs/map/ops.md"
+        entry = "- `ops.py`: does the work.\n"
+        for name, text in ((self.LIB, self.BASE), (tf, "import unittest\n"), (mp, entry)):
+            self.based(name, text)
+        a = self.lane(1, self.LIB, self.BASE + self.fn("lane_one"))
+        b = self.lane(2, self.LIB, self.BASE + self.fn("lane_two", "2"))
+        for n, tag in ((1, "one"), (2, "two")):
+            self.also(n, tf, "import unittest\n" + f"\n\nclass T{tag}(unittest.TestCase):\n    pass\n")
+            self.also(n, mp, entry.rstrip("\n") + f" Lane {tag} adds this.\n")
+        r = self.train(a, b)
+        self.assertNotIn("left out", r.stdout)
+        for tid in (a, b):
+            self.assertTrue(self.meta(tid)["lane_stop"].startswith("merged"), r.stdout)
+        self.assertIn("def lane_one", self.read(self.LIB))
+        self.assertIn("def lane_two", self.read(self.LIB))
+        self.assertIn("class Tone", self.read(tf))
+        self.assertIn("class Ttwo", self.read(tf))
+        self.assertIn("Lane one adds this. Lane two adds this.", self.read(mp))
+        self.assertEqual(self.git("ls-files", "-u"), "")
+
+    def test_a_same_line_edit_in_a_lib_file_still_parks(self):
+        self.based()
+        a = self.lane(1, self.LIB, self.BASE.replace("return 0", "return 1"))
+        b = self.lane(2, self.LIB, self.BASE.replace("return 0", "return 2"))
+        r = self.train(a, b, check=False)
+        self.parked(r, b)
+        self.assertIn("return 1", self.read(self.LIB))
+
+    def test_a_union_that_does_not_compile_still_parks(self):
+        """Each side compiles alone; `x = 1` then `global x` in one body is a SyntaxError no per-block parse sees."""
+        self.based(self.LIB, "def f():\n    pass\n")
+        a = self.lane(1, self.LIB, "def f():\n    pass\n    x = 1\n")
+        b = self.lane(2, self.LIB, "def f():\n    pass\n    global x\n")
+        r = self.train(a, b, check=False)
+        self.parked(r, b)
+        self.assertNotIn("global x", self.read(self.LIB))
+
+    def test_a_def_both_lanes_added_still_parks(self):
+        self.based()
+        a = self.lane(1, self.LIB, self.BASE + self.fn("same", "1"))
+        b = self.lane(2, self.LIB, self.BASE + self.fn("same", "2"))
+        r = self.train(a, b, check=False)
+        self.parked(r, b)
+        self.assertEqual(self.read(self.LIB).count("def same"), 1)
+
+    def test_one_file_that_is_not_a_pure_insertion_parks_the_whole_set(self):
+        self.based()
+        other = "plugin/lib/ything.py"
+        self.based(other, "a = 1\n")
+        a = self.lane(1, self.LIB, self.BASE + self.fn("lane_one"))
+        b = self.lane(2, self.LIB, self.BASE + self.fn("lane_two", "2"))
+        self.also(1, other, "a = 2\n")
+        self.also(2, other, "a = 3\n")
+        r = self.train(a, b, check=False)
+        self.assertIn(f"left out {b}: conflicts with an earlier lane in the train", r.stdout)
+        self.assertNotIn("def lane_two", self.read(self.LIB))
+        self.assertEqual(self.git("ls-files", "-u"), "")
+
+    def test_a_compile_error_in_the_union_is_refused_by_the_union_itself(self):
+        base = b"def f():\n    pass\n"
+        self.assertIsNone(train._insertion_union(base + b"    x = 1\n", base, base + b"    global x\n"))
+        self.assertIsNotNone(train._insertion_union(base + b"    x = 1\n", base, base + b"    y = 2\n"))
+
+    def test_a_lib_union_whose_affected_test_fails_parks_the_lane(self):
+        """The union compiles and repeats no name, but the test the lib file reaches is red on it: the lane is left
+        out for that, the merge undone, the first lane's function still there."""
+        self.based()
+        a = self.lane(1, self.LIB, self.BASE + self.fn("lane_one"))
+        b = self.lane(2, self.LIB, self.BASE + self.fn("lane_two", "'BOOM'"))
+        r = self.train(a, b, check=False)
+        self.assertIn(f"left out {b}: its union keeping both sides' added lines in {self.LIB} fails the tests that file "
+                      "reaches", r.stdout)
+        self.assertTrue(self.meta(a)["lane_stop"].startswith("merged"), r.stdout)
+        self.assertNotIn("BOOM", self.read(self.LIB))
+        self.assertEqual(self.git("ls-files", "-u"), "")
+
+    def test_a_test_file_union_runs_no_affected_tests_of_its_own(self):
+        """Only a union of a plugin/lib file is proved before the merge commit; the gate judges a test file's."""
+        from sampo import core as c
+        tf = "plugin/tests/test_xthing.py"
+        self.based(tf, "import unittest\n")
+        self.based()
+        tids = []
+        for n, who in ((1, "One"), (2, "Two")):
+            tids.append(self.lane(n, tf, "import unittest\n\n\nclass %s(unittest.TestCase):\n    pass\n" % who))
+            self.also(n, self.LIB, self.BASE + self.fn("lane_" + who.lower()))
+        p, wt = c.find_project(self.repo), os.path.join(self.tmp, "union-wt")
+        self.git("worktree", "add", "-q", "--detach", wt, "HEAD")
+        briefs = {b.id: b for b in c.load_briefs(p)}
+        seen = []
+        with mock.patch.object(train, "_union_proof", side_effect=lambda *a: seen.append(a[3]) or ""):
+            for n, tid in ((1, tids[0]), (2, tids[1])):
+                self.assertTrue(train._merge_in(wt, briefs[tid], self.git("rev-parse", f"foreman/lane{n}"), [], kept={}, p=p))
+        self.assertEqual(seen, [[self.LIB]], "the lib file's union was proved once, the test file's was not")
+
+    def test_a_hook_or_bin_script_is_no_union_candidate(self):
+        """Only plugin/lib and plugin/tests .py files are unioned: the same append clash in a hook script parks."""
+        hook = "plugin/hooks/guardthing.py"
+        self.based(hook, self.BASE)
+        a = self.lane(1, hook, self.BASE + self.fn("lane_one"))
+        b = self.lane(2, hook, self.BASE + self.fn("lane_two", "2"))
+        r = self.train(a, b, check=False)
+        self.parked(r, b, hook)
+        self.assertEqual([train._unionable([f]) for f in (hook, "plugin/bin/x.py", "x.py", "plugin/lib/a/b.py",
+                                                        "plugin/tests/test_a.py", "docs/map/ops.md", "MASTER.md")],
+                         [False, False, False, True, True, True, True])
+
+    def proof(self, affected, ran=None):
+        """_union_proof's answer with cli.affected and the run of its command stubbed (no process is started)."""
+        from sampo import cli, core as c
+        p = c.find_project(self.repo)
+        with mock.patch.object(cli, "affected", **({"side_effect": affected} if isinstance(affected, Exception)
+                                                  else {"return_value": affected})), \
+                mock.patch.object(train.c, "run_command", **({"side_effect": ran} if isinstance(ran, list)
+                                                              else {"return_value": ran or (0, "")})):
+            return train._union_proof(p, self.repo, "HEAD", [self.LIB])
+
+    def test_a_class_red_on_the_base_too_is_not_blamed_on_the_union(self):
+        """The red classes rerun once on the tree before the merge (as the probe does): red there is the base's."""
+        aff, red = ("true", ["t.py"], set()), (1, "FAIL: test_it (test_a.A.test_it)\nFAILED (failures=1)")
+        green = (0, "")
+        self.assertEqual(self.proof(aff, [red, red, red]), "", "red on the base too")
+        self.assertIn("test_a.A", self.proof(aff, [red, red, green]), "red again on the merge, green on the base: the union's")
+        head = self.git("rev-parse", "HEAD")
+        self.proof(aff, [red, red, red])
+        self.assertEqual(self.git("rev-parse", "HEAD"), head, "the merged commit is restored after the base rerun")
+
+    def test_a_class_red_once_and_green_on_a_rerun_of_the_merged_tree_is_a_flake_not_the_unions(self):
+        """The red classes run once more on the merge before the base: green there, the union is not blamed."""
+        aff, red = ("true", ["t.py"], set()), (1, "FAIL: test_it (test_a.A.test_it)\nFAILED (failures=1)")
+        self.assertEqual(self.proof(aff, [red, (0, "")]), "")
+
+    def test_a_proof_leaves_no_untracked_file_in_the_tree_the_gate_judges_next(self):
+        """A test run may write files: they are cleaned after the proof, green or red, so no later gate sees them."""
+        from sampo import core as c
+        self.based()
+        tids = [self.lane(n, self.LIB, self.BASE + self.fn(f"lane_{n}", str(n))) for n in (1, 2)]
+        p, wt = c.find_project(self.repo), os.path.join(self.tmp, "union-wt")
+        self.git("worktree", "add", "-q", "--detach", wt, "HEAD")
+        briefs, start = {b.id: b for b in c.load_briefs(p)}, self.git("rev-parse", "HEAD")
+
+        def proof(why):
+            def run(*a):
+                with open(os.path.join(a[1], "junk.txt"), "w") as f:
+                    f.write("left by a test run")
+                return why
+            return run
+        for why in ("", "failing t.A"):
+            train._UNION_PROOFS.clear()
+            self.git("reset", "-q", "--hard", start, cwd=wt)
+            with mock.patch.object(train, "_union_proof", side_effect=proof(why)):
+                for n, tid in ((1, tids[0]), (2, tids[1])):
+                    train._merge_in(wt, briefs[tid], self.git("rev-parse", f"foreman/lane{n}"), [], kept={}, p=p)
+            self.assertFalse(os.path.exists(os.path.join(wt, "junk.txt")), f"proof {why!r}")
+
+    def test_a_rerun_that_names_only_other_classes_cleared_the_first_red_ones(self):
+        """A flake: the first run failed A, the rerun of A fails B (not A). A is not blamed; a rerun that names no class
+        at all (a crash) leaves the first classes red."""
+        aff, red = ("true", ["t.py"], set()), (1, "FAIL: test_it (test_a.A.test_it)\nFAILED (failures=1)")
+        other, crash = (1, "FAIL: test_it (test_b.B.test_it)\nFAILED (failures=1)"), (1, "Traceback: boom")
+        self.assertEqual(self.proof(aff, [red, other]), "", "A cleared on its rerun")
+        self.assertIn("test_a.A", self.proof(aff, [red, crash, (0, "")]), "a rerun that names no class stays red")
+
+    def test_a_tree_that_wedges_under_a_red_proof_costs_that_lane_only_and_the_train_goes_on(self):
+        """The lib test leaves a git lock in the scratch tree's git dir, so the reset after its red proof fails: the
+        train rebuilds the tree once and retries, then leaves that one lane out; the lane before it still lands."""
+        doctor = self.DOCTOR.replace("            with open", "            s = open('plugin/lib/xthing.py').read()\n"
+                                     "            if 'BOOM' in s:\n"
+                                     "                g = open('.git').read().split(':', 1)[1].strip()\n"
+                                     "                open(os.path.join(g, 'index.lock'), 'w').close()\n"
+                                     "            with open")
+        self.commit("plugin/tests/test_doctor.py", doctor)
+        self.based()
+        a = self.lane(1, self.LIB, self.BASE + self.fn("lane_one"))
+        b = self.lane(2, self.LIB, self.BASE + self.fn("lane_two", "'BOOM'"))
+        r = self.train(a, b, check=False)
+        self.assertIn(f"left out {b}", r.stdout + r.stderr)
+        self.assertTrue(self.meta(a)["lane_stop"].startswith("merged"), r.stdout + r.stderr)
+        self.assertNotIn("BOOM", self.read(self.LIB))
+
+    def test_a_rebuild_reuses_the_proof_of_a_union_it_already_made(self):
+        """build() merges again for each bisection rebuild: each distinct union is proved once, red or green."""
+        from sampo import core as c
+        self.based()
+        tids = [self.lane(n, self.LIB, self.BASE + self.fn(f"lane_{n}", str(n))) for n in (1, 2)]
+        p, wt = c.find_project(self.repo), os.path.join(self.tmp, "union-wt")
+        self.git("worktree", "add", "-q", "--detach", wt, "HEAD")
+        briefs = {b.id: b for b in c.load_briefs(p)}
+        tips, start = [self.git("rev-parse", f"foreman/lane{n}") for n in (1, 2)], self.git("rev-parse", "HEAD")
+        calls = []
+        with mock.patch.object(train, "_union_proof", side_effect=lambda *a: calls.append(a[3]) or ""):
+            for _ in range(3):
+                self.git("reset", "-q", "--hard", start, cwd=wt)
+                for tid, tip in zip(tids, tips):
+                    self.assertTrue(train._merge_in(wt, briefs[tid], tip, [], kept={}, p=p))
+        self.assertEqual(calls, [[self.LIB]], "three builds, one proof")
+        train._UNION_PROOFS.clear()
+        red = []
+        with mock.patch.object(train, "_union_proof", side_effect=lambda *a: red.append(1) or "failing t.A"):
+            for _ in range(2):
+                self.git("reset", "-q", "--hard", start, cwd=wt)
+                log = []
+                self.assertTrue(train._merge_in(wt, briefs[tids[0]], tips[0], log, kept={}, p=p))
+                self.assertIsNone(train._merge_in(wt, briefs[tids[1]], tips[1], log, kept={}, p=p))
+                self.assertIn("failing t.A", log[0][1])
+        self.assertEqual(len(red), 2, "a red union is proved again: the cache holds green answers only")
+
+    def test_a_tree_that_will_not_reset_after_a_red_proof_is_lost_not_left_out(self):
+        from sampo import core as c
+        self.based()
+        tids = [self.lane(n, self.LIB, self.BASE + self.fn(f"lane_{n}", str(n))) for n in (1, 2)]
+        p, wt = c.find_project(self.repo), os.path.join(self.tmp, "union-wt")
+        self.git("worktree", "add", "-q", "--detach", wt, "HEAD")
+        briefs = {b.id: b for b in c.load_briefs(p)}
+        real, log = train._git, []
+
+        def git(cwd, *a, **k):
+            if a[:2] == ("reset", "-q") or a[:1] == ("reset",):
+                return mock.Mock(returncode=128, stdout="", stderr="boom")
+            return real(cwd, *a, **k)
+        self.assertTrue(train._merge_in(wt, briefs[tids[0]], self.git("rev-parse", "foreman/lane1"), log, kept={}, p=p))
+        with mock.patch.object(train, "_union_proof", return_value="failing t.A"), \
+                mock.patch.object(train, "_git", side_effect=git):
+            with self.assertRaises(train._Lost):
+                train._merge_in(wt, briefs[tids[1]], self.git("rev-parse", "foreman/lane2"), log, kept={}, p=p)
+        self.assertEqual(log, [], "no lane was logged as left out")
+
+    def test_the_proof_of_a_lib_union_is_green_only_when_its_affected_tests_ran_and_passed(self):
+        self.assertEqual(self.proof(("true", ["t.py"], {self.LIB})), "")
+        for name, args in {"no command": ((None, [], {self.LIB}),), "no tests": (("true", [], {self.LIB}),),
+                           "no affected command": (RuntimeError("no affected-tests command"),),
+                           "red": (("true", ["t.py"], set()), (1, "FAIL: test_a.A.test_it")),
+                           "timeout": (("true", ["t.py"], set()), (124, "")),
+                           "ran none": (("true", ["t.py"], set()), (5, ""))}.items():
+            self.assertNotEqual(self.proof(*args), "", name)
+
+    def test_a_same_line_clash_in_a_py_file_is_refused_before_any_run_and_says_why(self):
+        """The up-front probe names a .py conflict that is no pure insertion at once; a pure insertion goes on."""
+        from sampo import core as c
+        self.based()
+        a = self.lane(1, self.LIB, self.BASE.replace("return 0", "return 1"))
+        self.commit(self.LIB, self.BASE.replace("return 0", "return 2"))
+        p, base = c.find_project(self.repo), self.git("rev-parse", "HEAD")
+        why = train._probe(p, self.repo, base, None, self.git("rev-parse", "foreman/lane1"), [], tests=False)
+        self.assertIn(f"conflicts with the base: {self.LIB}", why)
+        self.assertIn("not a pure insertion", why)
+        r = self.train(a, check=False)
+        self.assertIn(f"{a}: conflicts with the base: {self.LIB} (not a pure insertion", r.stdout + r.stderr)
+        self.assertEqual(self.gate_runs(), 0, "no gate run for it")
+
+    def test_a_pure_insertion_clash_with_the_base_is_not_refused_up_front(self):
+        from sampo import core as c
+        self.based()
+        self.lane(1, self.LIB, self.BASE + self.fn("lane_one"))
+        self.commit(self.LIB, self.BASE + self.fn("trunk_two", "2"))
+        p, base = c.find_project(self.repo), self.git("rev-parse", "HEAD")
+        self.assertEqual(train._probe(p, self.repo, base, None, self.git("rev-parse", "foreman/lane1"), [], tests=False), "")
+
+    def test_a_non_compiling_or_repeating_clash_with_the_base_is_refused_up_front(self):
+        from sampo import core as c
+        self.based(self.LIB, "def f():\n    pass\n")
+        self.lane(1, self.LIB, "def f():\n    pass\n    global x\n")  # the trunk's lines come first in the union
+        self.commit(self.LIB, "def f():\n    pass\n    x = 1\n")
+        p, base = c.find_project(self.repo), self.git("rev-parse", "HEAD")
+        why = train._probe(p, self.repo, base, None, self.git("rev-parse", "foreman/lane1"), [], tests=False)
+        self.assertIn(f"conflicts with the base: {self.LIB}", why)
 
 class BehindAffected(PmCase):
     """T-5936: the behind verify of a merged head ran the whole suite (13,000 tests, 100% of the CPU for hours) after every
