@@ -5621,22 +5621,43 @@ class NotificationAndEnd(HookCase):
 FABLE, OPUS5 = "claude-fable-5-1", "claude-opus-5"
 
 
+def live_child(case):
+    """T-5794: a real sleep that is this test's child, the stand-in claude under the pane's shell: its (pid, start time) is
+    what the statusline records as claude_pid and claude_start (test_keeper's helper; that module imports this one)."""
+    from sampo import bus
+    proc = subprocess.Popen(["sleep", "600"])
+    case.addCleanup(proc.wait)
+    case.addCleanup(proc.kill)
+    return proc, bus._proc(proc.pid)[1]
+
+
 class ModelSwitchBack(ForemanTestCase):  # T-3742: a refusal fallback is recorded and the session switched back up
     def setUp(self):
         super().setUp()
         self.bin = os.path.join(self.tmp, "fakebin")
         os.makedirs(self.bin)
         self.log, self.pane = os.path.join(self.tmp, "tmux.log"), os.path.join(self.tmp, "pane.txt")
+        self.cmd = os.path.join(self.tmp, "pane_cmd.txt")
         tmux = os.path.join(self.bin, "tmux")
-        with open(tmux, "w") as f:  # never a real pane: this answers capture-pane from a file and logs every call
-            f.write(f'#!/bin/sh\necho "$@" >> "{self.log}"\nif [ "$1" = capture-pane ]; then cat "{self.pane}"; fi\n')
+        with open(tmux, "w") as f:  # never a real pane: this answers from files and logs every call
+            f.write(f'#!/bin/sh\necho "$@" >> "{self.log}"\n'
+                    f'if [ "$1" = display-message ]; then cat "{self.cmd}"; fi\n'
+                    f'if [ "$1" = capture-pane ]; then cat "{self.pane}"; fi\n')
         os.chmod(tmux, 0o755)
+        self.proc, start = live_child(self)
+        self.runs("claude")
         self.idle()
         self.env = {"PATH": self.bin + os.pathsep + os.environ["PATH"]}
         sd = os.path.join(self.home, "state", "sessions")
         os.makedirs(sd, exist_ok=True)
         with open(os.path.join(sd, "sess-1.json"), "w") as f:
-            json.dump({"tmux_pane": "%7", "model": "Opus 5"}, f)
+            json.dump({"tmux_pane": "%7", "model": "Opus 5", "claude_pid": self.proc.pid, "claude_start": start}, f)
+
+    def runs(self, command, pid=None):
+        """What `tmux display-message` says of the pane: its foreground command and its first pid (this test, the parent
+        of the stand-in claude the snapshot names)."""
+        with open(self.cmd, "w") as f:
+            f.write(f"{command}\t{pid or os.getpid()}\n")
 
     def idle(self, prompt="❯ "):
         with open(self.pane, "w") as f:
@@ -5679,6 +5700,24 @@ class ModelSwitchBack(ForemanTestCase):  # T-3742: a refusal fallback is recorde
         self.idle()
         self.stop()
         self.assertEqual(len(self.keys()), 2)
+
+    def test_a_pane_that_is_not_an_idle_claude_code_gets_no_keys(self):
+        # T-5794: every try types only into the live Claude Code's idle screen (tmuxpane.ready): a shell, a foreign
+        # screen or a busy turn gets nothing, and the switch-back lands once the pane is idle again
+        self.switch(OPUS5, FABLE)
+        self.stop()  # the refusal's own turn
+        for command, screen in (("bash", "some output\n\n❯ \n  ? for shortcuts\n"),
+                                ("claude", "user@host:~$ \n"),
+                                ("claude", "some output\n✻ Working… (esc to interrupt)\n")):
+            self.runs(command)
+            with open(self.pane, "w") as f:
+                f.write(screen)
+            self.stop(2)
+            self.assertEqual(self.keys(), [], (command, screen))
+        self.runs("claude")
+        self.idle()
+        self.stop()
+        self.assertEqual(len(self.keys()), 2, "idle again: the switch-back lands once")
 
     def test_a_compaction_ends_the_wait(self):
         self.switch(OPUS5, FABLE)
