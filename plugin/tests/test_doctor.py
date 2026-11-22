@@ -921,6 +921,57 @@ class Timing(ForemanTestCase):
         self.assertEqual(run_repair()[0], {"model": "opus"})
 
 
+class CardLine(ForemanTestCase):  # T-5613: one "calling cards:" line: real calls in 14 days, cards never called, lowest rate
+    NOW = "2026-11-20T12:00:00Z"
+    CARDS = ({"shout": {}, "upper": {}, "old-card": {}, "bench-only": {}, "idle": {}}, {})
+
+    def row(self, card, cls, at="2026-11-19T00:00:00Z", via="cli"):
+        return {"at": at, "card": card, "class": cls, "seconds": 1.0, "cached": False, "via": via}
+
+    def ledger(self, rows, rotated=()):
+        from sampo import callcards
+        p = callcards.calls_path()
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w") as f:
+            f.write("".join(json.dumps(r) + "\n" for r in rows) + "{torn line\n")
+        with open(p + ".1", "w") as f:
+            f.write("".join(json.dumps(r) + "\n" for r in rotated))
+
+    def line(self):
+        from unittest import mock
+        from sampo import callcards
+        self.fm("init")
+        p = c.find_project(self.repo, create=False)
+        with mock.patch.dict(os.environ, {"FOREMAN_NOW": self.NOW}), mock.patch.object(
+                callcards, "cards", return_value=self.CARDS), mock.patch.object(
+                callcards, "call", side_effect=AssertionError("the line never calls a card")), mock.patch.object(
+                callcards.Session, "call", side_effect=AssertionError("the line never calls a model")):
+            return d.check_card_calls()
+
+    def test_card_line_counts_real_calls_in_the_window_and_names_the_lowest_rate(self):
+        self.ledger([self.row("shout", "pass"), self.row("shout", "pass"), self.row("shout", "pass"),
+                     self.row("upper", "check_failed", via="smith"),
+                     self.row("bench-only", "pass", via="bench"),  # a bench arm's call: not real
+                     self.row("old-card", "pass", at="2026-10-01T00:00:00Z")],  # outside the window
+                    rotated=[self.row("shout", "pass", at="2026-11-18T00:00:00Z")])
+        r = self.line()
+        self.assertEqual((r.name, r.status), ("calling cards", "PASS"))
+        for words in ("5 real calls in 14 days", "3 cards never called", "lowest pass rate: upper 0.33"):
+            self.assertIn(words, r.detail)
+
+    def test_card_line_window_is_fourteen_days_inclusive_of_the_edge(self):
+        self.ledger([self.row("shout", "pass", at="2026-11-06T12:00:00Z"),
+                     self.row("shout", "pass", at="2026-11-06T11:59:59Z")])
+        self.assertIn("1 real call in 14 days", self.line().detail)
+
+    def test_card_line_with_no_ledger_says_no_calls_and_counts_every_card_idle(self):
+        r = self.line()
+        self.assertEqual(r.status, "PASS")
+        self.assertIn("0 real calls in 14 days", r.detail)
+        self.assertIn("5 cards never called", r.detail)
+        self.assertNotIn("lowest pass rate", r.detail)
+
+
 if __name__ == "__main__":
     unittest.main()
 

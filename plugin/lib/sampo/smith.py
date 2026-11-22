@@ -4184,7 +4184,7 @@ class Run:
 
     def harness_call(self, name, inputs, calls):
         """A card call the harness makes itself, through the run's Session; what it changed is recorded like a model's."""
-        r = self.session().call(name, inputs)
+        r = self.session().call(name, inputs, origin="harness")  # T-5613: the harness's own call, not smith's model's
         calls.append({"card": name, "status": r["status"]})
         if r["status"] == "applied":
             for rel in r["changed"] + r["created"]:

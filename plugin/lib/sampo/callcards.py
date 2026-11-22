@@ -1209,13 +1209,30 @@ def calls_path():
     return os.path.join(c.state_dir(), "callcards", "calls.jsonl")
 
 
-def _record_call(name, r, seconds):
-    """One outcome row for one call: the card, its class, the seconds, whether a cache answered. Never the inputs or any
-    file text. A write that fails (a full disk) never fails the call; the file rotates to calls.jsonl.1 past CALLS_CAP."""
+ORIGINS = ("cli", "smith", "harness", "bench", "test", "mcp")  # T-5613: who made a call (a row's via)
+NOT_REAL = ("bench", "test")  # T-5613: the origins call_stats and rank leave out
+
+
+def origin_of(origin="cli"):
+    """T-5613: who made a call, for its row's via. The process can name itself: SAMPO_CARD_ORIGIN (else FOREMAN_CARD_ORIGIN)
+    beats the caller's origin, so a bench arm's calls are bench whoever makes them. A name that isn't one of ORIGINS is
+    ignored; the caller's origin counts if it is one, else cli."""
+    for k in ("SAMPO_CARD_ORIGIN", "FOREMAN_CARD_ORIGIN"):
+        v = os.environ.get(k, "").strip()
+        if v in ORIGINS:
+            return v
+    return origin if origin in ORIGINS else "cli"
+
+
+def _record_call(name, r, seconds, origin="cli"):
+    """One outcome row for one call: the card, its class, the seconds, whether a cache answered, and its via (origin_of).
+    Never the inputs or any file text. A write that fails (a full disk) never fails the call; the file rotates to
+    calls.jsonl.1 past CALLS_CAP."""
     cls = outcome_class(r.get("status"))
     if cls is None:
         return
-    row = {"at": c.now(), "card": name, "class": cls, "seconds": round(seconds, 3), "cached": bool(r.get("cached"))}
+    row = {"at": c.now(), "card": name, "class": cls, "seconds": round(seconds, 3), "cached": bool(r.get("cached")),
+           "via": origin_of(origin)}
     p = calls_path()
     try:
         os.makedirs(os.path.dirname(p), exist_ok=True)
@@ -1229,9 +1246,10 @@ def _record_call(name, r, seconds):
         pass
 
 
-def call_stats():
+def call_stats(since=None):
     """{card: {calls, pass, check_failed, refused, failed, cached, seconds, rate}} summed from calls.jsonl and the file
-    it rotated to; a torn or foreign row is skipped. rate: pass_rate over the fresh runs (a cache hit repeats one)."""
+    it rotated to; a torn or foreign row is skipped. rate: pass_rate over the fresh runs (a cache hit repeats one).
+    since: an ISO time (now()'s format): only the rows at or after it (T-5613: the doctor's 14-day line)."""
     out = {}
     for p in (calls_path() + ".1", calls_path()):
         try:
@@ -1245,6 +1263,10 @@ def call_stats():
             except (ValueError, RecursionError):  # a torn line, or one nested past the parser's depth
                 continue
             if not isinstance(row, dict) or not isinstance(row.get("card"), str) or row.get("class") not in CLASSES:
+                continue
+            if row.get("via") in NOT_REAL:  # T-5613: a bench arm's or a test's call says nothing of the card in use
+                continue
+            if since and not (isinstance(row.get("at"), str) and row["at"] >= since):
                 continue
             s = out.setdefault(row["card"], {"calls": 0, "pass": 0, "check_failed": 0, "refused": 0, "failed": 0,
                                              "machine": 0, "cached": 0, "seconds": 0.0, "fresh": 0, "fresh_pass": 0})
@@ -1270,18 +1292,19 @@ def pass_rate(s):
 
 
 def call(name, inputs, root, *, cache=True, inject=None, inject_facts=None, guard=None, via=None, inject_model=None,
-         record=True):
-    """_call, and one outcome row for it (calls.jsonl): not for a card's own test case (record=False, or inject*), which
-    is no call that happened."""
+         record=True, origin="cli"):
+    """_call, and one outcome row for it (calls.jsonl, its via the origin): not for a card's own test case (record=False,
+    or inject*), which is no call that happened."""
     t0 = time.monotonic()
     r = _call(name, inputs, root, cache=cache, inject=inject, inject_facts=inject_facts, guard=guard, via=via,
-              inject_model=inject_model)
+              inject_model=inject_model, origin=origin)
     if record and inject is None and inject_facts is None and inject_model is None:
-        _record_call(name, r, time.monotonic() - t0)
+        _record_call(name, r, time.monotonic() - t0, origin)
     return r
 
 
-def _call(name, inputs, root, *, cache=True, inject=None, inject_facts=None, guard=None, via=None, inject_model=None):
+def _call(name, inputs, root, *, cache=True, inject=None, inject_facts=None, guard=None, via=None, inject_model=None,
+          origin="cli"):
     """Call a card: the result's status is applied or facts (ok), else bad_input, no_card, confinement, environment
     (something the card needs isn't installed here, or no local model answered), generator_failed, checker_failed,
     timeout, scope, stale or refused, with an error that says what to change. guard({rel: bytes}) runs before a checked
@@ -1303,7 +1326,7 @@ def _call(name, inputs, root, *, cache=True, inject=None, inject_facts=None, gua
             return _result(name, "bad_input", error="a chain has no generator for a test case to stand in for: give "
                                                     "inject to its steps' own tests")
         return _run_chain(card, clean, via or (lambda n, i: call(n, i, root, cache=cache, guard=guard,
-                                                                 inject_model=inject_model)))
+                                                                 inject_model=inject_model, origin=origin)))
     ok, why = confinement()
     if not ok:
         return _result(name, "confinement", error=f"cards run only confined, and here {why}")
@@ -1366,13 +1389,14 @@ class Session:
     the exception types an adviser's failure passes up through call (T-4860: smith's budget stop), every other one
     being no advice."""
 
-    def __init__(self, root, escalate=None, cache=True, guard=None, raises=()):
+    def __init__(self, root, escalate=None, cache=True, guard=None, raises=(), origin="smith"):
         self.root, self.escalate, self.cache, self.guard, self.raises = root, escalate, cache, guard, tuple(raises)
         self.fails, self.tried, self.closed, self.escalated = {}, set(), set(), False
         self.asked = 0  # model-step calls so far (MODEL_CALLS is the most)
+        self.origin = origin  # T-5613: the via of this session's rows (smith's own calls; the harness passes its own)
 
-    def call(self, name, inputs):
-        return self._call(name, inputs, False)
+    def call(self, name, inputs, origin=None):
+        return self._call(name, inputs, False, origin)
 
     def _closed_member(self, name, found, seen=()):
         """'step N (card)' of chain name (or of a chain inside it) whose card this Session closed, else None."""
@@ -1387,9 +1411,11 @@ class Session:
                 return deeper
         return None
 
-    def _call(self, name, inputs, nested):
+    def _call(self, name, inputs, nested, origin=None):
         """One call. A step of a chain comes back through here (nested): charged like any call, but the repeat rule is the
-        chain's own, since a chain's second try may well run an earlier step with the same inputs again."""
+        chain's own, since a chain's second try may well run an earlier step with the same inputs again. origin: the via
+        of its row and of its chain's steps' (None: this session's)."""
+        origin = origin or self.origin
         if name in self.closed:
             return _result(name, "closed", error=f"card {name!r} is closed for this run after failed calls: carry on "
                                                  "with plain tools")
@@ -1409,7 +1435,7 @@ class Session:
                                                    "plain tools")
         else:
             r = call(name, inputs, self.root, cache=self.cache, guard=self.guard,
-                     via=lambda n, i: self._call(n, i, True))
+                     via=lambda n, i: self._call(n, i, True, origin), origin=origin)
             if model and not r.get("cached") and r["status"] not in ("bad_input", "no_card", "confinement"):
                 self.asked += 1  # a cache hit asked nobody, and a call refused before asking isn't one
         if r["ok"] or r["status"] == "closed":
@@ -1562,8 +1588,9 @@ def _bench_one(base, key, model, arm):
     """One arm of one exam scenario: fm code on model with SAMPO_CARDS=arm in a throwaway copy (louhi's smith arm and
     its isolation); passed is the grader's hidden checks on the tree it leaves, as for an exam's fix."""
     from sampo import louhi
-    old, t0 = os.environ.get("SAMPO_CARDS"), time.monotonic()
+    old, old_origin, t0 = os.environ.get("SAMPO_CARDS"), os.environ.get("SAMPO_CARD_ORIGIN"), time.monotonic()
     os.environ["SAMPO_CARDS"] = arm  # the box keeps SAMPO_ names; the child's core.mirror_env reads it
+    os.environ["SAMPO_CARD_ORIGIN"] = "bench"  # T-5613: every call the arm's fm code makes is a bench row, not a real one
     try:
         with tempfile.TemporaryDirectory(prefix="sampo-cardbench-") as tmp:
             work, events = os.path.join(tmp, "work"), os.path.join(tmp, "arm.events.jsonl")
@@ -1581,6 +1608,10 @@ def _bench_one(base, key, model, arm):
             os.environ.pop("SAMPO_CARDS", None)
         else:
             os.environ["SAMPO_CARDS"] = old
+        if old_origin is None:
+            os.environ.pop("SAMPO_CARD_ORIGIN", None)
+        else:
+            os.environ["SAMPO_CARD_ORIGIN"] = old_origin
     return dict({"passed": passed, "closed": bool(a.get("done")), "tokens": a.get("tokens") or 0,
                  "seconds": round(secs, 1), "error": a.get("error"), "failure_class": _miss_class(evs, passed)}, **seen)
 

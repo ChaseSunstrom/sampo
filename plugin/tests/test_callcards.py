@@ -1693,7 +1693,7 @@ class CallStats(Base):
         r = callcards._result("shout", "applied", diff="SECRET FILE TEXT", changed=["a.txt"], facts={"k": "SECRET"})
         callcards._record_call("shout", r, 1.23456)
         row, = self.rows()
-        self.assertEqual(sorted(row), ["at", "cached", "card", "class", "seconds"])
+        self.assertEqual(sorted(row), ["at", "cached", "card", "class", "seconds", "via"])
         self.assertEqual((row["card"], row["class"], row["cached"], row["seconds"]), ("shout", "pass", False, 1.235))
         self.assertNotIn("SECRET", json.dumps(row))
         callcards._record_call("ghost", callcards._result("ghost", "no_card"), 0.1)
@@ -1842,6 +1842,101 @@ class CallStats(Base):
         self.assertAlmostEqual(row["pass_rate"], 4 / 6, places=3)
         other = next(x for x in out["cards"] if x["name"] != "shout")
         self.assertEqual((other["calls"], other["pass_rate"]), (0, 0.5), "no calls: the prior")
+
+
+class Provenance(Base):
+    """T-5613: every call's row says where it came from (via: cli, smith, harness, bench, test, mcp), and the pass rate,
+    the calls and the rank order count only the real ones (not bench or test); a row written before via counts as real."""
+
+    def rows(self):
+        with open(callcards.calls_path()) as f:
+            return [json.loads(x) for x in f]
+
+    def note(self, card, status, n=1, origin="cli"):
+        for _ in range(n):
+            callcards._record_call(card, callcards._result(card, status), 0.5, origin)
+
+    def test_provenance_a_card_call_from_the_shell_is_cli(self):
+        self.card("shout")
+        self.fm("card", "call", "shout", "--inputs", json.dumps({"path": "a.txt"}), check=False)
+        self.assertEqual([x["via"] for x in self.rows()], ["cli"])
+
+    def test_provenance_an_fm_code_session_call_is_smith(self):
+        self.card("shout")
+        callcards.Session(self.repo).call("shout", {"path": "a.txt"})
+        self.assertEqual([x["via"] for x in self.rows()], ["smith"])
+
+    def test_provenance_the_harness_pre_run_is_harness(self):
+        self.card("shout")
+        callcards.Session(self.repo).call("shout", {"path": "a.txt"}, origin="harness")
+        self.assertEqual([x["via"] for x in self.rows()], ["harness"])
+
+    def test_provenance_a_chain_step_keeps_the_origin_of_its_chain(self):
+        self.card("shout")
+        self.card("pipe", kind="chain", steps=[{"card": "shout", "inputs": {"path": "$path"}}], files=[],
+                  purpose="pipe: run shout")
+        callcards.Session(self.repo).call("pipe", {"path": "a.txt"}, origin="harness")
+        self.assertEqual(sorted((x["card"], x["via"]) for x in self.rows()), [("pipe", "harness"), ("shout", "harness")])
+
+    def test_provenance_the_env_names_the_origin_of_the_process(self):
+        self.card("shout")
+        with mock.patch.dict(os.environ, {"SAMPO_CARD_ORIGIN": "bench"}):
+            callcards.call("shout", {"path": "a.txt"}, self.repo)
+            callcards.Session(self.repo).call("shout", {"path": "a.txt"}, origin="harness")
+        with mock.patch.dict(os.environ, {"FOREMAN_CARD_ORIGIN": "test"}):
+            callcards.call("shout", {"path": "a.txt"}, self.repo)
+        self.assertEqual([x["via"] for x in self.rows()], ["bench", "bench", "test"],
+                         "a bench arm's calls say bench, its harness's too: the process names them")
+
+    def test_provenance_an_unknown_env_value_falls_back_to_the_callers_origin(self):
+        self.card("shout")
+        with mock.patch.dict(os.environ, {"SAMPO_CARD_ORIGIN": "gremlin"}):
+            callcards.call("shout", {"path": "a.txt"}, self.repo)
+            callcards.Session(self.repo).call("shout", {"path": "a.txt"})
+            self.fm("card", "call", "shout", "--inputs", json.dumps({"path": "a.txt"}), check=False)
+        callcards._record_call("shout", callcards._result("shout", "applied"), 0.5, "gremlin")
+        self.assertEqual([x["via"] for x in self.rows()], ["cli", "smith", "cli", "cli"])
+
+    def test_provenance_a_bench_arm_sets_its_env_and_puts_it_back(self):
+        from sampo import louhi
+        seen = []
+
+        def arm(base, key, work, model, _, events):
+            seen.append(os.environ.get("SAMPO_CARD_ORIGIN"))
+            return {}
+        with mock.patch.object(louhi, "_smith_arm", side_effect=arm):
+            callcards._bench_one(self.repo, {"defects": []}, "m", "on")
+        self.assertEqual(seen, ["bench"], "fm code in the arm writes its calls as bench")
+        self.assertNotIn("SAMPO_CARD_ORIGIN", os.environ, "the arm's env is put back")
+
+    def test_provenance_call_stats_leaves_bench_and_test_rows_out(self):
+        self.note("a-card", "applied", 2)
+        self.note("a-card", "checker_failed", 5, origin="bench")
+        self.note("a-card", "refused", 3, origin="test")
+        s = callcards.call_stats()["a-card"]
+        self.assertEqual((s["calls"], s["check_failed"], s["refused"]), (2, 0, 0))
+        self.assertAlmostEqual(s["rate"], 3 / 4, msg="(2 + 1) / (2 + 2): the bench and test rows never move it")
+        self.note("b-card", "failed", 4, origin="bench")
+        self.assertNotIn("b-card", callcards.call_stats(), "a card only a bench arm called has no calls")
+
+    def test_provenance_a_row_with_no_via_is_counted_as_real(self):
+        self.note("a-card", "applied")
+        with open(callcards.calls_path(), "a") as f:
+            f.write(json.dumps({"at": "2026-11-01T00:00:00Z", "card": "a-card", "class": "pass", "seconds": 1.0,
+                                "cached": False}) + "\n")
+        s = callcards.call_stats()["a-card"]
+        self.assertEqual((s["calls"], s["pass"]), (2, 2), "written before via existed: real, as it always was")
+
+    def test_provenance_a_bench_or_test_row_does_not_reorder_rank(self):
+        self.card("shout")  # the stronger lexical match for the task below
+        self.card("case-flip", purpose="uppercase text file")
+        text = "uppercase the text file a.txt"
+        before = [cd["name"] for s, cd in callcards.rank(text, k=20) if s >= callcards.LEXICAL_FLOOR]
+        self.note("case-flip", "applied", 9, origin="bench")
+        self.note("shout", "checker_failed", 9, origin="test")
+        after = [cd["name"] for s, cd in callcards.rank(text, k=20) if s >= callcards.LEXICAL_FLOOR]
+        self.assertTrue({"shout", "case-flip"} <= set(before), "both fit the task before any call")
+        self.assertEqual(after, before, "nine bench passes and nine test failures leave the order as it was")
 
 
 if __name__ == "__main__":

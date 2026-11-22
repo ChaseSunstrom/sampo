@@ -798,6 +798,29 @@ def check_model_backends(p):
                                             f"live: {', '.join(live) or 'none'}{emb}{sens}")
 
 
+def check_card_calls(days=14):
+    """T-5613: the calling cards line: the real calls in the last `days` (calls.jsonl and the half it rotated to; a bench
+    arm's or a test's call leaves out), the cards never called in that window, and the lowest pass rate among the cards
+    called. Information only: it reads the ledger and the card folders, never calls a card or a model, so it never fails
+    the doctor."""
+    from datetime import timedelta
+    from sampo import callcards
+    try:
+        since = (c.clock() - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        called = {n: s for n, s in callcards.call_stats(since).items() if s["calls"]}
+        names = set(callcards.cards()[0])
+    except Exception as e:  # a torn ledger or a broken card folder is a note, not a failure
+        return Result("calling cards", "PASS", f"couldn't count them ({type(e).__name__})")
+    plural = lambda n, word: f"{n} {word}" + ("" if n == 1 else "s")  # noqa: E731
+    real = sum(s["calls"] for s in called.values())
+    idle = plural(len(names - set(called)), "card")
+    out = f"{plural(real, 'real call')} in {days} days; {idle} never called in the window"
+    if called:  # the lowest rate, ties by name; a card that only failed machine checks sits at the prior 1/2
+        low = min(called, key=lambda n: (called[n]["rate"], n))
+        out += f"; lowest pass rate: {c.plain(low)[:40]} {called[low]['rate']:.2f}"
+    return Result("calling cards", "PASS", out)
+
+
 def _pinned_models():
     """T-2643: {model name: [modules pinning it]}: rune.REVIEW_MODELS (also the moonshot rater's top model) and the
     exam and steer defaults (T-2748: the sampo module names)."""
@@ -3556,6 +3579,7 @@ def run_all(full=False, accept_supply=False):
     results.append(check_anergy())
     results.append(check_predictions(here))
     results.append(check_model_backends(here))
+    results.append(check_card_calls())
     results.append(check_served_context())
     results.append(check_permission_mode([settings_path, os.path.join(claude, "settings.local.json"),
                                           os.path.join(os.getcwd(), ".claude", "settings.json"),
