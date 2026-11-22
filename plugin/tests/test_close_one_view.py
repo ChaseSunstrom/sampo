@@ -411,7 +411,7 @@ def offenders(source):
     return found
 
 
-READERS = ["affected", "_task_files", "_landed", "_owed_companions", "_self_docs_gaps", "_proved_gaps", "_file_map_gaps",
+READERS = ["affected", "_task_view", "_landed",  # T-5715: _task_files is _task_view's first three, the diff kept for the tier "_owed_companions", "_self_docs_gaps", "_proved_gaps", "_file_map_gaps",
            "_tier_drift", "_deleted", "_scaffolding", "_tests_only_gaps"]  # T-4712: the eleventh
 
 

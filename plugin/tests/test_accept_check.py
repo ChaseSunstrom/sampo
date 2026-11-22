@@ -107,7 +107,7 @@ class Lenses(AcceptCase):
             train.accept(self.p, c.find_brief(self.p, tid), self.repo, args)
 
     def test_lenses_m_lane_with_one_audit_is_refused_and_records_nothing(self):  # T-4487
-        tid = self.lane(1, "f1.txt", when=OLD, tier="M")
+        tid = self.lane(1, "f1.py", when=OLD, tier="M")  # T-5715: code with no linked test scores normal; a text file reads trivial
         with self.assertRaises(c.PolicyError) as e:
             self.accept_rows(tid, [["edge", "read the diff", "no findings"]])
         self.assertIn("audit missing: --lens 'intent: <result>'", str(e.exception))
@@ -375,7 +375,9 @@ class LiveLauncher(AcceptCase):
         b.meta["tier"] = "M"  # T-5516: an S lane's self audit is implicit, so with none typed an M lane (intent needed) refuses
         c.save_brief(self.p, b)
         args = types.SimpleNamespace(audit=[], json=False, no_check=True)
-        with self.assertRaises(cli.UsageError), contextlib.redirect_stdout(io.StringIO()):
+        # T-5715: the lane's file is a plain one-line text file, which scores trivial; the claimed tier is what's tested here
+        with mock.patch.dict(os.environ, {"FOREMAN_PROCESS_TIER": "off"}), self.assertRaises(cli.UsageError), \
+                contextlib.redirect_stdout(io.StringIO()):
             train.accept(self.p, self.brief(tid), self.repo, args)
         self.assertNotIn(tid, c.finished_lanes(self.p, c.load_briefs(self.p), 0, fresh=True))
 

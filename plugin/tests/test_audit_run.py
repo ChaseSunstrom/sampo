@@ -17,9 +17,15 @@ with open(os.environ["STUB_LOG"], "a") as f:
 if lens == os.environ.get("STUB_FAIL_LENS"):
     sys.exit(3)
 if lens == os.environ.get("STUB_BAD_LENS"):
-    print(f"## {lens}: changes needed\n- HIGH a.py:3 the thing breaks on empty input\n- MEDIUM b.py:9 it is slow")
+    text = f"## {lens}: changes needed\n- HIGH a.py:3 the thing breaks on empty input\n- MEDIUM b.py:9 it is slow"
 else:
-    print(f"## {lens}: ok")
+    text = f"## {lens}: ok"
+if os.environ.get("STUB_JSON"):  # T-5842: claude -p --output-format json, with its usage
+    print(json.dumps({"result": text, "total_cost_usd": 0.25, "usage": {
+        "input_tokens": 100, "output_tokens": 10, "cache_read_input_tokens": 1000,
+        "cache_creation_input_tokens": 50}}))
+else:
+    print(text)
 '''
 
 
@@ -49,7 +55,7 @@ class AuditRun(HookCase):
 
     def test_one_verdict_per_lens_and_the_findings(self):
         self.run_audit(env={"STUB_BAD_LENS": "edge"})
-        want = list(c.DEFAULT_LENSES)  # T-1501: a non-UI diff pays for no design reviewer
+        want = ["intent", "adversary", "edge"]  # T-1501: no design reviewer; T-5841: an M with no linked test is normal
         self.assertEqual(sorted(x["lens"] for x in self.calls()), sorted(want))
         self.assertEqual(self.audits(), sorted(want))
         for call in self.calls():
@@ -69,7 +75,7 @@ class AuditRun(HookCase):
         with open(os.path.join(self.repo, "page.html"), "w") as f:
             f.write("<button>Go</button>\n")
         self.run_audit()
-        self.assertEqual(sorted(x["lens"] for x in self.calls()), sorted(list(c.DEFAULT_LENSES) + ["design"]))
+        self.assertEqual(sorted(x["lens"] for x in self.calls()), sorted(["intent", "adversary", "edge", "design"]))
         self.assertIn("design", self.audits())
         design = next(x for x in self.calls() if x["lens"] == "design")
         self.assertIn("## design", design["stdin"])
@@ -99,6 +105,69 @@ class AuditRun(HookCase):
         self.assertIn("contract", p.stderr)
         self.assertEqual(self.calls(), [])
         self.assertEqual(self.audits(), [])
+
+    def models(self):
+        return sorted({x["args"][x["args"].index("--model") + 1] for x in self.calls()})
+
+    def small_task(self):
+        self.tid = self.task("Tidy a name", type_="CLEAN", tier="S")
+
+    def test_depth_map_a_low_risk_task_runs_intent_and_adversary_on_haiku(self):  # T-5842
+        self.small_task()
+        self.run_audit()
+        self.assertEqual(sorted(x["lens"] for x in self.calls()), ["adversary", "intent"])
+        self.assertEqual(self.models(), ["haiku"])
+
+    def test_depth_map_a_protected_path_runs_all_five_on_sonnet(self):  # T-5842
+        self.small_task()
+        with open(os.path.join(self.repo, "guard.py"), "w") as f:
+            f.write("x = 1\n")
+        self.run_audit()
+        self.assertEqual(sorted(x["lens"] for x in self.calls()), sorted(c.DEFAULT_LENSES))
+        self.assertEqual(self.models(), ["sonnet"])
+
+    def test_depth_map_an_explicit_lens_or_model_wins(self):  # T-5842
+        self.small_task()
+        self.run_audit("--lens", "edge")
+        self.assertEqual([x["lens"] for x in self.calls()], ["edge"], "--lens stands over the map's two")
+        self.assertEqual(self.models(), ["haiku"], "no --model: the map's model")
+        os.unlink(self.log)
+        self.run_audit("--model", "opus")
+        self.assertEqual(sorted(x["lens"] for x in self.calls()), ["adversary", "intent"], "no --lens: the map's")
+        self.assertEqual(self.models(), ["opus"], "--model stands over the map's")
+
+    def test_depth_map_review_depth_full_runs_the_five_lenses(self):  # T-5842
+        self.small_task()
+        self.run_audit(env={"SAMPO_REVIEW_DEPTH": "full"})
+        self.assertEqual(sorted(x["lens"] for x in self.calls()), sorted(c.DEFAULT_LENSES))
+        self.assertEqual(self.models(), ["sonnet"])
+
+    def costs(self):
+        return [e for e in c.ledger_tail(self.project(), 500) if e.get("event") == "review_cost"]
+
+    def test_review_cost_one_event_per_run_sums_the_lens_reviewers(self):  # T-5842
+        self.small_task()
+        self.run_audit(env={"STUB_JSON": "1"})
+        ev = self.costs()
+        self.assertEqual(len(ev), 1)
+        self.assertEqual(ev[0]["task"], self.tid)
+        d = ev[0]["data"]
+        self.assertEqual((d["model"], sorted(d["lenses"])), ("haiku", ["adversary", "intent"]))
+        self.assertEqual((d["input"], d["output"], d["cache_read"], d["cache_creation"]), (200, 20, 2000, 100))
+        self.assertAlmostEqual(d["usd"], 0.5)
+        self.run_audit(env={"STUB_JSON": "1"})
+        self.assertEqual(len(self.costs()), 2, "a second run is a second event")
+
+    def test_review_cost_plain_text_output_records_zero_tokens(self):  # T-5842: an older claude says no usage
+        self.small_task()
+        self.run_audit()
+        d = self.costs()[0]["data"]
+        self.assertEqual((d["input"], d["output"], d["cache_read"], d["cache_creation"], d["usd"]), (0, 0, 0, 0, 0))
+
+    def test_review_cost_counts_a_run_whose_reviewer_failed(self):  # T-5842: its tokens were spent
+        self.small_task()
+        self.run_audit(env={"STUB_JSON": "1", "STUB_FAIL_LENS": "intent"}, check=False)
+        self.assertEqual(len(self.costs()), 1)
 
     def test_prep_diff_holds_uncommitted_edits_beside_a_lane_branch_commit(self):  # T-1296
         import subprocess

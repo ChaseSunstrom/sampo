@@ -11,6 +11,16 @@ what counts as correct. `sampo task done` refuses until the tier's audits are re
 | L | all five: `intent`, `adversary`, `edge`, `operator`, `maintainer`, in one `sampo:fm-reviewer` pass |
 | XL, HUGE, GIANT | the same five as L (T-4220: a big task is reviewed like L) |
 
+**Review depth (T-5841).** What `sampo audit prep` and `sampo audit run` put in the brief, and the reviewer model, follow the diff's process tier, not the table above; the table is what the close gate requires. Models advise, proof decides: depth never gates a close.
+
+| Depth | Lenses in the brief | Reviewer model |
+|---|---|---|
+| light (trivial, small) | `intent` + `adversary`, read as one brief | haiku |
+| normal | + `edge` | sonnet |
+| risky, or a protected path (guard, hook, secret, auth, exec, land) or a SECURITY task | all five | sonnet |
+
+A file a finding on a light lane named floors its next review at normal. `SAMPO_REVIEW_DEPTH=full` reviews every change with all five lenses on sonnet (the header then reads "review depth full"). `--lens` and `--model` override the map.
+
 `design` is advisory, never required: `sampo audit prep` adds it at any tier when the diff touches UI (markup, styles, components, the foreman-ui pane's hooks, TUI screens; not tests), and `sampo audit run` runs it only then, so a backend diff costs nothing extra. Record it like any lens: `sampo task audit ID design …`.
 
 ## Protocol

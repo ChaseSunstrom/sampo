@@ -52,13 +52,17 @@ def run(p, args):
     path = os.path.join(p.dir, "audits", f"{b.id}.review.md")
     with open(path, encoding="utf-8") as f:
         brief = f.read()
-    # T-1501: design only when prep put it in the brief (a UI diff); fm writes this header, so a request can't add it
+    # T-1501, T-5841: the lenses prep put in the brief (the depth map's, and design for a UI diff); fm writes this
+    # header, so a request can't add one
     head = re.search(r"(?m)^=== review \(([^)\n]*)\) ===$", brief)
-    design = ["design"] if head and "design" in head.group(1).split(", ") else []
-    lenses = [x for x in (args.lens or list(c.DEFAULT_LENSES) + design) if x != "self"]
+    briefed = head.group(1).split(", ") if head else []
+    lenses = [x for x in (args.lens or briefed or list(c.DEFAULT_LENSES)) if x != "self"]
+    # T-5841: no --model takes the depth map's (haiku for a light change, sonnet for the rest)
+    model = args.model or (getattr(prep, "depth", None) or {}).get("model") or "sonnet"
     if not lenses:
-        raise cli.UsageError(f"fm audit run: {b.id} is an S task: its self audit is the main thread's "
-                               f"(fm task audit {b.id} self …); pass --lens to run reviewers anyway")
+        raise cli.UsageError(f"fm audit run: no reviewer lens is left to run for {b.id} (`self` is the main thread's "
+                             f"own: fm task audit {b.id} self …); pass --lens with a reviewer lens "
+                             f"({', '.join(c.DEFAULT_LENSES)})")
     try:
         budget.check("audit", budget.estimate("audit", len(lenses), FALLBACK_USD))
     except budget.BudgetError as e:
@@ -67,15 +71,16 @@ def run(p, args):
     k = (c.read_meta(p).get("contract") or {})
     if k.get("usd") is not None:  # no reviewer may spend past what the contract has left
         cap = max(0.01, min(cap, k["usd"] - contract.spent(p, k["started"])))
-    verdicts, failed = {}, {}
+    verdicts, failed, ran, spent = {}, {}, [], []
     for i in range(0, len(lenses), PARALLEL):
         batch = lenses[i:i + PARALLEL]
-        jobs = [(_argv(args.model, cap), f"{brief}\n\nReview only the lens: {x}\nIgnore the other lens sections.\n", x)
+        jobs = [(_argv(model, cap), f"{brief}\n\nReview only the lens: {x}\nIgnore the other lens sections.\n", x)
                 for x in batch]
         try:
-            res = ideas.run_children(jobs, args.timeout, "audit", cwd=p.root)
+            res = ideas.run_children(jobs, args.timeout, "audit", cwd=p.root, usage=spent)
         except OSError as e:
             raise cli.UsageError(str(e))
+        ran += batch
         for lens, (text, err) in zip(batch, res):
             verdict, found = parse(lens, text or "") if not err else (None, [])
             if verdict is None:
@@ -97,6 +102,11 @@ def run(p, args):
             for text in found[:20]:
                 c.log_event(p, "finding", task=b.id, data={"lens": lens, "verdict": "reported",
                                                            "text": c.redact(text)[:300]})
+    # T-5842: what this run's reviewers cost, one event per run, so a lane's review cost sums by task
+    with c.lock(p.dir):
+        c.log_event(p, "review_cost", task=b.id, data={
+            "model": model, "lenses": ran, "usd": round(sum(x["usd"] for x in spent), 6),
+            **{k: sum(x[k] for x in spent) for k in ("input", "output", "cache_read", "cache_creation")}})
     data = {"task": b.id, "verdicts": {k: v[0] for k, v in verdicts.items()},
             "findings": {k: v[1] for k, v in verdicts.items() if v[1]}, "failed": failed}
     cli.out(args, data, f"{b.id}: " + ", ".join(f"{k} {v[0]}" for k, v in verdicts.items())

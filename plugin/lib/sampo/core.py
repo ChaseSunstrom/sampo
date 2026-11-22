@@ -4878,11 +4878,13 @@ class Brief:
                 newest = (t.group(1), w.group(1) if w else None)
         return newest
 
-    def audit_blockers(self, since=None, tree=None, need=()):
+    def audit_blockers(self, since=None, tree=None, need=(), groups=None):
         """Required audits missing or stale. An audit recorded against the current worktree id covers exactly these
         files, so later evidence (test runs, a push) doesn't stale it; without ids (outside git, older audits) it must
         postdate the last step evidence / attributed edit. Callers that can't afford a worktree id (fm next, hooks)
-        use the one the newest step evidence was recorded at, unless an attributed edit came after it."""
+        use the one the newest step evidence was recorded at, unless an attributed edit came after it.
+        groups (T-5715): the audit groups the process tier asks (required_audits); none reads the tier stamped on the
+        brief, else the claimed tier's."""
         if not tree:
             ts, t = self.last_work_tree()
             if t and (since or "") <= ts:
@@ -4894,7 +4896,7 @@ class Brief:
         changed = {lens for lens, ts, t in audits if ts >= cutoff and trees and t and t not in trees}
         stale = {lens for lens, _, _ in audits} - fresh - changed
         reasons = []
-        for group in REQUIRED_AUDITS.get(self.tier, REQUIRED_AUDITS["S"]) + [{x} for x in need]:
+        for group in (required_audits(self) if groups is None else groups) + [{x} for x in need]:
             if not group & fresh:
                 why = (" (files changed since the audit; re-audit)" if group & changed else
                        " (recorded audits predate the last change; re-audit after the last change)" if group & stale
@@ -5056,7 +5058,9 @@ class Brief:
                 out[int(m.group(2))] = ln
         return out
 
-    def done_blockers(self, since=None, tree=None, need=()):
+    def done_blockers(self, since=None, tree=None, need=(), ptier=None):
+        """ptier (T-5715): the process tier the close scored, for the audit groups and the docs impact; none reads the
+        stamped or claimed one."""
         reasons = []
         for s in self.steps():
             if not s.done:
@@ -5068,7 +5072,7 @@ class Brief:
                 reasons.append(f"acceptance criterion {a.n} not checked: {a.text}")
         if not self.has_evidence():
             reasons.append("no verification evidence recorded")
-        if self.docs_gap():
+        if self.docs_gap(ptier):
             reasons.append(f"docs impact not recorded (sampo task set {self.id} --section \"Docs impact\" --text "
                            f"\"<docs updated | none: why>\")")
         if gap := self.proof_gap():
@@ -5076,7 +5080,8 @@ class Brief:
         if self.type == "PERFORMANCE" and not self.section("Measurements").strip():
             reasons.append(f"no before/after numbers: sampo task set {self.id} --section \"Measurements\" --text "
                            f"\"<metric>: <before> → <after> (<how measured>)\" (or \"none: <why>\")")
-        return reasons + self.audit_blockers(since, tree, need)
+        groups = None if ptier is None else audit_groups(self.tier, ptier)
+        return reasons + self.audit_blockers(since, tree, need, groups)
 
     def ran_times(self):
         """Timestamps of the evidence fm ran itself (T-4648: not a lock run after an edit, which locks nothing)."""
@@ -5137,9 +5142,13 @@ class Brief:
                 out.setdefault(int(m.group(2)), t.group(1))
         return out
 
-    def docs_gap(self):
-        """M/L changes say which docs they updated (or why none): out-of-date docs are the drift T-0013 targets."""
-        return at_least(self.tier, "M") and not self.section("Docs impact").strip()
+    def docs_gap(self, ptier=None):
+        """M/L changes say which docs they updated (or why none): out-of-date docs are the drift T-0013 targets. At the
+        normal and risky process tiers only (T-5715): `ptier` is the one the close scored, none reads the stamped one
+        or else the claimed tier's."""
+        if ptier is None:
+            ptier = ptier_now(self)[0]
+        return owes_close_fields(ptier, self.tier) and not self.section("Docs impact").strip()
 
     # --- resume
     def set_resume_auto(self, text):
@@ -6080,10 +6089,11 @@ def effective_autonomy(p, meta=None):
     return a
 
 
-def audit_progress(b, since=None):
-    """{"done", "required"}: the tier's audit groups satisfied by audits recorded after the last change."""
-    required = len(REQUIRED_AUDITS.get(b.tier, REQUIRED_AUDITS["S"]))
-    return {"done": required - len(b.audit_blockers(since)), "required": required}
+def audit_progress(b, since=None, ptier=None):
+    """{"done", "required"}: the tier's audit groups satisfied by audits recorded after the last change. ptier
+    (T-5715 review): the process tier the caller measured (ptier_hint)."""
+    groups = audit_groups(b.tier, ptier) if ptier else required_audits(b)  # T-5715: the process tier's groups
+    return {"done": len(groups) - len(b.audit_blockers(since, groups=groups)), "required": len(groups)}
 
 
 def pending_tasks(meta):
@@ -6615,7 +6625,8 @@ def fit(text, width):
     return text if len(text) <= width else text[:max(1, width - 1)] + "…"
 
 
-def stage(b, autonomy="standard", since=None):
+def stage(b, autonomy="standard", since=None, ptier=None):
+    """ptier (T-5715 review): the process tier the caller measured (ptier_hint); none reads the stamped or claimed one."""
     if b.status in CLOSED or b.status in ("blocked", "deferred"):
         return b.status
     if b.status == "captured":
@@ -6626,14 +6637,18 @@ def stage(b, autonomy="standard", since=None):
         return "executing"
     if any(not a.checked for a in b.acceptance()):
         return "verifying"
-    if b.docs_gap():
+    if b.docs_gap(ptier):
         return "documenting"
-    return "auditing" if b.audit_blockers(since) else "closing"
+    groups = audit_groups(b.tier, ptier) if ptier else None
+    return "auditing" if b.audit_blockers(since, groups=groups) else "closing"
 
 
-def next_action(b, autonomy="standard", since=None):
-    """The one next required action for a brief, with the procedure to use: the harness decides, not recall."""
-    st, tid = stage(b, autonomy, since), b.id
+def next_action(b, autonomy="standard", since=None, ptier=None):
+    """The one next required action for a brief, with the procedure to use: the harness decides, not recall. ptier
+    (T-5715 review): the process tier the caller measured (ptier_hint), so the finish hint asks for what the close will."""
+    st, tid = stage(b, autonomy, since, ptier), b.id
+    ptier = ptier or ptier_now(b)[0]
+    owes = owes_close_fields(ptier, b.tier)
     if st == "captured":
         return f"{tid}: expand it into a planned brief (sampo task new \"<title>\" --from {tid} …; /sampo:intake §2)"
     if st == "planning":
@@ -6644,7 +6659,8 @@ def next_action(b, autonomy="standard", since=None):
         return f"{tid}: plan is missing {', '.join(plan_gaps(b, autonomy))} (sampo task set/ac/step; /sampo:intake)"
     if st == "ready":
         return f"{tid}: sampo focus {tid}"
-    finish = f"sampo task finish {tid} --audit \"<how>\"" + (" --lens … --docs … --lesson …" if b.tier != "S" else "")
+    finish = (f"sampo task finish {tid} --audit \"<how>\"" + (" --lens …" if audit_groups(b.tier, ptier) != [{"self"}] else "")
+              + (" --docs … --lesson …" if owes else ""))
     if st == "executing":  # T-0193: a step with evidence is behind us; fm task finish marks it and checks its runs
         steps = b.steps()
         left = [s for s in steps if not s.done and not b.has_evidence(step=s.n)]
@@ -6671,9 +6687,10 @@ def next_action(b, autonomy="standard", since=None):
         return (f"{tid}: record the Docs impact — the docs this change updated, or 'none: <why>' "
                 f"(sampo task set {tid} --section \"Docs impact\" --text \"…\")")
     if st == "auditing":
-        return f"{tid}: {'; '.join(b.audit_blockers(since))} (skills/intake/references/audit.md; sampo task audit)"
+        return (f"{tid}: {'; '.join(b.audit_blockers(since, groups=audit_groups(b.tier, ptier)))} "
+                f"(skills/intake/references/audit.md; sampo task audit)")
     if st == "closing":
-        lesson = "" if b.tier == "S" or b.section("Lessons").strip() else " --lesson \"<what the next similar task should know>\""
+        lesson = "" if not owes or b.section("Lessons").strip() else " --lesson \"<what the next similar task should know>\""
         return f"{tid}: sampo task done {tid}{lesson}, then /sampo:next"
     return f"{tid} is {st}"
 
@@ -8163,7 +8180,8 @@ def _next_for(p, briefs=None, concerns=None):
         return b, "replan", (f"replan {b.id}: {b.meta['replan']} — re-read Steps and the Execution prompt, change what "
                              f"no longer holds, then sampo task log {b.id} \"replan: <what changed>\"")
     since = last_change(p, b.id, str(b.meta.get("created") or ""))
-    st, action = stage(b, autonomy, since), next_action(b, autonomy, since)
+    pt = ptier_hint(p, b)  # T-5715 review: the tier the close will use, measured from the touched files
+    st, action = stage(b, autonomy, since, pt), next_action(b, autonomy, since, pt)
     if is_big(b.tier) and st in ("ready", "executing") and b.status not in CLOSED and not p.lane:  # T-4222: the wave
         try:
             from sampo import big
@@ -8404,7 +8422,8 @@ def state_dict(p, briefs=None, concerns=None):
     active = None
     if act:
         changed = last_change(p, act.id, str(act.meta.get("created") or ""))
-        active = dict(brief_summary(act), stage=stage(act, autonomy, changed), audits=audit_progress(act, changed))
+        pt = ptier_hint(p, act)  # T-5715 review: the tier the close will use
+        active = dict(brief_summary(act), stage=stage(act, autonomy, changed, pt), audits=audit_progress(act, changed, pt))
     return {
         "project": p.slug, "root": p.root,
         "active": active,
@@ -9401,7 +9420,10 @@ PTIERS = ("trivial", "small", "normal", "risky")
 # names one runs nothing, so docs are exempt (see process_tier); any code file under them is risky, test or not.
 _RISKY_PATH = lazy(r"(?i)(^|/)(hooks?/|migrations?/|sql/)|(^|/)[^/]*(guard|schema)[^/]*(/|$)|\.sql$|"
                    r"(^|/)protocols\.json$|(^|/)settings[^/]*\.json$")
-_COMMENT_LINE = lazy(r"^\s*(#(\s|$)|//|/\*|\*/|<!--)")  # a bare "*" can open a continuation line: not a comment
+# T-5715 review: prose that steers an agent (skills, agent and command prompts, references, rules, output styles) is
+# instruction, not docs: it scores at least normal. A "comment-only" shortcut for code is gone: a comment line can hide
+# code (a removed */ or -->, code after a closing delimiter, a line inside a string).
+_AGENT_DRIVING = lazy(r"(?i)(^|/)(skills|agents|commands|references|rules|output-styles)/")
 # a test is a file in a tests folder: a production file named test_*.py (test_runner.py) is code, not a test (T-5713)
 _TEST_DIR = lazy(r"(^|/)(tests?|__tests__|spec)/")
 
@@ -9425,8 +9447,8 @@ def process_tier(tier, type_, files, diff, tests_linked):
     """T-5713: the process tier a change needs, as (ptier, why). Pure: no I/O, no git, no map (tests_linked maps each
     changed file to the tests linked to it, map.tests_for per file). The claimed tier is the base. A floor is risky
     whatever the diff says: claimed L or bigger, SECURITY, any sensitive() hit, a hook, guard, schema or migration path.
-    Trivial: a diff that is only docs or tests (test lines removed net of added at most 20), or only comments and
-    blanks under 60 changed lines. Small: a claimed S, or a claimed M of at most 3 files and 80 changed lines with a
+    Trivial: a diff that is only prose or test files (test lines removed net of added at most 20), never a code file
+    for its comments (T-5715). Agent-driving prose (skills, agents, commands, references) scores at least normal. Small: a claimed S, or a claimed M of at most 3 files and 80 changed lines with a
     linked test for each code file. Anything it can't measure stays at the claimed tier's own level."""
     files = list(files or [])
     changed = _changed_lines(diff)
@@ -9444,14 +9466,14 @@ def process_tier(tier, type_, files, diff, tests_linked):
         floors.append(f"hook, guard, schema or migration path: {joinmore(path, 3)}")
     if floors:
         return "risky", floors
-    if changed:
-        if files and all(DOC.search(f) or _TEST_DIR.search(f) for f in files):
-            test_net = sum(1 if sign == "-" else -1 for p, sign, _ in changed if _TEST_DIR.search(p))
-            if test_net <= 20:
-                kinds = {"docs" if DOC.search(f) else "tests" for f in files}
-                return "trivial", [f"{' and '.join(sorted(kinds))} only"]
-        if files and n < 60 and all(not text.strip() or _COMMENT_LINE.search(text) for _, _, text in changed):
-            return "trivial", ["comments and blanks only"]
+    driving = [f for f in files if _AGENT_DRIVING.search(f)]
+    if driving:
+        return "normal", [f"agent-driving prose: {joinmore(driving, 3)}"]
+    if changed and files and all(DOC.search(f) or _TEST_DIR.search(f) for f in files):
+        test_net = sum(1 if sign == "-" else -1 for p, sign, _ in changed if _TEST_DIR.search(p))
+        if test_net <= 20:
+            kinds = {"docs" if DOC.search(f) else "tests" for f in files}
+            return "trivial", [f"{' and '.join(sorted(kinds))} only"]
     if tier_rank(tier) == 0:  # S, or no tier at all (T-4220)
         return "small", ["claimed S"]
     code_files = [f for f in files if not DOC.search(f) and not _TEST_DIR.search(f)]
@@ -9490,6 +9512,148 @@ def ptier_of(b, files=None, diff="", tests_linked=None):
     if isinstance(stored, str) and stored.strip() in PTIERS and PTIERS.index(stored.strip()) > PTIERS.index(base):
         base, why = stored.strip(), why + [f"stored ptier {stored.strip()}"]
     return base, why
+
+
+def audit_groups(tier, ptier):
+    """T-5715: the audit groups a claimed `tier` needs at process tier `ptier`, as REQUIRED_AUDITS' lists. Trivial keeps
+    the self audit only. Small: a claimed S keeps its self audit; a claimed M asks one combined group, any one of the
+    default lenses (one reviewer's single read). Normal is today's M, risky today's L for a claimed L or bigger. A
+    claimed S or M scored risky (a sensitive diff, a guard path: the floors the change itself sets) keeps its own
+    claimed groups, the adversary lens for the sensitive files asked on top as before: the process tier never asks a
+    small claim for more lenses than the claim did, so a sensitive S still closes on self + adversary. An unknown ptier
+    reads as the claimed tier's own groups, as before."""
+    if ptier == "trivial":
+        return [{"self"}]
+    if ptier == "small":
+        return [{"self"}] if tier_rank(tier) == 0 else [set(DEFAULT_LENSES)]
+    if ptier == "normal":
+        return REQUIRED_AUDITS["M"]
+    if ptier == "risky" and at_least(tier, "L"):
+        return REQUIRED_AUDITS["L"]
+    return REQUIRED_AUDITS.get(tier, REQUIRED_AUDITS["S"])
+
+
+def stored_ptier(b):
+    """T-5715: the process tier stamped on b's meta, or "" when none (or not a tier name)."""
+    v = b.meta.get("ptier")
+    return v.strip() if isinstance(v, str) and v.strip() in PTIERS else ""
+
+
+def claimed_ptier(b):
+    """T-5715: the process tier b's claimed tier gives with no change to measure: S small, M normal, L or bigger risky
+    (what FOREMAN_PROCESS_TIER=off gives too)."""
+    return "risky" if at_least(b.tier, "L") else "normal" if canonical_tier(b.tier) == "M" else "small"
+
+
+def ptier_now(b, files=None, diff="", tests_linked=None):
+    """T-5715: b's process tier as (ptier, why). With files given it is ptier_of, the real change scored (a stored tier
+    the floor). With none (the stage, the land's field check, `done` before the diff is read) there is no change to
+    measure: the tier the close stamped stands, else the claimed tier's own; a claimed L or SECURITY is risky whatever
+    was stamped. Scope globs are not scored: they read as code and would only guess."""
+    if files is not None or diff or os.environ.get("FOREMAN_PROCESS_TIER", "").strip().lower() == "off":
+        return ptier_of(b, files, diff, tests_linked)
+    stored = stored_ptier(b)
+    if at_least(b.tier, "L") or str(b.type).upper() == "SECURITY":
+        return "risky", [f"claimed {b.tier}" if at_least(b.tier, "L") else "SECURITY"]
+    if stored:
+        return stored, [str(b.meta.get("ptier_why") or f"stored ptier {stored}")]
+    return claimed_ptier(b), [f"claimed {canonical_tier(b.tier) or b.tier}, no change measured"]
+
+
+def unmeasured_ptier(b):
+    """T-5715 review: the process tier of a change that can't be measured (an unreadable diff): the higher of the
+    claimed tier's and the stamped one, so an unmeasured change is never lighter than its claim. A claimed L or
+    SECURITY is risky, as in ptier_now."""
+    if at_least(b.tier, "L") or str(b.type).upper() == "SECURITY":
+        return "risky"
+    stored, claimed = stored_ptier(b), claimed_ptier(b)
+    if os.environ.get("FOREMAN_PROCESS_TIER", "").strip().lower() == "off":
+        return claimed
+    return stored if stored and PTIERS.index(stored) > PTIERS.index(claimed) else claimed
+
+
+def _prose_or_test_only(files):
+    """T-5715 review: every file is prose or a test, none an agent-driving prompt: the only shape that scores trivial."""
+    return bool(files) and all((DOC.search(f) or _TEST_DIR.search(f)) and not _AGENT_DRIVING.search(f) for f in files)
+
+
+def ptier_hint(p, b):
+    """T-5715 review: the process tier the next-step hints (stage, next_action, audit_progress) follow, measured from the
+    files the hooks saw the task touch (ledger only, no git, no diff): a claimed M whose touched files are all prose
+    or tests reads trivial, as the close will score it, so `sampo next` doesn't ask a docs-only change for lenses,
+    docs and a lesson. Any other claim, or a task with no touched file yet, reads unmeasured_ptier. The stamp is a
+    floor. Only an active claimed M with every step done is measured: no other hint changes with it."""
+    base = unmeasured_ptier(b)
+    if canonical_tier(b.tier) != "M" or b.status != "active" or base == "risky" or os.environ.get(
+            "FOREMAN_PROCESS_TIER", "").strip().lower() == "off":
+        return base
+    try:
+        if any(not s.done for s in b.steps()):
+            return base
+        files = sorted(task_touches(p, b.id))
+    except Exception:  # a hint: no ledger, the claimed tier's own
+        return base
+    if not files or process_tier(b.tier, b.type, files, "", {})[0] == "risky" or not _prose_or_test_only(files):
+        return base
+    stored = stored_ptier(b)
+    return stored if stored and PTIERS.index(stored) > 0 else "trivial"
+
+
+_GREEN_RUN = lazy(r"^- (?:\((?:step|ac) \d+\) )?`(.*?)` → (?!✗)")
+
+
+def green_run_cmds(b):
+    """T-5715 review: the commands of the evidence lines fm ran that passed: a [ran] line whose result isn't a failure."""
+    out = []
+    for line in b.evidence():
+        m = _GREEN_RUN.match(line) if _RAN_MARK in line else None
+        if m and "→ red as expected" not in line:
+            out.append(m.group(1))
+    return out
+
+
+def ran_green(cmds, test):
+    """T-5715 review: whether one of the green run commands `cmds` names the test file `test` (its path or its module
+    name, as a whole word: test_mod is not test_module)."""
+    stem = os.path.basename(test).rsplit(".", 1)[0]
+    pat = re.compile(rf"(?<![\w-]){re.escape(stem)}(?![\w-])|{re.escape(test)}")
+    return any(pat.search(cmd) for cmd in cmds)
+
+
+def ptier_rises(b, ptier):
+    """T-5715 review: whether stamping `ptier` on b would change its stamp (raise it), so a caller only writes then."""
+    stored = stored_ptier(b)
+    return ptier in PTIERS and not (stored and PTIERS.index(stored) >= PTIERS.index(ptier))
+
+
+def required_audits(b, files=None, diff="", tests_linked=None):
+    """T-5715: the audit groups brief b needs, from its process tier (ptier_now). Replaces the direct REQUIRED_AUDITS
+    reads. The adversary group for sensitive code is not here: it is a `need` added on top at every tier."""
+    return audit_groups(b.tier, ptier_now(b, files, diff, tests_linked)[0])
+
+
+def owes_close_fields(ptier, tier=None):
+    """T-5715: whether a close at process tier `ptier` owes docs impact, a lesson and (a FIX) why-not-caught: the normal
+    and risky tiers only. An empty or unknown tier (a caller that has none) owes them, as today. With the claimed `tier`
+    given, a claimed S scored risky by its own change (a sensitive diff) owes no more than the S claim did, as in
+    audit_groups."""
+    if ptier == "risky" and tier is not None and tier_rank(tier) == 0:
+        return False
+    return ptier not in ("trivial", "small")
+
+
+def stamp_ptier(b, ptier, why=()):
+    """T-5715: record process tier `ptier` and its reasons on b's meta (ptier, ptier_why), only ever raised: a tier at or
+    below the stored one changes nothing. Not stamped under FOREMAN_PROCESS_TIER=off or for a name that is no tier.
+    True when meta changed."""
+    if os.environ.get("FOREMAN_PROCESS_TIER", "").strip().lower() == "off" or ptier not in PTIERS:
+        return False
+    stored = stored_ptier(b)
+    if stored and PTIERS.index(stored) >= PTIERS.index(ptier):
+        return False
+    b.meta["ptier"] = ptier
+    b.meta["ptier_why"] = "; ".join(" ".join(str(w).split()) for w in why)[:300]
+    return True
 
 
 _UI_MORE = {".sass", ".less", ".astro", ".jinja", ".jinja2", ".hbs", ".njk", ".ejs", ".twig", ".liquid"}  # not linted

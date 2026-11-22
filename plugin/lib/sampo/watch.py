@@ -852,10 +852,11 @@ def view(p):
     active = None
     if act:
         changed = c.last_change(p, act.id)
-        prog = c.audit_progress(act, changed)
-        active = dict(c.brief_detail(act), stage=c.stage(act, autonomy, changed), stages=list(c.STAGES),
+        pt = c.ptier_hint(p, act)  # T-5715 review: the tier the close will use
+        prog = c.audit_progress(act, changed, pt)
+        active = dict(c.brief_detail(act), stage=c.stage(act, autonomy, changed, pt), stages=list(c.STAGES),
                       audits={"done": prog["done"], "need": prog["required"]},
-                      blockers=act.done_blockers(changed)[:6], **_ledger_lines(act))
+                      blockers=act.done_blockers(changed, ptier=pt)[:6], **_ledger_lines(act))
     events = c.ledger_tail(p, 5000)
     if active:
         focused = next((e.get("ts") for e in events if e.get("event") == "focus" and e.get("task") == act.id), None)

@@ -1083,21 +1083,23 @@ def cmd_task(args):
         tree = c.audit_tree_past_merges(p, pre, tree)  # T-2784: other lanes' merges alone don't stale audits
         if pre.status == "dropped":  # T-0679 chaos test: a dropped task isn't finished by closing it again
             raise c.PolicyError(f"{pre.id} is dropped: reopen it first (sampo task set {pre.id} status=planned)")
-        drift, notes = sdocs.task_docs(p.root, pre.section("Docs impact")) if c.at_least(pre.tier, "M") else ([], [])
+        touches, risky, gone, diff = _task_view(p, pre)
+        ptier, ptier_why = _task_tier(p, pre, touches, diff)  # T-5715: the process tier the audits and fields follow
+        owed = c.owes_close_fields(ptier, pre.tier)
+        drift, notes = sdocs.task_docs(p.root, pre.section("Docs impact")) if owed else ([], [])
 
         lesson = c.plain(args.lesson or "").strip()
-        touches, risky, gone = _task_files(p, pre)
         files = list(touches)
         tests_only = _tests_only_gaps(p, pre)  # T-4712: read here, not under the lock; no way round finish's pre-check
 
         def done(b):
             reasons = [r + _adversary_ask(risky) if r.startswith("audit missing: adversary")
-                       else r for r in b.done_blockers(since, tree, ("adversary",) if risky else ())] + drift
+                       else r for r in b.done_blockers(since, tree, ("adversary",) if risky else (), ptier)] + drift
             reasons += _child_gaps(p, b)  # T-0709: a parent closes after its children
             reasons += _scope_gaps(p, b, touches)
             reasons += tests_only if not b.meta.get("rival_at") else []
             reasons += _kind_gaps(b, first_edit)
-            if c.at_least(b.tier, "M") and not lesson and not b.section("Lessons").strip():
+            if owed and not lesson and not b.section("Lessons").strip():
                 reasons.append(f"lesson missing: sampo task done {b.id} --lesson \"<what the next similar task should "
                                f"know>\" (or \"none: <why>\"); recall shows it on related work")
             from sampo import miss  # T-2369: fm task done is no way round finish's refusal
@@ -1112,12 +1114,14 @@ def cmd_task(args):
             if reasons:
                 lead = "" if hasattr(args, "audit") else (  # T-0849: fm task done, not finish's own close
                     f" — one call settles most of it: sampo task finish {b.id} --run \"<test cmd>\" --audit \"<how>\""
-                    + (" --lens \"<lens>: <result>\" … --docs \"<…>\" --lesson \"<…>\"" if c.at_least(b.tier, "M") else ""))
+                    + (" --lens \"<lens>: <result>\" … --docs \"<…>\" --lesson \"<…>\"" if owed else ""))
                 raise c.PolicyError(f"{b.id} can't be marked done{lead}:\n  - " + "\n  - ".join(reasons))
             if lesson:
                 old = b.section("Lessons").rstrip()
                 b.set_section("Lessons", (old + "\n" if old else "") + f"- {lesson}")
             b.meta["status"] = "done"
+            if ptier_why:  # T-5715: a tier measured from the diff, raise-only, so a later reader never judges it lighter
+                c.stamp_ptier(b, ptier, ptier_why)
             b.meta["verified"] = b.grade()[0]
             try:  # T-2635: what fm prove still lists for this close, kept beside its grade (a rollup read never fails it)
                 kinds = sorted({n["kind"] for n in c.proof_needs(p, b, files, live=True)})
@@ -1856,14 +1860,15 @@ def _task_finish(p, args):
     # T-1272: a step that has a run (a failed one, else it would have closed) is told so, not that it has no evidence
     red = [n for kind, n, cmd in todo if cmd is None and kind == "step" and b.has_evidence(step=n)]
     missing = [named(kind, n) for kind, n, cmd in todo if cmd is None and not (kind == "step" and n in red)]
-    touches, risky, _ = _task_files(p, b)  # once for both pre-checks (done() reads it again after the gates)
+    touches, risky, _, diff = _task_view(p, b)  # once for both pre-checks (done() reads it again after the gates)
+    ptier, ptier_why = _task_tier(p, b, touches, diff)  # T-5715: the audits and fields this change's tier asks
     gaps = early + [f"{named('step', n)}: its last run failed; record a passing run (sampo task evidence {b.id} --step {n} --run CMD, or finish with --run CMD)"
             for n in red] + ([f"give --run \"<cmd>\" (or record evidence): {', '.join(missing)} has no verify command or "
-                              f"evidence of its own"] if missing else []) + _finish_gaps(b, args, lenses + spoken, p) + _self_docs_gaps(p, b) \
+                              f"evidence of its own"] if missing else []) + _finish_gaps(b, args, lenses + spoken, p, ptier) + _self_docs_gaps(p, b) \
         + _file_map_gaps(p, b) + _tests_only_gaps(p, b) + [g for g in [b.proof_gap(then=[cmd for _, _, cmd in todo] + [args.run])] if g] \
         + _proved_gaps(p, b, then=[cmd for _, _, cmd in todo] + [args.run]) \
         + _adversary_gaps(p, b, lenses + spoken, risky) + _scope_gaps(p, b, touches) \
-        + _done_only_gaps(p, b, args)  # T-1906, T-1907, T-3550, T-4585: before anything runs
+        + _done_only_gaps(p, b, args, ptier)  # T-1906, T-1907, T-3550, T-4585: before anything runs
     from sampo import miss  # T-2369: an open capability miss refuses every try; only a later passing run closes it
     from sampo import toolproof  # T-2372: first, so a proved tool resolves its miss in the same try
     from sampo import incident  # T-2388: its criterion's own run is the close's second green
@@ -1918,9 +1923,11 @@ def _task_finish(p, args):
             if not code and kind != "final":
                 x.check_ac(n) if kind == "ac" else x.mark_step(n)
         if not any(code for *_, code, _ in results):
-            small = b.tier == "S" and all(lens != "self" for lens, _ in lenses)  # T-0129: --audit is S's self audit
+            small = _self_alone(b, ptier) and all(lens != "self" for lens, _ in lenses)  # T-0129: --audit is the self audit
             for lens, result in lenses + ([("self", args.result)] if small else []):
                 x.add_audit(lens, args.audit, result, tree=tree)
+            if ptier_why:  # T-5715: the tier the close was judged at (measured from its diff), raise-only
+                c.stamp_ptier(x, ptier, ptier_why)
             if args.docs:
                 x.set_section("Docs impact", c.redact(args.docs))
             if getattr(args, "outcome", None):  # T-3934: probed later; the first line is the signal
@@ -1960,7 +1967,7 @@ def _task_finish(p, args):
             _commit_task(p, need_brief(p, b.id), to_commit, dry=True, with_=args.with_)
     with _span(args, "advice"):
         _close_advice(p, need_brief(p, b.id))
-        _stamp_lenses_at_tip(p, b, lenses, args, tree)
+        _stamp_lenses_at_tip(p, b, lenses, args, tree, ptier)
     args.task_cmd = "done"
     args.not_verified = ([f"affected tests skipped: {c.fit(args.waived_affected, 90)}"]  # T-1159
                          if getattr(args, "waived_affected", None) else []) + [
@@ -2810,6 +2817,36 @@ def _lane_merge(p, base, tip):
 def _task_files(p, b):
     """({file: when touched}, the security-sensitive ones, the untracked files gone since the start, not counted):
     edits made outside Claude since the task's base count."""
+    return _task_view(p, b)[:3]
+
+
+def _tests_linked(p, b, files):
+    """T-5715: {file: its linked tests that ran} for the process tier: map.tests_for per file, kept only when one of
+    the task's own green runs (b's evidence: affected or criteria runs) names the test, so a mapped test that never ran
+    links nothing and a small claim still owes intent. {} (no links, so never small) when the map can't be read,
+    outside git, or past three files, which no small change has."""
+    if p is None or len(files) > 3 or not c.git_root(p.root):
+        return {}
+    from sampo import map as smap
+    try:
+        m, ran = smap.load(p), c.green_run_cmds(b)
+        return {f: [t for t in smap.tests_for(m, [f]) if c.ran_green(ran, t)] for f in files}
+    except Exception:  # the map is a hint: no map, the claimed tier's own process
+        return {}
+
+
+def _task_tier(p, b, touches, diff):
+    """T-5715: (process tier, why) of the change b's close judges: its touched files and the one diff _task_view read. A
+    diff that can't be read leaves the stamped tier or else the claimed one (nothing to measure) with no reasons, so
+    nothing is stamped from it."""
+    files = sorted(touches)
+    if diff is None:
+        return c.unmeasured_ptier(b), []
+    return c.ptier_now(b, files, diff, _tests_linked(p, b, files))
+
+
+def _task_view(p, b):
+    """_task_files' three, and the diff text (None when it can't be read): the one read of the task's own change."""
     touches, gone = c.task_touches(p, b.id), set()
     base = c.task_base(p.root, b) if c.git_root(p.root) else None
     tip = _merged_lane_tip(p, b) if base else None
@@ -2839,7 +2876,7 @@ def _task_files(p, b):
     recorded = b.meta.get("base_tree") or b.meta.get("base")  # never focused: no start point, as before
     if diff is None and recorded and c.git_root(p.root):  # T-0078 review: what can't be read isn't passed as clean
         risky.append("diff unavailable, so its content wasn't checked")
-    return touches, risky, sorted(gone)
+    return touches, risky, sorted(gone), diff
 
 
 def _adversary_ask(risky):
@@ -2971,39 +3008,52 @@ def _dry_report(b, gaps, args):
     return 1 if rows else 0
 
 
-def _finish_gaps(b, args, lenses, p=None):
+def _finish_gaps(b, args, lenses, p=None, ptier=None):
     """T-0704: what fm task done would refuse that this call doesn't supply, checked before anything runs: the audit
-    lenses its tier needs, docs impact and the lesson (M/L)."""
-    return _audit_gaps(b, lenses, b.audit_blockers(tree=_merge_aware_tree(p, b))) + _field_gaps(b, args)
+    lenses its process tier needs (T-5715: `ptier`, the one the close scored), docs impact and the lesson (normal, risky)."""
+    ptier = ptier or c.ptier_now(b)[0]
+    groups = c.audit_groups(b.tier, ptier)
+    return _audit_gaps(b, lenses, b.audit_blockers(tree=_merge_aware_tree(p, b), groups=groups), ptier) \
+        + _field_gaps(b, args, ptier)
 
 
-def _audit_gaps(b, lenses, recorded):
-    """T-4487: the audit lines a close refuses: each lens group its tier needs that neither `lenses` (the close's own
-    --lens, or accept's audits) nor an audit on record that still counts gives. `recorded`: the audit_blockers lines."""
-    given = {lens for lens, _ in lenses} | ({"self"} if b.tier == "S" else set())
+def _self_alone(b, ptier=None):
+    """T-5715: the tier's only audit group is the self audit (trivial, a claimed S at small): the close records its
+    --audit as that audit, so it is never asked for. No tier: the claimed one's own."""
+    return c.audit_groups(b.tier, ptier or c.ptier_now(b)[0]) == [{"self"}]
+
+
+def _audit_gaps(b, lenses, recorded, ptier=None):
+    """T-4487: the audit lines a close refuses: each lens group its process tier needs (T-5715) that neither `lenses`
+    (the close's own --lens, or accept's audits) nor an audit on record that still counts gives. `recorded`: the
+    audit_blockers lines."""
+    given = {lens for lens, _ in lenses} | ({"self"} if _self_alone(b, ptier) else set())
     return [f"audit missing: --lens '{sorted(g)[0]}: <result>'" + (f" (or {', '.join(sorted(g)[1:])})" if len(g) > 1
                                                                   else "")
-            for g in c.REQUIRED_AUDITS.get(b.tier, c.REQUIRED_AUDITS["S"])
+            for g in c.audit_groups(b.tier, ptier or c.ptier_now(b)[0])
             if not g & given and any(r.startswith(f"audit missing: {' or '.join(sorted(g))}") for r in recorded)]
 
 
-def _field_gaps(b, args):
-    """The lines a close needs that neither the brief nor this call has (T-3819: sampo lane land names them up front)."""
+def _field_gaps(b, args, ptier=None):
+    """The lines a close needs that neither the brief nor this call has (T-3819: sampo lane land names them up front).
+    Docs impact, a lesson and why-not-caught are owed at the normal and risky process tiers only (T-5715)."""
     gaps = []
-    if b.docs_gap() and not args.docs:
+    ptier = ptier or c.ptier_now(b)[0]
+    owed = c.owes_close_fields(ptier, b.tier)
+    if b.docs_gap(ptier) and not args.docs:
         gaps.append("docs impact missing: --docs \"<docs updated | none: why>\"")
     if b.type == "PERFORMANCE" and not getattr(args, "numbers", None) and not b.section("Measurements").strip():
         gaps.append("numbers missing: --numbers \"<metric>: <before> → <after> (<how measured>)\" (or \"none: <why>\")")
-    if c.at_least(b.tier, "M") and not args.lesson and not b.section("Lessons").strip():
+    if owed and not args.lesson and not b.section("Lessons").strip():
         gaps.append("lesson missing: --lesson \"<what the next similar task should know>\" (or \"none: <why>\")")
-    if b.type == "FIX" and c.at_least(b.tier, "M") and not getattr(args, "why_not_caught", None) \
+    if b.type == "FIX" and owed and not getattr(args, "why_not_caught", None) \
             and not b.section("Why not caught").strip():  # T-0598: every M/L fix asks what would have caught it
         gaps.append("why-not-caught missing: --why-not-caught \"<the test, gate or guard that would have caught it "
                     "earlier>\" (or \"none: <why>\"); it becomes a follow-up")
     return gaps
 
 
-def _stamp_lenses_at_tip(p, b, lenses, args, tree):
+def _stamp_lenses_at_tip(p, b, lenses, args, tree, ptier=None):
     """T-4585: the audits this call gave (each --lens, and an S close's self audit) are recorded at the tree the gates
     left; the linked-tests run after that (T-4576's took 45 minutes) can leave files of its own, and fm task done then
     judged the audits against another tree and refused the close for audits "that predate the last change". The
@@ -3012,7 +3062,7 @@ def _stamp_lenses_at_tip(p, b, lenses, args, tree):
     now = c.worktree_id(p.root)
     if not now or now == tree:
         return
-    small = b.tier == "S" and all(lens != "self" for lens, _ in lenses)
+    small = _self_alone(b, ptier) and all(lens != "self" for lens, _ in lenses)  # T-5715: the tier's, not the claim's
     given = lenses + ([("self", args.result)] if small else [])
     if given:
         mutate(p, b.id, lambda x: [x.add_audit(lens, args.audit, result, tree=now) for lens, result in given],
@@ -3041,14 +3091,14 @@ def _kind_gaps(b, first_edit):
     return gaps
 
 
-def _done_only_gaps(p, b, args):
+def _done_only_gaps(p, b, args, ptier=None):
     """T-4585: the refusals fm task done decides from the brief, the docs and the repo alone, which finish used to meet
     only after its gates (T-4576: 45 minutes of gates, then refused): a Docs impact naming a missing doc or drifting
     one (M/L), an open child, a CLEAN close with no behaviour lock, a RESEARCH close with no Decision. Nothing a
     run of this call could change decides them (a close's own runs come after the task's first edit)."""
     from sampo import docs as sdocs
     gaps = []
-    if c.at_least(b.tier, "M"):
+    if c.owes_close_fields(ptier or c.ptier_now(b)[0], b.tier):  # T-5715: normal and risky only
         impact = c.redact(args.docs) if args.docs else b.section("Docs impact")
         gaps += sdocs.task_docs(p.root, impact)[0]
     return gaps + _child_gaps(p, b) + _kind_gaps(b, c.first_touch(p, b.id))
@@ -5478,7 +5528,7 @@ def cmd_focus(args):
         + (f"\nNote: {shifted}" if shifted else "")
         + (f"\nStale since it started (gone from the repo now): {', '.join(stale)} — re-check the brief." if stale else "")
         + (f"\n{related}" if related else "") + (f"\n{record}" if record else "") + (f"\n{cargo_line}" if cargo_line else "")
-        + f"\nDone needs: {', '.join(g for g, _ in gates(target.type, target.tier))} (sampo gates {target.id})")
+        + f"\nDone needs: {', '.join(g for g, _ in gates(target.type, target.tier) if g != 'process tier')} (sampo gates {target.id})")
 
 
 def _ready_stdin():
@@ -5573,13 +5623,23 @@ def cmd_quiet(args):
     return code
 
 
-def gates(type_, tier):
-    """What fm task done checks for this type and tier: [(short, how)]."""
-    audits = " + ".join(" or ".join(sorted(g)) for g in c.REQUIRED_AUDITS.get(tier, c.REQUIRED_AUDITS["S"]))  # T-4221: as brief.audit_blockers reads it
-    need = [("evidence", "every step and criterion has a check sampo ran (--run) or a typed one for what can't run here"),
+PTIER_HOW = {"trivial": "the self audit only (docs, tests or comments only)",
+             "small": "one combined audit group (a small, tested change)",
+             "normal": "the claimed tier's audit groups",
+             "risky": "the full audit groups (security, a sensitive path or a large change)"}  # T-5715
+
+
+def gates(type_, tier, ptier=None, why=""):
+    """What fm task done checks for this type and tier: [(short, how)].
+    T-5715: `ptier`, the process tier (none: the claimed tier's own, c.claimed_ptier), decides the audit groups and
+    whether docs impact, lesson and why-not-caught are owed (normal and risky only); `why` is its measured reasons."""
+    ptier = ptier if ptier in c.PTIERS else ("risky" if c.at_least(tier, "L") else "normal" if c.canonical_tier(tier) == "M" else "small")
+    audits = " + ".join(" or ".join(sorted(g)) for g in c.audit_groups(tier, ptier))  # T-4221: as brief.audit_blockers reads it
+    need = [("process tier", f"{ptier} ({why or PTIER_HOW[ptier]})"),
+            ("evidence", "every step and criterion has a check sampo ran (--run) or a typed one for what can't run here"),
             ("audits", f"{audits}, recorded after the last change (sampo audit prep ID); adversary as well when the "
                        f"change touches auth, crypto, secrets, exec or deserialization")]
-    if c.at_least(tier, "M"):
+    if c.owes_close_fields(ptier, tier):
         need += [("docs impact", "--section \"Docs impact\" (updated docs, or none: why)"),
                  ("lesson", "sampo task done ID --lesson \"…\"")]
         if type_ == "FIX":  # T-1977: fm task finish refuses an M/L fix without it (_close_gaps)
@@ -5603,8 +5663,9 @@ def cmd_gates(args):
     else:
         act = c.active_brief(c.load_briefs(p), p.lane)
     type_, tier = args.type or (act.type if act else "FEATURE"), args.tier or (act.tier if act else "S")
-    need = gates(type_, tier)
-    out(args, {"type": type_, "tier": tier, "gates": [{"gate": g, "how": h} for g, h in need]},
+    ptier, why = (c.ptier_now(act)[0], str((act.meta or {}).get("ptier_why") or "")) if act and not args.tier else (None, "")
+    need = gates(type_, tier, ptier, why)  # T-5715: a brief's own process tier (stamped or claimed), else the tier asked for
+    out(args, {"type": type_, "tier": tier, "ptier": need[0][1].split(" ")[0], "gates": [{"gate": g, "how": h} for g, h in need]},
         f"sampo task done needs ({type_} {tier}):\n" + "\n".join(f"- {g}: {h}" for g, h in need)
         + ("\nS shortcut: sampo task finish ID --run \"<check>\" --audit \"<how>\"" if tier == "S" else ""))
 
@@ -9025,13 +9086,25 @@ def cmd_audit(args):
     except Exception:  # the map is a hint: it never stops an audit
         m = None
     found = smap.pre_audit(p.root, r.stdout, files, m)
-    risky = ["adversary"] if c.sensitive(files, r.stdout) else []
     ui = c.ui_paths(files)  # T-1501: a UI diff gets the design read whatever the tier; any other diff pays nothing
-    lenses = args.lens or (["self"] + risky if b.tier == "S" else list(c.DEFAULT_LENSES)) + (["design"] if ui else [])
+    # T-5715: the process tier of this diff (core.ptier_now) says how much review it is owed; T-5841: lanes.review_depth
+    # turns it into the reviewers' lenses and model (the floors: a protected path, a past finding, SAMPO_REVIEW_DEPTH=full).
+    # A tier whose gate asks the self audit only keeps it, first, ahead of the reviewers; a small claimed M gets one
+    # combined reviewer brief for the one group it owes
+    from sampo import lanes
+    linked = _tests_linked(p, b, files)
+    depth = lanes.review_depth(b, files, r.stdout, p=p, tests_linked=linked)
+    args.depth = depth  # `audit run` reads the map's model from the namespace it passed
+    ptier, ptier_why = depth["ptier"], depth["why"]
+    one_group = c.audit_groups(b.tier, depth["scored"]) == [{"self"}]  # the gate's tier, not the floored one
+    lenses = args.lens or (["self"] if one_group else []) + depth["lenses"] + (["design"] if ui else [])
+    combined = not depth["full"] and ptier in ("trivial", "small")  # the light tiers' reviewers read as one brief
+    label = "review depth full" if depth["full"] else f"process tier {ptier}"
     missing = [x for x in lenses if x != "self" and x not in templates]
     if missing:
         raise UsageError(f"references/audit.md has no template for {', '.join(missing)} (its lens format changed?)")
-    head = (f"Read-only audit of task {b.id} \"{b.title}\" ({b.type} {b.tier}) in {p.root}.\n"
+    head = (f"Read-only audit of task {b.id} \"{b.title}\" ({b.type} {b.tier}, {label}"
+            + (f": {c.fit('; '.join(ptier_why), 160)}" if ptier_why else "") + f") in {p.root}.\n"
             f"Diff to review: {review} (git diff {base[:12]} → {upto}; "
             + (f"the non-test part, {shown_lines} lines; the tests: {tests_path}; the full diff, fixtures and "
                f"duplicate hunks elided: {path})."
@@ -9042,7 +9115,6 @@ def cmd_audit(args):
     if found:  # T-0068: mechanical findings first, so the reviewer confirms them instead of hunting for them
         head += "\nPre-audit (mechanical; confirm or dismiss each, then review the rest):\n" + "\n".join(
             f"- {x}" for x in found)
-    from sampo import lanes
     stale = lanes.stale_stack(p, b)  # T-5725 review: the dependency moved on after this lane was built on it
     if stale:
         head += "\n" + stale
@@ -9113,7 +9185,7 @@ def cmd_audit(args):
     # T-0216: --split gives each lens group its own fresh-context reviewer; default one reviewer reads the diff once
     groups = [g for g in ([[x for x in grp if x in by_lens] for grp in SPLIT_GROUPS]
                           + [[x for x in names if not any(x in grp for grp in SPLIT_GROUPS)]]) if g] \
-        if args.split and len(names) > 1 else [names] if names else []
+        if args.split and len(names) > 1 and not combined else [names] if names else []
     briefs, lists = [], ""
     from sampo import playbooks
     books = playbooks.review_checklists(p, re.findall(r"(?m)^\+\+\+ b/(.+)$", r.stdout))
@@ -9165,10 +9237,11 @@ def cmd_audit(args):
     how += f"\nObjections past reviews raised on these files: sampo audit ahead {b.id} (run it before committing)."  # T-3276
     # the brief goes to a file: printed, it would be paid for twice (here and in the reviewer's prompt)
     out(args, {"diff": path, "review": review, "tests": tests_path, "base": base, "lenses": lenses, "brief": brief,
-               "briefs": briefs, "pre_audit": found,
-               "lens_skills": fit},
+               "briefs": briefs, "pre_audit": found, "ptier": ptier, "model": depth["model"],
+               "depth_why": depth["why"], "lens_skills": fit},
         ("\n\n".join(blocks) + f"\n\n{diff_lines}" if args.print else
-         f"Review brief ({', '.join(lenses)}; {sum(map(len, blocks))} chars): {brief}\n{diff_lines}"
+         f"Review brief ({', '.join(lenses)}; {label}; reviewer model {depth['model']}; "
+         f"{sum(map(len, blocks))} chars): {brief}\n{diff_lines}"
          + "".join(f"Pre-audit: {x}\n" for x in found)) + how)
 
 
@@ -10999,7 +11072,7 @@ def _build_parser(only=None):
                                                                     "pre-audit of any diff (--base, default: the main branch); "
                                                                     "run ID: headless reviewers, one per lens (T-1186); "
                                                                     "ahead ID: the objections past reviews raised on this diff (T-3276)")
-    s.add_argument("--model", default="sonnet", help="run: the reviewers' model")
+    s.add_argument("--model", default=None, help="run: the reviewers' model (default: the review depth map's, T-5841)")
     s.add_argument("--timeout", type=int, default=900, help="run: seconds the reviewers get")
     s.add_argument("id", nargs="?")
     s.add_argument("--print", action="store_true", help="print the brief instead of only its path")

@@ -72,8 +72,8 @@ class DesignLens(HookCase):
         self.fm("init")
         self.tid = self.task(tier=tier)
 
-    def brief(self):
-        data = json.loads(self.fm("audit", "prep", self.tid, "--json").stdout)
+    def brief(self, *extra):
+        data = json.loads(self.fm("audit", "prep", self.tid, "--json", *extra).stdout)
         with open(data["brief"]) as f:
             return data["lenses"], f.read()
 
@@ -137,7 +137,7 @@ class DesignLens(HookCase):
         self.write("shots/home.png", "png")
         self.fm("task", "log", self.tid, "screenshot shots/home.png and shots/gone.png")
         lenses, text = self.brief()
-        self.assertEqual(lenses, list(c.DEFAULT_LENSES) + ["design"])
+        self.assertEqual(lenses, ["intent", "adversary", "edge", "design"])  # T-5841: the normal tier's lenses
         self.assertIn("## design", text)
         for who in PERSONAS:
             self.assertIn(who, text.lower())
@@ -179,7 +179,7 @@ class DesignLens(HookCase):
         self.prep(tier="S")
         self.write("src/App.tsx", "export const A = () => null\n")
         lenses, text = self.brief()
-        self.assertEqual(lenses, ["self", "design"])
+        self.assertEqual(lenses, ["self", "intent", "adversary", "design"])  # T-5841: the depth map's two, then design
         self.assertIn("No screenshots", text)
 
     def test_a_base_that_is_an_option_is_refused_and_writes_nothing(self):  # T-2318
@@ -281,7 +281,7 @@ class DesignLens(HookCase):
         self.prep()
         self.write("a.py", "x = 1\n")
         lenses, text = self.brief()
-        self.assertEqual(lenses, list(c.DEFAULT_LENSES))
+        self.assertEqual(lenses, ["intent", "adversary", "edge"])  # T-5841: the normal tier's lenses
         self.assertNotIn("## design", text)
 
     def test_a_merged_lanes_prep_diffs_its_own_merge_not_an_empty_one(self):  # T-3972: T-2878's diff was 0 lines
@@ -347,7 +347,7 @@ class DesignLens(HookCase):
         self.write("tests/test_app.py", 'def test_one():\n    return "BODY_MARK"\n')
         p = c.find_project(self.repo)
         full = os.path.join(p.dir, "audits", f"{self.tid}.diff")
-        text = self.brief()[1]
+        text = self.brief("--lens", "intent")[1]  # T-5715: a tests-only M change scores trivial (self only): ask a reviewer
         self.assertIn(f"Diff to review: {full}", text, "the full diff is the one to review")
         self.assertFalse(os.path.exists(os.path.join(p.dir, "audits", f"{self.tid}.src.diff")))
         self.assertFalse(os.path.exists(os.path.join(p.dir, "audits", f"{self.tid}.tests.md")), "no summary")
@@ -485,3 +485,374 @@ class SplitTests(ForemanTestCase):
         diff = (block("plugin/lib/app.py", "@@ -0,0 +1,2 @@\n+def new_fn():\n+    return 1\n")
                 + block("plugin/lib/app.py", "@@ -3 +3 @@\n-def old_fn(a):\n+def old_fn(a, b):\n"))
         self.assertEqual(cli._added_defs(diff), {("plugin/lib/app.py", "new_fn")})
+
+
+FIVE = list(c.DEFAULT_LENSES)  # intent, adversary, edge, operator, maintainer: today's full review
+SRC = "plugin/lib/sampo/app.py"
+SRC_TEST = "plugin/tests/test_app.py"
+DOC_FILE = "docs/guide.md"
+
+
+def _patch(path, n=3):
+    return (f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1,1 +1,{n} @@\n"
+            + "".join(f"+value_{i} = {i}\n" for i in range(n)))
+
+
+def _doc_patch(path):
+    return (f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1,1 +1,1 @@\n-old words\n+new words\n")
+
+
+def _task(tier, type_="FIX", scope=(SRC,), ptier=None):
+    b = c.Brief.new("T-0001", "Fix login", type_, tier, now="2026-01-01T00:00:00Z", scope=list(scope))
+    if ptier is not None:
+        b.meta["ptier"] = ptier
+    return b
+
+
+class _Env(ForemanTestCase):
+    def setUp(self):
+        super().setUp()
+        saved = {k: os.environ.pop(k, None) for k in ("SAMPO_REVIEW_DEPTH", "FOREMAN_REVIEW_DEPTH", "FOREMAN_PROCESS_TIER")}
+        self.addCleanup(lambda: [os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+                                 for k, v in saved.items()])
+
+
+class RiskDepth(_Env):
+    """T-5841: lanes.review_depth(b, files, diff) maps the process tier to the lenses and the reviewer model: trivial and
+    small give intent and adversary on haiku, normal adds edge on sonnet, risky all five; a protected path or a
+    security-tagged task always gives all five."""
+
+    def depth(self, b, files, diff, **kw):
+        from sampo import lanes
+        return lanes.review_depth(b, files, diff, **kw)
+
+    def test_risk_depth_trivial_and_small_give_intent_and_adversary_on_haiku(self):
+        cases = {"trivial": (_task("M"), [DOC_FILE], _doc_patch(DOC_FILE)),
+                 "small (claimed S)": (_task("S"), [SRC], _patch(SRC))}
+        for name, (b, files, diff) in cases.items():
+            with self.subTest(name):
+                got = self.depth(b, files, diff)
+                self.assertEqual(got["lenses"], ["intent", "adversary"])
+                self.assertEqual(got["model"], "haiku")
+
+    def test_risk_depth_small_m_with_linked_tests_is_small_too(self):
+        got = self.depth(_task("M"), [SRC], _patch(SRC), tests_linked={SRC: [SRC_TEST]})
+        self.assertEqual((got["ptier"], got["lenses"], got["model"]), ("small", ["intent", "adversary"], "haiku"))
+
+    def test_risk_depth_normal_gives_intent_adversary_and_edge_on_sonnet(self):
+        got = self.depth(_task("M"), [SRC], _patch(SRC))  # no linked test: normal
+        self.assertEqual((got["ptier"], got["lenses"], got["model"]), ("normal", ["intent", "adversary", "edge"], "sonnet"))
+
+    def test_risk_depth_risky_gives_all_five(self):
+        got = self.depth(_task("L"), [SRC], _patch(SRC))
+        self.assertEqual((got["ptier"], got["lenses"]), ("risky", FIVE))
+        self.assertEqual(got["model"], "sonnet")
+
+    def test_risk_depth_lenses_keep_the_default_order(self):
+        for b in (_task("S"), _task("M"), _task("L")):
+            got = self.depth(b, [SRC], _patch(SRC))["lenses"]
+            self.assertEqual(got, [x for x in FIVE if x in got])
+
+    def test_risk_depth_a_protected_path_always_gives_all_five(self):
+        for path in ("plugin/lib/sampo/guard.py", "plugin/lib/sampo/hooks.py", "plugin/lib/sampo/secrets.py",
+                     "plugin/lib/sampo/landlock.py", "plugin/lib/sampo/execs.py", "src/auth/login.py",
+                     "plugin/lib/sampo/kalevala_land.py", "plugin/lib/sampo/exec.py"):
+            for tier in ("S", "M"):
+                with self.subTest(path=path, tier=tier):
+                    got = self.depth(_task(tier, scope=(path,)), [path], _patch(path), tests_linked={path: ["t"]})
+                    self.assertEqual(got["lenses"], FIVE)
+                    self.assertEqual(got["model"], "sonnet")
+                    self.assertTrue(any(path in w for w in got["why"]), got["why"])
+
+    def test_risk_depth_a_doc_about_a_protected_path_and_a_lookalike_stay_light(self):
+        got = self.depth(_task("S"), ["docs/hooks.md"], _doc_patch("docs/hooks.md"))
+        self.assertEqual(got["lenses"], ["intent", "adversary"])
+        for path in ("plugin/lib/sampo/island.py", "plugin/lib/sampo/planded.py"):
+            with self.subTest(path=path):
+                self.assertEqual(self.depth(_task("S"), [path], _patch(path))["lenses"], ["intent", "adversary"])
+
+    def test_risk_depth_a_protected_word_inside_a_longer_word_is_not_protected(self):  # T-5841 round 1
+        # (core's own path scoring owns guard/secret/auth substrings and a hooks folder; the map's floor is the rest)
+        for path in ("src/landing/index.ts", "src/execution.py", "src/lib/landed.py"):
+            with self.subTest(path=path):
+                got = self.depth(_task("S", scope=(path,)), [path], _patch(path), tests_linked={path: ["t"]})
+                self.assertEqual(got["lenses"], ["intent", "adversary"], got["why"])
+
+    def test_risk_depth_a_protected_word_as_a_whole_segment_or_stem_is_protected(self):
+        from sampo import lanes
+        for path in ("src/guard/x.py", "src/hooks/x.py", "a/b/secrets.json", "auth.py", "src/auth-helper.py",
+                     "src/exec_run.py", "src/land.py"):
+            with self.subTest(path=path):
+                self.assertTrue(lanes._DEPTH_PROTECTED.search(path), path)
+        for path in ("src/authors.py", "src/landing/index.ts", "src/execution.py", "src/hooksy.py", "src/secretary.py"):
+            with self.subTest(path=path):
+                self.assertFalse(lanes._DEPTH_PROTECTED.search(path), path)
+
+    def test_risk_depth_a_test_of_a_protected_module_is_not_a_protected_path(self):
+        got = self.depth(_task("S"), ["plugin/tests/test_execs_view.py"], _patch("plugin/tests/test_execs_view.py"))
+        self.assertEqual(got["lenses"], ["intent", "adversary"], "a tests folder file keeps its tier's depth")
+
+    def test_risk_depth_a_security_task_always_gives_all_five(self):
+        for tier in ("S", "M"):
+            with self.subTest(tier=tier):
+                got = self.depth(_task(tier, "SECURITY"), [DOC_FILE], _doc_patch(DOC_FILE))
+                self.assertEqual(got["lenses"], FIVE)
+                self.assertTrue(any("SECURITY" in w for w in got["why"]), got["why"])
+
+    def test_risk_depth_a_sensitive_line_gives_all_five(self):
+        diff = _patch(SRC).replace("value_0 = 0", "value_0 = eval(text)")
+        self.assertEqual(self.depth(_task("S"), [SRC], diff)["lenses"], FIVE)
+
+    def test_risk_depth_a_stored_ptier_is_a_floor(self):
+        got = self.depth(_task("S", ptier="normal"), [SRC], _patch(SRC))
+        self.assertEqual(got["lenses"], ["intent", "adversary", "edge"])
+
+    def test_risk_depth_no_files_and_no_diff_reads_the_claimed_tier(self):
+        self.assertEqual(self.depth(_task("S"), None, "")["lenses"], ["intent", "adversary"])
+        self.assertEqual(self.depth(_task("M"), None, "")["lenses"], ["intent", "adversary", "edge"])
+        self.assertEqual(self.depth(_task("L"), None, "")["lenses"], FIVE)
+
+    def test_risk_depth_is_pure_and_returns_a_fresh_list(self):
+        a = self.depth(_task("L"), [SRC], _patch(SRC))
+        a["lenses"].append("x")
+        self.assertEqual(self.depth(_task("L"), [SRC], _patch(SRC))["lenses"], FIVE)
+
+    def test_risk_depth_process_tier_off_gives_todays_claim(self):
+        os.environ["FOREMAN_PROCESS_TIER"] = "off"
+        self.assertEqual(self.depth(_task("M"), [DOC_FILE], _doc_patch(DOC_FILE))["lenses"], ["intent", "adversary", "edge"])
+
+
+class RiskDepthGate(_Env):
+    """T-5841: the close gate (core.required_audits, T-5715) never asks for a lens depth did not run: every group it names,
+    for the same task and diff, is covered by the lenses review_depth gives (self is the main thread's own)."""
+
+    CASES = [
+        ("S docs", "S", "FIX", [DOC_FILE], _doc_patch(DOC_FILE), {}),
+        ("M docs", "M", "FEATURE", [DOC_FILE], _doc_patch(DOC_FILE), {}),
+        ("S code", "S", "FIX", [SRC], _patch(SRC), {}),
+        ("M code, linked", "M", "FEATURE", [SRC], _patch(SRC), {SRC: [SRC_TEST]}),
+        ("M code, unlinked", "M", "FEATURE", [SRC], _patch(SRC), {}),
+        ("M five files", "M", "FEATURE", [f"a/f{i}.py" for i in range(5)],
+         "".join(_patch(f"a/f{i}.py") for i in range(5)), {}),
+        ("L code", "L", "FEATURE", [SRC], _patch(SRC), {}),
+        ("XL code", "XL", "FEATURE", [SRC], _patch(SRC), {}),
+        ("S guard", "S", "FIX", ["plugin/lib/sampo/guard.py"], _patch("plugin/lib/sampo/guard.py"), {}),
+        ("M hooks", "M", "FEATURE", ["plugin/lib/sampo/hooks.py"], _patch("plugin/lib/sampo/hooks.py"), {}),
+        ("S security", "S", "SECURITY", [SRC], _patch(SRC), {}),
+        ("M agent prose", "M", "FEATURE", ["plugin/skills/x/SKILL.md"], _doc_patch("plugin/skills/x/SKILL.md"), {}),
+    ]
+
+    def test_risk_depth_gate_every_required_group_is_covered_by_the_depth_lenses(self):
+        from sampo import lanes
+        for name, tier, type_, files, diff, linked in self.CASES:
+            with self.subTest(name):
+                b = _task(tier, type_, scope=files)
+                ran = set(lanes.review_depth(b, files, diff, tests_linked=linked)["lenses"])
+                for group in c.required_audits(b, files, diff, linked):
+                    self.assertTrue(group == {"self"} or group & ran, f"{name}: the gate asks {group}, depth ran {ran}")
+                if c.sensitive(files, diff):
+                    self.assertIn("adversary", ran, "the adversary need for sensitive code")
+
+    def test_risk_depth_gate_agrees_with_a_stamped_tier_and_with_no_diff(self):
+        from sampo import lanes
+        for tier, stamp in (("M", "trivial"), ("M", "risky"), ("S", "normal"), ("L", None), ("M", None)):
+            with self.subTest(tier=tier, stamp=stamp):
+                b = _task(tier, ptier=stamp)
+                ran = set(lanes.review_depth(b, None, "")["lenses"])
+                for group in c.required_audits(b):
+                    self.assertTrue(group == {"self"} or group & ran, f"{group} vs {ran}")
+
+
+class RiskDepthPrep(HookCase):
+    """T-5841: sampo audit prep takes its lenses from review_depth: the same list the depth map gives, and the model."""
+
+    def lenses_of(self, tier, rel, text="x = 1\n", *extra, **kw):
+        self.fm("init")
+        tid = self.task(tier=tier)
+        path = os.path.join(self.repo, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(text)
+        return json.loads(self.fm("audit", "prep", tid, "--json", *extra, **kw).stdout)
+
+    def test_risk_depth_gate_prep_lists_the_depth_map_lenses_for_each_tier(self):
+        got = self.lenses_of("S", "plugin/lib/sampo/app.py")
+        self.assertEqual([x for x in got["lenses"] if x != "self"], ["intent", "adversary"])
+        self.assertEqual(got["model"], "haiku")
+
+    def test_risk_depth_gate_prep_normal_and_protected_paths(self):
+        got = self.lenses_of("M", "plugin/lib/sampo/app.py")
+        self.assertEqual(got["lenses"], ["intent", "adversary", "edge"])
+        self.assertEqual(got["model"], "sonnet")
+
+    def test_risk_depth_gate_prep_a_protected_path_lists_all_five(self):
+        got = self.lenses_of("S", "plugin/lib/sampo/guard.py")
+        self.assertEqual([x for x in got["lenses"] if x != "self"], FIVE)
+
+    def test_risk_depth_gate_prep_an_explicit_lens_overrides_the_map(self):
+        got = self.lenses_of("S", "plugin/lib/sampo/app.py", "x = 1\n", "--lens", "edge")
+        self.assertEqual(got["lenses"], ["edge"])
+
+    def test_risk_depth_full_audit_prep_lists_all_five(self):
+        got = self.lenses_of("S", "plugin/lib/sampo/app.py", "x = 1\n", env={"SAMPO_REVIEW_DEPTH": "full"})
+        self.assertEqual([x for x in got["lenses"] if x != "self"], FIVE)
+        self.assertEqual(got["model"], "sonnet")
+
+    def test_risk_depth_full_audit_prep_head_says_full_not_a_small_tier(self):  # T-5841 round 1
+        self.fm("init")
+        tid = self.task(tier="S")
+        with open(os.path.join(self.repo, "app.py"), "w") as f:
+            f.write("x = 1\n")
+        out = self.fm("audit", "prep", tid, env={"SAMPO_REVIEW_DEPTH": "full"}).stdout
+        self.assertIn("review depth full", out)
+        self.assertNotIn("process tier small", out)
+        light = self.fm("audit", "prep", tid).stdout
+        self.assertIn("process tier small", light)
+
+    def test_risk_depth_gate_prep_a_floored_small_lane_still_asks_for_self(self):  # T-5841 round 1
+        # a finding on another small lane floors this file at normal; the gate's tier is still small: self stays listed
+        self.fm("init")
+        other = self.task(tier="S")
+        c.log_event(c.find_project(self.repo), "finding", task=other,
+                    data={"lens": "edge", "verdict": "confirmed", "text": "no cap", "file": "plugin/lib/sampo/app.py"})
+        tid = self.task(tier="S")
+        path = os.path.join(self.repo, "plugin/lib/sampo/app.py")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write("x = 1\n")
+        got = json.loads(self.fm("audit", "prep", tid, "--json").stdout)
+        self.assertEqual(got["lenses"], ["self", "intent", "adversary", "edge"])
+
+    def test_risk_depth_gate_prep_a_ui_diff_adds_design_to_the_map(self):
+        got = self.lenses_of("M", "web/app.css", "body { color: #333 }\n")
+        self.assertEqual(got["lenses"], ["intent", "adversary", "edge", "design"])
+
+
+class RiskDepthFull(_Env):
+    """T-5841: SAMPO_REVIEW_DEPTH=full gives all five lenses everywhere, and a file a finding on a trivial or small lane
+    named scores normal at least on the next review (a floor read from the recorded finding events)."""
+
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        self.p = c.find_project(self.repo)
+        self.lane("S")  # T-0001, the id _task() uses: the lanes the tests make for findings are other lanes
+
+    def depth(self, b, files, diff, **kw):
+        from sampo import lanes
+        return lanes.review_depth(b, files, diff, p=self.p, **kw)
+
+    def finding(self, task, text="the retry has no cap", file=SRC, verdict="confirmed", **data):
+        c.log_event(self.p, "finding", task=task, data={"lens": "edge", "verdict": verdict, "text": text,
+                                                        **({"file": file} if file else {}), **data})
+
+    def lane(self, tier="S", ptier=None):
+        tid = json.loads(self.fm("task", "new", "Other lane", "--type", "FIX", "--tier", tier, "--json").stdout)["id"]
+        if ptier:
+            b = c.find_brief(self.p, tid)
+            b.meta["ptier"] = ptier
+            c.save_brief(self.p, b)
+        return tid
+
+    def test_risk_depth_full_env_gives_all_five_for_every_tier(self):
+        os.environ["SAMPO_REVIEW_DEPTH"] = "full"
+        for b, files, diff in ((_task("S"), [SRC], _patch(SRC)), (_task("M"), [DOC_FILE], _doc_patch(DOC_FILE)),
+                               (_task("M"), [SRC], _patch(SRC))):
+            got = self.depth(b, files, diff)
+            self.assertEqual(got["lenses"], FIVE)
+            self.assertEqual(got["model"], "sonnet", "full restores today's review")
+
+    def test_risk_depth_full_is_exact_and_anything_else_is_the_map(self):
+        for value, lenses in (("full", FIVE), (" FULL ", FIVE), ("", ["intent", "adversary"]),
+                              ("fulll", ["intent", "adversary"]), ("off", ["intent", "adversary"])):
+            with self.subTest(value=value):
+                os.environ["SAMPO_REVIEW_DEPTH"] = value
+                self.assertEqual(self.depth(_task("S"), [SRC], _patch(SRC))["lenses"], lenses)
+
+    def test_risk_depth_full_a_finding_on_a_small_lane_floors_its_file_at_normal(self):
+        small = self.lane("S")
+        self.finding(small)
+        got = self.depth(_task("S"), [SRC], _patch(SRC))
+        self.assertEqual((got["ptier"], got["lenses"], got["model"]), ("normal", ["intent", "adversary", "edge"], "sonnet"))
+        self.assertTrue(any(SRC in w for w in got["why"]), got["why"])
+        self.assertEqual(self.depth(_task("S"), ["plugin/lib/sampo/other.py"], _patch("plugin/lib/sampo/other.py"))["lenses"],
+                         ["intent", "adversary"], "only the named file")
+
+    def test_risk_depth_full_a_trivial_lane_stamp_counts_and_a_normal_lane_does_not(self):
+        trivial = self.lane("M", ptier="trivial")
+        normal = self.lane("M")
+        self.finding(normal, file="plugin/lib/sampo/n.py")
+        self.finding(trivial, file="plugin/lib/sampo/t.py")
+        from sampo import lanes
+        self.assertEqual(lanes.floor_for(self.p, ["plugin/lib/sampo/n.py", "plugin/lib/sampo/t.py"]),
+                         ["plugin/lib/sampo/t.py"])
+
+    def test_risk_depth_full_a_rejected_finding_or_one_that_names_no_file_floors_nothing(self):
+        small = self.lane("S")
+        self.finding(small, verdict="rejected")
+        self.finding(small, file=None, text="the retry has no cap")
+        self.finding(small, file=None, text="there is a general problem here")
+        from sampo import lanes
+        self.assertEqual(lanes.floor_for(self.p, [SRC]), [])
+
+    def test_risk_depth_full_a_manual_finding_whose_text_starts_with_a_path_counts(self):
+        small = self.lane("S")
+        self.finding(small, file=None, text="plugin/lib/sampo/app.py:12: the retry loop has no cap")
+        from sampo import lanes
+        self.assertEqual(lanes.floor_for(self.p, [SRC]), [SRC])
+
+    def test_risk_depth_full_a_finding_never_lowers_a_higher_tier(self):
+        self.finding(self.lane("S"))
+        got = self.depth(_task("L"), [SRC], _patch(SRC))
+        self.assertEqual(got["lenses"], FIVE)
+
+    def test_risk_depth_full_a_finding_whose_lane_cannot_be_read_counts(self):
+        self.finding("T-9999")  # no brief by that id: unknown, so the safe side
+        from sampo import lanes
+        self.assertEqual(lanes.floor_for(self.p, [SRC]), [SRC])
+
+    def test_risk_depth_full_the_floor_reads_a_bounded_tail_and_no_project_is_no_floor(self):
+        from sampo import lanes
+        self.assertEqual(lanes.floor_for(None, [SRC]), [])
+        self.assertEqual(lanes.floor_for(self.p, []), [])
+        self.assertEqual(lanes.floor_for(self.p, [SRC]), [], "no finding on record")
+
+    def test_risk_depth_full_a_lanes_own_findings_never_floor_its_own_review(self):  # T-5841 round 1
+        from sampo import lanes
+        small = self.lane("S")
+        self.finding(small)
+        self.assertEqual(lanes.floor_for(self.p, [SRC]), [SRC])
+        self.assertEqual(lanes.floor_for(self.p, [SRC], small), [], "its own finding")
+        self.assertEqual(lanes.floor_for(self.p, [SRC], small.lower()), [], "the id's case does not matter")
+        self.assertEqual(lanes.floor_for(self.p, [SRC], "T-0001"), [SRC], "another lane's does")
+
+    def test_risk_depth_full_the_floor_loads_the_brief_index_once(self):  # T-5841 round 1
+        from sampo import lanes
+        lanes_ = [self.lane("S"), self.lane("S"), self.lane("M")]
+        for i, tid in enumerate(lanes_):
+            self.finding(tid, file=f"plugin/lib/sampo/f{i}.py")
+        files = [f"plugin/lib/sampo/f{i}.py" for i in range(3)]
+        calls = {"load": 0, "find": 0}
+        real_load, real_find = c.load_briefs, c.find_brief
+
+        def load(*a, **k):
+            calls["load"] += 1
+            return real_load(*a, **k)
+
+        def find(*a, **k):
+            calls["find"] += 1
+            return real_find(*a, **k)
+
+        c.load_briefs, c.find_brief = load, find
+        try:
+            got = lanes.floor_for(self.p, files)
+        finally:
+            c.load_briefs, c.find_brief = real_load, real_find
+        self.assertEqual(got, files[:2], "the M lane is normal: no floor")
+        self.assertEqual(calls, {"load": 1, "find": 0})
+
+    def test_risk_depth_full_the_header_names_full_not_the_scored_tier(self):  # T-5841 round 1
+        self.assertTrue(self.depth(_task("S"), [SRC], _patch(SRC))["scored"] == "small")
+        os.environ["SAMPO_REVIEW_DEPTH"] = "full"
+        got = self.depth(_task("S"), [SRC], _patch(SRC))
+        self.assertEqual((got["full"], got["scored"], got["lenses"]), (True, "small", FIVE))

@@ -278,12 +278,29 @@ def run_child(feature, system, prompt, model, timeout, project=None, detail="", 
     return text
 
 
-def run_children(jobs, timeout, feature, cwd=None, warm=0, cache=None):
+def _usage_row(so, usd):
+    """T-5842: {usd, input, output, cache_read, cache_creation} from claude -p's json; zeros where it says nothing (an
+    older claude, plain text, a timeout), usd 0 when it gave no cost."""
+    try:
+        u = json.loads(so).get("usage") or {}
+        n = lambda k: int(u.get(k) or 0)  # noqa: E731
+        row = {"input": n("input_tokens"), "output": n("output_tokens"), "cache_read": n("cache_read_input_tokens"),
+               "cache_creation": n("cache_creation_input_tokens")}
+    except (ValueError, TypeError, AttributeError):
+        row = {"input": 0, "output": 0, "cache_read": 0, "cache_creation": 0}
+    try:
+        row["usd"] = float(usd or 0)
+    except (TypeError, ValueError):
+        row["usd"] = 0.0
+    return row
+
+
+def run_children(jobs, timeout, feature, cwd=None, warm=0, cache=None, usage=None):
     """T-0295: [(argv, stdin, detail)] run in parallel in one scratch folder under one deadline, each recorded:
     [(text or None, error)]; both set is a partial answer (T-0959). OSError when one can't start (the started ones are
     stopped). cwd: run there instead (T-1186: reviewers read the project). warm (T-1265): the first runs alone until it
     ends or `warm` s pass, so what the jobs share is in the prompt cache for the rest; cache: a dict the prompt-cache
-    tokens read and written are added to."""
+    tokens read and written are added to; usage (T-5842): a list that gets one _usage_row per job, in job order."""
     import contextlib
     with (contextlib.nullcontext(cwd) if cwd else _child_cwd(feature)) as cwd:
         procs, started = [], False
@@ -309,6 +326,8 @@ def run_children(jobs, timeout, feature, cwd=None, warm=0, cache=None):
                     _forget(pr)
                     text, usd = budget.result(so)  # T-0227: the text, and what it cost
                     budget.record(feature, usd, detail=detail)
+                    if usage is not None:
+                        usage.append(_usage_row(so, usd))
                     if cache is not None:
                         read, written = _cache_tokens(so)
                         cache["read"], cache["written"] = cache.get("read", 0) + read, cache.get("written", 0) + written
@@ -320,6 +339,8 @@ def run_children(jobs, timeout, feature, cwd=None, warm=0, cache=None):
                     _reap(pr)
                     budget.record(feature, None, detail=f"{detail} (timed out: cost unknown)" if detail
                                     else "timed out: cost unknown")
+                    if usage is not None:
+                        usage.append(_usage_row("", None))
                     out.append((None, f"timed out after {timeout}s"))
         except BaseException as e:  # T-1044: a child that can't start, or ^C: every group still running goes (each has
             for pr, _ in procs:  # its own session, so the terminal's ^C no longer reaches them)

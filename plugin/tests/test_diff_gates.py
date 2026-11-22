@@ -282,7 +282,8 @@ class DiffGates(ForemanTestCase):
         for want in ("debug leftover in auth/token.py", "new TODO in auth/token.py",
                      "source changed with no test changed", "security-sensitive"):
             self.assertIn(want, joined)
-        self.assertEqual(out["lenses"], ["self", "adversary"])
+        self.assertEqual(out["ptier"], "risky")  # T-5715: scored risky, the claimed S's own groups (self + adversary) still asked
+        self.assertEqual(out["lenses"], ["self", *c.DEFAULT_LENSES])  # T-5841: risky: all five reviewers behind the self audit
         with open(out["brief"]) as f:
             self.assertIn("Pre-audit (mechanical", f.read())
 

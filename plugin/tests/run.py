@@ -82,6 +82,7 @@ OPERATOR_SWITCHES.add("LANE_PILOT")  # T-5708: =off stops the detached lane pilo
 OPERATOR_SWITCHES.add("PROCESS_TIER")  # T-5713: =off gives today's S, M and L tiers; a test that needs it sets it itself
 OPERATOR_SWITCHES.add("CARD_ORIGIN")  # T-5613: a bench arm names its calls "bench"; never a test's origin, a test sets its own
 OPERATOR_SWITCHES.add("TRAIN_PROBES")  # T-3770: a runner's probe switch is never a test's
+OPERATOR_SWITCHES.add("REVIEW_DEPTH")  # T-5841: =full gives every review all five lenses; a test that needs it sets it itself
 OPERATOR_SWITCHES.add("TOWER_GAP")  # T-3504: the tower-update push gap; a test that needs it sets it itself
 OPERATOR_SWITCHES.add("TEST_RUN_ID")  # T-4268: the check's id for its gate's record; a nested run in a class never gets it
 OPERATOR_SWITCHES.add("CACHE_FULL")  # T-5482: a whole run skips its cached classes (the train and the behind verify set it); never a test's

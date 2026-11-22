@@ -3926,10 +3926,12 @@ def _note_left(p, tid, why):
     c.save_brief(p, b)
 
 
-def _close_gaps(b):
+def _close_gaps(b, ptier=None):
     """T-3819: what a close would refuse for a line the brief lacks (CHANGELOG, DOCS, NUMBERS, LESSON, why not caught;
     T-4515: the WHY-NOT-CAUGHT line of its Close fields counts for the last; T-4209: a FIX's missing red→green proof
-    comes first, said as the close would (Brief.proof_gap), since no Close field gives it)."""
+    comes first, said as the close would (Brief.proof_gap), since no Close field gives it).
+    T-5715: `ptier`, the process tier the caller measured, decides which of docs, lesson and why-not-caught are owed
+    (none given: the brief's stamped or claimed tier)."""
     from types import SimpleNamespace
 
     from sampo import cli
@@ -3940,7 +3942,7 @@ def _close_gaps(b):
     if not f.get("changelog"):
         return proof + ["no CHANGELOG line in its Close fields"]
     return proof + cli._field_gaps(b, SimpleNamespace(docs=f.get("docs"), numbers=f.get("numbers"), lesson=f.get("lesson"),
-                                                      why_not_caught=f.get("why_not_caught")))
+                                                      why_not_caught=f.get("why_not_caught")), ptier)
 
 
 def _brief_hash(b):
@@ -5207,23 +5209,31 @@ def _counted_lenses(b, path):
     return {lens for lens, _, t in b.audits() if tree and t == tree} if tree else set()
 
 
-def _accept_gaps(b, path, main, rows, counted=()):
+def _accept_gaps(b, path, main, rows, counted=(), p=None, tier_out=None):
     """T-4487: what the close would refuse for the lane at `path` once these audits (rows) are on its brief: the lens
-    groups its tier needs (cli._audit_gaps, the close's own rule), and adversary when the lane's own diff is
+    groups its process tier needs (cli._audit_gaps, the close's own rule), and adversary when the lane's own diff is
     security-sensitive (the close's _adversary_gaps). Judged against the lane's tree, before anything is recorded.
-    T-5516: a lens in `counted` (an audit on the lane's tree, see _counted_lenses) is given without a row."""
+    T-5516: a lens in `counted` (an audit on the lane's tree, see _counted_lenses) is given without a row.
+    T-5715: the lane's diff is read once, for the sensitive check and the process tier (core.ptier_now, linked tests
+    from project `p`'s map); `tier_out`, a dict, gets the tier and its reasons for the caller to stamp."""
     from sampo import cli
     tree = c.worktree_id(path)
     base = c.task_base(main, b)  # the close reads the same start point: a task with none is judged on its audits alone
     names = c.task_diff(path, base, "--name-only", "--no-renames") if base and tree else None
     if not base:
         risky = []
+        ptier, why = c.unmeasured_ptier(b), []
     elif names is None:  # unreadable: counted as sensitive, as the close does
         risky = ["diff unavailable, so its content wasn't checked"]
+        ptier, why = c.unmeasured_ptier(b), []
     else:
-        risky = c.sensitive(sorted(set(names.splitlines())), c.task_diff(path, base) or "")
+        files, diff = sorted(set(names.splitlines())), c.task_diff(path, base) or ""
+        risky = c.sensitive(files, diff)
+        ptier, why = c.ptier_now(b, files, diff, cli._tests_linked(p, b, files) if p else {})
+    if tier_out is not None:
+        tier_out.update(ptier=ptier, why=why)
     given = [(lens, how) for lens, how, _ in rows] + [(lens, "") for lens in sorted(counted)]
-    gaps = cli._audit_gaps(b, given, b.audit_blockers(tree=tree))
+    gaps = cli._audit_gaps(b, given, b.audit_blockers(tree=tree, groups=c.audit_groups(b.tier, ptier)), ptier)
     if risky and "adversary" not in {lens for lens, _ in given}:
         gaps += [r + cli._adversary_ask(risky) for r in b.audit_blockers(tree=tree, need=("adversary",))
                  if r.startswith("audit missing: adversary")]
@@ -5469,7 +5479,8 @@ def accept(p, b, main, args):
             f"({', '.join(c.repo_shape_classes())}): --no-check would queue it without them. Run "
             f"`sampo check --affected --hold --evidence {b.id}` in the lane (or drop --no-check: accept starts that check)")
     counted = _counted_lenses(b, path)  # T-5516: audits already on the brief for the lane's tree count, typed or not
-    gaps = _accept_gaps(b, path, main, rows, counted)
+    tier = {}  # T-5715: the process tier the lane's diff scored, filled by _accept_gaps
+    gaps = _accept_gaps(b, path, main, rows, counted, p=p, tier_out=tier)
     if gaps:  # T-4487: refused before anything is recorded or started: the close would refuse the lane for these
         msg = (f"{b.id} not accepted, nothing recorded: the close would refuse this lane: {'; '.join(gaps)}. "
                f"Accept again with the audits it names ({AUDIT_FORM}, one per lens)")
@@ -5486,6 +5497,11 @@ def accept(p, b, main, args):
         # that is its return, so the awaiting test below counts it; accepted_at is still stamped only when the lane really
         # queues (T-4239). T-5516 item 8: an accept that recorded and counted no audit saw nothing, so it stamps nothing
         cli.mutate(p, b.id, lambda x: x.meta.__setitem__("reviewed_tip", tip), "reviewed", {"tip": tip[:12]})
+    ptier, ptier_why = tier.get("ptier") or "", tier.get("why") or []
+    # T-5715: the tier the review judged the lane at, raise-only (the close reads it as a floor); written and logged
+    # only when the stamp rises
+    if ptier_why and c.ptier_rises(cli.need_brief(p, b.id), ptier):
+        cli.mutate(p, b.id, lambda x: c.stamp_ptier(x, ptier, ptier_why), "ptier", {"ptier": ptier})
     b = cli.need_brief(p, b.id)
     lines = [f"accept {b.id}: {added} audit(s) recorded"
              + (f" ({', '.join(sorted({lens for lens, _, _ in rows}))})" if rows else "")
@@ -5495,7 +5511,7 @@ def accept(p, b, main, args):
         lines.append(f"  {stale}")
     lines += [f"  the close will be refused: {g}" + ("" if g.startswith("no red→green proof") else
                                                      " (add it to the brief's Close fields before the land closes it)")
-              for g in _close_gaps(b)]  # T-4209: the proof is recorded in the lane (sampo task prove), not a Close field
+              for g in _close_gaps(b, ptier or None)]  # T-4209: the proof is recorded in the lane (sampo task prove), not a Close field
     if b.id not in lanes.awaiting_merge(p, c.load_briefs(p), 0, fresh=True):  # T-4265: the review just saw its tip
         lines.append(f"  not queued: {b.id} is not a finished lane waiting on a merge (commits, a clean tree); "
                      "fm lane list says what it waits on")
@@ -5508,6 +5524,8 @@ def accept(p, b, main, args):
 
     def accepted(x):  # T-4239: the start of its accept-to-live time; a check a newer green run cleared is green now
         x.meta["accepted_at"] = round(time.time(), 1)
+        if ptier_why:
+            c.stamp_ptier(x, ptier, ptier_why)  # T-5715: raise-only, idempotent with the stamp above
         if x.meta.get("check_state") in ("running", "red", "cut_off") and x.meta.get("check_tip") == tip:
             x.meta["check_state"] = "green"
             for k in ("check_failed", "check_pid", "check_ticks"):

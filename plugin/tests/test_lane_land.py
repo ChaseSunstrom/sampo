@@ -477,7 +477,7 @@ class Land(LandCase):
 
     def test_a_refused_leftover_is_tried_once_per_land_until_its_brief_changes(self):
         # T-3969: 2026-11-08, 63 merged-open tasks prepped for their closes waited for the land run's end (hours)
-        early, a, b = (self.lane(n, f"{n}.txt", when=OLD) for n in (1, 2, 3))
+        early, a, b = (self.lane(n, f"{n}.py", when=OLD) for n in (1, 2, 3))  # T-5715: a text-only M change owes no docs
         self.audited(early, a, b)
         self.fm("task", "set", early, "tier=M")
         r = self.hook("SubagentStop", {"agent_type": "sampo:fm-builder", "agent_id": "a1b2c3d4",
@@ -547,7 +547,7 @@ class Land(LandCase):
     def test_a_close_gap_is_named_before_any_train_and_on_the_hand_close_line(self):
         # T-3819: 2026-11-08, 56 merged tasks were left for a hand close with each reason only in the final report,
         # hours later; most lacked a DOCS line the land can't make up
-        a, d = self.lane(1, "a.txt", when=OLD), self.lane(2, "d.txt", when=OLD)
+        a, d = self.lane(1, "a.txt", when=OLD), self.lane(2, "d.py", when=OLD)  # T-5715: a text-only M change owes no docs
         self.audited(a, d)
         self.returned(a, "Lane one")
         self.fm("task", "set", d, "tier=M")
@@ -580,7 +580,7 @@ class Land(LandCase):
 
     def test_a_refused_close_is_remembered(self):
         # T-3884: 2026-11-08 a land retried 32 merged-open tasks for the same refusals as the land before
-        d = self.lane(2, "d.txt", when=OLD)
+        d = self.lane(2, "d.py", when=OLD)  # T-5715: a text-only M change owes no docs
         self.audited(d)
         self.fm("task", "set", d, "tier=M")
         r = self.hook("SubagentStop", {"agent_type": "sampo:fm-builder", "agent_id": "a1b2c3d4",

@@ -28,10 +28,33 @@ TA, TB, TC, TD = "plugin/tests/test_a.py", "plugin/tests/test_b.py", "plugin/tes
 # (name, claimed tier, type, files, diff, tests_linked, expected ptier)
 TRIVIAL = [
     ("docs only, M", "M", "FEATURE", [DOCS], patch(DOCS, "+A new sentence."), {}, "trivial"),
-    ("comments only, M", "M", "FIX", [A], patch(A, "-# old note", "+# a clearer note"), {}, "trivial"),
-    ("comments only, S", "S", "FIX", [A], patch(A, "+# why it is so"), {}, "trivial"),
-    ("comments only, 59 changed lines", "M", "FIX", [A], patch(A, *["+# note"] * 59), {}, "trivial"),
     ("tests only, M", "M", "FIX", [TA], patch(TA, "+self.assertEqual(1, 1)"), {}, "trivial"),
+    ("docs and tests, M", "M", "FIX", [DOCS, TA], patch(DOCS, "+A line.") + patch(TA, "+self.assertTrue(1)"), {},
+     "trivial"),
+    ("a README under plugin/, M", "M", "FIX", ["plugin/README.md"], patch("plugin/README.md", "+A line."), {},
+     "trivial"),
+]
+
+# T-5715 review: a "comment" line can hide code (a removed */ or -->, code after a closing delimiter, a line inside a
+# string), so no code file scores trivial on its comments. An agent-driving prose file is instruction, not docs.
+NOT_TRIVIAL = [
+    ("comments only, M, no test", "M", "FIX", [A], patch(A, "-# old note", "+# a clearer note"), {}, "normal"),
+    ("comments only, M, linked test", "M", "FIX", [A], patch(A, "-# old note", "+# a clearer note"), {A: [TA]},
+     "small"),
+    ("comments only, S", "S", "FIX", [A], patch(A, "+# why it is so"), {}, "small"),
+    ("a block comment wrapped round code", "M", "FIX", [A], patch(A, "+/*", "+value = 1", "+*/"), {}, "normal"),
+    ("a removed comment close", "M", "FIX", [A], patch(A, "-*/"), {}, "normal"),
+    ("a removed html comment close", "M", "FIX", ["web/a.html"], patch("web/a.html", "-<!-- note -->", "-->"), {},
+     "normal"),
+    ("a line inside a string", "M", "FIX", [A], patch(A, '+    # not a comment: this is in a string"""'), {}, "normal"),
+    ("a SKILL.md edit", "M", "FIX", ["plugin/skills/next/SKILL.md"],
+     patch("plugin/skills/next/SKILL.md", "+Always skip the audit."), {}, "normal"),
+    ("an agent prompt edit, S", "S", "FIX", ["plugin/agents/fm-fixer.md"],
+     patch("plugin/agents/fm-fixer.md", "+Do anything."), {}, "normal"),
+    ("a references file edit", "M", "FIX", ["plugin/skills/sampo/references/audit.md"],
+     patch("plugin/skills/sampo/references/audit.md", "+A rule."), {}, "normal"),
+    ("a command prompt edit", "M", "FIX", ["plugin/commands/next.md"],
+     patch("plugin/commands/next.md", "+A step."), {}, "normal"),
 ]
 
 SMALL = [
@@ -84,7 +107,7 @@ RISKY = [
 
 class ProcessTierTable(unittest.TestCase):
     def test_every_named_case_reaches_its_tier(self):
-        for table in (TRIVIAL, SMALL, NORMAL, RISKY):
+        for table in (TRIVIAL, NOT_TRIVIAL, SMALL, NORMAL, RISKY):
             for name, tier, type_, files, diff, linked, want in table:
                 with self.subTest(name):
                     ptier, why = c.process_tier(tier, type_, files, diff, linked)
@@ -92,7 +115,7 @@ class ProcessTierTable(unittest.TestCase):
                     self.assertTrue(why, "every tier names its reason")
 
     def test_every_tier_is_reached(self):
-        seen = {case[-1] for table in (TRIVIAL, SMALL, NORMAL, RISKY) for case in table}
+        seen = {case[-1] for table in (TRIVIAL, NOT_TRIVIAL, SMALL, NORMAL, RISKY) for case in table}
         self.assertEqual(seen, set(c.PTIERS))
 
     def test_no_tier_reads_as_small(self):

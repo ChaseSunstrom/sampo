@@ -2533,6 +2533,106 @@ def reviewer_findings(msg, cap=30):
     return out
 
 
+# T-5841: how deep a review goes. The process tier (core.ptier_now) picks the lenses and the reviewer's model; three
+# floors lift it to the depth that is safe: a protected path or a SECURITY task always gets all five lenses, a file a
+# finding on a trivial or small lane named is at least normal, and SAMPO_REVIEW_DEPTH=full gives all five everywhere.
+# core.required_audits stays the close gate's map: what it asks is always covered by what runs here (a test pins it).
+DEPTH_LENSES = {"trivial": ("intent", "adversary"), "small": ("intent", "adversary"),
+                "normal": ("intent", "adversary", "edge"), "risky": c.DEFAULT_LENSES}
+DEPTH_MODEL = {"trivial": "haiku", "small": "haiku", "normal": "sonnet", "risky": "sonnet"}
+# a path with a whole segment or name stem of guard(s), hook(s), secret(s), auth, exec(s), land or landlock (set off by a
+# slash, dot, dash, underscore or the path's ends): what gates, hooks, secrets, login, command running and the land touch.
+# authors.py, landing/ and execution.py are other words. Prose and a tests folder's files never count here.
+_DEPTH_PROTECTED = re.compile(r"(?i)(?:^|[/_.-])(?:guards?|hooks?|secrets?|auth|execs?|land|landlock)(?:$|[/_.-])")
+FLOOR_TAIL = 20000  # ledger lines the derived floor reads (the findings among them)
+_FLOOR_LEAD = re.compile(r"([\w./-]+\.\w+)(?::\d+)?[:\s]+")  # "app.css: the colour…": the path a manual finding leads with
+
+
+def _finding_file(d):
+    """The file a finding event names, as written (a line number cut off): its file, else the path its text starts with."""
+    where = str(d.get("file") or "")
+    if not where:
+        m = _FLOOR_LEAD.match(str(d.get("text") or "").strip()[:300])
+        where = m.group(1) if m else ""
+    return where.split(":")[0].removeprefix("./")
+
+
+def _same_file(a, b):
+    """Whether two paths name one file: equal, or one ends in the other after a slash (a finding may be cut at a folder)."""
+    return bool(a and b) and (a == b or a.endswith("/" + b) or b.endswith("/" + a))
+
+
+def floor_for(p, files, task=None):
+    """T-5841: the files of `files` that a finding on a trivial or small lane named, in their order: each scores normal at
+    least on its next review. Read from the recorded finding events (the last FLOOR_TAIL ledger lines): a finding counts
+    when it names the file (its own file or a path its text starts with), is not rejected, is not task's own (a lane's
+    findings never floor its own next review), and its lane's process tier is trivial or small (the stamp, else the
+    claim) or unknown (no brief to read: the safe side). The brief index is read once per call. A ledger that can't be
+    read floors every file: the floor only ever adds review."""
+    want = list(dict.fromkeys(str(f).removeprefix("./") for f in (files or []) if f))
+    if p is None or not want:
+        return []
+    try:
+        events = c.ledger_tail(p, FLOOR_TAIL, kinds=("finding",))
+    except Exception:  # fail toward more review
+        return want
+    own = str(task or "").upper()
+    light, hit, briefs = {}, set(), None
+    for e in reversed(events):
+        d = e.get("data") if isinstance(e.get("data"), dict) else {}
+        where = _finding_file(d)
+        if d.get("verdict") == "rejected" or not where:
+            continue
+        tid = str(e.get("task") or "").upper()
+        if own and tid == own:
+            continue
+        named = [f for f in want if f not in hit and _same_file(where, f)]
+        if not named:
+            continue
+        if tid not in light:
+            try:
+                if briefs is None:  # one read of the brief index (tid -> brief), only when a finding needs it
+                    briefs = {x.id.upper(): x for x in c.load_briefs(p)}
+                b = briefs.get(tid) if tid else None
+                light[tid] = b is None or c.ptier_now(b)[0] in ("trivial", "small")
+            except Exception:  # an unreadable lane: unknown, so counted
+                light[tid] = True
+        if light[tid]:
+            hit.update(named)
+            if len(hit) == len(want):
+                break
+    return [f for f in want if f in hit]
+
+
+def review_depth(b, files, diff, p=None, tests_linked=None):
+    """T-5841: how deep brief b's review of this change goes, as {"ptier", "scored", "full", "lenses", "model", "why"}
+    (scored: the process tier before the floors, the one the close gate follows; full: SAMPO_REVIEW_DEPTH=full). Pure on its inputs
+    (p only feeds the derived floor, floor_for; none reads no findings). The lenses come from the process tier
+    (DEPTH_LENSES: trivial and small intent + adversary on haiku, normal adds edge on sonnet, risky all five, in
+    DEFAULT_LENSES order). Floors: a protected path (guard, hooks, secrets, auth, exec, land; a doc or a tests-folder file
+    is not one) or a SECURITY task is risky; a file a finding on a trivial or small lane named is normal at least;
+    SAMPO_REVIEW_DEPTH=full gives all five lenses on sonnet whatever the tier says."""
+    files = [str(f) for f in (files or [])]
+    ptier, why = c.ptier_now(b, files if files or diff else None, diff, tests_linked)
+    why, scored = list(why), ptier
+    protected = [f for f in files if not c.DOC.search(f) and not c._TEST_DIR.search(f) and _DEPTH_PROTECTED.search(f)]
+    if protected:
+        ptier, why = "risky", [f"protected path: {c.joinmore(protected, 3)}"] + why
+    if str(b.type).upper() == "SECURITY":
+        ptier, why = "risky", ["SECURITY task"] + why
+    if ptier in ("trivial", "small"):
+        floored = floor_for(p, files, b.id)
+        if floored:
+            ptier, why = "normal", [f"a past finding on a trivial or small lane named {c.joinmore(floored, 3)}"] + why
+    # mirror_env moves SAMPO_X to FOREMAN_X at import: read the name the code uses, then the one a caller built
+    if (os.environ.get("SAMPO_REVIEW_DEPTH") or os.environ.get("FOREMAN_REVIEW_DEPTH") or "").strip().lower() == "full":
+        return {"ptier": ptier, "scored": scored, "full": True, "lenses": list(c.DEFAULT_LENSES),
+                "model": DEPTH_MODEL["risky"], "why": ["SAMPO_REVIEW_DEPTH=full"] + why}
+    ptier = ptier if ptier in DEPTH_LENSES else "risky"  # a tier this map doesn't know reviews in full
+    return {"ptier": ptier, "scored": scored, "full": False, "lenses": list(DEPTH_LENSES[ptier]),
+            "model": DEPTH_MODEL[ptier], "why": why}
+
+
 _VERDICT = re.compile(r"(?i)^verdict\s*[—–:-]+\s*(.+)$")
 
 
