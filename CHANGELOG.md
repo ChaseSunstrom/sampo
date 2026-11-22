@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- A test class that only stat'ed a Python file (recall's verb-docs stamp stat'ed every module of the package) is keyed on the file's module code and mode, so a function-body edit reruns only the classes that ran that function, not all 193 that held localruns.py whole (T-5586).
 - `sampo next` and the self-check now name finished lanes nobody accepted for a day (the oldest, with accept or rm), and `sampo lane brief` holds a new builder while more than two trains of lanes wait to land unless `--why` gives a reason (T-4938).
 - Cache report lists the classes that rerun on every change, costliest first, with the cause run.py now keeps for each (T-5484).
 - A lane check's repo-shape stage runs once for the lanes waiting on it, on one merged scratch tree, marking each member green at its tip; a red or cut batch runs each lane alone (T-5380).
