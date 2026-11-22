@@ -475,12 +475,6 @@
 ],
 1
 ],
-"sampo/landlock.py::writable_for": [
-[
-"expanduser"
-],
-1
-],
 "sampo/lanes.py::is_credential": [
 [
 "expanduser"

@@ -60,7 +60,7 @@ REVIEWED = {
               "sampo/risk.py::_targets", "sampo/oracle.py::disagreements", "sampo/oracle.py::ran_in",
               "sampo/smith.py::Run.hidden", "sampo/smith.py::Run.judge", "sampo/smith.py::_snapshot",
               "sampo/smith.py::_strict", "sampo/board.py::part_tests", "sampo/deps.py::_grep",
-              "sampo/landlock.py::writable_for", "sampo/long.py::_activity", "sampo/tidy.py::dead_paths",
+              "sampo/long.py::_activity", "sampo/tidy.py::dead_paths",
               "sampo/sync.py::_from_mirror", "sampo/rune.py::card", "sampo/settings.py::_guard_block",
               "sampo/callcards.py::<module>", "sampo/callcards.py::_system_reads", "sampo/homemove.py::_parent",
               "sampo/sandbox.py::_homes", "sampo/secrets.py::_claude", "sampo/bench.py::_forms",
