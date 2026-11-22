@@ -33,5 +33,7 @@ Confidence: M/L, state how likely the task holds on its first finish, `sampo tas
 - Simplest adequate approach? What would make it fail?
 - Is rollback clear?
 
+Mechanical gaps fill themselves (T-5890): `sampo task new`, `task plan --file` and `lane brief` write the choice's percent as `Choice N (NN%)` when you wrote it as "confidence 70%" or "70% sure", and `Undo: nothing changes` on a step that only reads (a grep, git status, a ls in backticks, with plain linking words around them; never a step that changes anything, and never a test run, which runs repo code), and say so (a `filled:` line, a Log entry). `lane brief` also starts the cold rival read when the choice is under 80% and waits up to 90 s for it in the same call. A missing option, reading or criterion is still refused.
+
 ## Questions
 Batch them into one message, each with your default. Ask only what would make the work wrong or irreversible if guessed; otherwise proceed on the default and record the assumption in the brief.

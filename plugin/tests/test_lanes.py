@@ -5736,5 +5736,93 @@ class FreeFloor(tcd.RustCase):
         self.assertNotIn("shrunk", r.detail)
 
 
+BR_INTERP = "Reading 1: the gate counts options. Reading 2: the gate reads the words under each option."
+BR_OPTIONS = ("1) use what exists: the existing gap list. likely outcome: the data is there. fails if: a caller cuts it. "
+              "2) do less: one gap per line. fails if: the skeleton still costs a round. "
+              "3) print every gap and write the skeleton. likely outcome: one round. fails if: the file is stale. ")
+BR_STEP = "Run `grep -rn Replace ./`"
+
+
+class BriefRival(ForemanTestCase):
+    """T-5890: one `lane brief` call plans an M task: the cold rival read is waited for when it is the only gap, and what a
+    tool can settle (a percent written 'confidence 70%', an Undo line for a check-only step) is filled, not refused."""
+
+    def setUp(self):
+        super().setUp()
+        saved = os.environ.pop("FOREMAN_NO_RIVAL", None)
+        self.addCleanup(lambda: os.environ.__setitem__("FOREMAN_NO_RIVAL", saved) if saved is not None
+                        else os.environ.pop("FOREMAN_NO_RIVAL", None))
+
+    def task(self, approach, step="read the gate", ac="it works :: true"):
+        args = ["task", "new", "Plan in one call", "--type", "FIX", "--tier", "M", "--raw", "plan in one call",
+                "--interpretation", BR_INTERP, "--approach", approach, "--ac", ac, "--step", step]
+        tid = json.loads(self.fm(*args, "--json").stdout)["id"]
+        self.p = c.find_project(self.repo)
+        return tid
+
+    def land(self, p_, tid_, secs):  # the read comes back inside the wait
+        from sampo import cli
+
+        def save(x):
+            x.meta["rival_at"] = c.now()
+        cli.mutate(p_, tid_, save, "rival", {})
+        return True
+
+    def brief(self, tid):
+        b = c.find_brief(self.p, tid)
+        try:
+            slanes.builder_brief(self.p, b, argparse.Namespace())
+        except c.PolicyError as e:
+            return str(e)
+        except Exception:  # noqa: BLE001 — whatever stops it after the plan gate (load, slots, git) is not the plan gate
+            return ""
+        return ""
+
+    def test_a_choice_under_80_written_as_confidence_is_read_and_waited_for_in_one_call(self):
+        tid = self.task(BR_OPTIONS + "Choice 3: one round (confidence 70%).")
+        with mock.patch.object(slanes, "_rival_spawn", return_value=True) as spawn, \
+                mock.patch.object(slanes, "_rival_wait", side_effect=self.land) as waited:
+            said = self.brief(tid)
+        spawn.assert_called_once()
+        waited.assert_called_once()
+        self.assertNotIn("isn't planned enough", said)
+        b = c.find_brief(self.p, tid)
+        self.assertEqual(c.plan_gaps(b), [])
+        self.assertIn("Choice 3 (70%)", b.section("Approach (options → choice → why)"))
+        self.assertIn("70%", b.section("Log"), "the brief says what was filled")
+
+    def test_a_check_only_step_and_a_percent_and_the_rival_read_are_all_one_call(self):
+        tid = self.task(BR_OPTIONS + "Choice 3: one round, 65% confident.", step=BR_STEP)
+        with mock.patch.object(slanes, "_rival_spawn", return_value=True), \
+                mock.patch.object(slanes, "_rival_wait", side_effect=self.land):
+            said = self.brief(tid)
+        self.assertNotIn("isn't planned enough", said)
+        b = c.find_brief(self.p, tid)
+        self.assertEqual(c.plan_gaps(b), [])
+        self.assertIn("Undo: nothing changes", b.steps()[0].text)
+
+    def test_a_plan_missing_a_real_option_is_still_refused_and_no_read_is_started(self):
+        two = ("1) use what exists: the existing gap list. likely outcome: the data is there. fails if: a caller cuts it. "
+               "2) do less: one gap per line. fails if: the skeleton still costs a round. "
+               "Choice 2: one gap per line (confidence 70%).")
+        tid = self.task(two)
+        with mock.patch.object(slanes, "_rival_spawn", return_value=True), \
+                mock.patch.object(slanes, "_rival_wait", side_effect=AssertionError("waited with a real gap left")):
+            said = self.brief(tid)
+        self.assertIn("3+ options", said)
+
+    def test_a_read_that_does_not_come_back_in_time_is_refused_naming_the_pending_read(self):
+        tid = self.task(BR_OPTIONS + "Choice 3: one round (confidence 70%).")
+        with mock.patch.object(slanes, "_rival_spawn", return_value=True), \
+                mock.patch.object(slanes, "_rival_wait", return_value=False):
+            said = self.brief(tid)
+        self.assertIn("cold rival read", said)
+        self.assertIn(f"rerun sampo lane brief {tid}", said)
+
+    def test_the_wait_fits_inside_a_default_tool_call(self):
+        self.assertLessEqual(slanes.RIVAL_WAIT, 100)
+        self.assertGreaterEqual(slanes.RIVAL_WAIT, 60)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -6177,11 +6177,24 @@ def door_hash(text):
     return hashlib.sha1(text.encode("utf-8", "surrogateescape")).hexdigest()[:12]
 
 
-def undo_ok(text):
+CHECK_UNDO = "nothing changes"  # T-5890: the Undo line sampo fills on a step that only reads (doors.check_only)
+
+
+def earlier_steps(b, n):
+    """T-5890: the texts of every step of brief b before step n, done or open (what check_only reads for a config an earlier
+    step writes or an environment it sets: a done step has already done it)."""
+    return [s.text for s in b.steps() if s.n < n]
+
+
+def undo_ok(text, before=()):
     """T-2342 review: whether a step's 'Undo:' line is a real way back: a restore command (cp, mv, rsync, tar, unzip) that
-    names a source that exists. 'none', 'n/a' and an empty line are not one; fm's own line (cp -a SNAPSHOT/. REPO/) is."""
+    names a source that exists. 'none', 'n/a' and an empty line are not one; fm's own line (cp -a SNAPSHOT/. REPO/) is.
+    before: the earlier open steps' texts, for the check-only line (earlier_steps)."""
     if "Undo:" not in text:
         return False
+    if text.split("Undo:", 1)[1].strip().lower().startswith(CHECK_UNDO):  # T-5890: only for a step that really only reads
+        from sampo import doors
+        return doors.check_only(text, before)
     try:
         words = shlex.split(text.split("Undo:", 1)[1].strip())
     except ValueError:
@@ -6199,7 +6212,7 @@ def _door_open(b):
     """[(label, text)] for each marked one-way step with no real Undo line, and each marked verify command with no snapshot."""
     marked, acs, undone = door_marked(b), door_marked(b, "door_acs"), [str(x) for x in b.meta.get("door_undone") or []]
     out = [(f"step {s.n}", s.text) for s in (b.steps() if marked else ()) if s.n in marked and not s.done
-           and not undo_ok(s.text)]
+           and not undo_ok(s.text, earlier_steps(b, s.n))]
     for a in b.acceptance() if acs else ():  # T-3573: unmarked (nearly every task): no section read
         cmd = verify_of(a.text)
         if a.n in acs and cmd and not a.checked and door_hash(cmd) not in undone:
@@ -6257,6 +6270,49 @@ def stated_confidence(approach):
     and the calibration ledger share."""
     m = list(_CHOICE_PCT_RE.finditer(approach or ""))
     return int(m[-1].group(1)) if m and int(m[-1].group(1)) <= 100 else None
+
+
+# T-5890: a percent for the choice written another way, always with a confidence word or a closing paren right after it:
+# 'confidence 70%', '70% sure', '(70 percent)', '(~70%)'; never '(95% of rows kept)' or 'make sure 95% of rows are kept'
+_ALT_PCT_RE = lazy(r"\b(?:confidence|confident)\b\W{0,8}(?:(?:of|at|is|about|around|roughly)\W{1,3})?(\d{1,3})\s*(?:%|percent)"
+                   r"|(\d{1,3})\s*(?:%|percent)\s*(?:confidence|confident|sure|certain)\b"
+                   r"|\(\s*(?:~|about |around )?(\d{1,3})\s*(?:%|percent)\s*\)", re.I)
+_CHOICE_WORD_RE = lazy(r"\b(?:choice|choose|chose|chosen|decision|decided)\b(?:\s*#?\d{1,3}\b)?", re.I)
+
+
+def fill_choice_pct(approach):
+    """T-5890: (text, pct): the Approach with 'Choice N (NN%)' written where the choice line states its percent another way
+    ('Choice 3: why (confidence 70%)'), or (approach, None) when the gate reads one already, when there is no choice word,
+    or when the only percent near it is not 0 to 100 or not worded as a confidence (a '50% of callers' is never taken)."""
+    ap = approach or ""
+    if stated_confidence(ap) is not None:
+        return ap, None
+    for m in reversed(list(_CHOICE_WORD_RE.finditer(ap))):
+        end = ap.find("\n", m.end())
+        for alt in _ALT_PCT_RE.finditer(ap, m.end(), len(ap) if end < 0 else end):
+            pct = int(alt.group(1) or alt.group(2) or alt.group(3))
+            if pct <= 100:
+                return f"{ap[:m.end()]} ({pct}%){ap[m.end():]}", pct
+    return ap, None
+
+
+def plan_autofill(p, b):
+    """T-5890: fill in brief b (in memory; the caller saves) what a tool can settle itself instead of refusing: the choice's
+    percent when it is written another way (fill_choice_pct), and an 'Undo: nothing changes' line on a step that only reads
+    (doors.autofill_undo; never a test run). Gate rules are untouched: a missing option, reading or criterion is never filled.
+    Returns the notes, one line each, and writes each on the brief's Log too."""
+    notes = []
+    sec = "Approach (options → choice → why)"
+    if at_least(b.tier, "M") and not b.meta.get("harness_plan") and not _started(b):
+        new, pct = fill_choice_pct(b.section(sec))
+        if pct is not None:
+            b.set_section(sec, new)
+            notes.append(f"Approach: wrote the choice's percent as 'Choice N ({pct}%)', as you worded it")
+    from sampo import doors
+    notes += doors.autofill_undo(p, b)
+    for n in notes:
+        b.append_log(f"plan autofill: {n}")
+    return notes
 
 
 def assumption_confidence(text, low=True):

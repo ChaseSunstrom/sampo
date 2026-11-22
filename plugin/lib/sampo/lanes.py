@@ -4549,7 +4549,7 @@ def card_section(p, b):
     return card_block(fit)
 
 
-RIVAL_WAIT = 60  # T-5728: seconds lane brief waits for a cold rival read it started, when that read is its one gap
+RIVAL_WAIT = 90  # T-5728, T-5890: seconds lane brief waits for a cold rival read it started, when that read is its one gap (a tool call lasts 120)
 RIVAL_READ_S = 240  # the background read's own time box (second rival --timeout)
 
 
@@ -4626,6 +4626,21 @@ def _door_gaps(p, b):
     return sdoors.brief_gaps(p, b)
 
 
+def _autofill(p, b):
+    """T-5890: (brief, notes): the mechanical plan gaps of brief b filled and saved (core.plan_autofill: a percent worded
+    another way, an Undo line on a check-only step), noted on its Log and on stderr, so one lane brief call does not refuse
+    what a tool can settle. A dry run on a fresh read first: a plan with nothing to fill is not rewritten."""
+    from sampo import cli
+    fresh = c.find_brief(p, b.id)
+    if fresh is None or not c.plan_autofill(p, fresh):
+        return b, []
+    done = []
+    b, _ = cli.mutate(p, b.id, lambda x: done.extend(c.plan_autofill(p, x)), "plan_autofill", {"lane": True})
+    for n in done:
+        print(f"sampo: {b.id} plan filled in: {n}", file=sys.stderr)
+    return b, done
+
+
 def builder_brief(p, b, args, resume_branch=None, after="", stacked=None):
     """T-0234: a self-contained brief for one S/M task worked by a sampo:fm-builder subagent in its own worktree
     (Agent isolation "worktree"; its `fm focus` binds the task there), and the Agent call that launches it. The main
@@ -4669,6 +4684,10 @@ def builder_brief(p, b, args, resume_branch=None, after="", stacked=None):
     # T-4821: focus's door gaps for a root door, read with no write (after the cheap refusals)
     gaps = list(dict.fromkeys([*c.plan_gaps(b, c.effective_autonomy(p)), *_door_gaps(p, b)]))
     if gaps:  # T-0823: the builder's first act is fm focus, which refuses these
+        b, filled = _autofill(p, b)  # T-5890: what a tool can settle (a worded percent, a check-only step's Undo) is filled
+        if filled:
+            gaps = list(dict.fromkeys([*c.plan_gaps(b, c.effective_autonomy(p)), *_door_gaps(p, b)]))
+    if gaps:
         said = _plan_refusal(p, b, gaps)  # T-5728: every gap at once, the skeleton file, the rival read started
         if said:
             c.log_plan_gate_refused(p, gaps, task=b.id, where="lane")  # T-5887: cardmine counts the kinds that repeat

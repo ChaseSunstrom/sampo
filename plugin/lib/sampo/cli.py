@@ -4906,22 +4906,29 @@ def task_new(p, args):
                 b.add_ac(*c.split_verify(text))
             for text in args.step or []:
                 b.add_step(text)
+            filled.extend(c.plan_autofill(p, b))  # T-5890: what a tool can settle itself is filled, not refused later
+        filled = []
         b, _ = mutate(p, b.id, plan, "task_plan", {"ac": len(args.ac or []), "step": len(args.step or [])})
         warns = _lint_verify(p, [v for _, v in map(c.split_verify, args.ac or []) if v])
     else:
-        warns = []
+        warns, filled = [], []
     b = _adopt_draft(p, b, args.source)
     if not args.from_id:
         _note_escapes(p, b, " ".join(filter(None, [args.title, args.raw])))
     out(args, c.brief_summary(b), f"{b.id} [{b.type} {b.tier}] {b.title} — planned ({b.path}){reused}"
         + ("" if args.from_id else _covered_note(p, b.id, " ".join(filter(None, [args.title, args.raw]))))
-        + _warned(warns))
+        + _warned(warns) + _filled_note(filled))
     if args.focus:
         import contextlib  # T-1954: under --json, stdout stays one JSON document
         with contextlib.redirect_stdout(sys.stderr) if getattr(args, "json", False) else contextlib.nullcontext():
             cmd_focus(argparse.Namespace(id=b.id, project=getattr(args, "project", None), json=False))
             if warns:  # T-3813: still the last line after focus's own
                 print(f"{b.id}: verify{_warned(warns)}")
+
+
+def _filled_note(notes):
+    """T-5890: the lines a plan call adds for what sampo filled in itself (core.plan_autofill), '' for none."""
+    return "".join(f"\n  filled: {n}" for n in notes)
 
 
 def _plan_field(text):
@@ -5005,13 +5012,14 @@ def plan_file(p, args):
         raise UsageError("nothing written: " + "; ".join(problems))
     verifies = [v for _, _, crit, _ in todo for t in crit for _, v in [c.split_verify(_plan_field(t))] if v]  # as written
     _refuse_unrunnable(p, verifies)
-    lines, rows = [], []
+    lines, rows, filled = [], [], {}
     with c.lock(p.dir):  # T-5516 item 6: one lock for the batch; each plan is judged on its brief as it is under this lock
         planned, before = [], []
         for tid, e, crit, steps in todo:
             before.append(c.find_brief(p, tid))  # the brief as it is now: what a rollback writes back
             x = need_brief(p, tid)
             _plan_into(x, e, crit, steps)  # raises before anything is saved: one refusal writes nothing
+            filled[x.id] = c.plan_autofill(p, x)  # T-5890: mechanical gaps filled in the same write, noted below
             planned.append(x)
         tried = 0
         try:
@@ -5031,7 +5039,7 @@ def plan_file(p, args):
     c.regen_views(p, mirror=False)  # every brief re-read: never while hooks queue on the project lock
     for x, (_, _, crit, steps) in zip(planned, todo):
         rows.append({"id": x.id, "criteria": len(crit), "steps": len(steps)})
-        lines.append(f"{x.id}: planned ({len(crit)} criteria, {len(steps)} steps)")
+        lines.append(f"{x.id}: planned ({len(crit)} criteria, {len(steps)} steps)" + _filled_note(filled.get(x.id, [])))
     warns = _lint_verify(p, verifies)
     left, skel = _plan_left(p, planned)  # T-5728: what each plan still lacks, once, with the skeleton to fill
     for row in rows:

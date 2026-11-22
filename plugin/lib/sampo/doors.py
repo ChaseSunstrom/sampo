@@ -233,12 +233,76 @@ def brief_gaps(p, b):
             continue
         if kind == "step":
             step = next((s for s in b.steps() if str(s.n) == n and not s.done), None)
-            if step is not None and not c.undo_ok(step.text):
+            if step is not None and not c.undo_ok(step.text, c.earlier_steps(b, step.n)):
                 out.append(c.door_gap(f"step {n}"))
         elif kind == "verify" and acs.get(n):  # focus parks a root verify door too (gate), so the brief refuses it
             if not c.undo_ok(acs[n]) and c.door_hash(acs[n]) not in undone:
                 out.append(c.door_gap(f"verify {n}"))
     return out
+
+
+_PROSE_OK = frozenset("run then and check list show read see confirm count find print with the a in of to for from that it each "
+                      "all any no is are were step".split())  # T-5890: the only words a check-only step's prose may hold (an allow-list)
+
+
+_ENV = re.compile(r"(?i)\bgit\b(?!\s+(?:status|rev-parse)\b)|\bconfig\b|fsmonitor|hookspath|\bexport\s|\b[A-Za-z_]\w*=\S")
+# an earlier step that may set git's config or an environment variable: any git but status/rev-parse, config, a hook, export, NAME=v
+
+
+_CONFIG = re.compile(r"(?:^|/)\.[^/]+$|(?:rc|\.cfg|\.ini|\.toml|\.conf)$|(?:^|/)\.git(?:/|$)")  # a dotfile, a config, anything under .git
+
+
+def check_only(text, before=()):
+    """T-5890: whether a step (its text before any 'Undo:') provably only reads, so 'Undo: nothing changes' is true of it.
+    It needs a `command` in ticks and every segment of it (&&, ||, ;, |) must pass fmguard.read_only (no write flag,
+    redirect, substitution, assignment or backgrounding) and write no target of its own. Of git only status and rev-parse
+    qualify (diff, log, show, blame and grep run drivers the repo configures). A test run never qualifies: a
+    conftest.py, a config, a plugin or the environment makes it run repo code. The prose around the commands must carry
+    only words of _PROSE_OK (numbers and punctuation too) and no path at all (the commands name the places). No earlier step,
+    done or open (before: their texts), may name a dotfile or config the readers would then read (.gitattributes, .git/config),
+    run `git config` or set an environment variable.
+    Fails closed on anything else."""
+    import fmguard
+    head = text.split("Undo:", 1)[0]
+    cmds = _TICK.findall(head)
+    prose = _TICK.sub(" ", head)
+    if not cmds or any(w.lower() not in _PROSE_OK for w in re.findall(r"[^\W\d_][\w'-]*", prose)) or any(_tokens(prose)):
+        return False
+    if any(re.fullmatch(r"[/.]+", w) for w in (x.strip("\"'()[]{},;:").rstrip(".") for x in prose.split()) if w):
+        return False  # '../', '/' and the like: _tokens reads a lone '/' as prose
+    if any(_ENV.search(e) for e in before) or any(_CONFIG.search(t) for e in before for t in _tokens(e.split("Undo:", 1)[0])):
+        return False  # an earlier step may write the config a reader here would read, or set what it reads
+    for cmd in cmds:
+        if "&" in cmd.replace("&&", "") or re.search(r"[<>`]|\$\(|\bsudo\b", cmd) or _cmd_targets(cmd):
+            return False
+        if re.search(r"[\"'\\]", cmd):
+            return False  # a quoted or escaped word reads differently to a split on spaces than to the guard's tokenizer
+        for seg in re.split(r"&&|\|\||[;|\n]", cmd):
+            if seg.strip() and not fmguard.read_only(seg):
+                return False
+        for part in fmguard._split(fmguard._tokens(cmd)):  # the guard's own argv, so git is git however it is written
+            if part.argv and part.argv[0] == "git" and part.argv[1:2] not in (["status"], ["rev-parse"]):
+                return False  # git diff, log, show, blame, grep run drivers the repo sets (textconv, diff.external, core.pager)
+    return True
+
+
+def autofill_undo(p, b):
+    """T-5890: 'Undo: nothing changes (check-only step)' written on each open step that reads as a local one-way door
+    (brief_gaps' own test) and provably only reads (check_only). Returns one note per step; a step with
+    evidence, a done step or a real Undo line is left alone."""
+    notes = []
+    rows = {d["where"]: d for d in classify(p, b, local_only=True)}
+    for s in b.steps():
+        d = rows.get(f"step {s.n}")
+        before = c.earlier_steps(b, s.n)
+        if s.done or not d or d["door"] != "local" or not d["root"] or c.undo_ok(s.text, before) or not check_only(s.text, before):
+            continue
+        try:
+            b.edit_step(s.n, f"{s.text.split('Undo:', 1)[0].rstrip().rstrip('.')}. Undo: {c.CHECK_UNDO} (check-only step)")  # replace a bare "Undo: none", never stack a second
+        except c.PolicyError:
+            continue
+        notes.append(f"step {s.n}: wrote 'Undo: {c.CHECK_UNDO}' (it only reads)")
+    return notes
 
 
 def overwritten(root, cmd):
@@ -472,7 +536,7 @@ def gate(p, tid):
             continue
         head = text.split("Undo:", 1)[0]
         (doors if kind == "step" else door_acs).append(n)
-        if c.undo_ok(text) or (kind == "verify" and _h(text) in undone):  # a real way back is there already
+        if c.undo_ok(text, c.earlier_steps(b, n) if kind == "step" else ()) or (kind == "verify" and _h(text) in undone):  # a real way back is there already
             continue
         if d["root"]:
             undo, why = None, "it names the repo itself or a folder above it, which a copy can't cover"

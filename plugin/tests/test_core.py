@@ -2154,3 +2154,214 @@ class SandboxEnv(unittest.TestCase):
         for mod, n in (("demo", 2), ("drill", 1), ("bench", 1), ("long", 2), ("louhi", 5), ("smithbench", 1)):
             src = read_text(os.path.join(os.path.dirname(c.__file__), mod + ".py"))
             self.assertEqual(src.count("sandbox_env("), n, mod)
+
+
+AUTOFILL_INTERP = "Reading 1: the gate counts options. Reading 2: the gate reads the words under each option."
+AUTOFILL_AP = ("1) use what exists: the existing gap list. likely outcome: the data is there. fails if: a caller cuts it. "
+               "2) do less: one gap per line. fails if: the skeleton still costs a round. "
+               "3) print every gap and write the skeleton. likely outcome: one round. fails if: the file is stale. ")
+AUTOFILL_STEP = "Run `grep -rn Replace ./`"  # a read; the word it looks for reads as a destroy word
+
+
+class PlanAutoFill(ForemanTestCase):
+    """T-5890: what a tool can settle itself is filled, not refused: 'confidence 70%' is the choice's percent, a step that
+    only reads or runs a check gets its Undo line; a plan missing a real option is still refused."""
+
+    def task(self, approach, step="read the gate", new=False):
+        """An M task whose Approach and step are set after `task new`, which fills them itself (new=True: given to it)."""
+        args = ["task", "new", "Fill the plan", "--type", "FIX", "--tier", "M", "--raw", "fill the plan",
+                "--interpretation", AUTOFILL_INTERP, "--ac", "it works :: true"]
+        args += ["--approach", approach, "--step", step] if new else []
+        tid = json.loads(self.fm(*args, "--json").stdout)["id"]
+        if not new:
+            self.fm("task", "set", tid, "--section", "Approach", "--text", approach)
+            self.fm("task", "step", tid, "add", step)
+        self.p = c.find_project(self.repo)
+        return tid
+
+    def fill(self, tid):
+        b = c.find_brief(self.p, tid)
+        notes = c.plan_autofill(self.p, b)
+        return b, notes
+
+    def conf_gaps(self, b):
+        return [g for g in c.plan_gaps(b) if g.startswith("a confidence") or g.startswith("a choice in Approach")]
+
+    def test_a_percent_written_as_confidence_counts(self):
+        for wording in ("Choice 3: every measured round is removed (confidence 70%).",
+                        "Choice 3: every measured round is removed, 70% sure.",
+                        "Choice 3: every measured round is removed. Confidence: 70 percent.",
+                        "Choice 3 (70 percent): every measured round is removed."):
+            tid = self.task(AUTOFILL_AP + wording)
+            before = c.find_brief(self.p, tid)
+            self.assertTrue(self.conf_gaps(before), (wording, c.plan_gaps(before)))  # the gate does not read it as written
+            b, notes = self.fill(tid)
+            self.assertEqual(c.stated_confidence(b.section("Approach (options → choice → why)")), 70, wording)
+            self.assertEqual(self.conf_gaps(b), [], wording)
+            self.assertTrue(notes and "70%" in notes[0], notes)
+
+    def test_a_percent_that_is_not_the_choices_is_never_taken(self):
+        for wording in ("Choice 3: it is the smallest change.",  # no percent at all
+                        "Choice 3: it is the smallest change; 50% of callers never read it.",  # a percent of something else
+                        "Choice 3: it is the smallest change (confidence 170%)."):  # not 0 to 100
+            tid = self.task(AUTOFILL_AP + wording)
+            b, notes = self.fill(tid)
+            self.assertEqual(notes, [], wording)
+            self.assertTrue(self.conf_gaps(b), wording)
+
+    def test_a_step_that_only_runs_a_check_gets_an_undo_line(self):
+        from sampo import doors
+        tid = self.task(AUTOFILL_AP + "Choice 3 (90%): one round.", step=AUTOFILL_STEP)
+        b = c.find_brief(self.p, tid)
+        self.assertTrue(doors.brief_gaps(self.p, b), "the step reads as a one-way door before the fill")
+        b, notes = self.fill(tid)
+        self.assertTrue(any("Undo" in n and "step 1" in n for n in notes), notes)
+        self.assertIn("Undo: nothing changes", b.steps()[0].text)
+        self.assertEqual(doors.brief_gaps(self.p, b), [])
+        self.assertEqual(c.door_gaps(b), [])
+
+    def test_a_step_that_changes_something_is_not_given_an_undo_line(self):
+        from sampo import doors
+        tid = self.task(AUTOFILL_AP + "Choice 3 (90%): one round.", step="Delete the old rows under ./ and replace them")
+        b, notes = self.fill(tid)
+        self.assertEqual(notes, [])
+        self.assertTrue(doors.brief_gaps(self.p, b), "a real one-way step keeps its gap")
+        typed = "Delete the old rows under ./ and replace them. Undo: nothing changes"
+        self.assertFalse(c.undo_ok(typed), "the words alone never lift a step that changes something")
+        self.assertTrue(c.undo_ok(AUTOFILL_STEP + ". Undo: nothing changes (check-only step)"))
+        for cmd in ("git diff --output=x.txt", "rg --pre ./run.sh foo", "grep foo a > b", "cat a | sh", "sort -o a a",
+                    "python3 tool.py", "git status && rm -f x"):  # a reader that writes, a redirect, a program off the list
+            self.assertFalse(doors.check_only(f"Run `{cmd}`"), cmd)
+        self.assertFalse(doors.check_only("Run the check and delete the output"), "no command in ticks")
+        self.assertFalse(doors.check_only("Delete the logs, then run `git status`"), "a destroy word outside the ticks")
+
+    def test_check_only_refuses_a_runner_flag_that_writes_a_background_and_a_prose_write(self):
+        # T-5890 round 2: pytest --basetemp wipes DIR, a lone & backgrounds the next command, and the words around the ticks act too
+        from sampo import doors
+        for step in ("Run `pytest --basetemp ./data`", "Run `python3 -c 'import os'`",
+                     "Run `ls ./ & chmod -R 000 ./data`",
+                     "Run `git grep -O foo`", "Run `git grep -nOcat foo`", "Run `FOO=1 ls`",
+                     "Run `grep -rn remove ./src`, then rmdir ./src/old",
+                     "Run `grep -rn x ./src`, then unlink ./src/a, chmod 000 ./src, kill 1, git push, dd of=./x",
+                     "Run `grep -rn x ./src` and look at ./data/rows.csv"):
+            self.assertFalse(doors.check_only(step), step)
+        self.assertTrue(doors.check_only("Run `git status && grep -rn x ./src`"))
+
+    def test_check_only_refuses_a_pointer_that_is_not_exactly_dot_slash_a_program_in_prose_an_at_file_and_a_foreign_runner(self):
+        # T-5890 round 3
+        from sampo import doors
+        for step in ("Run `grep -rn remove ./`, then cp -r ./ ../",
+                     "Run `grep -rn x ./`, then rsync -a ./ ../old/", "Run `grep -rn x ./` and tar the result",
+                     "Run `grep -rn x ./`, then pull and publish", "Run `grep -rn x ./` then curl it",
+                     "Run `ls ./` and look at ../", "Run `ls ./` and look at /", "Run `ls ./` and look at /."):
+            self.assertFalse(doors.check_only(step), step)
+
+    def test_a_test_run_never_gets_an_undo_line_and_an_earlier_config_step_blocks_a_reader(self):
+        # T-5890 round 4: conftest.py, config, plugins and the environment make a test run execute repo code, so only readers qualify
+        from sampo import doors
+        for cmd in ("pytest -q", "python3 plugin/tests/run.py x", "python -m pytest -q", "python3 -m unittest", "pytest -k Replace"):
+            self.assertFalse(doors.check_only(f"Run `{cmd}`"), cmd)
+            self.assertFalse(c.undo_ok(f"Run `{cmd}`. Undo: nothing changes (check-only step)"), cmd)
+        self.assertFalse(doors.check_only("Run `grep -rn remove ./`, then revert ./ to HEAD"), "a path in the prose")
+        self.assertTrue(doors.check_only("Run `grep -rn x ./src`."), "a reader and a closing dot")
+        self.assertFalse(doors.check_only("Run `grep -rn x ./src` from ./"), "even a pointer in the prose")
+        self.assertTrue(doors.check_only("Run `git status`", before=["Add a test file tests/test_a.py"]))
+        for earlier in ("Write `.gitattributes` with a diff driver", "Set up ./.git/config", "Edit ci/tox.ini", "Create .ripgreprc"):
+            self.assertFalse(doors.check_only("Run `git diff`", before=[earlier]), earlier)
+        tid = self.task(AUTOFILL_AP + "Choice 3 (90%): one round.", step="Write `.gitattributes` with a diff driver")
+        self.fm("task", "step", tid, "add", AUTOFILL_STEP)
+        b, notes = self.fill(tid)
+        self.assertEqual([s for s in b.steps() if "Undo:" in s.text], [], notes)
+
+    def test_the_prose_around_the_ticks_is_an_allow_list(self):
+        # T-5890 round 5: a verb the deny-list never named still changes things, so only linking words may stand outside the ticks
+        from sampo import doors
+        for verb in ("revert everything", "fix the rows", "create a file", "generate the index", "change the data",
+                     "reformat it", "build it", "overwrite it", "rename it", "wipe the cache"):
+            self.assertFalse(doors.check_only(f"Run `grep -rn remove ./`, then {verb}"), verb)
+        for ok in ("Run `grep -rn x ./src` and `git status`", "Run `ls`, then check that it is 2 of 3 in the list.",
+                   "Read `git status` for each step"):
+            self.assertTrue(doors.check_only(ok), ok)
+        tid = self.task(AUTOFILL_AP + "Choice 3 (90%): one round.", step="Run `grep -rn Replace ./` and `git status`")  # the word makes it read as a one-way door
+        b, notes = self.fill(tid)
+        self.assertIn("Undo: nothing changes", b.steps()[0].text, notes)
+        tid = self.task(AUTOFILL_AP + "Choice 3 (90%): one round.", step="Run `grep -rn remove ./`, then revert everything")
+        b, notes = self.fill(tid)
+        self.assertEqual([s for s in b.steps() if "Undo:" in s.text], [], notes)
+
+    def test_a_done_earlier_step_counts_and_a_git_driver_a_git_config_or_an_env_variable_blocks_a_reader(self):
+        # T-5890 round 5: a done step may already have written the config; git diff/log/show/grep run repo-set drivers
+        from sampo import doors
+        tid = self.task(AUTOFILL_AP + "Choice 3 (90%): one round.", step="Write `.gitattributes` with a diff driver")
+        self.fm("task", "step", tid, "add", "Run `git diff`")
+        b = c.find_brief(self.p, tid)
+        b.set_section("Steps", "1. [x] Write `.gitattributes` with a diff driver\n2. [ ] Run `git diff`")
+        self.assertEqual(len(c.earlier_steps(b, 2)), 1, "a done step is scanned too")
+        for cmd in ("git diff", "git log -p", "git show HEAD", "git blame x", "git grep foo", "git -c core.pager=cat status",
+                    "git --no-pager diff --no-ext-diff --no-textconv"):
+            self.assertFalse(doors.check_only(f"Run `{cmd}`"), cmd)
+        for cmd in ("git status", "git rev-parse HEAD", "git status && git rev-parse --show-toplevel"):
+            self.assertTrue(doors.check_only(f"Run `{cmd}`"), cmd)
+        for earlier in ("Run `git config diff.external ./x`", "git config core.pager less", "Run `PAGER=./x ls`",
+                        "export GIT_EXTERNAL_DIFF=./x"):
+            self.assertFalse(doors.check_only("Run `git status`", before=[earlier]), earlier)
+
+    def test_the_git_subcommand_is_read_the_way_the_guard_reads_it_and_a_quote_or_backslash_is_refused(self):
+        # T-5890 round 6: `"git" diff` and `g\it log` are git to the guard's tokenizer, so the subcommand comes from its argv
+        from sampo import doors
+        for cmd in ('"git" diff', "'git' log -p", "g\\it log", 'git "diff"', "git dif\\f", 'git "status"', "ls 'a'", "grep x a\\b"):
+            self.assertFalse(doors.check_only(f"Run `{cmd}`"), cmd)
+        self.assertTrue(doors.check_only("Run `git status`"))
+
+    def test_an_earlier_step_that_mentions_git_beyond_status_config_or_a_hook_blocks_a_reader(self):
+        # T-5890 round 6: `git -C x config`, `git -c a=b diff` and the like dodge a pattern, so any git but status/rev-parse blocks
+        from sampo import doors
+        for earlier in ("Run `git -C x config diff.external ./t`", "Run `git -c core.pager=./t log`", "Run `git diff`",
+                        "Set config in the repo", "Point core.fsmonitor at a script", "Set core.hooksPath to ./h", "Use git alias x"):
+            self.assertFalse(doors.check_only("Run `git status`", before=[earlier]), earlier)
+        self.assertTrue(doors.check_only("Run `git status`", before=["Run `git status`", "Run `git rev-parse HEAD`", "Add a test"]))
+
+    def test_a_percent_of_something_else_in_parentheses_is_never_the_choices(self):
+        for wording in ("Choice 3: one pass (95% of rows kept).", "Choice 3: one pass (95 percent of rows kept).",
+                        "Choice 3: one pass, make sure 95% of rows are kept."):
+            tid = self.task(AUTOFILL_AP + wording)
+            b, notes = self.fill(tid)
+            self.assertEqual(notes, [], wording)
+            self.assertTrue(self.conf_gaps(b), wording)
+
+    def test_a_step_that_says_undo_none_has_it_replaced_once_and_a_second_run_changes_nothing(self):
+        tid = self.task(AUTOFILL_AP + "Choice 3 (90%): one round.", step=AUTOFILL_STEP + ". Undo: none")
+        b, notes = self.fill(tid)
+        text = b.steps()[0].text
+        self.assertEqual(text.count("Undo:"), 1, text)
+        self.assertNotIn("Undo: none", text)
+        self.assertTrue(c.undo_ok(text), text)
+        c.save_brief(self.p, b)  # the caller saves; a second run reads what the first wrote
+        b2, notes2 = self.fill(tid)
+        self.assertEqual(notes2, [])
+        self.assertEqual(b2.steps()[0].text, text)
+        self.assertEqual(b2.steps()[0].text.count("Undo:"), 1)
+
+    def test_task_new_fills_both_in_its_own_write_and_says_so(self):
+        from sampo import doors
+        args = ["task", "new", "Fill at new", "--type", "FIX", "--tier", "M", "--raw", "fill at new",
+                "--interpretation", AUTOFILL_INTERP, "--approach", AUTOFILL_AP + "Choice 3: one round (confidence 70%).",
+                "--ac", "it works :: true", "--step", AUTOFILL_STEP]
+        r = self.fm(*args)
+        self.assertIn("filled:", r.stdout)
+        self.assertIn("70%", r.stdout)
+        self.assertIn("Undo: nothing changes", r.stdout)
+        self.p = c.find_project(self.repo)
+        b = c.find_brief(self.p, "T-0001")
+        self.assertEqual(c.stated_confidence(b.section("Approach (options → choice → why)")), 70)
+        self.assertEqual(doors.brief_gaps(self.p, b), [])
+        self.assertIn("plan autofill", b.section("Log"))
+
+    def test_a_plan_missing_a_real_option_is_still_refused(self):
+        two = ("1) use what exists: the existing gap list. likely outcome: the data is there. fails if: a caller cuts it. "
+               "2) do less: one gap per line. fails if: the skeleton still costs a round. "
+               "Choice 2: one gap per line (confidence 70%).")
+        tid = self.task(two)
+        b, notes = self.fill(tid)
+        self.assertTrue(any("2 options" in g and "3+ options needed" in g for g in c.plan_gaps(b)), c.plan_gaps(b))
+        self.assertTrue(all("Undo" not in n for n in notes), notes)
