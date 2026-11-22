@@ -64,11 +64,13 @@ class ReviewerFindings(ForemanTestCase):
         self.stop("- HIGH — a.py:1 — a retry abort leaves partial state — fix — high\n"
                   "- HIGH — b.py:2 — wrong signal from stale state — fix — high")
         p = c.find_project(self.repo)
-        self.assertEqual(len(lanes.defect_classes(p)), 2)
+        lanes._classes_save(p, {lanes._finding_key("a retry abort leaves partial state"): "failopen",
+                                lanes._finding_key("wrong signal from stale state"): "race"}, 0)
+        self.assertEqual(len(lanes.defect_classes(p, ["a.py", "b.py"])), 2)
         self.fm("task", "finding", self.tid, "edge", "rejected", "a retry abort leaves partial state")
-        out = "\n".join(lanes.defect_classes(p))
-        self.assertNotIn("half-done", out)
-        self.assertIn("stale", out)
+        out = "\n".join(lanes.defect_classes(p, ["a.py", "b.py"]))
+        self.assertNotIn("fail-open", out)
+        self.assertIn("race or stale capture", out)
 
 
 if __name__ == "__main__":
