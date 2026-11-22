@@ -8,6 +8,7 @@ import json
 import re
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -5734,6 +5735,249 @@ class FreeFloor(tcd.RustCase):
             r = tcd.d.check_disk(self.tmp, self.low, [(self.p, {})])
         self.assertIn(f"of {slanes.human(100 * s)} cap per project", r.detail)
         self.assertNotIn("shrunk", r.detail)
+
+
+class LocalBuilder(ForemanTestCase):
+    """T-5884: `sampo lane brief ID --model local` hands an S lane to a headless `sampo code --task` run on a JARVIS
+    profile in the lane's own worktree; the run returns through the builder-return and the review pilot like a Claude
+    builder. An unreachable endpoint falls back to sonnet (reason logged); an M or L task is refused."""
+
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        self.fm("lane", "max", "20")
+        self.p = c.find_project(self.repo)
+
+    def task(self, tier="S"):
+        tid = first(self.fm("task", "new", f"Local {tier}", "--type", "FEATURE", "--tier", tier, "--ac", "ok :: true",
+                            "--step", "s", "--json").stdout)["id"]
+        self.fm("task", "set", tid, "approved=true", check=False)  # an L task wants a Build vs reuse section first
+        return tid
+
+    def brief(self, tid, profile="jarvis", model="local"):
+        """The lane brief in this process with the local profile probe stubbed: (json answer, stderr)."""
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(slanes, "local_profile", return_value=profile), contextlib.redirect_stdout(out), \
+                contextlib.redirect_stderr(err):
+            slanes.builder_brief(self.p, c.find_brief(self.p, tid), argparse.Namespace(model=model, json=True))
+        return json.loads(out.getvalue()), err.getvalue()
+
+    def test_the_brief_launches_a_headless_sampo_code_run_on_the_local_profile(self):
+        tid = self.task()
+        got, _ = self.brief(tid)
+        self.assertEqual(got["model"], "local")
+        self.assertIn(f"sampo lane local {tid}", got["launch"], "the launch line is a command, not an Agent call")
+        self.assertNotIn("Agent(", got["launch"])
+        self.assertIn(f"sampo code --task {tid} --model jarvis", got["runs"])
+        self.assertIn("--lane", got["runs"], "the run commits and returns; the land closes (never task finish)")
+        b = c.find_brief(self.p, tid)
+        self.assertEqual(b.meta["builder_model"], "local")
+        self.assertEqual(b.meta["builder_local"], "jarvis")
+        self.assertTrue(b.meta.get("builder"))
+
+    def test_a_local_lane_leaves_the_claude_route_history_alone(self):
+        tid = self.task()
+        self.brief(tid)
+        b = c.find_brief(self.p, tid)
+        b.meta["status"] = "done"
+        c.save_brief(self.p, b)
+        outs = {tid: {"fate": "held"}}
+        self.assertEqual(slanes._lanes(self.p, "S", outs), [], "a local lane is no sonnet or opus sample")
+
+    def test_an_unreachable_endpoint_falls_back_to_sonnet_and_logs_the_reason(self):
+        tid = self.task()
+        got, err = self.brief(tid, profile=None)
+        self.assertEqual(got["model"], "sonnet")
+        self.assertIn('model: "sonnet"', got["agent"], "the usual Claude builder's launch")
+        self.assertNotIn("launch: sampo lane local", got["agent"])
+        self.assertTrue(any("local" in w and "sonnet" in w for w in got["warnings"]), got["warnings"])
+        b = c.find_brief(self.p, tid)
+        self.assertEqual(b.meta["builder_model"], "sonnet")
+        self.assertNotIn("builder_local", b.meta)
+        self.assertIn("local builder unavailable", b.section("Log"), "the reason is on the brief's log")
+
+    def test_an_m_or_l_task_is_refused_with_a_message(self):
+        for tier in ("M", "L"):
+            tid = self.task(tier)
+            with self.assertRaises(c.PolicyError) as e:
+                self.brief(tid)
+            self.assertIn("local builder", str(e.exception))
+            self.assertIn("S task", str(e.exception), tier)
+            self.assertFalse(c.find_brief(self.p, tid).meta.get("builder"), "refused: no slot taken")
+
+    def test_the_cli_takes_model_local(self):
+        tid = self.task("M")
+        r = self.fm("lane", "brief", tid, "--model", "local", check=False)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertNotIn("invalid choice", r.stderr, "local is a model the flag knows")
+        self.assertIn("S task", r.stderr + r.stdout)
+
+    def test_the_launch_refuses_when_the_endpoint_went_down_and_names_the_rebrief(self):
+        tid = self.task()
+        self.brief(tid)
+        with mock.patch.object(slanes, "local_profile", return_value=None), \
+                mock.patch.object(slanes, "_local_spawn") as spawn:
+            with self.assertRaises(c.PolicyError) as e:
+                slanes.local_launch(self.p, c.find_brief(self.p, tid))
+        self.assertIn(f"sampo lane brief {tid} --model sonnet", str(e.exception))
+        spawn.assert_not_called()
+
+    def test_the_launch_refuses_a_brief_that_is_not_a_local_one(self):
+        tid = self.task()
+        self.brief(tid, model="sonnet")
+        with self.assertRaises(c.PolicyError) as e:
+            slanes.local_launch(self.p, c.find_brief(self.p, tid))
+        self.assertIn("not a local builder", str(e.exception))
+
+    def test_the_run_returns_like_a_claude_builder_commit_report_fields_and_review_pilot(self):
+        tid = self.task()
+        self.brief(tid)
+        main = c.main_worktree(self.p.root) or self.p.root
+
+        def code(p, b, lane, name):  # stands in for the headless sampo code run: it commits with its close trailers
+            with open(os.path.join(lane, "made.txt"), "w", encoding="utf-8") as f:
+                f.write("x\n")
+            subprocess.run(["git", "-C", lane, "add", "-A"], check=True)
+            subprocess.run(["git", "-C", lane, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm",
+                            f"Local S ({tid})", "-m", f"CHANGELOG: Local S ({tid}).\nTITLE: Local S ({tid})\n"
+                            "DOCS: none: a test"], check=True)
+            return 0
+        with mock.patch.object(slanes, "local_profile", return_value="jarvis"), \
+                mock.patch.object(slanes, "_local_code", side_effect=code), \
+                mock.patch("sampo.pilotsig.spawn", return_value=4242) as pilot:
+            slanes.local_run(self.p, c.find_brief(self.p, tid))
+        b = c.find_brief(self.p, tid)
+        lane = b.meta["lane"]
+        self.assertEqual(os.path.basename(lane), tid)
+        self.assertTrue(os.path.isdir(lane) and lane.startswith(os.path.dirname(os.path.realpath(main))), lane)
+        self.assertEqual(os.path.realpath(lane), os.path.realpath(os.path.join(
+            os.path.dirname(main), os.path.basename(main) + ".lanes", tid)))
+        self.assertTrue(b.meta.get("builder_returned"), "the return is stamped, as the SubagentStop hook does")
+        fields = slanes.close_fields(b.section(slanes.CLOSE_FIELDS))
+        self.assertEqual(fields.get("changelog"), f"Local S ({tid}).", "the commit's report fields are on the brief")
+        pilot.assert_called_once_with(self.p, tid)
+        briefs = c.load_briefs(self.p)
+        self.assertIn(tid, slanes._slots(self.p, briefs, exclude="")[1], "a returned local lane waits on the land")
+
+    def test_a_run_that_made_no_commit_is_not_a_return(self):
+        tid = self.task()
+        self.brief(tid)
+        with mock.patch.object(slanes, "local_profile", return_value="jarvis"), \
+                mock.patch.object(slanes, "_local_code", return_value=3), \
+                mock.patch("sampo.pilotsig.spawn") as pilot:
+            slanes.local_run(self.p, c.find_brief(self.p, tid))
+        b = c.find_brief(self.p, tid)
+        self.assertFalse(b.meta.get("builder_returned"), "no commit: nothing to review")
+        self.assertIn("local builder stopped", b.section("Log"))
+        pilot.assert_not_called()
+
+    def test_sampo_code_lane_commits_with_trailers_the_land_reads_and_never_finishes(self):
+        from sampo import smith
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        git =lambda *a: subprocess.run(["git", "-C", d, "-c", "user.name=t", "-c", "user.email=t@t", *a],  # noqa: E731
+                                        check=True, capture_output=True, text=True).stdout
+        git("init", "-q")
+        git("commit", "-q", "--allow-empty", "-m", "start")
+        base = git("rev-parse", "HEAD").strip()
+        with open(os.path.join(d, "made.txt"), "w", encoding="utf-8") as f:
+            f.write("x\n")
+        run = mock.Mock(root=d, tid="T-9999", plan={"title": "Make the thing"}, worker=None, tokens=0, usd=None)
+        env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+        with mock.patch.dict(os.environ, env):
+            smith._finish_lane(run, {"name": "jarvis"})
+        run.fm.assert_not_called()  # never `fm task finish`: a lane refuses it to a briefed builder
+        self.assertEqual(slanes.lane_trailers(d, base, "T-9999").get("changelog"), "Make the thing (T-9999).")
+        self.assertEqual(git("status", "--porcelain").strip(), "", "the run's work is committed")
+        with self.assertRaises(smith.Blocked):  # a run that changed nothing has nothing to hand back
+            smith._finish_lane(run, {"name": "jarvis"})
+
+    def lane_repo(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        git = lambda *a: subprocess.run(["git", "-C", d, "-c", "user.name=t", "-c", "user.email=t@t", *a],  # noqa: E731
+                                        check=True, capture_output=True, text=True).stdout
+        git("init", "-q")
+        git("commit", "-q", "--allow-empty", "-m", "start")
+        return d, git
+
+    def finish(self, d):
+        from sampo import smith
+        run = mock.Mock(root=d, tid="T-9999", plan={"title": "Make the thing"}, worker=None, tokens=0, usd=None)
+        env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+        with mock.patch.dict(os.environ, env):
+            smith._finish_lane(run, {"name": "jarvis"})
+
+    def test_a_local_models_stray_secret_file_is_never_committed(self):
+        d, git = self.lane_repo()
+        for name in ("made.txt", ".env", ".env.local", "server.pem", "id_ed25519", "sub/deploy.key"):
+            os.makedirs(os.path.dirname(os.path.join(d, name)), exist_ok=True)
+            with open(os.path.join(d, name), "w", encoding="utf-8") as f:
+                f.write("x\n")
+        self.finish(d)
+        self.assertEqual(git("ls-files").split(), ["made.txt"], "only the work is committed, no key or env file")
+        self.assertIn(".env", git("status", "--porcelain"), "a held file is left in the tree, not deleted")
+        with open(os.path.join(d, "more.pem"), "w", encoding="utf-8") as f:  # nothing but a secret changed: nothing to hand back
+            f.write("x\n")
+        from sampo import smith
+        with self.assertRaises(smith.Blocked):
+            self.finish(d)
+        self.assertNotIn("more.pem", git("ls-files"))
+
+    def test_the_commit_names_the_docs_it_changed_and_never_claims_what_was_not_measured(self):
+        d, git = self.lane_repo()
+        base = git("rev-parse", "HEAD").strip()
+        os.makedirs(os.path.join(d, "docs"))
+        for name in ("made.py", "docs/guide.md", "README.md"):
+            with open(os.path.join(d, name), "w", encoding="utf-8") as f:
+                f.write("x\n")
+        self.finish(d)
+        got = slanes.lane_trailers(d, base, "T-9999")
+        self.assertEqual(got.get("docs"), "README.md, docs/guide.md", "the diff's doc files are the DOCS line")
+        self.assertEqual(got.get("lesson"), "none: local run, not measured")
+        self.assertEqual(got.get("numbers"), "none: local run, not measured")
+        d2, git2 = self.lane_repo()
+        base2 = git2("rev-parse", "HEAD").strip()
+        with open(os.path.join(d2, "only.py"), "w", encoding="utf-8") as f:
+            f.write("x\n")
+        self.finish(d2)
+        self.assertTrue(slanes.lane_trailers(d2, base2, "T-9999").get("docs", "").startswith("none: local run"))
+
+    def test_a_cut_run_kills_its_group_only_through_the_guarded_helper(self):
+        # a stubbed Popen's pid is a Mock, which converts to 1: killpg(1) would kill every process of the user
+        stub = mock.Mock(pid=mock.Mock(), poll=mock.Mock(return_value=None))
+        stub.wait.side_effect = [subprocess.TimeoutExpired("sampo", 1), 0]
+        with mock.patch.object(slanes.subprocess, "Popen", return_value=stub), mock.patch("os.killpg") as killpg:
+            self.assertEqual(slanes._local_code(self.p, mock.Mock(id="T-1"), "/nonexistent", "jarvis"), 124)
+        killpg.assert_not_called()
+        stub = mock.Mock(pid=424242, poll=mock.Mock(return_value=None))
+        stub.wait.side_effect = [subprocess.TimeoutExpired("sampo", 1), 0]
+        with mock.patch.object(slanes.subprocess, "Popen", return_value=stub), mock.patch("os.killpg") as killpg:
+            self.assertEqual(slanes._local_code(self.p, mock.Mock(id="T-1"), "/nonexistent", "jarvis"), 124)
+        killpg.assert_any_call(424242, signal.SIGKILL)
+        self.assertEqual({a[0][0] for a in killpg.call_args_list}, {424242}, "only the child's own group")
+
+    def test_a_wrapper_that_is_stopped_takes_the_child_group_with_it(self):
+        stub = mock.Mock(pid=424242, poll=mock.Mock(return_value=None))
+        stub.wait.side_effect = KeyboardInterrupt()  # what the SIGTERM handler raises in the wrapper
+        with mock.patch.object(slanes.subprocess, "Popen", return_value=stub), mock.patch("os.killpg") as killpg:
+            with self.assertRaises(KeyboardInterrupt):
+                slanes._local_code(self.p, mock.Mock(id="T-1"), "/nonexistent", "jarvis")
+        killpg.assert_called_once_with(424242, signal.SIGKILL)
+
+    def test_the_spawn_stamps_the_run_so_a_second_launch_is_refused(self):
+        tid = self.task()
+        self.brief(tid)
+        stub = mock.Mock(pid=os.getpid())  # a real, live pid: the stamp reads its start time
+        with mock.patch.object(slanes.subprocess, "Popen", return_value=stub):
+            self.assertEqual(slanes._local_spawn(self.p, c.find_brief(self.p, tid)), os.getpid())
+        self.assertTrue(c.find_brief(self.p, tid).meta.get("builder_proc"), "stamped before the spawn returns")
+        with mock.patch.object(slanes, "local_profile", return_value="jarvis"), \
+                mock.patch.object(slanes, "_local_spawn") as spawn:
+            with self.assertRaises(c.PolicyError) as e:
+                slanes.local_launch(self.p, c.find_brief(self.p, tid))
+        self.assertIn("already running", str(e.exception))
+        spawn.assert_not_called()
 
 
 BR_INTERP = "Reading 1: the gate counts options. Reading 2: the gate reads the words under each option."

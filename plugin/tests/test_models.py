@@ -1284,3 +1284,14 @@ class OllamaThreads(Base):  # T-3588: llama.cpp's CPU threads busy-poll while th
         m.LOCAL = [("ollama", f.url)]
         m.complete(self.profile(f, key=False), [{"role": "user", "content": [{"type": "text", "text": "hi"}]}])
         self.assertEqual([s[:2] for s in f.seen], [("POST", "/v1/chat/completions")], "list content: /v1, unprobed")
+
+
+class LoopbackForms(unittest.TestCase):  # T-5884
+    def test_every_spelling_of_this_machine_is_loopback_and_no_other_host_is(self):
+        # the local builder skips a loopback profile (a model is never run on this machine): a short or unspecified
+        # spelling of the same machine must not pass for a JARVIS host
+        for host in ("localhost", "LOCALHOST", "localhost.", "localhost.localdomain", "127.0.0.1", "127.1", "127.0.1",
+                     "0.0.0.0", "0", "::", "::1", "[::1]", "::ffff:127.0.0.1", "0x7f.1", "2130706433"):
+            self.assertTrue(m.is_loopback(host), host)
+        for host in ("", "jarvis", "gpu.example.test", "10.0.0.5", "192.168.1.9", "128.0.0.1", "8.8.8.8", "1.2.3.4.5"):
+            self.assertFalse(m.is_loopback(host), host)

@@ -12171,6 +12171,8 @@ def _build_parser(only=None):
     s.add_argument("--resume", nargs="?", const="", metavar="ID", help="carry on a crashed or killed run from its "
                                                                      "journal (default: the newest unfinished one)")
     s.add_argument("--no-commit", action="store_true", help="close the task without committing")
+    s.add_argument("--lane", action="store_true", help="with --task, in a lane's worktree: commit the work with its close "
+                   "lines as trailers and stop; the review and the land close the task (T-5884; never task finish)")
     s.add_argument("--no-look", action="store_true", help="close after the first task without the closing look (T-4295)")
     s.add_argument("--no-review", action="store_true", help="T-4388: skip the function-by-function review a free "
                    "model's run makes before planning a request for the code as a whole (find and fix, release)")
@@ -12299,7 +12301,7 @@ def _build_parser(only=None):
                                                        "recover --all: every lane stopped before its merge, one launch line each (T-3922)")
     s.add_argument("action", choices=["new", "list", "rm", "brief", "merge", "max", "resume", "recover", "race", "pick",
                                       "stats", "verify", "train", "precheck", "land", "andon", "accept", "mode", "start",
-                                      "classify", "fixes"])  # fixes: the review's findings for the lane's builder (T-5477); classify: the detached pass a builder brief starts (T-5723), not typed
+                                      "classify", "fixes", "local"])  # local: the headless run of a --model local brief (T-5884); fixes: the review's findings for the lane's builder (T-5477); classify: the detached pass a builder brief starts (T-5723), not typed
     s.add_argument("--all", action="store_true", help="list: every lane's row, or in a builder's lane its own row and a "
                                                       "count of the others (T-5687); recover: every lane stopped before its "
                                                       "merge, one launch line each or the reason it's left (T-3922); merge: "
@@ -12341,7 +12343,9 @@ def _build_parser(only=None):
                                                      "files would go (T-1028); the reason is logged")
     s.add_argument("--unverified", metavar="REASON", help="merge: merge although the criteria's re-run is red, with the "
                                                           "reason on the ledger (main thread only, T-0948)")
-    s.add_argument("--model", choices=["sonnet", "opus", "haiku"], help="brief: the builder's model, over the history's pick (T-2291)")
+    s.add_argument("--model", choices=["sonnet", "opus", "haiku", "local"], help="brief: the builder's model, over the history's "
+                   "pick (T-2291); local: an S lane worked headless by sampo code on a JARVIS profile, Claude reviews it (T-5884)")
+    s.add_argument("--foreground", action="store_true", help="local: run the builder here, not detached (T-5884)")
     s.add_argument("--revert-route", metavar="DATE", help="brief, no id: put back the dearer picks the probe-down route "
                                                           "promoted since DATE (YYYY-MM-DD), probing paused 20 lanes (T-2353)")
     s.add_argument("--no-preview", action="store_true", help="list: skip the trial merges between lanes (T-3268)")

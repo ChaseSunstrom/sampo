@@ -925,12 +925,25 @@ def to_anthropic_tools(tools):
 # ---------------------------------------------------------------- transport
 
 def _loopback(host):
-    if host == "localhost":
+    """Whether `host` names this machine: localhost (and localhost.localdomain), a loopback or unspecified address in any
+    spelling the resolver takes (127.1, 0x7f.1, 2130706433, 0.0.0.0, ::, ::ffff:127.0.0.1, [::1]) (T-5884)."""
+    host = str(host or "").strip().lower().rstrip(".")
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1]
+    if host == "localhost" or host.endswith(".localhost") or host == "localhost.localdomain":
         return True
+    addrs = []
     try:
-        return ipaddress.ip_address(host).is_loopback
+        addrs.append(ipaddress.ip_address(host))
     except ValueError:
-        return False
+        try:  # the short and numeric IPv4 forms (127.1, 0x7f.1, a bare integer) the resolver also takes
+            addrs.append(ipaddress.IPv4Address(socket.inet_aton(host)))
+        except (OSError, ValueError):
+            return False
+    ip = addrs[0]
+    if getattr(ip, "ipv4_mapped", None):
+        ip = ip.ipv4_mapped
+    return ip.is_loopback or ip.is_unspecified
 
 
 def is_loopback(host):

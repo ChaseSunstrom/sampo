@@ -861,6 +861,30 @@ def start(p, args):
                           "focus": seen.getvalue()}, text)
 
 
+def _new_lane(p, b, main, branch, spike=False):
+    """The lane for task b: a worktree on `branch` beside the repo (<repo>.lanes/<ID>), bound on the brief. (path, a
+    cargo hint). T-5884: shared by `sampo lane new` and the local builder's run."""
+    from sampo import cli
+    path = os.path.join(os.path.dirname(main), os.path.basename(main) + ".lanes", b.id)
+    _git(main, "worktree", "prune")  # a lane folder deleted by hand would block re-adding it
+    have = _ref_ok(main, branch)
+    r = _git(main, "worktree", "add", "-q", *([path, branch] if have else ["-b", branch, path, "HEAD"]))
+    if r.returncode:
+        raise cli.UsageError(f"git worktree add failed: {r.stderr.strip()[:300]}")
+    path = os.path.realpath(path)
+    pruned = lane_new_cargo(p, path)  # T-4717, T-4764: a Rust lane's own cargo commands reach its own target folder (a hint)
+
+    def give(x):
+        x.meta["lane"] = path
+        if spike:
+            x.meta["lane_spike"] = True
+        for k in ("base", "base_tree", "paused_tree"):  # its start point is taken in the lane, at focus
+            x.meta.pop(k, None)
+        x.append_log(f"lane: {path} on {branch}")
+    cli.mutate(p, b.id, give, "lane_new", {"path": path, "branch": branch})
+    return path, pruned
+
+
 def cmd_lane(args):
     from sampo import cli
     p = cli.resolve(args)
@@ -1044,6 +1068,16 @@ def cmd_lane(args):
         return pick(p, b, main, args)
     if args.action == "brief":
         return builder_brief(p, b, args)
+    if args.action == "local":  # T-5884: the headless run of a --model local brief: detached, or --foreground here
+        if getattr(args, "foreground", False):
+            rc = local_run(p, b)
+            if rc:
+                raise c.PolicyError(f"{b.id}: the local builder stopped ({rc}); the brief's Log says why")
+            return cli.out(args, {"id": b.id, "returned": True}, f"{b.id}: the local builder returned its commit")
+        pid = local_launch(p, b)
+        return cli.out(args, {"id": b.id, "pid": pid, "log": os.path.join(p.dir, f"local-{b.id}.log")},
+                       f"{b.id}: local builder started (pid {pid}) on {b.meta.get('builder_local')}; it returns on its own: "
+                       f"the review pilot starts then, as for a Claude builder (log: local-{b.id}.log in the project's state)")
     if args.action == "fixes":  # T-5477: a review round's fixes go to the builder that wrote the lane
         return fixes(p, b, args)
     if args.action == "resume":
@@ -1093,23 +1127,7 @@ def cmd_lane(args):
         if b.status in c.CLOSED or b.status in ("active", "verifying") or b.meta.get("lane"):
             raise c.PolicyError(f"{b.id} is {b.meta.get('lane') and 'already in lane ' + b.meta['lane'] or b.status}: "
                                 f"a lane takes a task nobody is working on")
-        path = os.path.join(os.path.dirname(main), os.path.basename(main) + ".lanes", b.id)
-        _git(main, "worktree", "prune")  # a lane folder deleted by hand would block re-adding it
-        have = _ref_ok(main, branch)
-        r = _git(main, "worktree", "add", "-q", *([path, branch] if have else ["-b", branch, path, "HEAD"]))
-        if r.returncode:
-            raise cli.UsageError(f"git worktree add failed: {r.stderr.strip()[:300]}")
-        path = os.path.realpath(path)
-        pruned = lane_new_cargo(p, path)  # T-4717, T-4764: a Rust lane's own cargo commands reach its own target folder (a hint)
-
-        def give(x):
-            x.meta["lane"] = path
-            if getattr(args, "spike", False):
-                x.meta["lane_spike"] = True
-            for k in ("base", "base_tree", "paused_tree"):  # its start point is taken in the lane, at focus
-                x.meta.pop(k, None)
-            x.append_log(f"lane: {path} on {branch}")
-        cli.mutate(p, b.id, give, "lane_new", {"path": path, "branch": branch})
+        path, pruned = _new_lane(p, b, main, branch, getattr(args, "spike", False))
         return cli.out(args, {"id": b.id, "path": path, "branch": branch},
                          f"{b.id}: lane {path} on {branch}. Work there: cd into it and start claude; fm focus {b.id}."
                          + (f"\n{pruned}" if pruned else ""))
@@ -3321,7 +3339,8 @@ def _lanes(p, tier, outs):
     red = " ".join(b.section("Raw request") for b in briefs if b.meta.get("baseline"))
     return sorted((outcomes.done_at(b), b.id, b.meta["builder_model"], bool(b.meta.get("route_probe")),
                    outs[b.id]["fate"] in ("reverted", "fixed later") or outs[b.id].get("survival") == "lost" or b.id in red)
-                  for b in briefs if b.tier == tier and b.id in outs and b.meta.get("builder_model"))
+                  for b in briefs if b.tier == tier and b.id in outs and b.meta.get("builder_model")
+                  and b.meta["builder_model"] != LOCAL)  # T-5884: a local lane is no sonnet or opus sample
 
 
 def model_route(p, tier, outs=None):
@@ -3345,6 +3364,7 @@ def model_route(p, tier, outs=None):
 # T-2353: the probe-down route. The pick (model_route, or a promoted one kept in route.json) is probed one model down on
 # the lanes the stable hash names; probes that rework within a band of the pick's own rate make the cheaper model the pick.
 MODELS = ("haiku", "sonnet", "opus")  # cheapest first
+LOCAL = "local"  # T-5884: --model local: an S lane's builder is a headless `sampo code` run on a JARVIS profile, not a Claude model
 PROBE_MOD, PROBE_MIN, PROBE_WINDOW, PROBE_BAND, PROBE_COOL, REVERT_QUIET = 5, 5, 10, 0.1, 5, 20
 _ROUTE_KEYS = ("pick", "since", "provisional", "from", "evidence", "reverted_at", "quiet_from")
 
@@ -4647,6 +4667,9 @@ def builder_brief(p, b, args, resume_branch=None, after="", stacked=None):
     thread reviews the branch, merges it, refocuses the task here, re-runs its criteria and closes it."""
     from sampo import budget
     from sampo import cli
+    if getattr(args, "model", None) == LOCAL and b.tier != "S":  # T-5884: the small-model run is for small tasks only
+        raise c.PolicyError(f"{b.id} is {b.tier}: a local builder takes an S task only (sampo lane brief {b.id} for a "
+                            "Claude builder; an L task stays in the main thread)")
     if c.is_big(b):
         raise c.PolicyError(c.big_refusal(b))
     if b.tier not in ("S", "M"):
@@ -4871,6 +4894,10 @@ def builder_brief(p, b, args, resume_branch=None, after="", stacked=None):
         from sampo import bus
         x.meta["builder"] = c.now()
         x.meta["builder_model"] = chosen
+        if chosen == LOCAL:  # T-5884: the JARVIS profile the run uses; the run's own wrapper stamps builder_proc
+            x.meta["builder_local"] = local
+        else:
+            x.meta.pop("builder_local", None)
         if anchor or stack:  # T-4222: the lane's base, on the brief (T-5725: a dependency's tip): its commits are past it
             x.meta["big_base"] = base
         else:
@@ -4883,20 +4910,32 @@ def builder_brief(p, b, args, resume_branch=None, after="", stacked=None):
             x.meta["route_probe"] = 1
         else:
             x.meta.pop("route_probe", None)
-        proc = bus.claude_proc()  # T-1028: when this process ends, the builder is stopped (fm lane resume)
+        proc = bus.claude_proc() if chosen != LOCAL else None  # T-1028: when this process ends, the builder is stopped (fm lane resume)
         if proc:
             x.meta["builder_proc"] = proc
         else:
             x.meta.pop("builder_proc", None)
         x.append_log(f"builder brief: {path}")
+        if fell:  # T-5884: the reason a --model local brief went to sonnet
+            x.append_log(f"local builder unavailable: {fell}; briefed for sonnet")
     effort = "medium" if b.tier == "S" else "high"
     light = plan_model(b)  # T-5714: a trivial or small change by its scope: haiku at medium effort, unless --model says
     if light:  # a light lane skips the route: it promotes no model and fills no probe window
         chosen, effort, route, probe = light[0], light[1], f"{light[2]}: {light[0]} at {light[1]} effort", False
     else:
         chosen, route, probe = _route(p, b.tier, tid=b.id, racing=bool(racing))
-    if getattr(args, "model", None):
+    local, fell = None, ""
+    if getattr(args, "model", None) == LOCAL:  # T-5884: a JARVIS profile that answers, else sonnet with the reason logged
+        local = local_profile(p)
+        if local:
+            chosen, route, probe = LOCAL, f"--model local: sampo code on {local}", False
+        else:
+            fell = "no JARVIS profile answers (none configured, its key unset, or its server is down)"
+            chosen, route, probe = "sonnet", f"--model local fell back to sonnet: {fell}", False
+            warns.append(f"local builder unavailable ({fell}): briefed for sonnet")
+    elif getattr(args, "model", None):
         chosen, route, probe = args.model, f"--model {args.model}", False
+    paused = paused if chosen != LOCAL else ""  # T-5884: a local run spends no Claude usage: the hold does not apply to it
     if paused:  # T-5562: the hook rewrites a launch to haiku while the hold lasts; the printed call says so up front
         chosen, route, probe = budget.HELD_MODEL, f"{budget.HELD_MODEL} while usage is ahead of pace ({paused})", False
     cli.mutate(p, b.id, mark, "lane_builder", {"path": path, "chars": len(text)})  # T-2368: fm lane stats
@@ -4918,9 +4957,16 @@ def builder_brief(p, b, args, resume_branch=None, after="", stacked=None):
         warns.append(f"usage is ahead of pace ({paused}): this builder runs on {budget.HELD_MODEL}, not the routed model; at "
                      f"most {budget.HELD_AGENTS} subagents run at once in a session until it eases")
     warns += git_lock_lines(clear_git_locks(c.main_worktree(p.root) or p.root))  # T-4616: said to the caller, not in the brief
-    return cli.out(args, {"id": b.id, "path": path, "agent": agent, "model": chosen, "route": route, "out": out + [b.id], "warnings": warns},
+    extra = {}
+    if chosen == LOCAL:  # T-5884: the launch is a shell command: it starts the headless run detached and returns at once
+        agent = f"sampo lane local {b.id}"
+        extra = {"launch": agent, "runs": " ".join(local_argv(local, b.id)), "profile": local}
+    return cli.out(args, {"id": b.id, "path": path, "agent": agent, "model": chosen, "route": route, "out": out + [b.id], "warnings": warns, **extra},
                      "".join(f"{w}\n" for w in warns) +
-                     f"{b.id}: builder brief {path}\n  model {chosen}: {route}\n  launch: {agent}\n  then: review its branch (one fm-reviewer on "
+                     f"{b.id}: builder brief {path}\n  model {chosen}: {route}\n  launch: {agent}"
+                     + (f" (a Bash call: it runs `{extra['runs']}` detached in the lane's own worktree and returns at once; "
+                        "the review pilot starts when the run returns, as for a Claude builder)" if extra else "")
+                     + "\n  then: review its branch (one fm-reviewer on "
                      # T-5411: kith merged, focused, re-ran and finished 298 lanes one at a time from this line, 1.2-1.9 h
                      # median from audit to merge; the land trains every finished lane at once and closes each itself
                      f"git diff HEAD...<branch>) and record the audit (fm task audit {b.id}), then land it with the other "
@@ -4928,6 +4974,150 @@ def builder_brief(p, b, args, resume_branch=None, after="", stacked=None):
                      f"closed from its builder's report lines); only when it is the one finished lane: fm lane merge {b.id}, "
                      f"fm focus {b.id} here, re-run its criteria, fm task finish {b.id}; fm lane rm {b.id} takes it back "
                      f"(skills/intake/references/delegate.md)\n  not launching it? fm lane rm {b.id} frees the slot")
+
+
+LOCAL_WALL_S = 30 * 60  # T-5884: a local builder's run: sampo code's own --deadline; the wrapper cuts it 2 min after
+
+
+def local_profile(p):
+    """T-5884: the JARVIS profile a local builder runs on: the first own, non-loopback generative profile whose key is set
+    and whose server answers (moonscale's probe, 2 s), or None: no profile, a key unset, the server down, or a
+    sensitive project (its code never leaves the machine, and a model is never run on this one). The key is never read
+    out here: the probe sends it, nothing prints it."""
+    from urllib.parse import urlsplit
+    from sampo import models, moonscale
+    try:
+        if c.read_meta(p).get("sensitive"):
+            return None
+        for prof in moonscale._generative(False):
+            host = urlsplit(prof.get("base_url") or "").hostname or ""
+            if prof.get("own") and prof.get("name") and not models.is_loopback(host) and moonscale._usable(prof, False):
+                return str(prof["name"])
+    except (models.ModelError, OSError, ValueError):
+        pass
+    return None
+
+
+def local_argv(name, tid):
+    """T-5884: the headless run as the brief shows it (`sampo` stands for this plugin's own bin): sampo code works the
+    task's own plan on profile `name`, and --lane has it commit with its close lines as trailers and stop (the review
+    and the land close the task, as for a Claude builder; fm task finish is refused to a briefed builder)."""
+    return ["sampo", "code", "--task", tid, "--model", name, "--lane", "--plain", "--restart", "--deadline", str(LOCAL_WALL_S)]
+
+
+def _local_brief(p, b):
+    """T-5884: the profile name on a local builder's brief; PolicyError when the brief is not one or is closed."""
+    name = str(b.meta.get("builder_local") or "")
+    if b.meta.get("builder_model") != LOCAL or not name:
+        raise c.PolicyError(f"{b.id} is not a local builder's lane (its builder is "
+                            f"{b.meta.get('builder_model') or 'not briefed'}): sampo lane brief {b.id} --model local")
+    if b.status in c.CLOSED:
+        raise c.PolicyError(f"{b.id} is {b.status}: there is no builder to run")
+    return name
+
+
+def local_launch(p, b):
+    """T-5884: start the local builder's run detached: its pid. Refused when the brief is not a local one, a run of it is
+    alive, or the endpoint went down since the brief (the message names the re-brief for a Claude builder)."""
+    from sampo import bus
+    _local_brief(p, b)
+    if bus.proc_state(b.meta.get("builder_proc")) == "alive":
+        raise c.PolicyError(f"{b.id}'s local builder is already running (sampo lane list shows it)")
+    if not local_profile(p):
+        raise c.PolicyError(f"the JARVIS endpoint for {b.id}'s local builder does not answer: sampo lane brief {b.id} "
+                            f"--model sonnet briefs it for a Claude builder instead")
+    return _local_spawn(p, b)
+
+
+def _local_spawn(p, b):
+    """T-5884: `sampo lane local ID --foreground` in its own session, from the main checkout, its output in
+    local-ID.log under the project's state: the pid."""
+    main = c.main_worktree(p.root) or p.root
+    argv = c.nice_argv([sys.executable, os.path.join(c.PLUGIN_ROOT, "bin", "sampo"), "lane", "local", b.id, "--foreground"])
+    with open(os.path.join(p.dir, f"local-{b.id}.log"), "ab") as log:
+        proc = subprocess.Popen(argv, cwd=main, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                                start_new_session=True)
+    from sampo import bus, cli
+    if info := bus._proc(proc.pid):  # stamped before this returns, so a second launch finds the run alive
+        cli.mutate(p, b.id, lambda x: x.meta.__setitem__("builder_proc", f"{bus.host_id()}|{proc.pid}|{info[1]}"),
+                   "local_spawn", {"pid": proc.pid})
+    return proc.pid
+
+
+def _local_code(p, b, lane, name):
+    """T-5884: one `sampo code --task` run in the lane's own worktree, its process group killed LOCAL_WALL_S plus two
+    minutes in: the exit status (124 when cut). Its output goes where this process's does."""
+    argv = local_argv(name, b.id)
+    argv = [sys.executable, os.path.join(c.PLUGIN_ROOT, "bin", "sampo"), *argv[1:]]
+    from sampo import pilotsig
+    proc = subprocess.Popen(argv, cwd=lane, stdin=subprocess.DEVNULL, start_new_session=True)
+    old = None
+
+    def stopped(signum, frame):
+        raise KeyboardInterrupt  # the finally below kills the child's group
+    try:  # a stopped wrapper (SIGTERM) takes its child's group with it
+        old = signal.signal(signal.SIGTERM, stopped)
+    except ValueError:  # not the main thread: no handler
+        pass
+    try:
+        return proc.wait(timeout=LOCAL_WALL_S + 120)
+    except subprocess.TimeoutExpired:
+        pilotsig._kill_group(proc)  # guarded: only a real pid above 1 is signalled (T-5899)
+        proc.wait()
+        return 124
+    finally:
+        if proc.poll() is None:  # the wait was interrupted: the run must not outlive its wrapper
+            pilotsig._kill_group(proc)
+        if old is not None:
+            signal.signal(signal.SIGTERM, old)
+
+
+def local_run(p, b):
+    """T-5884: the local builder, here and now: the lane is made when there is none, `sampo code --task` runs in it, and a
+    run that ends 0 with a commit past the main checkout's tip returns as a Claude builder does (a headless run has no
+    SubagentStop hook): the commit's close lines are stored as the brief's Close fields (never over ones already
+    there), builder_returned is stamped, and the review pilot starts. A run with no commit, or that failed, is logged
+    (local builder stopped: why) and left for sampo lane recover or rm. The run's answer is the exit status."""
+    from sampo import bus, cli, pilotsig
+    name = _local_brief(p, b)
+    main = c.main_worktree(p.root) or p.root
+    if c.panicked():
+        raise c.PolicyError(c.PAUSED)
+    lane = str(b.meta.get("lane") or "")
+    if not lane or not os.path.isdir(lane):
+        lane = _new_lane(p, b, main, f"foreman/{b.id}")[0]
+    info = bus._proc(os.getpid())
+
+    def start(x):
+        x.meta.pop("builder_returned", None)
+        if info:  # this wrapper is the builder: its end tells sampo lane list the builder stopped
+            x.meta["builder_proc"] = f"{bus.host_id()}|{os.getpid()}|{info[1]}"
+        x.append_log(f"local builder started: sampo code on {name} in {lane}")
+    cli.mutate(p, b.id, start, "local_start", {"profile": name})
+    try:
+        rc = _local_code(p, b, lane, name)
+        why = "" if rc == 0 else f"sampo code ended {'cut after ' + str(LOCAL_WALL_S + 120) + ' s' if rc == 124 else rc}"
+    except OSError as e:
+        rc, why = 1, f"sampo code could not start: {c.fit(str(e), 200)}"
+    head = c._git(main, "rev-parse", "HEAD", timeout=10).strip()
+    made = bool(head) and c._git(lane, "rev-list", "--count", "HEAD", "--not", head, timeout=10).strip() not in ("", "0")
+    if rc == 0 and not made:
+        why = "sampo code ended 0 but the lane has no commit of its own"
+    if why or not made:
+        cli.mutate(p, b.id, lambda x: x.append_log(f"local builder stopped: {why or 'no commit'}"), "local_stop",
+                   {"rc": rc})
+        return rc or 1
+
+    def back(x):
+        got = lane_trailers(lane, x.meta.get("base"), x.id)
+        if got and not x.section(CLOSE_FIELDS).strip():
+            x.set_section(CLOSE_FIELDS, close_text(got))
+        x.meta["builder_returned"] = c.now()
+        x.append_log("local builder returned: " + (f"close fields from the commit: {', '.join(k for k in CLOSE_KEYS if got.get(k))}"
+                                                   if got else "no close lines on the commit (the land reads them there)"))
+    cli.mutate(p, b.id, back, "local_return", {"profile": name})
+    pilotsig.spawn(p, b.id)  # as the SubagentStop hook starts it for a Claude builder
+    return 0
 
 
 # what a build or test run leaves and rebuilds, never anyone's work (T-0377: python's; T-0408: the test, lint, package

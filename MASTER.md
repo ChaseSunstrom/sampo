@@ -448,7 +448,7 @@ The notes below are grouped; each group folds. `sampo outline MASTER.md` lists t
 |---|---|---|
 | [Dev loop and install](#dev-loop-and-install) | Edit, reload, test; the shell, time travel, MCP, plugin workflows, integrations, install and health checks, plugins, Claude Code and portability notes | 15 |
 | [Tasks, batches and backlog](#tasks-batches-and-backlog) | Batches, capture nudges, inbox and backlog tools, waits, many ids at once, tours, away and todo, queue preview and ranking | 15 |
-| [Lanes and builders](#lanes-and-builders) | Linked worktrees, defect classes, merge-prone files, changed text still found elsewhere, stalled and dropped builders, claims, racing builders, cut-off lane repair, overlapping lanes, accepted lanes checked as one batched candidate (T-4528) | 10 |
+| [Lanes and builders](#lanes-and-builders) | Linked worktrees, defect classes, merge-prone files, changed text still found elsewhere, stalled and dropped builders, claims, racing builders, cut-off lane repair, overlapping lanes, accepted lanes checked as one batched candidate (T-4528), local builders (T-5884) | 11 |
 | [Evidence, gates and verification](#evidence-gates-and-verification) | Evidence, gate runs and reuse, affected tests, close gates, hunk proofs, audits, second reads, test claims, print-mode holds, recurring failures, run records, known red first | 21 |
 | [Guard and security](#guard-and-security) | The guard's reads, scripts, oracle, mutation and ratchets; credentials, stored commands, install checks, approvals, outbound, sandbox | 19 |
 | [Hooks, notes and steering](#hooks-notes-and-steering) | What the hooks say and when: steering as data, session map, tripwires, write validators, outside text, breakers, postures | 11 |
@@ -519,6 +519,7 @@ Each note below is one index line: the first words of its full note and a link t
 - Stalled builders (T-1156, `fmlanes.stalled`): a lane whose builder process is… [→ ops-1](docs/map/ops-1.md)
 - Lanes (T-0134): a linked git worktree of a registered repo is a lane of its… [→ ops-1](docs/map/ops-1.md)
 - Lane claims (T-1068, `fmbus`): `sampo lease take FILE[::SYM]...` refuses the… [→ ops-1](docs/map/ops-1.md)
+- Local builders (T-5884, `fmlanes.local_profile/local_launch/local_run`): `sampo lane brief ID --model local`… [→ ops-1](docs/map/ops-1.md)
 - Racing builders (T-1069, `fmlanes.race/score/pick`): `sampo lane race T` (S/M… [→ ops-1](docs/map/ops-1.md)
 
 ### Evidence, gates and verification

@@ -10520,7 +10520,7 @@ def _drive(run, profile):
             run.phase(f"fix:{rounds}", model, text + ", then call done.")
     _keep_end(run, profile)  # T-4425
     _proof_end(run)  # T-4590
-    _finish(run, profile)
+    (_finish_lane if getattr(run.args, "lane", False) else _finish)(run, profile)
 
 
 def _who(run, profile):
@@ -10590,6 +10590,37 @@ def _finish_args(run, a, lenses, own):
     if not run.no_commit:
         out += ["--commit", f"{run.plan['title']} ({run.tid})"]
     return out
+
+
+def _finish_lane(run, profile):
+    """T-5884: --lane, a briefed builder's lane: the harness-run verify is green, so the work is committed with its close
+    lines as trailers (the commit's CHANGELOG, TITLE, DOCS, LESSON and NUMBERS are what the land reads, as it reads a
+    Claude builder's) and the run stops. It never runs `fm task finish`, which a lane refuses a builder: the review
+    records the audit and the land closes the task."""
+    run.leave_out_built()
+    title = " ".join(str(run.plan["title"]).split())[:100].rstrip(" .") or run.tid
+    from sampo import lanes
+    # a model's stray key or env file is never committed: it stays in the tree, as lanes.resume holds one back
+    paths = sorted(f for f in _dirty(run.root)
+                   if not core.ARTEFACT.search(f) and not lanes._SECRETISH.search(os.path.basename(f)))
+    if not paths:
+        raise Blocked("fm code: --lane: every check passed but the run changed no file worth committing, so there is nothing to commit")
+    if (r := _git(run.root, "add", "--", *paths)).returncode:
+        raise Blocked(f"fm code: --lane: git add failed: {_one_line(os.fsdecode(r.stderr), 300)}")
+    docs = [f for f in paths if f.lower().endswith(DOC_EXT)]
+    docs = (", ".join(docs[:5]) + (f" (+{len(docs) - 5} more)" if len(docs) > 5 else "")) if docs else \
+        "none: local run, no document changed; the review checks"
+    msg = (f"{title} ({run.tid})\n\nBuilt headless by fm code on {_who(run, None if run.worker else profile)}; the "
+           f"harness ran every criterion's check green.\n\n"
+           f"CHANGELOG: {title} ({run.tid}).\nTITLE: {title} ({run.tid})\n"
+           f"DOCS: {docs}\n"
+           "LESSON: none: local run, not measured\n"
+           "NUMBERS: none: local run, not measured\n")
+    if (r := _git(run.root, "commit", "-q", "-m", msg)).returncode:
+        raise Blocked(f"fm code: --lane: git commit failed: {_one_line(os.fsdecode(r.stderr or r.stdout), 300)}")
+    run.log(kind="end", status="done")
+    run.emit("closed", f"{run.tid} committed in its lane ({len(paths)} files; the review and the land close it)",
+             task=run.tid, tokens=run.tokens, unproven=[], usd=None if run.usd is None else round(run.usd, 4))
 
 
 def _finish(run, profile):
