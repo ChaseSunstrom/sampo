@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- Three category skills (skill-writing, problem-solving, coverage) load once a session on prompt words, at the plan stage of an M or L task, and on a step's second failed evidence run (T-3855).
 - Foreman's skill listing is back under its 2600-character cap, and MASTER.md lists each lib module with one bullet again (T-5545).
 - callcards.remeasure pairs before/after bench rows per failure class and marks it closed only at p<0.05 over at least 30 scenarios, calling smaller samples inconclusive (T-3486).
 - `sampo seams FILE` ranks the cleanest split clusters of a big module by recent edits, and louhi's exam lock moved out into `louhi_lock` behind the same names (T-3290).
