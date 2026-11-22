@@ -7987,7 +7987,7 @@ def _close_fields(pl):
     fields already recorded (a note in the Log instead): a scout echoing a README can't write them."""
     from sampo import lanes as slanes
     who = str(pl.get("agent_type") or "")
-    if not re.fullmatch(rf"(?:[\w-]+:)?(?:{'|'.join(c.EDITING_AGENTS)}|general-purpose|claude)", who):
+    if not re.fullmatch(r"(?:[\w-]+:)?(?:fm-builder|general-purpose|claude)", who):  # T-5774: not the fixer or the resolver
         return
     got = slanes.close_fields(pl.get("last_assistant_message"), tail=True)
     if not got.get("id") or not slanes.close_text(got):
