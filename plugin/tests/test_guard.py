@@ -315,6 +315,10 @@ class KnownVars(GuardCase):
         "exam --only": "an fnmatch glob over file paths",
         "prove --check": "an SQL invariant query run against the data store, never a shell line (--run is read)",
         "readme --url": "where the already running app answers, fetched, never run",
+        "recover --release": "a lane id; its help says the lane's commands were read, and it writes a loss_released ledger "
+                             "line (T-5903), never a shell line",
+        "recover --why": "free text for the loss_released ledger line (what the main thread read and changed), recorded "
+                         "and never run",
         "replay --cmd": "the one command the guard judges; its help says never run",
         "replay --cwd": "the folder the judged command would run in",
         "doctor --wrong": "a command filed as a labelled guard case (should allow|block, so a dangerous one is the point): "
