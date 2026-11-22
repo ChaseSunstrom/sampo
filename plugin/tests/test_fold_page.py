@@ -202,6 +202,13 @@ class FoldControlText(FoldBase):
             json.dump(d, f)
         self.assertNotIn("\x1b", self.fm("fold", "page").stdout)
 
+    def test_evidence_is_cleaned_in_the_set_echo_too(self):
+        a = self.new("Alpha thing")
+        out = self.fm("fold", "set", a, "built", "--evidence", "src/a\x1b[2Jb.py:3").stdout
+        self.assertNotIn("\x1b", out)
+        self.assertIn("built", out)
+        self.assertNotIn("\x1b", self.ledger()["rows"][a]["evidence"])
+
 
 class FoldCheck(FoldBase):
     def test_check_without_its_module_says_not_built(self):

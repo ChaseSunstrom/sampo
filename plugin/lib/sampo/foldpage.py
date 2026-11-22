@@ -89,7 +89,7 @@ def set_verdict(p, tid, verdict, to="", evidence="", why=""):
             raise cli.UsageError(f"--to {to}: no such task in this project")
     elif verdict in ("joined", "merged"):
         raise cli.UsageError(f"a verdict of {verdict} needs --to ID: the task it went into")
-    evidence = str(evidence or "").strip()
+    evidence = c.plain(str(evidence or "")).strip()  # cleaned as --why is: the set echo prints it
     if evidence and not _EVIDENCE.match(evidence):
         raise cli.UsageError(f"--evidence {evidence!r} is not path:line (or path:first-last)")
     if verdict == "built" and not evidence:
