@@ -2927,7 +2927,7 @@ def cargo_drop_parent_config(parent):
 
 
 def run_command(root, cmd, timeout=600, env=None, stdin=None, priority=False, niced=False, run_id=None, watch=None,
-                watch_every=30.0, low=False, argv0=None, pipefail=False):
+                watch_every=30.0, low=False, argv0=None, pipefail=False, origin=None):
     """Run a verification command (bash -c, in the repo root) for evidence: (exit code, redacted output). pipefail
     (T-3383): bash -o pipefail, set only where a user's --run string is recorded as evidence, so `<cmd> | tail` fails
     with the command; other callers keep a pipe's last-stage exit, as a configured gate like `grep x | head` expects.
@@ -2937,7 +2937,10 @@ def run_command(root, cmd, timeout=600, env=None, stdin=None, priority=False, ni
     slots ahead of lane runs (T-3614), unless SAMPO_SLOT_PRIORITY is already set (=0 opts out). niced: the command
     starts at nice 10 (T-4197), after normalize_verify has read it. run_id: stamped on the record its tests/run.py
     leaves (T-4268), so the caller reads that run's record and no other. low: its tests/run.py leaves freed slots to a
-    waiting run for a bounded time (T-4570: the post-merge verify, which no one waits on), unless it is a priority run."""
+    waiting run for a bounded time (T-4570: the post-merge verify, which no one waits on), unless it is a priority run.
+    origin (T-6006): who starts the command (land, verify, ship, probe): its tests/run.py meters its CPU under it, and
+    the land alone takes a reuse of classes green at the same code from it (run.py's REUSING; the verify has its own
+    SAMPO_CACHE_FULL, the ship's run stays full); None leaves the run a builder's."""
     stdin = subprocess.DEVNULL if stdin is None else stdin
     root, cmd, _ = normalize_verify(root, cmd)  # T-3411
     if root and os.path.isdir(root):
@@ -2954,6 +2957,8 @@ def run_command(root, cmd, timeout=600, env=None, stdin=None, priority=False, ni
         env = {**env, SLOT_LOW: "1"}
     if run_id:
         env = {**env, RUN_ID_ENV: str(run_id)}
+    if origin:
+        env = {**env, ORIGIN_ENV: str(origin)}
     if timeout:  # T-3338: tests/run.py ends its own run under the timeout, naming what was slow, not killed unnamed
         env = {**env, "FM_RUN_DEADLINE": str(max(1, int(timeout) - min(30, int(timeout) // 10)))}
     gate = env.get(CARGO_VAR)
@@ -7814,6 +7819,7 @@ def class_lines(names, indent="    ", n=50):
 
 
 RUN_ID_ENV = "SAMPO_TEST_RUN_ID"  # T-4268: the id a gate's tests/run.py stamps on its record (run.py pops it at start)
+ORIGIN_ENV = "SAMPO_RUN_ORIGIN"  # T-6006: who started a gate's tests/run.py (land, verify, ship, probe): its CPU log and reuse read it
 _RUN_PY = lazy(r"(?<![\w.-])tests/run\.py(?![\w.])")  # not `pytest tests/test_run.py`; lazy: LazyPatterns (T-2020)
 
 

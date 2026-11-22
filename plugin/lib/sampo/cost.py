@@ -1632,9 +1632,96 @@ def _per_lane(p, args, cli):
     return cli.out(args, data, text)
 
 
+CPU_ORIGINS = ("builder", "land", "verify", "ship", "probe", "other")  # tests/run.py's ORIGINS, and what none of them is
+
+
+def _cpu_log_path(common):
+    """The repo's CPU log: tests/run.py's own cpu_log_path (one place hashes the repo and names the folder), loaded from
+    the plugin's file; None when that file can't be loaded."""
+    import importlib.util
+    try:
+        spec = importlib.util.spec_from_file_location("sampo_tests_run", os.path.join(c.PLUGIN_ROOT, "tests", "run.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod.cpu_log_path(common)
+    except Exception:  # a plugin without its tests folder has no log to read
+        return None
+
+
+def cpu_by_origin(p, days, now=None):
+    """T-6006: the CPU seconds the test runs of the last `days` days cost, by who started them: {days, landed,
+    origins: {origin: {runs, cpu_s, saved_cpu_s, reused, per_lane_cpu_s}}, cpu_s, per_lane_cpu_s, saved_cpu_s, source}.
+    Each tests/run.py appends a row to the repo's CPU log (cpu_s: its classes' and its own CPU time, from the kernel's
+    rusage; saved_cpu_s: what the classes it reused cost when they ran). `landed` is the lanes that merged in the window
+    (trunk `Merge T-X` commits, as per_lane counts them; the ledger's when git can't read the log); per_lane_cpu_s is
+    the total over it, None while none landed. A torn or foreign line is skipped; an unknown origin counts as other."""
+    now = time.time() if now is None else now
+    root = c.main_worktree(p.root) or p.root
+    r = c._git(root, "rev-parse", "--path-format=absolute", "--git-common-dir", timeout=20, proc=True)
+    common = os.path.realpath(os.path.join(root, r.stdout.strip())) if r.returncode == 0 and r.stdout.strip() else None
+    rows = []
+    log = _cpu_log_path(common) if common else None
+    try:
+        with open(log or os.devnull, "rb") as f:
+            for raw in f:
+                try:
+                    row = json.loads(raw)
+                except ValueError:
+                    continue
+                if isinstance(row, dict) and isinstance(row.get("t"), (int, float)) and now - days * 86400 <= row["t"] <= now + 3600 \
+                        and isinstance(row.get("cpu_s"), (int, float)):
+                    rows.append(row)
+    except OSError:
+        pass
+    floor = _since(days)
+    trunk = _trunk_merges(root, floor)
+    if trunk is None:
+        events = [e for e in c.ledger_events(p, ("lane_landed",), since=floor) if isinstance(e, dict)]
+        landed, source = len({t for e in events for t in _tids(e.get("task"))}), "ledger"
+    else:
+        landed, source = len({t for tasks, _ in trunk[0] for t in tasks}), "git"
+    origins = {}
+    for row in rows:
+        o = row.get("origin") if row.get("origin") in CPU_ORIGINS else "other"
+        got = origins.setdefault(o, {"runs": 0, "cpu_s": 0.0, "saved_cpu_s": 0.0, "reused": 0})
+        got["runs"] += 1
+        got["cpu_s"] += row["cpu_s"]
+        got["saved_cpu_s"] += row.get("saved_cpu_s") if isinstance(row.get("saved_cpu_s"), (int, float)) else 0.0
+        got["reused"] += row.get("reused") if isinstance(row.get("reused"), int) else 0
+    per = (lambda s: round(s / landed, 1)) if landed else (lambda s: None)  # noqa: E731
+    for got in origins.values():
+        got.update(cpu_s=round(got["cpu_s"], 1), saved_cpu_s=round(got["saved_cpu_s"], 1), per_lane_cpu_s=per(got["cpu_s"]))
+    total = sum(g["cpu_s"] for g in origins.values())
+    return {"days": days, "landed": landed, "source": source, "runs": len(rows),
+            "origins": {o: origins[o] for o in CPU_ORIGINS if o in origins},
+            "cpu_s": round(total, 1), "per_lane_cpu_s": per(total),
+            "saved_cpu_s": round(sum(g["saved_cpu_s"] for g in origins.values()), 1)}
+
+
+def _cpu_text(r):
+    if not r["runs"]:
+        return (f"No CPU to show: no test run was metered in the last {r['days']:g} day(s) (tests/run.py logs each run's "
+                "CPU once it runs from this version on).")
+    lines = [f"Test CPU in the last {r['days']} day(s): {r['cpu_s']:.1f} CPU s over {r['runs']} run(s), "
+             + (f"{r['per_lane_cpu_s']:.1f} CPU s per landed lane ({r['landed']} landed, {r['source']})" if r["landed"]
+                else "no lane landed in the window, so no per landed lane figure")]
+    for o, g in r["origins"].items():
+        lines.append(f"  {o:<8}{g['cpu_s']:>9.1f} CPU s  {g['runs']} run(s)"
+                     + (f"  {g['per_lane_cpu_s']:.1f} per landed lane" if g["per_lane_cpu_s"] is not None else "")
+                     + (f"  reused {g['reused']} classes (saved {g['saved_cpu_s']:.0f} CPU s)" if g["reused"] else ""))
+    return "\n".join(lines)
+
+
+def _cpu(args, p, cli):
+    r = cpu_by_origin(p, args.days)
+    return cli.out(args, r, _cpu_text(r))
+
+
 def cmd_cost(args):
     from sampo import cli
     p = cli.resolve(args)
+    if getattr(args, "cpu", False):  # T-6006
+        return _cpu(args, p, cli)
     if any(getattr(args, k, False) for k in ("per_lane", "save_baseline", "compare_baseline")):  # T-5950
         args.per_lane = True  # the baseline flags imply it (the help says so)
         return _per_lane(p, args, cli)

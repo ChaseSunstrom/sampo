@@ -741,6 +741,7 @@ def _run_test(p, wt, base, env, test, log, run_id=None):
     affected stage's), so a refusal reads the failing tests there."""
     _affected_first(p, wt, base, env)  # T-2323: a red linked test stops the ship in minutes, not after the suite
     env = {**env, c.RUN_ID_ENV: run_id} if run_id else env
+    env = {**env, c.ORIGIN_ENV: "ship"}  # T-6006: the `sampo check` it runs is metered as the ship's; its run stays full (no reuse)
     with open(log, "wb") as out, open(log, "rb") as rd:
         try:
             proc = subprocess.Popen(c.nice_argv(test), cwd=wt, stdin=subprocess.DEVNULL, env=env, stdout=out,
@@ -788,7 +789,7 @@ def _rerun_red(wt, out, code, env, said=None):
         return None
     c.wait_for_load("sampo ship", out=sys.stdout)
     print(f"{', '.join(classes)} failed in the full run; rerunning alone", flush=True)
-    if c.run_command(wt, again, _rerun_timeout(), env=env, niced=True)[0]:  # T-4197
+    if c.run_command(wt, again, _rerun_timeout(), env=env, niced=True, origin="ship")[0]:  # T-4197, T-5985
         said.append("the rerun alone also failed")
         return None
     print(f"flaky (red in the full run, green alone): {', '.join(classes)}", flush=True)
@@ -1084,7 +1085,7 @@ def _affected_first(p, wt, base, env, only=None):
     run_env, venv = cli._venv_env(wt, run_env, cmd)  # T-4150: the project's own interpreter, as the close runs it
     if venv:
         print(cli._venv_note(venv), flush=True)
-    code, out = c.run_command(wt, cmd, limit, niced=True, env=run_env)  # T-4197
+    code, out = c.run_command(wt, cmd, limit, niced=True, env=run_env, origin="ship")  # T-4197
     truly = []  # the killed classes far over their recorded time
     if code == 124 and not _TEST_RED.search(out) and _killed(out):
         # T-4788: cut at its limit with classes running and no test failed: said from the run's own totals. Only a class
@@ -1100,7 +1101,8 @@ def _affected_first(p, wt, base, env, only=None):
         print(f"{SLOTS_CUT} ({len(names)} classes not run): running them once more", flush=True)
         from sampo import lanes
         c.wait_for_load("sampo ship", out=sys.stdout)
-        code, out = c.run_command(wt, lanes.pm_rerun_cmd(wt, names) or cmd, 900, niced=True, env=run_env)
+        code, out = c.run_command(wt, lanes.pm_rerun_cmd(wt, names) or cmd, 900, niced=True, env=run_env,
+                                    origin="ship")
         if again := _cut_only(code, out):
             print(out[-4000:], flush=True)
             _err(f"the affected tests {SLOTS_CUT} ({len(again)} classes not run), again after one retry; no test failed; "

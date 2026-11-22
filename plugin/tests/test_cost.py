@@ -804,6 +804,80 @@ class PerLane(HookCase):
         self.assertIn("0 lane(s) landed", proc.stdout)
 
 
+class CpuOrigin(HookCase):
+    """T-6006: `sampo cost --cpu` prints the CPU-seconds the test runs of the window cost, by the origin that started
+    them (builder, land gate, behind verify, ship), per landed lane; each run.py appends one row to the repo's CPU log."""
+
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        self.cache = os.path.join(self.tmp, "cache")
+        self.now = datetime.datetime.now(datetime.timezone.utc).timestamp()
+
+    def common(self):
+        out = subprocess.run(["git", "-C", self.repo, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                             check=True, capture_output=True, text=True).stdout.strip()
+        return os.path.realpath(out)
+
+    def log(self, origin, cpu, ago_h=1.0, saved=0.0, reused=0):
+        import run
+        with unittest.mock.patch.dict(os.environ, {"XDG_CACHE_HOME": self.cache}):
+            run.log_cpu(self.common(), {"t": round(self.now - ago_h * 3600, 3), "origin": origin, "cpu_s": cpu,
+                                        "saved_cpu_s": saved, "reused": reused, "ran": 5, "ok": True})
+
+    def merge(self, subject):
+        subprocess.run(["git", "-C", self.repo, "commit", "-q", "--allow-empty", "-m", subject], check=True)
+
+    def cpu(self, *flags):
+        return self.fm_json("cost", "--cpu", "--days", "1", *flags, env={"XDG_CACHE_HOME": self.cache})
+
+    def test_cpu_seconds_per_landed_lane_by_origin(self):
+        self.merge("Merge T-0001: lane A")
+        self.merge("Merge T-0002: lane B")
+        for origin, cpu in (("builder", 40.0), ("builder", 20.0), ("land", 30.0), ("verify", 60.0), ("ship", 10.0)):
+            self.log(origin, cpu)
+        self.log("verify", 999.0, ago_h=48)  # outside the day: not counted
+        got = self.cpu()
+        self.assertEqual(got["landed"], 2)
+        by = got["origins"]
+        self.assertEqual({k: v["cpu_s"] for k, v in by.items()}, {"builder": 60.0, "land": 30.0, "verify": 60.0, "ship": 10.0})
+        self.assertEqual({k: v["per_lane_cpu_s"] for k, v in by.items()},
+                         {"builder": 30.0, "land": 15.0, "verify": 30.0, "ship": 5.0})
+        self.assertEqual((got["cpu_s"], got["per_lane_cpu_s"], by["builder"]["runs"]), (160.0, 80.0, 2))
+
+    def test_the_text_names_each_origin_and_what_reuse_saved(self):
+        self.merge("Merge T-0001: lane A")
+        self.log("land", 12.0, saved=300.0, reused=40)
+        text = self.fm("cost", "--cpu", "--days", "1", env={"XDG_CACHE_HOME": self.cache}).stdout
+        self.assertIn("per landed lane", text)
+        self.assertRegex(text, r"land\s+12\.0 CPU s")
+        self.assertIn("reused 40 classes", text)
+        self.assertIn("300", text)
+
+    def test_no_log_or_no_landed_lane_is_a_sentence_not_a_traceback(self):
+        proc = self.fm("cost", "--cpu", env={"XDG_CACHE_HOME": self.cache})
+        self.assertNotIn("Traceback", proc.stderr)
+        self.assertIn("no test run was metered", proc.stdout)
+
+    def test_an_unknown_origin_in_a_row_counts_as_other_and_a_torn_line_is_skipped(self):
+        self.merge("Merge T-0001: lane A")
+        self.log("martian", 5.0)
+        with open(os.path.join(self.cache, "sampo", "run-cache", os.listdir(os.path.join(self.cache, "sampo", "run-cache"))[0]),
+                  "a") as f:
+            f.write('{"t": 1, "origin"\n')
+        got = self.cpu()
+        self.assertEqual(got["origins"]["other"]["cpu_s"], 5.0)
+
+    def test_run_command_stamps_the_origin_a_run_py_reads(self):
+        from sampo import core as c
+        for origin in ("land", "verify", "ship"):
+            code, out = c.run_command(self.repo, "echo o=$SAMPO_RUN_ORIGIN", 30, origin=origin)
+            self.assertEqual(code, 0)
+            self.assertIn(f"o={origin}", out)
+        code, out = c.run_command(self.repo, "echo o=[$SAMPO_RUN_ORIGIN]", 30, env={"PATH": os.environ["PATH"]})
+        self.assertIn("o=[]", out, "no origin given, none set: the runner calls it a builder's")
+
+
 if __name__ == "__main__":
     import unittest
     unittest.main()

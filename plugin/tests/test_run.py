@@ -1,11 +1,13 @@
 """T-0808: run.py takes test module names positionally, so fm check affected can hand it {names}."""
 import atexit
 import contextlib
+import io
 import os
 import re
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -906,3 +908,285 @@ class ChildEnv(unittest.TestCase):
                 else:
                     os.environ[k] = v
         self.assertEqual({k for k in keep if k in env}, {"FOREMAN_HOME", "PIP_QUIET"})
+
+
+ORIGIN_USE = "import os, sys, unittest\nsys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'lib'))\n"
+ORIGIN_ONE = ORIGIN_USE + "import mod_a\nclass One(unittest.TestCase):\n    def test_a(self):\n        self.assertTrue(mod_a.A)\n"
+ORIGIN_TWO = ORIGIN_USE + "import mod_b\nclass Two(unittest.TestCase):\n    def test_a(self):\n        self.assertTrue(mod_b.B)\n"
+ORIGIN_THREE = ORIGIN_USE + "class Three(unittest.TestCase):\n    def test_a(self):\n        self.assertFalse(os.path.exists({flag!r}))\n"
+REUSED = re.compile(r"run\.py: reused from a green run at the same code \((\w+)\): ([\w.]+(?:, [\w.]+)*)(?:, \+(\d+) more)?")
+
+
+class ClosureReuse(unittest.TestCase):
+    """T-6006: a class run on the builder's tree is reused by the land gate, the behind verify and the ship while its
+    import closure (what it read) is unchanged: the second run is skipped and named on stderr, tagged with its origin.
+    A class whose closure changed always runs, and every site that runs the suite names its origin or is listed."""
+
+    def repo(self, sample=0.0, three=False):
+        """A scratch repo (run.py, runcover.py, two classes with a library module each; `three` adds a class that fails
+        while a flag file outside the repo exists); go(*names, origin=, cwd=, **env) runs run.py there: (exit code,
+        stderr). The cache is the scratch's own, shared by its worktrees. Its run.py has the resample set to `sample`
+        (0: a reuse is never drawn for a rerun, so a test is deterministic)."""
+        import subprocess
+        from test_run_cache import scratch, outer
+        top = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, top, True)
+        d = os.path.join(top, "repo")
+        tests = os.path.join(d, "plugin", "tests")
+        os.makedirs(tests)
+        shutil.copy(os.path.join(run.HERE, "runcover.py"), os.path.join(tests, "runcover.py"))
+        with open(os.path.join(run.HERE, "run.py"), encoding="utf-8") as f:
+            text = f.read()
+        self.assertIn("\nSAMPLE = 0.1 ", text)
+        with open(os.path.join(tests, "run.py"), "w", encoding="utf-8") as f:
+            f.write(text.replace("\nSAMPLE = 0.1 ", f"\nSAMPLE = {sample} ", 1))
+        self.flag = os.path.join(top, "flag")
+        files = {"plugin/lib/mod_a.py": "A = 1\n", "plugin/lib/mod_b.py": "B = 1\n", "README.md": "hi\n",
+                 "plugin/tests/test_one.py": ORIGIN_ONE, "plugin/tests/test_two.py": ORIGIN_TWO}
+        if three:
+            files["plugin/tests/test_three.py"] = ORIGIN_THREE.format(flag=self.flag)
+        scratch(d, files)
+        self.cache = os.path.join(top, "cache")
+        base = outer(XDG_CACHE_HOME=self.cache, FOREMAN_SLOTS="0", FM_TEST_TIMES=os.path.join(top, "t.json"))
+        for k in ("SAMPO_RUN_ORIGIN", "FOREMAN_RUN_ORIGIN"):
+            base.pop(k, None)
+
+        def go(*names, origin=None, cwd=None, **env):
+            e = dict(base, **env)
+            if origin:
+                e["SAMPO_RUN_ORIGIN"] = origin
+            r = subprocess.run([sys.executable, os.path.join(cwd or d, "plugin", "tests", "run.py"), *names],
+                               capture_output=True, text=True, timeout=300, env=e, cwd=cwd or d)
+            return r.returncode, r.stderr
+        return top, d, go
+
+    def commit(self, d, path, text, mode="a"):
+        import subprocess
+        with open(os.path.join(d, path), mode) as f:
+            f.write(text)
+        subprocess.run(["git", "-C", d, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-qam", "edit"],
+                       check=True, capture_output=True)
+
+    def worktree(self, top, d, name="land"):
+        import subprocess
+        wt = os.path.join(top, name)
+        subprocess.run(["git", "-C", d, "worktree", "add", "-q", "-b", name, wt], check=True, capture_output=True)
+        return wt
+
+    def reused(self, go, **kw):
+        """(origin, classes named, stderr) of a run that reused a class (the scratch's resample is 0: always the first)."""
+        code, err = go(**kw)
+        self.assertEqual(code, 0, err)
+        m = REUSED.search(err)
+        self.assertTrue(m, "no class was reused:\n" + err)
+        return m[1], set(m[2].split(", ")), err
+
+    def test_a_class_green_on_the_builders_tree_is_reused_and_named_by_land_and_verify(self):
+        top, d, go = self.repo()
+        self.assertEqual(go("test_one", "test_two")[0], 0)  # the builder's run: the classes' closures are recorded
+        wt = self.worktree(top, d)  # the land's scratch tree: another folder of the same repo
+        self.commit(wt, "README.md", "more\n")  # main moved on by a file no class reads
+        for origin, env in (("land", {}), ("verify", {"SAMPO_CACHE_FULL": "1"})):
+            with self.subTest(origin=origin):
+                got, names, err = self.reused(go, origin=origin, cwd=wt, **env)
+                self.assertEqual(got, origin)
+                self.assertTrue(names and all(n.endswith((".One", ".Two")) for n in names), names)
+                self.assertRegex(err, rf"skipped {len(names)} classes green at the same code")
+
+    def test_a_class_whose_closure_changed_runs_and_is_never_reused(self):
+        top, d, go = self.repo()
+        go("test_one", "test_two")
+        wt = self.worktree(top, d)
+        self.commit(wt, "plugin/lib/mod_b.py", "B = 1\nedited = 1\n", mode="w")  # only test_two's closure moved
+        code, err = go(origin="land", cwd=wt)
+        self.assertEqual(code, 0, err)
+        m = REUSED.search(err)
+        self.assertFalse(m and any(n.endswith(".Two") for n in m[2].split(", ")), "the changed class ran:\n" + err)
+        self.assertNotRegex(err, r"skipped 2 classes", err)
+
+    def test_a_class_a_change_turned_red_fails_the_land_and_the_ship_whatever_the_cache_holds(self):
+        top, d, go = self.repo()
+        go("test_one", "test_two")
+        wt = self.worktree(top, d)
+        self.commit(wt, "plugin/lib/mod_b.py", "B = 0\n", mode="w")  # test_two asserts mod_b.B
+        for origin, env in (("land", {}), ("verify", {"SAMPO_CACHE_FULL": "1"}), ("ship", {})):
+            for _ in range(2):  # the second run finds a red record, not a green one
+                code, err = go(origin=origin, cwd=wt, **env)
+                self.assertNotEqual(code, 0, origin + "\n" + err)
+                m = REUSED.search(err)
+                self.assertFalse(m and any(n.endswith(".Two") for n in m[2].split(", ")), err)
+
+    def test_a_class_red_at_these_inputs_after_its_green_runs_and_is_never_reused(self):
+        """T-6006 review: green at a digest, then red at the same digest (an input outside the closure moved: a flag file
+        the class checks): the cache still holds the green, the run records hold the red. Neither the land nor the
+        verify's full gate may take the old green."""
+        top, d, go = self.repo(three=True)
+        self.assertEqual(go("test_three")[0], 0)  # green, cached at its digest
+        self.assertEqual(go("test_three", origin="land")[0], 0)  # and the land reuses it
+        open(self.flag, "w").close()
+        code, err = go()  # a plain full run runs every class: red at the same digest; the green record stays
+        self.assertNotEqual(code, 0, err)
+        for origin, env in (("land", {}), ("verify", {"SAMPO_CACHE_FULL": "1"})):
+            with self.subTest(origin=origin):
+                code, err = go(origin=origin, **env)
+                self.assertNotEqual(code, 0, "the class was taken from its green record:\n" + err)
+                m = REUSED.search(err)
+                self.assertFalse(m and any(n.endswith(".Three") for n in m[2].split(", ")), err)
+
+    def test_the_resample_of_a_reuse_is_the_runs_own_not_the_origins(self):
+        """The land in a lane tree keeps the lane's 0% resample (T-5588); the verify's full gate keeps its 10%: here set to
+        1, so it reruns every class it would reuse."""
+        top, d, go = self.repo(sample=1.0)
+        go("test_one", "test_two")
+        wt = self.worktree(top, d)
+        self.reused(go, origin="land", cwd=wt)
+        _, err = go(origin="verify", cwd=wt, SAMPO_CACHE_FULL="1")
+        self.assertNotIn("reused from a green run", err)
+
+    def test_only_the_land_skips_on_a_full_run_the_ship_and_the_verify_without_its_switch_run_every_class(self):
+        top, d, go = self.repo()
+        go("test_one", "test_two")
+        for kw in ({}, {"origin": "builder"}, {"origin": "verify"}, {"origin": "ship"}, {"origin": "probe"}, {"origin": "martian"}):
+            with self.subTest(**kw):
+                for _ in range(2):
+                    code, err = go(**kw)
+                    self.assertEqual(code, 0, err)
+                    self.assertNotIn("reused from a green run", err, "a plain full run, a probe or an uncached verify runs every class")
+        _, err = go(origin="land", SAMPO_NO_TEST_CACHE="1")
+        self.assertNotIn("reused from a green run", err, "the cache's off switch still wins")
+        _, err = go("test_one", "-k", "test_a", origin="land")
+        self.assertNotIn("reused from a green run", err, "part of a class never skips")
+
+    def test_each_run_records_its_origin_its_cpu_and_the_classes_it_reused_in_the_log_and_the_record(self):
+        import json
+        import subprocess
+        top, d, go = self.repo()
+        go("test_one", "test_two")
+        self.reused(go, origin="land")
+        with mock.patch.dict(os.environ, {"XDG_CACHE_HOME": self.cache}):
+            rows = run.read_cpu_log(os.path.realpath(os.path.join(d, ".git")))
+        self.assertEqual([r["origin"] for r in rows][:2], ["builder", "land"])
+        last = [r for r in rows if r["origin"] == "land"][-1]
+        self.assertGreater(last["cpu_s"], 0)
+        self.assertGreaterEqual(last["reused"], 1)
+        self.assertIn("saved_cpu_s", last)
+        r = subprocess.run([sys.executable, os.path.join(d, "plugin", "tests", "run.py"), "--last", "--json"], cwd=d,
+                           capture_output=True, text=True, env=dict(os.environ, XDG_CACHE_HOME=self.cache))
+        rec = json.loads(r.stdout)
+        self.assertEqual(rec["origin"], "land")
+        self.assertGreater(rec["cpu_s"], 0)
+        self.assertTrue(rec["reused"] and set(rec["reused"]) <= {"test_one.One", "test_two.Two"}, rec)
+
+    def test_the_log_keeps_its_newest_half_when_it_grows_past_its_cap_and_skips_a_torn_line(self):
+        home = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, home, True)
+        common = os.path.join(home, ".git")
+        with mock.patch.dict(os.environ, {"XDG_CACHE_HOME": home}), mock.patch.object(run, "CPU_LOG_MAX", 2000):
+            for i in range(60):
+                run.log_cpu(common, {"t": i, "origin": "land", "cpu_s": 1.0})
+            rows = run.read_cpu_log(common)
+            self.assertLess(len(rows), 60)
+            self.assertEqual(rows[-1]["t"], 59, "the newest row is the one kept")
+            self.assertEqual([r["t"] for r in rows], sorted(r["t"] for r in rows))
+            with open(run.cpu_log_path(common), "a") as f:
+                f.write('{"t": 7, "orig\n')
+            self.assertEqual(len(run.read_cpu_log(common)), len(rows))
+
+    def test_the_cache_prune_takes_a_stale_repos_cpu_log_and_lock_and_keeps_the_fresh_and_held_ones(self):
+        """T-6006: the CPU log and its lock sit in the run-cache folder under the repo's key; a save prunes them by age
+        like the rest, and a lock a holder just touched (the log's trim) is not pruned from under it."""
+        home = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, home, True)
+        old = time.time() - run.PRUNE_S - 3600
+        with mock.patch.dict(os.environ, {"XDG_CACHE_HOME": home}):
+            mine, other = os.path.join(home, "a" * 16 + ".git"), os.path.join(home, "b" * 16 + ".git")
+            stale = run.cpu_log_path(other)
+            run.log_cpu(other, {"t": 1, "origin": "land", "cpu_s": 1.0})
+            fresh = run.cpu_log_path(mine)
+            run.log_cpu(mine, {"t": 2, "origin": "land", "cpu_s": 1.0})
+            self.assertTrue(os.path.exists(stale + ".lock") and os.path.exists(fresh + ".lock"))
+            for q in (stale, stale + ".lock"):
+                os.utime(q, (old, old))
+            os.utime(fresh + ".lock", (old, old))  # a lock a holder touches on taking it is fresh again
+            with run._cache_lock(fresh):
+                target = os.path.join(os.path.dirname(fresh), "c" * 16 + ".json")
+                run.save_cache(target, {}, run.load_cache(target)[0])
+            self.assertFalse(os.path.exists(stale), "a repo's CPU log unused as long as its cache goes with it")
+            self.assertFalse(os.path.exists(stale + ".lock"))
+            self.assertTrue(os.path.exists(fresh) and os.path.exists(fresh + ".lock"))
+
+    def test_a_log_that_cannot_be_written_says_so_in_its_own_words_and_never_fails_the_run(self):
+        home = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, home, True)
+        blocker = os.path.join(home, "file")
+        open(blocker, "w").close()  # a cache folder under a file: nothing can be made there
+        buf = io.StringIO()
+        with mock.patch.dict(os.environ, {"XDG_CACHE_HOME": blocker}), mock.patch("sys.stderr", buf):
+            run.log_cpu(os.path.join(home, ".git"), {"t": 1, "origin": "land", "cpu_s": 1.0})
+        self.assertIn("the CPU log was not written", buf.getvalue())
+        self.assertNotIn("run record", buf.getvalue())
+
+    def test_every_site_that_runs_the_suite_names_its_origin_or_is_listed_with_its_reason(self):
+        """The class sweep: each function of the library that calls run_command is an origin site (every call names the
+        origin, and run.py consults the closure-hash reuse for it) or sits in a list that says why it need not."""
+        import ast
+        import glob
+        lib = os.path.join(os.path.dirname(run.HERE), "lib", "sampo")
+        sites = {("train.py", "_run"): "land", ("train.py", "_shape_run"): "land",  # _run holds the gate's nested run1
+                 ("train.py", "_base_red_once"): "probe", ("train.py", "_union_proof"): "probe", ("train.py", "_probe_once"): "probe",
+                 ("lanes.py", "pm_verify"): "verify", ("lanes.py", "_pm_green_at"): "verify",
+                 ("lanes.py", "_pm_cmd_green_at"): "verify", ("lanes.py", "_pm_judge"): "verify",
+                 ("release.py", "_rerun_red"): "ship", ("release.py", "_affected_first"): "ship"}
+        found, bad = {}, []
+        for path in sorted(glob.glob(os.path.join(lib, "*.py"))):
+            with open(path, encoding="utf-8") as f:
+                tree = ast.parse(f.read())
+            fns = [n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+            fns += [m for n in tree.body if isinstance(n, ast.ClassDef) for m in n.body
+                    if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))]
+            for fn in fns:
+                calls = [n for n in ast.walk(fn) if isinstance(n, ast.Call)
+                         and getattr(n.func, "attr", getattr(n.func, "id", "")) == "run_command"]
+                if not calls:
+                    continue
+                key = (os.path.basename(path), fn.name)
+                found[key] = calls
+                for n in calls if key in sites else ():
+                    got = next((k.value.value for k in n.keywords if k.arg == "origin" and isinstance(k.value, ast.Constant)), None)
+                    if got != sites[key]:
+                        bad.append(f"{key[0]}:{n.lineno} {key[1]}: run_command must pass origin={sites[key]!r}")
+        own = ("the builder's or the accept check's own run in the lane's tree (check, prove, close, resume): the default origin, "
+               "the run that records the classes the others reuse")
+        given = "runs a command a person, a task or a probe gave it (evidence, bench, smoke, docs, repro), not the suite for a lane's land, verify or ship"
+        verify = "the verify's side runs (a failing class on base, a cross check): they name classes and run with a name list, which reuses on its own"
+        listed = {
+            own: {("cli.py", f) for f in ("_close_affected", "_cmd_check", "_check_affected", "_task_finish", "task_prove",
+                                           "task_prove_hunks", "task_prove_same", "_run_at", "_repeat_runs", "cmd_resume",
+                                           "_check_lock", "cmd_sentinel", "cmd_quiet", "_changelog_reads_clean")},
+            verify: {("lanes.py", f) for f in ("_fails_on_base", "_failing", "_cross", "_verify")},
+            given: {("cli.py", f) for f in ("task_hypo", "task_assume", "task_packet", "_bench")}
+            | {(f, g) for f, g in LISTED_GIVEN},
+        }
+        flat = set().union(*listed.values())
+        self.assertFalse(flat & set(sites), "a site is an origin site or listed, not both")
+        for key in sorted(set(found) - set(sites) - flat):
+            bad.append(f"{key[0]} {key[1]} calls run_command and is neither an origin site nor listed: pass origin=, or list it "
+                       "in ClosureReuse with the reason it never runs a lane's suite")
+        for key in sorted((set(sites) | flat) - set(found)):
+            bad.append(f"{key[0]} {key[1]} is listed here but no longer calls run_command: drop it")
+        self.assertEqual(bad, [], "\n".join(bad))
+        with open(os.path.join(lib, "release.py"), encoding="utf-8") as f:  # the ship's own streamed run is a Popen
+            body = next(n for n in ast.walk(ast.parse(f.read())) if isinstance(n, ast.FunctionDef) and n.name == "_run_test")
+        self.assertTrue(any(isinstance(n, ast.Attribute) and n.attr == "ORIGIN_ENV" for n in ast.walk(body)),
+                        "release._run_test starts `sampo check` for the ship: its environment names the origin")
+        self.assertEqual(set(sites.values()) | {"builder"}, set(run.ORIGINS))
+        self.assertEqual(set(run.REUSING), {"land"}, "the ship's run stays full (lanes.pm_cmd): it never takes a reuse")
+
+
+LISTED_GIVEN = (
+    ("ambient.py", "run"), ("bench.py", "_grade"), ("bench.py", "stranger"), ("big.py", "_in_scratch"), ("change.py", "cmd_spec"),
+    ("eco.py", "adopt"), ("hooks.py", "_onwrite"), ("incident.py", "_open"), ("lake.py", "collect"), ("long.py", "_passed"),
+    ("mandate.py", "drift"), ("pr.py", "_retest"), ("rune.py", "export"), ("smoke.py", "_other_checks"), ("stack.py", "_red"),
+    ("debug.py", "cmd_whyred"), ("debug.py", "cmd_record"), ("foresight.py", "github_repo"), ("foresight.py", "default_branch"),
+    ("prove.py", "_pick"), ("prove.py", "_untested"), ("prove.py", "_parses"), ("prove.py", "_flaky"), ("prove.py", "_recheck"),
+    ("prove.py", "_written"), ("prove.py", "docs_proof"))

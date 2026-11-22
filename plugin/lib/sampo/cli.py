@@ -10710,6 +10710,8 @@ def _build_parser(only=None):
     s.add_argument("--per-lane", action="store_true", help="per landed lane: input, cache read, cache write and output "
                    "tokens of its lead, builder, reviewer and fixer shares, a median per role, and the runs that fit "
                    "no lane (T-5950)")
+    s.add_argument("--cpu", action="store_true", help="test CPU seconds per landed lane in the window, by who started "
+                   "the run (builder, land gate, behind verify, ship, probe), and what reusing a green class saved (T-6006)")
     s.add_argument("--save-baseline", action="store_true", help="save the medians per role as the baseline "
                    "(implies --per-lane)")
     s.add_argument("--compare-baseline", action="store_true", help="the change per role against the saved baseline "

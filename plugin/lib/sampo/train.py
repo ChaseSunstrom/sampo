@@ -220,7 +220,7 @@ def _base_red_once(main, base, sub, own=()):
             if shutil.which("nice"):
                 cmd = "nice -n 10 bash -c " + shlex.quote(cmd)
             _lost_check(wt)
-            got = c.run_command(wt, cmd, c.load_scaled(1800), run_id=rid)
+            got = c.run_command(wt, cmd, c.load_scaled(1800), run_id=rid, origin="probe")  # T-6006: metered as a probe; takes no reuse of its own (a run naming classes reuses as it always did)
             _lost_check(wt)  # a run in a vanished folder ends 127: that is the loss, not a red base
             firsts.clear()
             if rid and got[0] not in (0, 5, 124):
@@ -685,13 +685,13 @@ def _union_proof(p, wt, before, files):
         return "no test of theirs was found"
     cwd, cmd, _ = c.normalize_verify(wt, cmd)
     env, _ = cli._venv_env(wt, cpu_env(p), cmd)
-    code, out = c.run_command(cwd, cmd, c.load_scaled(900), priority=True, env=env)
+    code, out = c.run_command(cwd, cmd, c.load_scaled(900), priority=True, env=env, origin="probe")
     if code == 0:
         return ""
     bad = sorted(set(_failed(out)))
     if code not in (124, 5) and bad:  # as _probe_once: a flake is green on a rerun, a class red on `before` too is the base's
         again = pm_rerun_cmd(wt, bad) or cmd  # the red classes alone where the runner names them, else the command again
-        code2, out2 = c.run_command(cwd, again, c.load_scaled(900), priority=True, env=env)
+        code2, out2 = c.run_command(cwd, again, c.load_scaled(900), priority=True, env=env, origin="probe")
         if not code2:
             return ""  # green on a rerun of the merged tree: a flake, not the union's
         named = set(_failed(out2))
@@ -703,7 +703,8 @@ def _union_proof(p, wt, before, files):
         if _git(wt, "reset", "-q", "--hard", before).returncode:
             raise _Lost(wt)
         try:
-            code3, out3 = c.run_command(cwd, pm_rerun_cmd(wt, bad) or cmd, c.load_scaled(900), priority=True, env=env)
+            code3, out3 = c.run_command(cwd, pm_rerun_cmd(wt, bad) or cmd, c.load_scaled(900), priority=True, env=env,
+                                        origin="probe")
             based = set(_failed(out3)) if code3 else set()
         finally:
             if _git(wt, "reset", "-q", "--hard", merged).returncode or _git(wt, "clean", "-fdq").returncode:
@@ -1256,7 +1257,7 @@ def _probe_once(p, main, base, b, tip, notes, cli):
                 cmd = "nice -n 10 bash -c " + shlex.quote(cmd)
             _lost_check(wt)
             code, out = c.run_command(cwd, cmd, c.load_scaled(900), priority=True,  # T-3614: ahead of lane runs
-                                      env=env, run_id=rid)  # T-3757: a CPU rise is red here too
+                                      env=env, run_id=rid, origin="probe")  # T-3757: a CPU rise is red here too
             _lost_check(wt)  # a run in a vanished folder ends 127: that is the loss, not a red lane
             if rid and code not in (0, 5, 124):
                 firsts.update(_first_failures(wt, raw, rid))
@@ -2370,7 +2371,8 @@ def _run(p, main, ids, defer_verify=False, judged=None):
         while True:
             ensure_wt()
             code, out = c.run_command(wt, line, c.load_scaled(1800), priority=True,  # T-3614, T-3757; T-4289: no test override
-                                      env=c.scrubbed_env(cpu_env(p)), watch=trunk_watch, watch_every=TRUNK_POLL_S)
+                                      env=c.scrubbed_env(cpu_env(p)), watch=trunk_watch, watch_every=TRUNK_POLL_S,
+                                      origin="land")  # T-6006: metered as the land gate; reuses a class green at the same code
             if not wt_gone():
                 break
         row = {"cmd": cmd, "exit": code, "s": round(time.monotonic() - t0, 1), **({"affected": mods} if mods else {})}
@@ -6570,7 +6572,7 @@ def _shape_run(path, wall=None, classes=None):
     while True:
         cmd = "python3 plugin/tests/run.py " + " ".join(names or c.repo_shape_modules())
         rid = c.new_run_id(cmd)
-        code, out = c.run_command(path, cmd, wall or SHAPE_WALL_S, niced=True, run_id=rid)
+        code, out = c.run_command(path, cmd, wall or SHAPE_WALL_S, niced=True, run_id=rid, origin="land")
         if code == 0:
             return "green", ""
         gone = {n.strip() for n in m.group(1).split(",")} & set(names) if names and code == 1 and (

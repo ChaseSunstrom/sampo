@@ -88,6 +88,7 @@ OPERATOR_SWITCHES.add("TRAIN_PROBES")  # T-3770: a runner's probe switch is neve
 OPERATOR_SWITCHES.add("REVIEW_DEPTH")  # T-5841: =full gives every review all five lenses; a test that needs it sets it itself
 OPERATOR_SWITCHES.add("TOWER_GAP")  # T-3504: the tower-update push gap; a test that needs it sets it itself
 OPERATOR_SWITCHES.add("TEST_RUN_ID")  # T-4268: the check's id for its gate's record; a nested run in a class never gets it
+OPERATOR_SWITCHES.add("RUN_ORIGIN")  # T-6006: who started this run (land, verify, ship, probe); a class's own run names its own
 OPERATOR_SWITCHES.add("CACHE_FULL")  # T-5482: a whole run skips its cached classes (the train and the behind verify set it); never a test's
 OPERATOR_SWITCHES.add("HOLD_JOBS")  # T-5465: how many lane holds run at once; the operator's knob, a test sets its own
 OPERATOR_SWITCHES.add("SHAPE_BATCH_WALL_S")  # T-5380: a shape batch's wall in seconds; the operator's, a test passes its own
@@ -1301,6 +1302,66 @@ RUN_NAME = re.compile(r"(\d{20})-(\d+)(?:-w([0-9a-f]{8}))?\.json")
 RUN_TEMP = re.compile(r"\d{20}-\d+(?:-w[0-9a-f]{8})?\.json\.\d+")  # _write_json's temp file, left by a crash
 TEMP_S = 3600
 RUN_ID_ENV = "SAMPO_TEST_RUN_ID"  # T-4268: the check's id for its gate; the record carries it, no class or child run gets it
+# T-6006: who started a run: the starter (core.run_command(origin=)) names itself, the record and the CPU log carry it, so
+# `sampo cost --cpu` can say which site spent the CPU. The land gate reuses a class green at the same code (REUSING: the
+# closure-hash cache, as the post-merge verify does with its CACHE_FULL); the builder's own full run, the ship's (it
+# stays full, lanes.pm_cmd), a probe's (it names the classes it asks about, and a named run reuses as it always did)
+# and the verify without its switch take no reuse of their own. Out of every class's environment like the run id.
+ORIGIN_ENV = "SAMPO_RUN_ORIGIN"
+ORIGINS = ("builder", "land", "verify", "ship", "probe")
+REUSING = ("land",)
+REUSE_RED_S = 86400.0  # a class red at these inputs in the run records of this long is never taken from a green record
+CPU_LOG_MAX = 1 << 20  # a repo's CPU log is trimmed to its newest half past this many bytes
+NAMED_MAX = 8  # the classes a reuse line names before "+N more"
+
+
+def cpu_log_path(common):
+    return os.path.join(_cache_dir(), repo_id(common) + ".cpu.jsonl")
+
+
+def log_cpu(common, row):
+    """T-6006: one JSON line per metered run appended to the repo's CPU log; past CPU_LOG_MAX the file keeps its newest
+    half. Append and trim are one step under the cache's lock (_cache_lock, held beside the log), so a trim never drops
+    a line a run appends between its read and its replace; the file is replaced whole, so a reader (sampo cost) sees the
+    old or the new log. Best effort: it says why it wrote nothing, and never fails a run."""
+    path = cpu_log_path(common)
+    try:
+        line = (json.dumps(row, separators=(",", ":")) + "\n").encode()
+        with _cache_lock(path):
+            fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+            try:
+                os.write(fd, line)
+                size = os.fstat(fd).st_size
+            finally:
+                os.close(fd)
+            if size > CPU_LOG_MAX:
+                with open(path, "rb") as f:
+                    f.seek(size // 2)
+                    f.readline()  # the half line the cut left
+                    keep = f.read()
+                tmp = f"{path}.{os.getpid()}"
+                with open(tmp, "wb") as f:
+                    f.write(keep)
+                os.replace(tmp, path)
+    except (OSError, TypeError, ValueError) as e:
+        sys.stderr.write(f"run.py: the CPU log was not written (T-6006): {repr(e)[:200]}\n")
+
+
+def read_cpu_log(common):
+    """The log's rows, oldest first; a torn or foreign line is skipped, a missing log is no rows."""
+    rows = []
+    try:
+        with open(cpu_log_path(common), "rb") as f:
+            for raw in f:
+                try:
+                    row = json.loads(raw)
+                except ValueError:
+                    continue
+                if isinstance(row, dict):
+                    rows.append(row)
+    except OSError:
+        pass
+    return rows
 
 
 def runs_dir(common):
@@ -3349,6 +3410,11 @@ def _suite(a):
     run_id = _env(RUN_ID_ENV)  # T-4268: the check's id for this gate: kept for the record, out of every class's environment
     for k in (RUN_ID_ENV, "FOREMAN_" + RUN_ID_ENV[len("SAMPO_"):]):
         os.environ.pop(k, None)
+    origin = (_env(ORIGIN_ENV) or "builder").strip()  # T-6006: who started this run; out of every class's environment too
+    for k in (ORIGIN_ENV, "FOREMAN_" + ORIGIN_ENV[len("SAMPO_"):]):
+        os.environ.pop(k, None)
+    if origin not in ORIGINS:
+        origin = "other"  # an unknown starter is metered, never trusted to skip a class
     if any(re.search(r"\s", k) for k in a.k + a.names):  # T-0357: '-k "a or b"' matched nothing and failed only at the end
         ap.error("-k matches a substring of test ids; repeat -k for each pattern (-k test_guard -k test_cli)")
     if a.sandbox:
@@ -3386,6 +3452,11 @@ def _suite(a):
     incr = (_env(CACHE_FULL) or "0") != "0"
     for k in (CACHE_FULL, "FOREMAN_" + CACHE_FULL[len("SAMPO_"):]):
         os.environ.pop(k, None)
+    # T-6006: the land gate takes the same reuse as the verify's (its class ran green on the builder's tree at the same
+    # closure: what it read, hashed); every off switch below applies to it, and so does the resample of the run itself
+    # (sample_rate(incr): the land in a lane tree keeps the lane's 0%, the verify's full gate its 10%)
+    reuse = incr or origin in REUSING
+    saved = 0.0  # the CPU s the reused classes cost when they ran (from the cache's cpu field), what this run did not spend
     # T-3757: the train's gate and the post-merge verify name a baseline; out of the environment too, so no class or
     # child run compares or records. Not for -k or a shard (part of the suite).
     cpu_base, cpu_gate = os.environ.pop(CPU_BASE, ""), os.environ.pop(CPU_GATE, "") not in ("", "0")
@@ -3399,10 +3470,19 @@ def _suite(a):
         cache, value = cache_path(got[2]), values(*got[:2])
         COVERED.clear()
         gen, recs = load_cache(cache)
-        rec = {c: r for c in todo for r in recs.get(c, ())[::-1] if r[0] == digest(r[2], value)} if a.names or incr else {}
+        rec = {c: r for c in todo for r in recs.get(c, ())[::-1] if r[0] == digest(r[2], value)} if a.names or reuse else {}
         hits = {c: r[1] for c, r in rec.items()}
         drawn = {c for c in hits if random.random() < sample_rate(incr)}  # T-5588: none in a lane, unless the full gate
         skip = {c: n for c, n in hits.items() if c not in drawn}
+        if skip:  # T-6006: a green record is no word on inputs a run since found red: that class runs
+            try:
+                red = known_red(got[2], set(skip), value, max(known_red_window(), REUSE_RED_S))
+            except Exception as e:  # fail closed: a record that can't be read reuses nothing
+                sys.stderr.write(f"run.py: the run records were not read for a reuse check (T-6006): {repr(e)[:200]}\n")
+                red = dict.fromkeys(skip, 0.0)
+            if red:
+                sys.stderr.write(f"run.py: not reused, red on these inputs in a run record: {', '.join(sorted(red))}\n")
+                skip = {c: n for c, n in skip.items() if c not in red}
         if cpu_base:  # T-3757: a cached class costs what it cost then; one over its margin runs, so it is measured
             known = {c: rec[c][3] for c in skip if len(rec[c]) > 3}
             over = {c for c, *_ in cpu_over(hist, known, BUDGETS)}
@@ -3414,6 +3494,10 @@ def _suite(a):
         if skip:
             sys.stderr.write(f"run.py: skipped {len(skip)} classes green at the same code; "
                              "FOREMAN_NO_TEST_CACHE=1 runs them\n")
+            saved = sum(float(rec[c][3][0]) for c in skip if len(rec[c]) > 3 and rec[c][3])  # the cpu field is [CPU s, jobs]
+            named = sorted(skip)  # T-6006: the second run of a class says it was reused, and for whom
+            sys.stderr.write(f"run.py: reused from a green run at the same code ({origin}): {', '.join(named[:NAMED_MAX])}"
+                             + (f", +{len(named) - NAMED_MAX} more" if len(named) > NAMED_MAX else "") + "\n")
         if not SANDBOX and (py := cover_python()):
             COVER_PY.append(py)
             sys.executable = py  # every Python run.py starts records, a fork server it starts (T-3572) too
@@ -3627,6 +3711,8 @@ def _suite(a):
     real = [r for r in failed if r not in stopped]
     names = [r[0] for r in real] + [c for c, *_ in cpu_red if c not in {r[0] for r in real}]
     said = ", ".join(names[:5]) + (f", +{len(names) - 5} more" if len(names) > 5 else "")
+    me = resource.getrusage(resource.RUSAGE_SELF) if resource else None
+    spent = sum(CPU.values()) + (me.ru_utime + me.ru_stime if me else 0)  # T-3757: the classes' own count, and run.py's
     try:  # T-4268: the run's record, red or green, for `run.py --last` and the check's naming of what failed; never the
         # run's result (not for a test's own run.py in a slot, nor outside git)
         if not _env(SLOT_ENV) and (where := _where()):
@@ -3645,17 +3731,23 @@ def _suite(a):
                     "classes": len({owner(r[0]) for r in results}),  # T-4491: the deadline line says 'N of M classes ran'
                     "classes_not_run": len({owner(r[0]) for r in stopped}),
                     "failed": ents[:FAILS_MAX],
-                    "not_run": [r[0] for r in stopped][:NOT_RUN_MAX]}
+                    "not_run": [r[0] for r in stopped][:NOT_RUN_MAX],
+                    "origin": origin, "cpu_s": round(spent, 2), "saved_cpu_s": round(saved, 2),  # T-6006
+                    "reused": sorted(skip)[:NAMED_MAX * 8]}
             if rtree:  # T-4269: what each red class read, so a later run on the same inputs knows it red; and the flaky ones
                 made["inputs"] = red_inputs([e["class"] for e in ents if not e.get("own")], real, owner,
                                             shared(*rtree[:2]), *rtree[:2], value)
                 made["cleared"] = flaky
             record_run(where[1], {**made, "lines": record_lines(made)})  # the lines too: a caller prints them as they are
+            try:  # T-6006: its own message: a CPU log that can't be written never reads as a lost run record
+                log_cpu(where[1], {k: made.get(k) for k in ("t", "origin", "cpu_s", "saved_cpu_s", "ran", "cached", "ok", "whole",
+                                                            "worktree", "tree", "run_id")}
+                        | {"reused": len(skip), "wall_s": round(time.time() - t0, 1)})
+            except Exception as e:
+                sys.stderr.write(f"run.py: the CPU log was not written (T-6006): {repr(e)[:200]}\n")
     except Exception as e:
         sys.stderr.write(f"run.py: the run's record was not written (T-4268): {repr(e)[:200]}\n")
     sys.stderr.write("".join(f"\n  failed class: {n}" for n in names) + ("\n" if names else ""))  # T-3397: all of them, one per line
-    me = resource.getrusage(resource.RUSAGE_SELF) if resource else None
-    spent = sum(CPU.values()) + (me.ru_utime + me.ru_stime if me else 0)  # T-3757: the classes' own count, and run.py's
     sys.stderr.write(f"\nRan {total} tests in {time.time() - t0:.1f}s ({len(todo)} jobs, {a.j} at a time; "
                      f"slowest: {slow}; cpu {spent:.1f} s{slot_notes(WAITED, WAIT_SPANS, left_now(), time.time() - t0)}){cached}\n\n"
                      f"{f'FAILED ({len(names)} classes: {said})' if names else 'INCOMPLETE (ended from outside)' if ENDED else 'INCOMPLETE (stopped at its deadline)' if stopped else 'OK' if total or skip or joined else 'NO TESTS RAN'}\n")

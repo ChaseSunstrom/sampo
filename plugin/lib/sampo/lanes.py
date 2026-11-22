@@ -6771,7 +6771,7 @@ def _pm_judge(main, wt, sha, gone, code, out, owns=()):
             reach, unrelated = reds, []
         if again:
             c.wait_for_load(f"lane verify {sha[:9]}")  # T-3425: the alone-rerun waits for load like a gate
-        acode, aout = c.run_command(wt, again, c.load_scaled(900), niced=True, low=True) if again else (1, "")
+        acode, aout = c.run_command(wt, again, c.load_scaled(900), niced=True, low=True, origin="verify") if again else (1, "")
         if again and not acode:
             flaky, reach = reds, []
         else:
@@ -6787,7 +6787,7 @@ def _pm_judge(main, wt, sha, gone, code, out, owns=()):
             elif again:  # T-3213: red alone too; does main just before this merge fail the same classes?
                 _git(wt, "reset", "--hard", "-q", f"{sha}^1")
                 if not gone or not _git(wt, "revert", "-m", "1", "--no-commit", "--no-edit", *reversed(gone)).returncode:
-                    pcode, pout = c.run_command(wt, again, c.load_scaled(900), niced=True, low=True)
+                    pcode, pout = c.run_command(wt, again, c.load_scaled(900), niced=True, low=True, origin="verify")
                     # T-3224: a class is inherited only when the parent names it failing; a parent run that
                     # names none ("no test matches" for a class the merge added, a crash) leaves the red this merge's.
                     # T-5518: per class: the classes the parent also fails are excused, the rest stay blamed
@@ -6900,7 +6900,8 @@ def pm_verify(p, main, sha):
         full, code, out, judged, part = False, 0, "", None, None
         shape = pm_shape_cmd(main)
         if shape:  # T-5791: the repo-shape modules first, minutes before the suite's hours: a red they name is recorded now
-            scode, sout = c.run_command(wt, shape, c.load_scaled(900), env=cpu_env(p, gate=False), niced=True, low=True)
+            scode, sout = c.run_command(wt, shape, c.load_scaled(900), env=cpu_env(p, gate=False), niced=True, low=True,
+                                        origin="verify")
             if _pm_tree_lost(p, sha, r, tries, wt):
                 return False
             if scode and scode != 124 and _pm_shape_named(sout, scode):  # no class named: no verdict, the suite decides
@@ -6927,7 +6928,7 @@ def pm_verify(p, main, sha):
             else:
                 code, out = c.run_command(wt, part[0] if part is not None else pm_cmd(main, uncached=full, p=p),
                                           c.load_scaled(3600), env=cpu_env(p, gate=False), niced=True,
-                                          low=True)  # T-3757: what landed becomes the usual; T-4197; T-4570: yields slots to waiting builders
+                                          low=True, origin="verify")  # T-3757: what landed becomes the usual; T-4197; T-4570: yields slots to waiting builders
             if _pm_tree_lost(p, sha, r, tries, wt):  # T-4728: a run in a removed folder ends 127: no merge is reverted for it
                 return False
             judged = _pm_judge(main, wt, sha, gone, code, out, _pm_own_mods(p, [r["task"]]))
@@ -7207,13 +7208,14 @@ def _pm_green_at(p, main, sha, reds=None, short=None, part=None, since=None, hea
             return False
         shape = pm_shape_cmd(main)
         if shape:  # T-5791: the short pass first; a red that holds alone is the probe's answer, the full suite not run
-            scode, sout = c.run_command(wt, shape, c.load_scaled(900), env=cpu_env(p, gate=False), niced=True, low=True)
+            scode, sout = c.run_command(wt, shape, c.load_scaled(900), env=cpu_env(p, gate=False), niced=True, low=True,
+                                        origin="verify")
             if _tree_lost(wt):
                 raise c.PolicyError(f"{VERIFY_GONE} ({sha[:9]}); nothing judged, the next pass runs it again")
             sreds = _pm_shape_named(sout, scode) if scode and scode != 124 else []  # none named: no verdict, the suite decides
             if sreds:
                 again = pm_rerun_cmd(main, sreds)
-                if not (again and not c.run_command(wt, again, c.load_scaled(900), niced=True, low=True)[0]):
+                if not (again and not c.run_command(wt, again, c.load_scaled(900), niced=True, low=True, origin="verify")[0]):
                     if reds is not None:
                         reds.extend(sreds)
                     if short is not None:
@@ -7228,7 +7230,8 @@ def _pm_green_at(p, main, sha, reds=None, short=None, part=None, since=None, hea
             code, out = 0, ""  # nothing reaches the change: the shape pass was the probe
         else:
             code, out = c.run_command(wt, plan[0] if plan is not None else pm_cmd(main, uncached=full, p=p),
-                                      c.load_scaled(3600), env=cpu_env(p, gate=False), niced=True, low=True)  # T-4197; T-4570
+                                      c.load_scaled(3600), env=cpu_env(p, gate=False), niced=True, low=True,
+                                      origin="verify")  # T-4197; T-4570
         if _tree_lost(wt):  # T-4728: a run in a removed folder is no red suite: stop the pass, the merge stays pending
             raise c.PolicyError(f"{VERIFY_GONE} ({sha[:9]}); nothing judged, the next pass runs it again")
         if code:
@@ -7254,7 +7257,7 @@ def _pm_cmd_green_at(main, sha, cmd, limit=900):
         if _git(main, "worktree", "add", "--detach", wt, sha).returncode:
             return False
         c.wait_for_load(f"lane verify {sha[:9]}")  # as pm_verify's alone-rerun waits
-        code = c.run_command(wt, cmd, c.load_scaled(limit), niced=True, low=True)[0]  # T-4197: a lane verify's run; T-4570
+        code = c.run_command(wt, cmd, c.load_scaled(limit), niced=True, low=True, origin="verify")[0]  # T-4197: a lane verify's run; T-4570
         if _tree_lost(wt):  # T-4728: 127 from a removed folder is no red class: the bisection would blame a merge
             raise c.PolicyError(f"{VERIFY_GONE} ({sha[:9]}); nothing judged, the next pass runs it again")
         return not code
