@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- The Stop hook no longer holds a stop for a steer the session applies to its active task, and the concerns fold carries each concern's kind; a new ask still holds (T-4218).
 - `sampo next`, `queue --replan` and the STATE.md regen now lead with the top open concern, ahead of lane-merge and friction actions, so the written state shows what the user is waiting on (T-4217).
 - A test's `addCleanup` now runs while the test's own `FOREMAN_HOME` is still set, because the environment restore is registered first and so runs last, which stops in-process cleanups from writing to the machine's real state (T-4198).
 - The rename scan now covers the demo recorders, `demo/record_live.py` says Sampo throughout, and the scan's baseline drops from 16 to the real 13 (T-3957).
