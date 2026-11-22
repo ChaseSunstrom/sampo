@@ -667,10 +667,74 @@ def refusals(p):
     return {"all": len(rows), "last_7_days": sum(1 for e in rows if str(e.get("ts") or "") >= week)}
 
 
+CONTRACT_HEADING = "## Your contract (sampo:fm-builder)\n"  # contract() writes it; start() reads the base after the last one
+BRIEF_BASE = re.compile(r"Start from the main checkout's commit ([0-9a-f]{7,40})\b")  # the contract's first rule, filled in
+
+
+def start(p, args):
+    """T-3958: a builder's opening in one call, run inside its lane: the base its brief names against this worktree's
+    HEAD, then `sampo focus ID`, then the brief's path and the task's steps. A base HEAD lacks is not focused: the
+    answer is the command that fetches it (a behind lane) or the two commits (a diverged one), as the contract says. A
+    lane that is ahead of the base builds on HEAD (T-3142). A brief with no base (none written, or an older one) skips
+    the check and says so; the focus is the same one `sampo focus ID` runs."""
+    from sampo import cli
+    if not p.lane:
+        raise cli.UsageError("sampo lane start ID runs inside the builder's own lane (its worktree), not in the main "
+                             "checkout: there, sampo focus ID")
+    if not args.id:
+        raise cli.UsageError("sampo lane start needs a task id")
+    b = cli.need_brief(p, args.id)
+    held = str(b.meta.get("lane") or "")
+    if held and os.path.realpath(held) != os.path.realpath(p.root):
+        raise c.PolicyError(f"{b.id} belongs to lane {held}, not this one ({p.root}): start the task this lane is for")
+    path = os.path.join(p.dir, "audits", f"{b.id}.builder.md")
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            # the task's own sections come first and may quote a base line: only the contract (last section) counts
+            _, sep, rules = f.read().rpartition(CONTRACT_HEADING)  # no heading: no contract, so no base
+            m = BRIEF_BASE.search(rules) if sep else None
+    except OSError:
+        m = None
+    base, notes = m.group(1) if m else None, []
+    if not base:
+        notes.append(f"no brief with a base on record for {b.id} (sampo lane brief {b.id} writes one): the base was "
+                     f"not checked")
+    else:
+        head = _git(p.root, "rev-parse", "HEAD").stdout.strip()
+        def ancestor(a, z):  # 0 yes, 1 no; any other code is git's own fault (unknown object, no git, timeout)
+            r = _git(p.root, "merge-base", "--is-ancestor", a, z)
+            if r.returncode not in (0, 1):
+                raise c.PolicyError(f"could not compare HEAD with base {base}: "
+                                    f"{(r.stderr or r.stdout or 'git exit ' + str(r.returncode)).strip()[:200]} "
+                                    f"(nothing was focused)")
+            return r.returncode == 0
+        if ancestor(base, "HEAD"):
+            if not head.startswith(base):
+                notes.append(f"main moved on after the brief was written (its base {base[:12]} is in your HEAD "
+                             f"{head[:12]}): builds on HEAD")
+        elif ancestor("HEAD", base):
+            raise c.PolicyError(f"your worktree is behind the brief's base: git merge --ff-only {base} then sampo lane "
+                                f"start {b.id} again (nothing was focused)")
+        else:
+            raise c.PolicyError(f"your HEAD {head} and the brief's base {base} have diverged: stop and report both "
+                                f"commits (nothing was focused)")
+    seen = io.StringIO()
+    with contextlib.redirect_stdout(seen):  # the focus's own words, kept apart so --json stays one document
+        cli.cmd_focus(argparse.Namespace(id=b.id, project=getattr(args, "project", None), json=False))
+    steps = [f"{s.n}. [{'x' if s.done else ' '}] {s.text}" for s in cli.need_brief(p, b.id).steps()]
+    shown = path if os.path.isfile(path) else None
+    text = (seen.getvalue().rstrip() + "\n" if seen.getvalue().strip() else "") + (
+        f"Brief: {shown}\n" if shown else "") + "".join(f"{n}\n" for n in notes) + "Steps:\n" + "\n".join(steps)
+    return cli.out(args, {"id": b.id, "focused": True, "brief": shown, "base": base, "notes": notes, "steps": steps,
+                          "focus": seen.getvalue()}, text)
+
+
 def cmd_lane(args):
     from sampo import cli
     p = cli.resolve(args)
     main = c.main_worktree(p.root) or p.root  # from inside a lane: its main checkout
+    if args.action == "start":  # T-3958
+        return start(p, args)
     if args.action == "max":  # T-1089: how many builders may be out at once
         if args.id:
             if not (args.id.isascii() and args.id.isdecimal()) or not 1 <= int(args.id) <= BUILDERS_MAX:
@@ -927,7 +991,7 @@ def contract(id, base, main):
     rules = "\n".join(l for l in rules.splitlines() if not l.startswith("("))  # the note about this very copy
     for k, v in (("<ID>", id), ("<BASE>", base), ("<MAIN>", main)):  # T-5511: no <SHAPE>: the accept stage runs those modules
         rules = rules.replace(k, v)
-    return "## Your contract (sampo:fm-builder)\n" + rules
+    return CONTRACT_HEADING + rules
 
 
 def stopped(p, briefs=None):

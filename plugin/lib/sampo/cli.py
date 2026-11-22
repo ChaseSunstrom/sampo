@@ -107,7 +107,8 @@ def mutate(p, tid, fn, event, data=None):
                 bus.release(p, b.id, preclaim=True)
             except Exception as e:  # the status changed already; a lease left to expire must not make that look failed
                 print(f"sampo: warning: leases of {b.id} not released: {e}", file=sys.stderr)
-        c.log_event(p, event, task=b.id, data=data or {}, session=session())
+        if event:  # None: fn logged its own events (one per step, T-3958)
+            c.log_event(p, event, task=b.id, data=data or {}, session=session())
         after = c.stage(b)
         if after != before:  # pane splits read these instead of proxy events
             c.log_event(p, "stage", task=b.id, data={"from": before, "to": after}, session=session())
@@ -6421,6 +6422,28 @@ def _pause_off(args, only):
                **({"kept": held} if agent and held else {})}, text)
 
 
+def _record_check(p, args, add, event_cmd, event_result):
+    """Where a check run's result becomes evidence: on the step or criterion named, or (T-3958, --all-steps) on every
+    step of the task that has no evidence yet and none that has (add(brief, step, ac) writes one line); says which."""
+    if not getattr(args, "all_steps", False):
+        mutate(p, args.evidence, lambda b: add(b, args.step, args.ac), "evidence",
+               {"step": args.step, "ac": args.ac, "cmd": event_cmd, "result": event_result})
+        return
+    done = []
+
+    def every(b):  # a step lacks evidence when it has none, or its newest run failed (only a newer pass clears it)
+        for s in b.steps():
+            if not b.has_evidence(step=s.n) or b.step_failed(s.n):  # a redacted failed command still counts (T-3958)
+                add(b, s.n, None)
+                done.append(s.n)
+                # the shape the readers (the step boundary, file assignment) key on: one event per step, in the lock
+                c.log_event(p, "evidence", task=b.id, data={"step": s.n, "ac": None, "cmd": event_cmd,
+                                                            "result": event_result}, session=session())
+    mutate(p, args.evidence, every, None)
+    print(f"evidence recorded on step{'s' * (len(done) != 1)} {', '.join(map(str, done))}" if done else
+          f"no step lacks evidence on {args.evidence}: nothing recorded", file=sys.stderr, flush=True)
+
+
 def cmd_check(args):
     """The project's gate commands (tests, lint, doctor…), run together; any failure exits 1, so a pipe can't mask it."""
     if getattr(args, "timeout", 600) is None:  # T-4864: no --timeout: an affected run is sized (T-4892), the rest take 600
@@ -6428,6 +6451,9 @@ def cmd_check(args):
     if args.action == "office":  # T-1406: one deliverable's check: no project, no gate lock
         from sampo import office
         return office.cmd(args)
+    if getattr(args, "all_steps", False) and (not args.evidence or getattr(args, "lock", False)):  # T-3958
+        raise UsageError("sampo check --all-steps records one run on a task's steps: sampo check --evidence T-… "
+                         "--all-steps (the behaviour lock takes --step 1)")
     if getattr(args, "lock", False):  # T-4648: a lane builder's bounded behaviour lock, never the wide gates
         if args.action != "run" or getattr(args, "affected", False) or getattr(args, "python", None):
             raise UsageError("sampo check --lock stands alone: sampo check --evidence T-… --step 1 --lock")
@@ -6632,11 +6658,10 @@ def _cmd_check(args):
     if cached:  # the same gates already passed on this exact tree: rerunning them only costs time
         results, notes = [(cmd, 0, f"cached pass ({cached})", 0.0) for cmd in checks], {}
         if args.evidence:
-            mutate(p, args.evidence, lambda b: b.add_evidence(
+            _record_check(p, args, lambda b, step, ac: b.add_evidence(
                 "sampo check: " + "; ".join(checks),
                 f"exit 0 · {len(checks)} passed on this tree ({cached}){'; ' + left_out if left_out else ''}"[:600],
-                step=args.step, ac=args.ac, tree=tree, ran=True),
-                "evidence", {"step": args.step, "ac": args.ac, "cmd": "fm check", "result": "cached pass"})
+                step=step, ac=ac, tree=tree, ran=True), "fm check", "cached pass")
         out(args, {"results": [{"cmd": x, "exit": 0, "cached": cached} for x in checks], "failed": 0,
                    "skipped_tests": skip},
             (f"✓ gates: reusing the full {cached}; cached (sampo check --fresh reruns)" if "same code tree" in cached else
@@ -6743,9 +6768,9 @@ def _cmd_check(args):
                   f"exit 0 · {len(results)} passed: ") + (f"({left_out}) " if left_out else "") + "; ".join(
             f"{cmd} → {c.run_result(code, output)}" + (f" ({notes[cmd]})" if cmd in notes else "")
             for cmd, code, output, _ in shown)
-        mutate(p, args.evidence, lambda b: b.add_evidence("sampo check: " + "; ".join(checks), result[:600],
-                                                          step=args.step, ac=args.ac, tree=tree, ran=True),
-               "evidence", {"step": args.step, "ac": args.ac, "cmd": "fm check", "result": result[:300]})
+        _record_check(p, args, lambda b, step, ac: b.add_evidence(
+            "sampo check: " + "; ".join(checks), result[:600], step=step, ac=ac, tree=tree, ran=True),
+            "fm check", result[:300])
     lines = []
     for cmd, code, output, secs in results:
         lines.append(f"{'✗' if code else '✓'} {cmd} → {c.run_result(code, output)} ({secs:.1f} s)"
@@ -8113,10 +8138,9 @@ def _check_affected(p, args):
             result = result.replace(" · ", f" · {c.joinmore(every, 50)} · ", 1)
         if sd_fail:
             result = f"self docs: {sd.detail} · " + result
-        mutate(p, args.evidence, lambda b: b.add_evidence(
-            c.AFFECTED_LABEL + cmd, result[:600], step=args.step, ac=args.ac,
-            tree=c.worktree_id(p.root), ran=True),
-            "evidence", {"step": args.step, "ac": args.ac, "cmd": "fm check --affected", "result": result[:200]})
+        _record_check(p, args, lambda b, step, ac: b.add_evidence(
+            c.AFFECTED_LABEL + cmd, result[:600], step=step, ac=ac, tree=c.worktree_id(p.root), ran=True),
+            "fm check --affected", result[:200])
     out(args, {"tests": tests, "exit": exit_code, "changed": sorted(changed), "skipped_tests": skip, "unrunnable": odd,
                "hubs": hubs, "self_docs": sd_json, "venv": venv, "gates": gates, "gates_error": gates_error,
                "deleted_tests": gone, **held},
@@ -10131,6 +10155,8 @@ def _build_parser(only=None):
     g = s.add_mutually_exclusive_group()
     g.add_argument("--step", type=int)
     g.add_argument("--ac", type=int)
+    g.add_argument("--all-steps", action="store_true", help="with --evidence ID: record this one run on every step of "
+                   "the task that has no evidence yet, and none on a step that has (T-3958)")
 
     s = add("friction", lazy("sampo.friction", "cmd_friction"), tier=("Reports", 1040),
             help="Sampo's own friction since the last self-improvement pass: a digest, or a brief for one subagent")
@@ -11352,6 +11378,9 @@ def _build_parser(only=None):
                                                        "merge <id>: bring a builder's finished commits in; "
                                                        "merge ID ID …|--all: several (every finished lane) as one train, "
                                                        "each lane checked in its own process, a red one bisected out (T-3119); "
+                                                       "start <id>: in the builder's own lane, the opening in one call: the "
+                                                       "brief's base against HEAD (told to merge when HEAD lacks it), the "
+                                                       "focus, the brief's path and steps (T-3958); "
                                                        "resume <id>: take back a stopped builder's work; "
                                                        "recover <id>: the one recovery for why its lane stopped (T-2354); "
                                                        "stats: builder landing rate by brief size (T-2368); "
@@ -11381,7 +11410,7 @@ def _build_parser(only=None):
                                                        "once, the rest wait as 'check queued'); "
                                                        "recover --all: every lane stopped before its merge, one launch line each (T-3922)")
     s.add_argument("action", choices=["new", "list", "rm", "brief", "merge", "max", "resume", "recover", "race", "pick",
-                                      "stats", "verify", "train", "precheck", "land", "andon", "accept", "mode"])
+                                      "stats", "verify", "train", "precheck", "land", "andon", "accept", "mode", "start"])
     s.add_argument("--all", action="store_true", help="recover: every lane stopped before its merge, one launch line each "
                                                       "or the reason it's left (T-3922); merge: every finished lane (T-3119)")
     s.add_argument("--audit", nargs=3, action="append", metavar=("LENS", "HOW", "RESULT"),

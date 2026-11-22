@@ -4755,14 +4755,24 @@ class Brief:
         if step is not None and not inconclusive:
             self.track_step(step)  # T-0406: every writer of step evidence moves the band and fm next with it
 
+    def _failed_run(self, step):
+        """The line of the step's newest fm-run check when that run failed, else None."""
+        runs = [l for l in self.evidence() if _RAN_MARK in l and (m := _EV_RE.match(l))
+                and (m.group(1), int(m.group(2))) == ("step", step)]
+        return runs[-1] if runs and "` → ✗ exit" in runs[-1] and runs[-1].count("`") >= 2 else None
+
+    def step_failed(self, step):
+        """T-3958: the step's newest run failed, whatever its stored command: failed_cmd is None for a redacted one, which
+        still leaves the step without green evidence."""
+        return self._failed_run(step) is not None
+
     def failed_cmd(self, step):
         """T-1844: the step's newest run's command when that run failed, so fm task finish can re-run it; None when it
         passed, or its stored form had a secret redacted (not the command that ran)."""
-        runs = [l for l in self.evidence() if _RAN_MARK in l and (m := _EV_RE.match(l))
-                and (m.group(1), int(m.group(2))) == ("step", step)]
-        if not runs or "` → ✗ exit" not in runs[-1] or runs[-1].count("`") < 2:
+        run = self._failed_run(step)
+        if run is None:
             return None
-        cmd = runs[-1].split("`")[1]
+        cmd = run.split("`")[1]
         for lab in (AFFECTED_LABEL, AFFECTED_LABEL.replace("sampo ", "fm ", 1), LOCK_LABEL, LOCK_LATE_LABEL):  # T-2596: rerun the tests, not the label; old ledgers hold the fm form
             cmd = cmd[len(lab):] if cmd.startswith(lab) else cmd
         return None if "[REDACTED" in cmd else cmd

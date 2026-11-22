@@ -1320,6 +1320,10 @@ class BuilderCheckConfine(GuardCase):
             with self.subTest(cmd=cmd):
                 self.assertBlocked(self.verdict(cmd), "confine")
 
+    def test_the_confine_verdict_alone_lets_check_affected_all_steps_through(self):  # T-3958 review: not a leave to a
+        # subagent builder, whom the hook still denies --affected (the main thread's own lane check uses the flag)
+        self.assertIsNone(self.verdict("sampo check --affected --evidence T-1 --all-steps"))
+
     def test_the_read_only_check_verbs_still_run_in_a_builder(self):
         for cmd in ("sampo check", "sampo check run", "sampo check list", "sampo check --affected",
                     "sampo check --evidence T-0007 --step 1", "sampo check --fail-fast --timeout 60",

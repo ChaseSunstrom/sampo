@@ -11159,7 +11159,7 @@ BUILDER_CHECK_READ = ("run", "list", "office", "affected")  # T-4785: the sampo 
 
 
 CHECK_BOOL = frozenset({"-h", "--help", "--json", "--clear", "--fresh", "--fail-fast", "--affected", "--lock", "--hold",
-                        "--shape-green", "--literal", "--why"})  # the options of sampo check that take no value
+                        "--shape-green", "--literal", "--why", "--all-steps"})  # the options of sampo check that take no value
 CHECK_VALUED = frozenset({"-p", "--project", "--cell", "--sheets", "--contains", "--for", "--python", "--timeout",
                           "--repeat", "--evidence", "--since", "--step", "--ac"})  # and the ones that take the next word
 # T-4785 review: the guard imports nothing of Sampo, so these two tables are tied to the parser by a test that walks its

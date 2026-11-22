@@ -1304,6 +1304,69 @@ class Checks(ForemanTestCase):
         self.assertIn("exit 0", line)
         self.fm("task", "step", "T-0001", "done", "1")
 
+    def test_all_steps_records_the_one_run_on_every_step_without_evidence(self):  # T-3958
+        self.fm("init")
+        self.fm("check", "add", "echo suite ok")
+        self.fm("task", "new", "Fix it", "--type", "FIX", "--tier", "S", "--step", "one", "--step", "two",
+                "--step", "three", "--ac", "works")
+        self.fm("task", "evidence", "T-0001", "--step", "2", "pytest", "exit 0 · mine")
+        self.fm("check", "--evidence", "T-0001", "--all-steps")
+        b = c.find_brief(c.find_project(self.repo), "T-0001")
+        mine = lambda n: [l for l in b.evidence() if f"(step {n})" in l]  # noqa: E731
+        self.assertEqual((len(mine(1)), len(mine(2)), len(mine(3))), (1, 1, 1))
+        self.assertIn("echo suite ok", mine(1)[0])
+        self.assertIn("echo suite ok", mine(3)[0])
+        self.assertIn("exit 0 · mine", mine(2)[0], "a step that has evidence keeps only its own")
+        again = self.fm("check", "--evidence", "T-0001", "--all-steps", "--fresh")  # a second run adds nothing
+        b = c.find_brief(c.find_project(self.repo), "T-0001")
+        self.assertEqual(len([l for l in b.evidence() if "echo suite ok" in l]), 2)
+        self.assertIn("no step lacks evidence", again.stdout + again.stderr)
+
+    def test_all_steps_a_red_run_records_red_and_the_flag_needs_an_id_and_no_step(self):  # T-3958
+        self.fm("init")
+        self.fm("check", "add", "false")
+        self.fm("task", "new", "Fix it", "--type", "FIX", "--tier", "S", "--step", "one", "--step", "two", "--ac", "works")
+        self.assertEqual(self.fm("check", "--evidence", "T-0001", "--all-steps", check=False).returncode, 1)
+        b = c.find_brief(c.find_project(self.repo), "T-0001")
+        self.assertEqual(len([l for l in b.evidence() if "✗ exit 1" in l]), 2)
+        for argv in (("--all-steps",), ("--evidence", "T-0001", "--all-steps", "--step", "1")):
+            r = self.fm("check", *argv, check=False)
+            self.assertNotEqual(r.returncode, 0, argv)
+            self.assertNotIn("Traceback", r.stderr)
+
+
+    def test_all_steps_a_green_run_after_a_red_one_records_again_one_ledger_event_per_step(self):  # T-3958 review
+        self.fm("init")
+        flag = os.path.join(self.tmp, "ok.flag")
+        self.fm("check", "add", f"test -f {flag}")
+        self.fm("task", "new", "Fix it", "--type", "FIX", "--tier", "S", "--step", "one", "--step", "two", "--ac", "works")
+        self.assertEqual(self.fm("check", "--evidence", "T-0001", "--all-steps", check=False).returncode, 1)
+        open(flag, "w").close()
+        self.fm("check", "--evidence", "T-0001", "--all-steps")
+        b = c.find_brief(c.find_project(self.repo), "T-0001")
+        for n in (1, 2):
+            self.assertIsNone(b.failed_cmd(n), "the newest run on the step is the green one")
+        self.fm("task", "step", "T-0001", "done", "1")  # not refused for the older red run
+        events = [json.loads(l) for l in read_text(os.path.join(c.find_project(self.repo).dir, "ledger.jsonl")).splitlines()
+                  if l.strip()] if os.path.isfile(os.path.join(c.find_project(self.repo).dir, "ledger.jsonl")) else []
+        steps = [e["data"]["step"] for e in events if e.get("event") == "evidence" and isinstance(e.get("data"), dict)
+                 and isinstance(e["data"].get("step"), int)]
+        self.assertEqual(steps[-2:], [1, 2], events[-6:])
+
+    def test_all_steps_records_on_a_step_whose_failed_run_was_redacted(self):  # T-3958 review
+        self.fm("init")
+        self.fm("check", "add", "echo suite ok")
+        self.fm("task", "new", "Fix it", "--type", "FIX", "--tier", "S", "--step", "one", "--step", "two", "--ac", "works")
+        p = c.find_brief(c.find_project(self.repo), "T-0001")
+        p.add_evidence("echo ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345", "✗ exit 1", step=1, ran=True)  # pragma: allowlist secret
+        c.save_brief(c.find_project(self.repo), p)
+        b = c.find_brief(c.find_project(self.repo), "T-0001")
+        self.assertIsNone(b.failed_cmd(1), "a redacted command is not one to re-run")
+        self.fm("check", "--evidence", "T-0001", "--all-steps")
+        b = c.find_brief(c.find_project(self.repo), "T-0001")
+        self.assertEqual(len([l for l in b.evidence() if "(step 1)" in l]), 2, "the failed step got the green run too")
+        self.assertEqual(len([l for l in b.evidence() if "(step 2)" in l]), 1)
+
 
 class NewTaskCriteria(ForemanTestCase):
     def test_ac_can_carry_its_verify_command(self):
@@ -2020,6 +2083,28 @@ class AffectedPairs(ForemanTestCase):
         ev = c.find_brief(c.find_project(self.repo), "T-0001").section("Verification evidence")
         self.assertIn("affected tests only", ev)
         self.assertIn("test_green", ev)
+
+    def test_an_affected_run_with_all_steps_records_on_every_step_and_lock_is_refused(self):  # T-3958 review
+        self.red_lane(["test_green.py"])
+        self.fm("task", "step", "T-0001", "add", "second")
+        r = self.fm("check", "--affected", "--evidence", "T-0001", "--all-steps", check=False, timeout=300)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        ev = c.find_brief(c.find_project(self.repo), "T-0001").evidence()
+        for n in (1, 2):
+            self.assertEqual(len([l for l in ev if f"(step {n})" in l and "affected tests only" in l]), 1, ev)
+        r = self.fm("check", "--affected", "--evidence", "T-0001", "--all-steps", "--lock", check=False)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_all_steps_a_cached_pass_records_on_every_step(self):  # T-3958 review
+        self.fm("init")
+        self.fm("check", "add", "true")
+        self.fm("task", "new", "Fix it", "--type", "FIX", "--tier", "S", "--step", "one", "--step", "two", "--ac", "w :: true")
+        self.fm("check")  # the pass to reuse
+        r = self.fm("check", "--evidence", "T-0001", "--all-steps")
+        self.assertIn("cached", r.stdout + r.stderr)
+        ev = c.find_brief(c.find_project(self.repo), "T-0001").evidence()
+        self.assertEqual([n for n in (1, 2) if any(f"(step {n})" in l and "on this tree" in l for l in ev)], [1, 2], ev)
 
     def test_every_linked_test_skipped_is_said_so(self):
         # T-1731 review: "No tests linked" when the one linked test was another lane's red-first file

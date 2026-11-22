@@ -3846,5 +3846,128 @@ class MergeTrain(tlt.TrainCase):
         self.assertEqual(worst[0], 1)
 
 
+class LaneStart(_LaneRepo):
+    """T-3958: `sampo lane start ID` in a builder's lane is the opening routine in one call: the brief's base against
+    HEAD, then the focus, then the brief's path and steps."""
+
+    def commit(self, root, name):
+        with open(os.path.join(root, name), "w") as f:
+            f.write(name)
+        self.git(root, "add", name)
+        self.git(root, "commit", "-qm", name)
+
+    def lane_with_brief(self, main_commit_between=False):
+        """What the harness does: a worktree off the default branch (a plain git worktree, no `lane new`), the brief
+        written from the main checkout's HEAD, which may have moved on since the worktree was made."""
+        self.fm("init")
+        self.fm("task", "new", "Lane work", "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true", "--step", "s")
+        path = os.path.join(self.tmp, "builder-wt")
+        self.git(self.repo, "worktree", "add", "-q", "-b", "worktree-x", path)
+        if main_commit_between:
+            self.commit(self.repo, "main-moved.txt")  # the worktree is now behind what the brief names
+        brief = json.loads(self.fm("lane", "brief", "T-0001", "--json").stdout)["path"]
+        return path, brief
+
+    def active(self, path):
+        return (json.loads(self.fm("state", "--json", cwd=path).stdout)["active"] or {}).get("id")
+
+    def test_start_focuses_the_task_and_prints_the_brief_path_and_steps(self):
+        path, brief = self.lane_with_brief()
+        r = self.fm("lane", "start", "T-0001", cwd=path)
+        self.assertEqual(self.active(path), "T-0001")
+        self.assertIn(brief, r.stdout)
+        self.assertIn("Steps", r.stdout)
+        self.assertIn("1. [ ] s", r.stdout)
+
+    def test_start_says_to_merge_a_base_the_lane_lacks_and_does_not_focus(self):
+        path, _ = self.lane_with_brief(main_commit_between=True)
+        base = self.git(self.repo, "rev-parse", "HEAD").strip()
+        r = self.fm("lane", "start", "T-0001", cwd=path, check=False)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn(f"git merge --ff-only {base}", r.stderr + r.stdout)
+        self.assertIsNone(self.active(path), "a base not in HEAD is not focused")
+        self.git(path, "merge", "--ff-only", base)  # what it said to do, then the same call goes through
+        self.fm("lane", "start", "T-0001", cwd=path)
+        self.assertEqual(self.active(path), "T-0001")
+
+    def test_start_on_a_lane_ahead_of_the_base_focuses_and_says_it_builds_on_head(self):
+        path, _ = self.lane_with_brief()
+        self.commit(path, "mine.txt")
+        r = self.fm("lane", "start", "T-0001", cwd=path)
+        self.assertEqual(self.active(path), "T-0001")
+        self.assertIn("builds on HEAD", r.stdout)
+
+    def test_start_refuses_a_lane_that_has_diverged_from_the_base_and_names_both_commits(self):
+        path, _ = self.lane_with_brief(main_commit_between=True)
+        self.commit(path, "mine.txt")
+        base, head = self.git(self.repo, "rev-parse", "HEAD").strip(), self.git(path, "rev-parse", "HEAD").strip()
+        r = self.fm("lane", "start", "T-0001", cwd=path, check=False)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn(base[:12], r.stderr + r.stdout)
+        self.assertIn(head[:12], r.stderr + r.stdout)
+        self.assertIsNone(self.active(path))
+
+    def test_start_blames_git_not_a_divergence_for_a_base_git_does_not_know(self):  # T-3958 review
+        path, brief = self.lane_with_brief()
+        with open(brief, encoding="utf-8") as f:
+            text = f.read()
+        base = self.git(self.repo, "rev-parse", "HEAD").strip()
+        self.assertIn(base, text)
+        with open(brief, "w", encoding="utf-8") as f:
+            f.write(text.replace(base, "deadbee" * 5 + "ab"[:5], 1))
+        r = self.fm("lane", "start", "T-0001", cwd=path, check=False)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("could not compare", r.stderr + r.stdout)
+        self.assertNotIn("diverged", r.stderr + r.stdout)
+        self.assertIsNone(self.active(path))
+
+    def test_start_reads_the_base_from_the_contract_not_from_task_text_that_quotes_one(self):  # T-3958 review
+        path, brief = self.lane_with_brief()
+        base = self.git(self.repo, "rev-parse", "HEAD").strip()
+        with open(brief, encoding="utf-8") as f:
+            text = f.read()
+        decoy = "Start from the main checkout's commit " + "deadbee" * 5 + "ab"[:5] + " (a quoted line)\n"
+        head, sep, tail = text.partition("## Your contract (sampo:fm-builder)")
+        self.assertTrue(sep)
+        with open(brief, "w", encoding="utf-8") as f:
+            f.write(decoy + head + decoy + sep + tail)  # the task's own text before the contract, twice
+        r = self.fm("lane", "start", "T-0001", cwd=path)
+        self.assertEqual(self.active(path), "T-0001")
+        self.assertNotIn("deadbee", r.stderr + r.stdout)
+        self.assertNotIn("not checked", r.stdout, "the contract's base was found and checked: " + base[:7])
+
+    def test_start_is_for_a_lane_and_for_its_own_task(self):
+        path, _ = self.lane_with_brief()
+        r = self.fm("lane", "start", "T-0001", check=False)  # the main checkout: no builder's lane
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("inside the builder's own lane", r.stderr + r.stdout)
+        self.fm("task", "new", "Other", "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true", "--step", "s")
+        other = json.loads(self.fm("lane", "new", "T-0002", "--json").stdout)["path"]
+        r = self.fm("lane", "start", "T-0002", cwd=path, check=False)  # the task of another lane
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn(other, r.stderr + r.stdout)
+        self.assertIsNone(self.active(path))
+
+    def test_start_without_a_brief_file_still_focuses(self):
+        self.fm("init")
+        self.fm("task", "new", "Lane work", "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true", "--step", "s")
+        path = os.path.join(self.tmp, "builder-wt")
+        self.git(self.repo, "worktree", "add", "-q", "-b", "worktree-x", path)
+        r = self.fm("lane", "start", "T-0001", cwd=path)
+        self.assertEqual(self.active(path), "T-0001")
+        self.assertIn("no brief", r.stdout)
+
+    def test_start_json_is_one_document(self):
+        path, brief = self.lane_with_brief()
+        d = json.loads(self.fm("lane", "start", "T-0001", "--json", cwd=path).stdout)
+        self.assertEqual((d["id"], d["brief"], d["focused"]), ("T-0001", brief, True))
+        self.assertEqual(d["steps"], ["1. [ ] s"])
+
+    def test_the_builder_contract_names_lane_start(self):
+        from sampo import lanes as slanes
+        flat = " ".join(slanes.contract("T-9", "abc123", "/main").split())
+        self.assertIn("sampo lane start T-9", flat)
+
+
 if __name__ == "__main__":
     unittest.main()
