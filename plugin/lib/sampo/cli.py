@@ -12330,6 +12330,9 @@ def _build_parser(only=None):
                                                        "the clean ones (T-4603) "
                                                        "(T-4596; merge ID ID … closes what it lands the same way); "
                                                        "andon: mark this lane's ANDON.md answered, moved aside, no rm (T-3704); "
+                                                       "say ID delta|fix|merge-trunk [steer]: the round's message for the "
+                                                       "builder or reviewer, from the lane tip, the findings and the brief's "
+                                                       "tests; prints only, no model (T-5953); "
                                                        "accept ID --audit LENS 'how' 'result' …: a reviewed lane's audits; refused, "
                                                        "nothing recorded, unless the audits given plus those on record cover what the "
                                                        "close requires for its diff (intent; one of adversary/edge/operator/maintainer; "
@@ -12340,7 +12343,7 @@ def _build_parser(only=None):
                                                        "recover --all: every lane stopped before its merge, one launch line each (T-3922)")
     s.add_argument("action", choices=["new", "list", "rm", "brief", "merge", "max", "resume", "recover", "race", "pick",
                                       "stats", "verify", "train", "precheck", "land", "andon", "accept", "mode", "start",
-                                      "classify", "fixes", "local"])  # local: the headless run of a --model local brief (T-5884); fixes: the review's findings for the lane's builder (T-5477); classify: the detached pass a builder brief starts (T-5723), not typed
+                                      "classify", "fixes", "local", "say"])  # say: sampo lane say ID delta|fix|merge-trunk [steer], the round message built from state, no model (T-5953); local: the headless run of a --model local brief (T-5884); fixes: the review's findings for the lane's builder (T-5477); classify: the detached pass a builder brief starts (T-5723), not typed
     s.add_argument("--all", action="store_true", help="list: every lane's row, or in a builder's lane its own row and a "
                                                       "count of the others (T-5687); recover: every lane stopped before its "
                                                       "merge, one launch line each or the reason it's left (T-3922); merge: "

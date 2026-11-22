@@ -8569,9 +8569,10 @@ def subagent_stop(pl):
                 if tid and aid and earlier is None:  # T-5913: a resumed round binds to this one
                     c.log_event(p, "reviewer_bound", task=tid, session=pl.get("session_id"), data={"agent_id": aid})
                 asked_at = c.now()  # before the findings are logged: none of them is older than the mark it sets
-                for lens, sev, file, text in slanes.reviewer_findings(msg):
+                for lens, sev, file, text, fix in slanes.reviewer_findings(msg, fixes=True):  # T-5953: the fix rides along
                     c.log_event(p, "finding", task=tid, session=pl.get("session_id"),
-                                data={"lens": lens, "severity": sev, "file": file, "text": text, "verdict": "reported"})
+                                data={"lens": lens, "severity": sev, "file": file, "text": text, "verdict": "reported",
+                                      **({"fix": fix} if fix else {})})
                 try:  # T-5516: its verdict's audits, or its changes-needed mark (bookkeeping: never the subagent's event)
                     _reviewer_return(p, tid, pl, msg, asked_at, turns)
                 except Exception:

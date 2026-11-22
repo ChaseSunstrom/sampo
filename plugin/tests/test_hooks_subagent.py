@@ -97,6 +97,8 @@ class ReviewerAudits(ForemanTestCase):
         self.assertTrue(self.brief().meta.get("changes_asked_at"))
         findings = c.ledger_events(c.find_project(self.repo), kinds=["finding"])  # the findings travel as their events
         self.assertTrue(any("trusts the payload text" in json.dumps(e) for e in findings))
+        self.assertTrue(any((e.get("data") or {}).get("fix") == "cap it" for e in findings),
+                        "T-5953: the finding's fix is on its event, for sampo lane say fix")
 
     def test_reviewer_audits_the_same_reviewers_approve_clears_its_mark(self):
         self.stop(CHANGES, agent_id="a1")
