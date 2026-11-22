@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- sampo task evidence, check --evidence, task audit and task done for a task a lane holds now run and stamp in that lane wherever they are called from, a --run-file is judged on the lane's copy with links out of the lane refused, and a leftover non-worktree folder is no lane (T-5517).
 - `sampo lane brief` cites the nearest closed task of the same type as a Precedent recipe (files touched, each step with the command that passed it, its lesson) so a builder starts from how a similar change was made (T-3292).
 - `sampo works grow --grid works --target N` fills the thinnest cells of a type × subject × style × technique grid with best-of-N drafts, a critique of the render, revision and a two-order pairwise rank, keeping each work with its writer, rounds, gate numbers and rank, and nothing for a cell whose drafts all fail (T-3110).
 - A land closes a builder's lane from the close lines its last commit carries when its brief has none, so no hand close is needed (T-5496).
