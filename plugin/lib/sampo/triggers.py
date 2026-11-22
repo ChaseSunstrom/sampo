@@ -301,10 +301,11 @@ def settle_routes(p):
 
 # ---- T-4743: the fold, the append, the learned allowance and the held list. discovered and followup captures were a
 # project's whole inbox (one project: 340 and 77 against ~60 requests); an item an open task already owns goes onto that
-# task, and a trigger files no more a day than its own record earns. The user's captures and the urgent triggers never
+# task, and a trigger files no more a day than its own record earns (unless the user sets its budget: T-5722). The user's
+# captures and the urgent triggers never
 # come through here. Callers hold the project lock (cmd_capture, cmd_research); none of these takes it.
 FOLDED = ("discovered", "followup")
-DAILY_MAX = 12        # a trigger with a clean record may file this many a day
+DAILY_MAX = 40        # a trigger with a clean record may file this many a day (T-5722: was 12)
 MIN_ALLOW = 2         # and one with a bad record this many: demoted, never silenced (as noisy())
 TRAIL_DAYS = 14       # the closed captures of this many days are the record the allowance follows
 DRAIN_LOOKS = 40      # a drain checks this many held items against the open tasks, no more
@@ -387,11 +388,15 @@ def _utc(dt):
 
 def allowance(p, trigger):
     """How many tasks a day this trigger may file: DAILY_MAX until TRAIL_DAYS of its captures hold MIN_CLOSED closed
-    ones, then DAILY_MAX times its precision (done of done and dropped), not under MIN_ALLOW; a budget the user set caps
-    it. None for an urgent trigger and for one that isn't folded."""
+    ones, then DAILY_MAX times its precision (done of done and dropped), not under MIN_ALLOW; a budget the user set is
+    the allowance instead, raising it past the record or capping it under (T-5722). None for an urgent trigger and for
+    one that isn't folded."""
     trigger = _AS.get(trigger, trigger)
     if trigger in URGENT:
         return None
+    budget = row(p, trigger).get("budget")
+    if budget:
+        return budget
     caps = [(t, i) for t, i in _captures(p, TRAIL_DAYS) if _AS.get(t, t) == trigger]
     n = DAILY_MAX
     if len(caps) >= MIN_CLOSED:
@@ -399,8 +404,7 @@ def allowance(p, trigger):
         closed = [status[i] for _, i in caps if status.get(i) in c.CLOSED]
         if len(closed) >= MIN_CLOSED:
             n = max(MIN_ALLOW, round(DAILY_MAX * closed.count("done") / len(closed)))
-    budget = row(p, trigger).get("budget")
-    return min(n, budget) if budget else n
+    return n
 
 
 def filed_today(p, trigger, now=None):
@@ -776,9 +780,10 @@ def replay(p, days):
                   if tr == trig and ts >= _utc(datetime.datetime.strptime(t, "%Y-%m-%dT%H:%M:%SZ").replace(
                       tzinfo=datetime.timezone.utc) - datetime.timedelta(days=TRAIL_DAYS))
                   and tid in recs and recs[tid]["status"] in c.CLOSED and (recs[tid]["close"] or "") <= t]
-        n = DAILY_MAX if len(closed) < MIN_CLOSED else max(MIN_ALLOW, round(DAILY_MAX * closed.count("done") / len(closed)))
         budget = row(p, trig).get("budget")
-        return min(n, budget) if budget else n
+        if budget:  # T-5722: the user's budget is the allowance, as in allowance()
+            return budget
+        return DAILY_MAX if len(closed) < MIN_CLOSED else max(MIN_ALLOW, round(DAILY_MAX * closed.count("done") / len(closed)))
 
     def settle(kind, trig):
         out[kind] += 1

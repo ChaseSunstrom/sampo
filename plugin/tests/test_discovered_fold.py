@@ -132,8 +132,9 @@ class Fold(ForemanTestCase):
         self.assertIsNone(triggers.allowance(self.p, "ci-red"), "a red build has no allowance")
 
     def test_items_over_the_allowance_are_held_shown_and_filed_best_first_next_day(self):
-        self.history("discovered", done=2, dropped=18)  # precision 0.1: the allowance is the floor; 20 filed today
+        self.history("discovered", done=1, dropped=19)  # precision 0.05: the allowance is 2 of 40 (T-5722); 3 items come
         left = triggers.allowance(self.p, "discovered")
+        self.assertEqual(left, 2, "the learned allowance under the 40 a clean record gets")
         n = len(self.tasks())
         out = self.fm("capture", "FEATURE: a prettier banner for the pane", "--source", "discovered").stdout
         self.assertIn("held", out)
@@ -167,6 +168,36 @@ class Fold(ForemanTestCase):
         self.assertEqual(triggers.allowance(self.p, "discovered"), triggers.DAILY_MAX)
         self.fm("capture", "FIX: one finding about the lock leak", "--source", "discovered")
         self.assertEqual(triggers.held(self.p), [])
+
+    def test_a_clean_record_allows_forty_and_a_budget_the_user_sets_raises_it_to_sixty(self):  # T-5722
+        self.assertEqual(triggers.allowance(self.p, "discovered"), 40, "a clean record files forty a day")
+        self.fm("triggers", "set", "discovered", "--budget", "60")
+        self.assertEqual(triggers.allowance(self.p, "discovered"), 60, "the user's budget raises the allowance")
+        self.crowd("discovered", 41)  # past forty: only the raised budget lets the next one file
+        self.fm("capture", "FIX: one more finding about the lock leak", "--source", "discovered")
+        self.assertEqual(triggers.held(self.p), [], "under the raised budget nothing waits")
+
+    def test_a_budget_the_user_sets_below_the_record_caps_the_allowance(self):  # T-5722
+        self.fm("triggers", "set", "discovered", "--budget", "5")
+        self.assertEqual(triggers.allowance(self.p, "discovered"), 5, "the user's budget caps it")
+        self.crowd("discovered", 5)
+        self.fm("capture", "FIX: one finding past the cap", "--source", "discovered")
+        self.assertEqual(len(triggers.held(self.p)), 1, "the sixth waits behind the cap")
+
+    def test_a_budget_the_user_sets_wins_over_a_learned_allowance_both_ways(self):  # T-5722
+        self.history("discovered", done=2, dropped=18)  # precision 0.1: learned down to 4 of 40
+        self.assertEqual(triggers.allowance(self.p, "discovered"), 4)
+        self.fm("triggers", "set", "discovered", "--budget", "60")
+        self.assertEqual(triggers.allowance(self.p, "discovered"), 60, "the budget raises the learned allowance too")
+        self.fm("triggers", "set", "discovered", "--budget", "3")
+        self.assertEqual(triggers.allowance(self.p, "discovered"), 3, "and caps it below the learned one")
+
+    def test_the_replay_allows_the_budget_the_user_sets_both_ways(self):  # T-5722: the replay's own allowance line
+        self.fm("triggers", "set", "discovered", "--budget", "60")
+        self.crowd("discovered", 41)
+        self.assertEqual(triggers.replay(self.p, 7)["held"], 0, "41 filed today under a budget of 60 hold nothing")
+        self.fm("triggers", "set", "discovered", "--budget", "5")
+        self.assertGreater(triggers.replay(self.p, 7)["held"], 0, "a budget of 5 holds what is over it")
 
     # ---- criterion 3: a followup goes through the same fold, append and allowance
     def test_a_followup_item_is_appended_folded_and_held_like_a_discovered_one(self):
