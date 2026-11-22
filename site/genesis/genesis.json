@@ -1,6 +1,6 @@
 {
- "updated": "2026-11-22T01:37:04Z",
- "rev": "c720518ac",
+ "updated": "2026-11-22T05:58:25Z",
+ "rev": "ce5f7a55e",
  "capabilities": [
   {
    "n": 1,
@@ -4466,1218 +4466,6 @@
   }
  ],
  "exam": [
-  {
-   "run": "s0-001",
-   "agent": "smith",
-   "keyed": 3,
-   "found": 1,
-   "false_alarms": 0,
-   "exam_defects": 0,
-   "fixable": 3,
-   "fixed": 0,
-   "tf_keyed": 2,
-   "tf_first": 0,
-   "readings_keyed": 0,
-   "readings_hit": 0,
-   "missing_keyed": 0,
-   "missing_hit": 0,
-   "rank_keyed": 0,
-   "rank_hit": 0,
-   "false_done": 0,
-   "broken": 0,
-   "scenarios": 3,
-   "errors": 0,
-   "reasked": 0,
-   "proved_by_arm": 0,
-   "brier_n": 3,
-   "conf_missing": 3,
-   "brier_sum": 0.75,
-   "false_proofs": 0,
-   "watch_keyed": 0,
-   "watch_started": 0,
-   "watch_hit": 0,
-   "watch_ran": 0,
-   "lanes_keyed": 0,
-   "lanes_recovered": 0,
-   "lanes_kept": 0,
-   "lanes_dup": 0,
-   "lean_keyed": 0,
-   "lean_ok": 0,
-   "forecast_keyed": 0,
-   "forecast_type": 0,
-   "forecast_overlap": 0,
-   "forecast_base_type": 0,
-   "forecast_base_overlap": 0,
-   "breakage_keyed": 0,
-   "breakage_flagged": 0,
-   "breakage_false": 0,
-   "recall": {
-    "lang": {
-     "c": [
-      0,
-      1
-     ],
-     "js": [
-      0,
-      1
-     ],
-     "rust": [
-      1,
-      1
-     ]
-    },
-    "kind": {
-     "bug": [
-      0,
-      1
-     ],
-     "vuln": [
-      0,
-      1
-     ],
-     "untested": [
-      1,
-      1
-     ]
-    }
-   },
-   "holdout": {
-    "keyed": 0,
-    "found": 0,
-    "false_alarms": 0,
-    "exam_defects": 0,
-    "fixable": 0,
-    "fixed": 0,
-    "tf_keyed": 0,
-    "tf_first": 0,
-    "readings_keyed": 0,
-    "readings_hit": 0,
-    "missing_keyed": 0,
-    "missing_hit": 0,
-    "rank_keyed": 0,
-    "rank_hit": 0,
-    "false_done": 0,
-    "broken": 0,
-    "scenarios": 0,
-    "errors": 0,
-    "reasked": 0,
-    "proved_by_arm": 0,
-    "brier_n": 0,
-    "conf_missing": 0,
-    "brier_sum": 0,
-    "false_proofs": 0,
-    "watch_keyed": 0,
-    "watch_started": 0,
-    "watch_hit": 0,
-    "watch_ran": 0,
-    "lanes_keyed": 0,
-    "lanes_recovered": 0,
-    "lanes_kept": 0,
-    "lanes_dup": 0,
-    "lean_keyed": 0,
-    "lean_ok": 0,
-    "forecast_keyed": 0,
-    "forecast_type": 0,
-    "forecast_overlap": 0,
-    "forecast_base_type": 0,
-    "forecast_base_overlap": 0,
-    "breakage_keyed": 0,
-    "breakage_flagged": 0,
-    "breakage_false": 0,
-    "recall": {},
-    "brier": null,
-    "closed_share": null
-   },
-   "train": {
-    "keyed": 3,
-    "found": 1,
-    "false_alarms": 0,
-    "exam_defects": 0,
-    "fixable": 3,
-    "fixed": 0,
-    "tf_keyed": 2,
-    "tf_first": 0,
-    "readings_keyed": 0,
-    "readings_hit": 0,
-    "missing_keyed": 0,
-    "missing_hit": 0,
-    "rank_keyed": 0,
-    "rank_hit": 0,
-    "false_done": 0,
-    "broken": 0,
-    "scenarios": 3,
-    "errors": 0,
-    "reasked": 0,
-    "proved_by_arm": 0,
-    "brier_n": 3,
-    "conf_missing": 3,
-    "brier_sum": 0.75,
-    "false_proofs": 0,
-    "watch_keyed": 0,
-    "watch_started": 0,
-    "watch_hit": 0,
-    "watch_ran": 0,
-    "lanes_keyed": 0,
-    "lanes_recovered": 0,
-    "lanes_kept": 0,
-    "lanes_dup": 0,
-    "lean_keyed": 0,
-    "lean_ok": 0,
-    "forecast_keyed": 0,
-    "forecast_type": 0,
-    "forecast_overlap": 0,
-    "forecast_base_type": 0,
-    "forecast_base_overlap": 0,
-    "breakage_keyed": 0,
-    "breakage_flagged": 0,
-    "breakage_false": 0,
-    "recall": {
-     "lang": {
-      "c": [
-       0,
-       1
-      ],
-      "js": [
-       0,
-       1
-      ],
-      "rust": [
-       1,
-       1
-      ]
-     },
-     "kind": {
-      "bug": [
-       0,
-       1
-      ],
-      "vuln": [
-       0,
-       1
-      ],
-      "untested": [
-       1,
-       1
-      ]
-     }
-    },
-    "brier": 0.25,
-    "closed_share": 0.0
-   },
-   "cost": 0,
-   "closed": {
-    "train": [],
-    "holdout": []
-   },
-   "proved_by_arm_findings": [],
-   "answered": {
-    "holdout": [],
-    "child": []
-   },
-   "ungraded": [],
-   "brier": 0.25,
-   "closed_share": 0.0,
-   "model": "a model",
-   "at": "2026-11-04T12:47:44Z",
-   "gen": 4,
-   "split": "train",
-   "kinds": [
-    "bug",
-    "untested",
-    "vuln"
-   ],
-   "author": "self"
-  },
-  {
-   "run": "s0-001",
-   "agent": "smith",
-   "keyed": 3,
-   "found": 0,
-   "false_alarms": 1,
-   "exam_defects": 0,
-   "fixable": 3,
-   "fixed": 0,
-   "tf_keyed": 2,
-   "tf_first": 0,
-   "readings_keyed": 0,
-   "readings_hit": 0,
-   "missing_keyed": 0,
-   "missing_hit": 0,
-   "rank_keyed": 0,
-   "rank_hit": 0,
-   "false_done": 0,
-   "broken": 0,
-   "scenarios": 3,
-   "errors": 0,
-   "reasked": 0,
-   "proved_by_arm": 0,
-   "brier_n": 3,
-   "conf_missing": 3,
-   "brier_sum": 0.75,
-   "false_proofs": 0,
-   "watch_keyed": 0,
-   "watch_started": 0,
-   "watch_hit": 0,
-   "watch_ran": 0,
-   "lanes_keyed": 0,
-   "lanes_recovered": 0,
-   "lanes_kept": 0,
-   "lanes_dup": 0,
-   "lean_keyed": 0,
-   "lean_ok": 0,
-   "forecast_keyed": 0,
-   "forecast_type": 0,
-   "forecast_overlap": 0,
-   "forecast_base_type": 0,
-   "forecast_base_overlap": 0,
-   "breakage_keyed": 0,
-   "breakage_flagged": 0,
-   "breakage_false": 0,
-   "recall": {
-    "lang": {
-     "c": [
-      0,
-      1
-     ],
-     "js": [
-      0,
-      1
-     ],
-     "rust": [
-      0,
-      1
-     ]
-    },
-    "kind": {
-     "bug": [
-      0,
-      1
-     ],
-     "vuln": [
-      0,
-      1
-     ],
-     "untested": [
-      0,
-      1
-     ]
-    }
-   },
-   "holdout": {
-    "keyed": 0,
-    "found": 0,
-    "false_alarms": 0,
-    "exam_defects": 0,
-    "fixable": 0,
-    "fixed": 0,
-    "tf_keyed": 0,
-    "tf_first": 0,
-    "readings_keyed": 0,
-    "readings_hit": 0,
-    "missing_keyed": 0,
-    "missing_hit": 0,
-    "rank_keyed": 0,
-    "rank_hit": 0,
-    "false_done": 0,
-    "broken": 0,
-    "scenarios": 0,
-    "errors": 0,
-    "reasked": 0,
-    "proved_by_arm": 0,
-    "brier_n": 0,
-    "conf_missing": 0,
-    "brier_sum": 0,
-    "false_proofs": 0,
-    "watch_keyed": 0,
-    "watch_started": 0,
-    "watch_hit": 0,
-    "watch_ran": 0,
-    "lanes_keyed": 0,
-    "lanes_recovered": 0,
-    "lanes_kept": 0,
-    "lanes_dup": 0,
-    "lean_keyed": 0,
-    "lean_ok": 0,
-    "forecast_keyed": 0,
-    "forecast_type": 0,
-    "forecast_overlap": 0,
-    "forecast_base_type": 0,
-    "forecast_base_overlap": 0,
-    "breakage_keyed": 0,
-    "breakage_flagged": 0,
-    "breakage_false": 0,
-    "recall": {},
-    "brier": null,
-    "closed_share": null
-   },
-   "train": {
-    "keyed": 3,
-    "found": 0,
-    "false_alarms": 1,
-    "exam_defects": 0,
-    "fixable": 3,
-    "fixed": 0,
-    "tf_keyed": 2,
-    "tf_first": 0,
-    "readings_keyed": 0,
-    "readings_hit": 0,
-    "missing_keyed": 0,
-    "missing_hit": 0,
-    "rank_keyed": 0,
-    "rank_hit": 0,
-    "false_done": 0,
-    "broken": 0,
-    "scenarios": 3,
-    "errors": 0,
-    "reasked": 0,
-    "proved_by_arm": 0,
-    "brier_n": 3,
-    "conf_missing": 3,
-    "brier_sum": 0.75,
-    "false_proofs": 0,
-    "watch_keyed": 0,
-    "watch_started": 0,
-    "watch_hit": 0,
-    "watch_ran": 0,
-    "lanes_keyed": 0,
-    "lanes_recovered": 0,
-    "lanes_kept": 0,
-    "lanes_dup": 0,
-    "lean_keyed": 0,
-    "lean_ok": 0,
-    "forecast_keyed": 0,
-    "forecast_type": 0,
-    "forecast_overlap": 0,
-    "forecast_base_type": 0,
-    "forecast_base_overlap": 0,
-    "breakage_keyed": 0,
-    "breakage_flagged": 0,
-    "breakage_false": 0,
-    "recall": {
-     "lang": {
-      "c": [
-       0,
-       1
-      ],
-      "js": [
-       0,
-       1
-      ],
-      "rust": [
-       0,
-       1
-      ]
-     },
-     "kind": {
-      "bug": [
-       0,
-       1
-      ],
-      "vuln": [
-       0,
-       1
-      ],
-      "untested": [
-       0,
-       1
-      ]
-     }
-    },
-    "false_by_kind": {
-     "untested": 1
-    },
-    "brier": 0.25,
-    "closed_share": 0.0
-   },
-   "cost": 0,
-   "closed": {
-    "train": [],
-    "holdout": []
-   },
-   "proved_by_arm_findings": [],
-   "answered": {
-    "holdout": [],
-    "child": []
-   },
-   "ungraded": [],
-   "false_by_kind": {
-    "untested": 1
-   },
-   "brier": 0.25,
-   "closed_share": 0.0,
-   "model": "a model",
-   "at": "2026-11-04T12:50:18Z",
-   "gen": 4,
-   "split": "train",
-   "kinds": [
-    "bug",
-    "untested",
-    "vuln"
-   ],
-   "author": "self"
-  },
-  {
-   "run": "s0-001",
-   "agent": "smith",
-   "keyed": 8,
-   "found": 0,
-   "false_alarms": 4,
-   "exam_defects": 0,
-   "fixable": 8,
-   "fixed": 1,
-   "tf_keyed": 4,
-   "tf_first": 0,
-   "readings_keyed": 2,
-   "readings_hit": 0,
-   "missing_keyed": 1,
-   "missing_hit": 0,
-   "rank_keyed": 0,
-   "rank_hit": 0,
-   "false_done": 0,
-   "broken": 0,
-   "scenarios": 10,
-   "errors": 0,
-   "reasked": 0,
-   "proved_by_arm": 0,
-   "brier_n": 10,
-   "conf_missing": 10,
-   "brier_sum": 2.5,
-   "false_proofs": 0,
-   "watch_keyed": 0,
-   "watch_started": 0,
-   "watch_hit": 0,
-   "watch_ran": 0,
-   "lanes_keyed": 0,
-   "lanes_recovered": 0,
-   "lanes_kept": 0,
-   "lanes_dup": 0,
-   "lean_keyed": 0,
-   "lean_ok": 0,
-   "forecast_keyed": 0,
-   "forecast_type": 0,
-   "forecast_overlap": 0,
-   "forecast_base_type": 0,
-   "forecast_base_overlap": 0,
-   "breakage_keyed": 0,
-   "breakage_flagged": 0,
-   "breakage_false": 0,
-   "recall": {
-    "lang": {
-     "c": [
-      0,
-      1
-     ],
-     "js": [
-      0,
-      2
-     ],
-     "rust": [
-      0,
-      3
-     ],
-     "ruby": [
-      0,
-      1
-     ],
-     "python": [
-      0,
-      1
-     ]
-    },
-    "kind": {
-     "bug": [
-      0,
-      1
-     ],
-     "vuln": [
-      0,
-      1
-     ],
-     "untested": [
-      0,
-      1
-     ],
-     "slow": [
-      0,
-      2
-     ],
-     "docs": [
-      0,
-      1
-     ],
-     "flaky": [
-      0,
-      1
-     ],
-     "dep": [
-      0,
-      1
-     ]
-    }
-   },
-   "holdout": {
-    "keyed": 0,
-    "found": 0,
-    "false_alarms": 0,
-    "exam_defects": 0,
-    "fixable": 0,
-    "fixed": 0,
-    "tf_keyed": 0,
-    "tf_first": 0,
-    "readings_keyed": 0,
-    "readings_hit": 0,
-    "missing_keyed": 0,
-    "missing_hit": 0,
-    "rank_keyed": 0,
-    "rank_hit": 0,
-    "false_done": 0,
-    "broken": 0,
-    "scenarios": 0,
-    "errors": 0,
-    "reasked": 0,
-    "proved_by_arm": 0,
-    "brier_n": 0,
-    "conf_missing": 0,
-    "brier_sum": 0,
-    "false_proofs": 0,
-    "watch_keyed": 0,
-    "watch_started": 0,
-    "watch_hit": 0,
-    "watch_ran": 0,
-    "lanes_keyed": 0,
-    "lanes_recovered": 0,
-    "lanes_kept": 0,
-    "lanes_dup": 0,
-    "lean_keyed": 0,
-    "lean_ok": 0,
-    "forecast_keyed": 0,
-    "forecast_type": 0,
-    "forecast_overlap": 0,
-    "forecast_base_type": 0,
-    "forecast_base_overlap": 0,
-    "breakage_keyed": 0,
-    "breakage_flagged": 0,
-    "breakage_false": 0,
-    "recall": {},
-    "brier": null,
-    "closed_share": null
-   },
-   "train": {
-    "keyed": 8,
-    "found": 0,
-    "false_alarms": 4,
-    "exam_defects": 0,
-    "fixable": 8,
-    "fixed": 1,
-    "tf_keyed": 4,
-    "tf_first": 0,
-    "readings_keyed": 2,
-    "readings_hit": 0,
-    "missing_keyed": 1,
-    "missing_hit": 0,
-    "rank_keyed": 0,
-    "rank_hit": 0,
-    "false_done": 0,
-    "broken": 0,
-    "scenarios": 10,
-    "errors": 0,
-    "reasked": 0,
-    "proved_by_arm": 0,
-    "brier_n": 10,
-    "conf_missing": 10,
-    "brier_sum": 2.5,
-    "false_proofs": 0,
-    "watch_keyed": 0,
-    "watch_started": 0,
-    "watch_hit": 0,
-    "watch_ran": 0,
-    "lanes_keyed": 0,
-    "lanes_recovered": 0,
-    "lanes_kept": 0,
-    "lanes_dup": 0,
-    "lean_keyed": 0,
-    "lean_ok": 0,
-    "forecast_keyed": 0,
-    "forecast_type": 0,
-    "forecast_overlap": 0,
-    "forecast_base_type": 0,
-    "forecast_base_overlap": 0,
-    "breakage_keyed": 0,
-    "breakage_flagged": 0,
-    "breakage_false": 0,
-    "recall": {
-     "lang": {
-      "c": [
-       0,
-       1
-      ],
-      "js": [
-       0,
-       2
-      ],
-      "rust": [
-       0,
-       3
-      ],
-      "ruby": [
-       0,
-       1
-      ],
-      "python": [
-       0,
-       1
-      ]
-     },
-     "kind": {
-      "bug": [
-       0,
-       1
-      ],
-      "vuln": [
-       0,
-       1
-      ],
-      "untested": [
-       0,
-       1
-      ],
-      "slow": [
-       0,
-       2
-      ],
-      "docs": [
-       0,
-       1
-      ],
-      "flaky": [
-       0,
-       1
-      ],
-      "dep": [
-       0,
-       1
-      ]
-     }
-    },
-    "false_by_kind": {
-     "untested": 1,
-     "docs": 1,
-     "dep": 1,
-     "vague": 1
-    },
-    "brier": 0.25,
-    "closed_share": 0.0
-   },
-   "cost": 0,
-   "closed": {
-    "train": [],
-    "holdout": []
-   },
-   "proved_by_arm_findings": [],
-   "answered": {
-    "holdout": [],
-    "child": []
-   },
-   "ungraded": [],
-   "false_by_kind": {
-    "untested": 1,
-    "docs": 1,
-    "dep": 1,
-    "vague": 1
-   },
-   "brier": 0.25,
-   "closed_share": 0.0,
-   "model": "a model",
-   "at": "2026-11-04T13:19:30Z",
-   "gen": 4,
-   "split": "train",
-   "kinds": [
-    "ambiguous",
-    "bug",
-    "dep",
-    "docs",
-    "flaky",
-    "missing-tool",
-    "slow",
-    "untested",
-    "vague",
-    "vuln"
-   ],
-   "author": "self"
-  },
-  {
-   "run": "s0-001",
-   "agent": "smith",
-   "keyed": 8,
-   "found": 1,
-   "false_alarms": 1,
-   "exam_defects": 0,
-   "fixable": 8,
-   "fixed": 1,
-   "tf_keyed": 4,
-   "tf_first": 0,
-   "readings_keyed": 2,
-   "readings_hit": 0,
-   "missing_keyed": 1,
-   "missing_hit": 1,
-   "rank_keyed": 0,
-   "rank_hit": 0,
-   "false_done": 0,
-   "broken": 0,
-   "scenarios": 10,
-   "errors": 0,
-   "reasked": 0,
-   "proved_by_arm": 0,
-   "brier_n": 10,
-   "conf_missing": 10,
-   "brier_sum": 2.5,
-   "false_proofs": 0,
-   "watch_keyed": 0,
-   "watch_started": 0,
-   "watch_hit": 0,
-   "watch_ran": 0,
-   "lanes_keyed": 0,
-   "lanes_recovered": 0,
-   "lanes_kept": 0,
-   "lanes_dup": 0,
-   "lean_keyed": 0,
-   "lean_ok": 0,
-   "forecast_keyed": 0,
-   "forecast_type": 0,
-   "forecast_overlap": 0,
-   "forecast_base_type": 0,
-   "forecast_base_overlap": 0,
-   "breakage_keyed": 0,
-   "breakage_flagged": 0,
-   "breakage_false": 0,
-   "recall": {
-    "lang": {
-     "c": [
-      0,
-      1
-     ],
-     "js": [
-      0,
-      2
-     ],
-     "rust": [
-      1,
-      3
-     ],
-     "ruby": [
-      0,
-      1
-     ],
-     "python": [
-      0,
-      1
-     ]
-    },
-    "kind": {
-     "bug": [
-      0,
-      1
-     ],
-     "vuln": [
-      0,
-      1
-     ],
-     "untested": [
-      1,
-      1
-     ],
-     "slow": [
-      0,
-      2
-     ],
-     "docs": [
-      0,
-      1
-     ],
-     "flaky": [
-      0,
-      1
-     ],
-     "dep": [
-      0,
-      1
-     ]
-    }
-   },
-   "holdout": {
-    "keyed": 0,
-    "found": 0,
-    "false_alarms": 0,
-    "exam_defects": 0,
-    "fixable": 0,
-    "fixed": 0,
-    "tf_keyed": 0,
-    "tf_first": 0,
-    "readings_keyed": 0,
-    "readings_hit": 0,
-    "missing_keyed": 0,
-    "missing_hit": 0,
-    "rank_keyed": 0,
-    "rank_hit": 0,
-    "false_done": 0,
-    "broken": 0,
-    "scenarios": 0,
-    "errors": 0,
-    "reasked": 0,
-    "proved_by_arm": 0,
-    "brier_n": 0,
-    "conf_missing": 0,
-    "brier_sum": 0,
-    "false_proofs": 0,
-    "watch_keyed": 0,
-    "watch_started": 0,
-    "watch_hit": 0,
-    "watch_ran": 0,
-    "lanes_keyed": 0,
-    "lanes_recovered": 0,
-    "lanes_kept": 0,
-    "lanes_dup": 0,
-    "lean_keyed": 0,
-    "lean_ok": 0,
-    "forecast_keyed": 0,
-    "forecast_type": 0,
-    "forecast_overlap": 0,
-    "forecast_base_type": 0,
-    "forecast_base_overlap": 0,
-    "breakage_keyed": 0,
-    "breakage_flagged": 0,
-    "breakage_false": 0,
-    "recall": {},
-    "brier": null,
-    "closed_share": null
-   },
-   "train": {
-    "keyed": 8,
-    "found": 1,
-    "false_alarms": 1,
-    "exam_defects": 0,
-    "fixable": 8,
-    "fixed": 1,
-    "tf_keyed": 4,
-    "tf_first": 0,
-    "readings_keyed": 2,
-    "readings_hit": 0,
-    "missing_keyed": 1,
-    "missing_hit": 1,
-    "rank_keyed": 0,
-    "rank_hit": 0,
-    "false_done": 0,
-    "broken": 0,
-    "scenarios": 10,
-    "errors": 0,
-    "reasked": 0,
-    "proved_by_arm": 0,
-    "brier_n": 10,
-    "conf_missing": 10,
-    "brier_sum": 2.5,
-    "false_proofs": 0,
-    "watch_keyed": 0,
-    "watch_started": 0,
-    "watch_hit": 0,
-    "watch_ran": 0,
-    "lanes_keyed": 0,
-    "lanes_recovered": 0,
-    "lanes_kept": 0,
-    "lanes_dup": 0,
-    "lean_keyed": 0,
-    "lean_ok": 0,
-    "forecast_keyed": 0,
-    "forecast_type": 0,
-    "forecast_overlap": 0,
-    "forecast_base_type": 0,
-    "forecast_base_overlap": 0,
-    "breakage_keyed": 0,
-    "breakage_flagged": 0,
-    "breakage_false": 0,
-    "recall": {
-     "lang": {
-      "c": [
-       0,
-       1
-      ],
-      "js": [
-       0,
-       2
-      ],
-      "rust": [
-       1,
-       3
-      ],
-      "ruby": [
-       0,
-       1
-      ],
-      "python": [
-       0,
-       1
-      ]
-     },
-     "kind": {
-      "bug": [
-       0,
-       1
-      ],
-      "vuln": [
-       0,
-       1
-      ],
-      "untested": [
-       1,
-       1
-      ],
-      "slow": [
-       0,
-       2
-      ],
-      "docs": [
-       0,
-       1
-      ],
-      "flaky": [
-       0,
-       1
-      ],
-      "dep": [
-       0,
-       1
-      ]
-     }
-    },
-    "false_by_kind": {
-     "vague": 1
-    },
-    "brier": 0.25,
-    "closed_share": 0.1
-   },
-   "cost": 0,
-   "closed": {
-    "train": [
-     "missing-tool-rust-15f302"
-    ],
-    "holdout": []
-   },
-   "proved_by_arm_findings": [],
-   "answered": {
-    "holdout": [],
-    "child": []
-   },
-   "ungraded": [],
-   "false_by_kind": {
-    "vague": 1
-   },
-   "brier": 0.25,
-   "closed_share": 0.1,
-   "model": "a model",
-   "at": "2026-11-04T13:31:49Z",
-   "gen": 4,
-   "split": "train",
-   "kinds": [
-    "ambiguous",
-    "bug",
-    "dep",
-    "docs",
-    "flaky",
-    "missing-tool",
-    "slow",
-    "untested",
-    "vague",
-    "vuln"
-   ],
-   "author": "self"
-  },
-  {
-   "run": "s4-018",
-   "agent": "smith",
-   "keyed": 4,
-   "found": 0,
-   "false_alarms": 0,
-   "exam_defects": 0,
-   "fixable": 4,
-   "fixed": 0,
-   "tf_keyed": 0,
-   "tf_first": 0,
-   "readings_keyed": 0,
-   "readings_hit": 0,
-   "missing_keyed": 0,
-   "missing_hit": 0,
-   "rank_keyed": 0,
-   "rank_hit": 0,
-   "false_done": 0,
-   "broken": 0,
-   "scenarios": 4,
-   "errors": 0,
-   "reasked": 0,
-   "proved_by_arm": 0,
-   "brier_n": 4,
-   "conf_missing": 4,
-   "brier_sum": 1.0,
-   "false_proofs": 0,
-   "watch_keyed": 0,
-   "watch_started": 0,
-   "watch_hit": 0,
-   "watch_ran": 0,
-   "lanes_keyed": 0,
-   "lanes_recovered": 0,
-   "lanes_kept": 0,
-   "lanes_dup": 0,
-   "lean_keyed": 0,
-   "lean_ok": 0,
-   "forecast_keyed": 0,
-   "forecast_type": 0,
-   "forecast_overlap": 0,
-   "forecast_base_type": 0,
-   "forecast_base_overlap": 0,
-   "breakage_keyed": 0,
-   "breakage_flagged": 0,
-   "breakage_false": 0,
-   "recall": {
-    "lang": {
-     "python": [
-      0,
-      4
-     ]
-    },
-    "kind": {
-     "bug": [
-      0,
-      4
-     ]
-    }
-   },
-   "holdout": {
-    "keyed": 0,
-    "found": 0,
-    "false_alarms": 0,
-    "exam_defects": 0,
-    "fixable": 0,
-    "fixed": 0,
-    "tf_keyed": 0,
-    "tf_first": 0,
-    "readings_keyed": 0,
-    "readings_hit": 0,
-    "missing_keyed": 0,
-    "missing_hit": 0,
-    "rank_keyed": 0,
-    "rank_hit": 0,
-    "false_done": 0,
-    "broken": 0,
-    "scenarios": 0,
-    "errors": 0,
-    "reasked": 0,
-    "proved_by_arm": 0,
-    "brier_n": 0,
-    "conf_missing": 0,
-    "brier_sum": 0,
-    "false_proofs": 0,
-    "watch_keyed": 0,
-    "watch_started": 0,
-    "watch_hit": 0,
-    "watch_ran": 0,
-    "lanes_keyed": 0,
-    "lanes_recovered": 0,
-    "lanes_kept": 0,
-    "lanes_dup": 0,
-    "lean_keyed": 0,
-    "lean_ok": 0,
-    "forecast_keyed": 0,
-    "forecast_type": 0,
-    "forecast_overlap": 0,
-    "forecast_base_type": 0,
-    "forecast_base_overlap": 0,
-    "breakage_keyed": 0,
-    "breakage_flagged": 0,
-    "breakage_false": 0,
-    "recall": {},
-    "brier": null,
-    "closed_share": null
-   },
-   "train": {
-    "keyed": 4,
-    "found": 0,
-    "false_alarms": 0,
-    "exam_defects": 0,
-    "fixable": 4,
-    "fixed": 0,
-    "tf_keyed": 0,
-    "tf_first": 0,
-    "readings_keyed": 0,
-    "readings_hit": 0,
-    "missing_keyed": 0,
-    "missing_hit": 0,
-    "rank_keyed": 0,
-    "rank_hit": 0,
-    "false_done": 0,
-    "broken": 0,
-    "scenarios": 4,
-    "errors": 0,
-    "reasked": 0,
-    "proved_by_arm": 0,
-    "brier_n": 4,
-    "conf_missing": 4,
-    "brier_sum": 1.0,
-    "false_proofs": 0,
-    "watch_keyed": 0,
-    "watch_started": 0,
-    "watch_hit": 0,
-    "watch_ran": 0,
-    "lanes_keyed": 0,
-    "lanes_recovered": 0,
-    "lanes_kept": 0,
-    "lanes_dup": 0,
-    "lean_keyed": 0,
-    "lean_ok": 0,
-    "forecast_keyed": 0,
-    "forecast_type": 0,
-    "forecast_overlap": 0,
-    "forecast_base_type": 0,
-    "forecast_base_overlap": 0,
-    "breakage_keyed": 0,
-    "breakage_flagged": 0,
-    "breakage_false": 0,
-    "recall": {
-     "lang": {
-      "python": [
-       0,
-       4
-      ]
-     },
-     "kind": {
-      "bug": [
-       0,
-       4
-      ]
-     }
-    },
-    "brier": 0.25,
-    "closed_share": 0.0
-   },
-   "cost": 0,
-   "closed": {
-    "train": [],
-    "holdout": []
-   },
-   "proved_by_arm_findings": [],
-   "answered": {
-    "holdout": [],
-    "child": []
-   },
-   "ungraded": [],
-   "brier": 0.25,
-   "closed_share": 0.0,
-   "model": "a model",
-   "at": "2026-11-04T18:39:57Z",
-   "gen": 4,
-   "split": "train",
-   "kinds": [
-    "bug"
-   ],
-   "author": "self"
-  },
   {
    "run": "s4-018",
    "agent": "smith",
@@ -62119,6 +60907,1376 @@
     "goal"
    ],
    "author": "self"
+  },
+  {
+   "run": "s8-049",
+   "agent": "foreman",
+   "keyed": 0,
+   "found": 0,
+   "false_alarms": 0,
+   "exam_defects": 0,
+   "fixable": 48,
+   "fixed": 40,
+   "tf_keyed": 24,
+   "tf_first": 21,
+   "readings_keyed": 0,
+   "readings_hit": 0,
+   "missing_keyed": 0,
+   "missing_hit": 0,
+   "rank_keyed": 0,
+   "rank_hit": 0,
+   "false_done": 5,
+   "broken": 0,
+   "scenarios": 12,
+   "errors": 0,
+   "reasked": 0,
+   "proved_by_arm": 0,
+   "brier_n": 12,
+   "conf_missing": 0,
+   "brier_sum": 3.6888,
+   "false_proofs": 0,
+   "watch_keyed": 0,
+   "watch_started": 0,
+   "watch_hit": 0,
+   "watch_ran": 0,
+   "lanes_keyed": 0,
+   "lanes_recovered": 0,
+   "lanes_kept": 0,
+   "lanes_dup": 0,
+   "lean_keyed": 0,
+   "lean_ok": 0,
+   "forecast_keyed": 0,
+   "forecast_type": 0,
+   "forecast_overlap": 0,
+   "forecast_base_type": 0,
+   "forecast_base_overlap": 0,
+   "breakage_keyed": 0,
+   "breakage_flagged": 0,
+   "breakage_false": 0,
+   "recall": {},
+   "holdout": {
+    "keyed": 0,
+    "found": 0,
+    "false_alarms": 0,
+    "exam_defects": 0,
+    "fixable": 8,
+    "fixed": 7,
+    "tf_keyed": 4,
+    "tf_first": 4,
+    "readings_keyed": 0,
+    "readings_hit": 0,
+    "missing_keyed": 0,
+    "missing_hit": 0,
+    "rank_keyed": 0,
+    "rank_hit": 0,
+    "false_done": 1,
+    "broken": 0,
+    "scenarios": 2,
+    "errors": 0,
+    "reasked": 0,
+    "proved_by_arm": 0,
+    "brier_n": 2,
+    "conf_missing": 0,
+    "brier_sum": 0.7625,
+    "false_proofs": 0,
+    "watch_keyed": 0,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 0,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 0,
+    "lean_ok": 0,
+    "forecast_keyed": 0,
+    "forecast_type": 0,
+    "forecast_overlap": 0,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 0,
+    "breakage_flagged": 0,
+    "breakage_false": 0,
+    "recall": {},
+    "brier": 0.3812,
+    "closed_share": 0.5
+   },
+   "train": {
+    "keyed": 0,
+    "found": 0,
+    "false_alarms": 0,
+    "exam_defects": 0,
+    "fixable": 40,
+    "fixed": 33,
+    "tf_keyed": 20,
+    "tf_first": 17,
+    "readings_keyed": 0,
+    "readings_hit": 0,
+    "missing_keyed": 0,
+    "missing_hit": 0,
+    "rank_keyed": 0,
+    "rank_hit": 0,
+    "false_done": 4,
+    "broken": 0,
+    "scenarios": 10,
+    "errors": 0,
+    "reasked": 0,
+    "proved_by_arm": 0,
+    "brier_n": 10,
+    "conf_missing": 0,
+    "brier_sum": 2.9263,
+    "false_proofs": 0,
+    "watch_keyed": 0,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 0,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 0,
+    "lean_ok": 0,
+    "forecast_keyed": 0,
+    "forecast_type": 0,
+    "forecast_overlap": 0,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 0,
+    "breakage_flagged": 0,
+    "breakage_false": 0,
+    "recall": {},
+    "brier": 0.2926,
+    "closed_share": 0.6
+   },
+   "cost": 1.8261,
+   "closed": {
+    "train": [
+     "goal-c-1764a8",
+     "goal-c-ab86e2",
+     "goal-ruby-f44b59",
+     "goal-rust-1532a6",
+     "goal-rust-ea4f63",
+     "goal-ts-d77eda"
+    ],
+    "holdout": [
+     "goal-c-e61e7e"
+    ]
+   },
+   "proved_by_arm_findings": [],
+   "answered": {
+    "holdout": [
+     "goal-c-e61e7e",
+     "goal-python-14283a"
+    ],
+    "child": []
+   },
+   "ungraded": [],
+   "by_kind": {
+    "goal": {
+     "scenarios": 12,
+     "fixable": 48,
+     "fixed": 40,
+     "done": 12,
+     "false_done": 5,
+     "whole": 7
+    }
+   },
+   "by_lang": {
+    "rust": {
+     "scenarios": 4,
+     "fixable": 16,
+     "fixed": 12,
+     "done": 4,
+     "false_done": 2,
+     "whole": 2
+    },
+    "python": {
+     "scenarios": 2,
+     "fixable": 8,
+     "fixed": 6,
+     "done": 2,
+     "false_done": 2,
+     "whole": 0
+    },
+    "c": {
+     "scenarios": 4,
+     "fixable": 16,
+     "fixed": 14,
+     "done": 4,
+     "false_done": 1,
+     "whole": 3
+    },
+    "ruby": {
+     "scenarios": 1,
+     "fixable": 4,
+     "fixed": 4,
+     "done": 1,
+     "false_done": 0,
+     "whole": 1
+    },
+    "ts": {
+     "scenarios": 1,
+     "fixable": 4,
+     "fixed": 4,
+     "done": 1,
+     "false_done": 0,
+     "whole": 1
+    }
+   },
+   "brier": 0.3074,
+   "closed_share": 0.5833,
+   "model": "sonnet",
+   "seed": 8,
+   "ids": "533064b859c1",
+   "at": "2026-11-22T05:56:00Z",
+   "gen": 4,
+   "split": "all",
+   "kinds": [
+    "goal"
+   ],
+   "author": "self",
+   "scen": {
+    "goal-c-0b1e05": [
+     "goal",
+     4,
+     2
+    ],
+    "goal-c-1764a8": [
+     "goal",
+     4,
+     4
+    ],
+    "goal-c-ab86e2": [
+     "goal",
+     4,
+     4
+    ],
+    "goal-c-e61e7e": [
+     "goal",
+     4,
+     4
+    ],
+    "goal-python-14283a": [
+     "goal",
+     4,
+     3
+    ],
+    "goal-python-f7c04a": [
+     "goal",
+     4,
+     3
+    ],
+    "goal-ruby-f44b59": [
+     "goal",
+     4,
+     4
+    ],
+    "goal-rust-107230": [
+     "goal",
+     4,
+     2
+    ],
+    "goal-rust-1532a6": [
+     "goal",
+     4,
+     4
+    ],
+    "goal-rust-dd2f6e": [
+     "goal",
+     4,
+     2
+    ],
+    "goal-rust-ea4f63": [
+     "goal",
+     4,
+     4
+    ],
+    "goal-ts-d77eda": [
+     "goal",
+     4,
+     4
+    ]
+   }
+  },
+  {
+   "run": "s8-049",
+   "agent": "plain",
+   "keyed": 0,
+   "found": 0,
+   "false_alarms": 0,
+   "exam_defects": 0,
+   "fixable": 48,
+   "fixed": 32,
+   "tf_keyed": 24,
+   "tf_first": 17,
+   "readings_keyed": 0,
+   "readings_hit": 0,
+   "missing_keyed": 0,
+   "missing_hit": 0,
+   "rank_keyed": 0,
+   "rank_hit": 0,
+   "false_done": 10,
+   "broken": 0,
+   "scenarios": 12,
+   "errors": 0,
+   "reasked": 0,
+   "proved_by_arm": 0,
+   "brier_n": 12,
+   "conf_missing": 0,
+   "brier_sum": 7.5575,
+   "false_proofs": 0,
+   "watch_keyed": 0,
+   "watch_started": 0,
+   "watch_hit": 0,
+   "watch_ran": 0,
+   "lanes_keyed": 0,
+   "lanes_recovered": 0,
+   "lanes_kept": 0,
+   "lanes_dup": 0,
+   "lean_keyed": 0,
+   "lean_ok": 0,
+   "forecast_keyed": 0,
+   "forecast_type": 0,
+   "forecast_overlap": 0,
+   "forecast_base_type": 0,
+   "forecast_base_overlap": 0,
+   "breakage_keyed": 0,
+   "breakage_flagged": 0,
+   "breakage_false": 0,
+   "recall": {},
+   "holdout": {
+    "keyed": 0,
+    "found": 0,
+    "false_alarms": 0,
+    "exam_defects": 0,
+    "fixable": 8,
+    "fixed": 5,
+    "tf_keyed": 4,
+    "tf_first": 3,
+    "readings_keyed": 0,
+    "readings_hit": 0,
+    "missing_keyed": 0,
+    "missing_hit": 0,
+    "rank_keyed": 0,
+    "rank_hit": 0,
+    "false_done": 2,
+    "broken": 0,
+    "scenarios": 2,
+    "errors": 0,
+    "reasked": 0,
+    "proved_by_arm": 0,
+    "brier_n": 2,
+    "conf_missing": 0,
+    "brier_sum": 1.3625,
+    "false_proofs": 0,
+    "watch_keyed": 0,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 0,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 0,
+    "lean_ok": 0,
+    "forecast_keyed": 0,
+    "forecast_type": 0,
+    "forecast_overlap": 0,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 0,
+    "breakage_flagged": 0,
+    "breakage_false": 0,
+    "recall": {},
+    "brier": 0.6813,
+    "closed_share": 0.0
+   },
+   "train": {
+    "keyed": 0,
+    "found": 0,
+    "false_alarms": 0,
+    "exam_defects": 0,
+    "fixable": 40,
+    "fixed": 27,
+    "tf_keyed": 20,
+    "tf_first": 14,
+    "readings_keyed": 0,
+    "readings_hit": 0,
+    "missing_keyed": 0,
+    "missing_hit": 0,
+    "rank_keyed": 0,
+    "rank_hit": 0,
+    "false_done": 8,
+    "broken": 0,
+    "scenarios": 10,
+    "errors": 0,
+    "reasked": 0,
+    "proved_by_arm": 0,
+    "brier_n": 10,
+    "conf_missing": 0,
+    "brier_sum": 6.195,
+    "false_proofs": 0,
+    "watch_keyed": 0,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 0,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 0,
+    "lean_ok": 0,
+    "forecast_keyed": 0,
+    "forecast_type": 0,
+    "forecast_overlap": 0,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 0,
+    "breakage_flagged": 0,
+    "breakage_false": 0,
+    "recall": {},
+    "brier": 0.6195,
+    "closed_share": 0.1
+   },
+   "cost": 0.9285,
+   "closed": {
+    "train": [
+     "goal-c-ab86e2"
+    ],
+    "holdout": []
+   },
+   "proved_by_arm_findings": [],
+   "answered": {
+    "holdout": [
+     "goal-c-e61e7e",
+     "goal-python-14283a"
+    ],
+    "child": []
+   },
+   "ungraded": [],
+   "by_kind": {
+    "goal": {
+     "scenarios": 12,
+     "fixable": 48,
+     "fixed": 32,
+     "done": 12,
+     "false_done": 10,
+     "whole": 2
+    }
+   },
+   "by_lang": {
+    "rust": {
+     "scenarios": 4,
+     "fixable": 16,
+     "fixed": 10,
+     "done": 4,
+     "false_done": 4,
+     "whole": 0
+    },
+    "python": {
+     "scenarios": 2,
+     "fixable": 8,
+     "fixed": 6,
+     "done": 2,
+     "false_done": 2,
+     "whole": 0
+    },
+    "c": {
+     "scenarios": 4,
+     "fixable": 16,
+     "fixed": 12,
+     "done": 4,
+     "false_done": 2,
+     "whole": 2
+    },
+    "ruby": {
+     "scenarios": 1,
+     "fixable": 4,
+     "fixed": 2,
+     "done": 1,
+     "false_done": 1,
+     "whole": 0
+    },
+    "ts": {
+     "scenarios": 1,
+     "fixable": 4,
+     "fixed": 2,
+     "done": 1,
+     "false_done": 1,
+     "whole": 0
+    }
+   },
+   "brier": 0.6298,
+   "closed_share": 0.0833,
+   "model": "sonnet",
+   "seed": 8,
+   "ids": "533064b859c1",
+   "at": "2026-11-22T05:56:02Z",
+   "gen": 4,
+   "split": "all",
+   "kinds": [
+    "goal"
+   ],
+   "author": "self",
+   "scen": {
+    "goal-c-0b1e05": [
+     "goal",
+     4,
+     4
+    ],
+    "goal-c-1764a8": [
+     "goal",
+     4,
+     2
+    ],
+    "goal-c-ab86e2": [
+     "goal",
+     4,
+     4
+    ],
+    "goal-c-e61e7e": [
+     "goal",
+     4,
+     2
+    ],
+    "goal-python-14283a": [
+     "goal",
+     4,
+     3
+    ],
+    "goal-python-f7c04a": [
+     "goal",
+     4,
+     3
+    ],
+    "goal-ruby-f44b59": [
+     "goal",
+     4,
+     2
+    ],
+    "goal-rust-107230": [
+     "goal",
+     4,
+     2
+    ],
+    "goal-rust-1532a6": [
+     "goal",
+     4,
+     3
+    ],
+    "goal-rust-dd2f6e": [
+     "goal",
+     4,
+     3
+    ],
+    "goal-rust-ea4f63": [
+     "goal",
+     4,
+     2
+    ],
+    "goal-ts-d77eda": [
+     "goal",
+     4,
+     2
+    ]
+   }
+  },
+  {
+   "run": "s8-049",
+   "agent": "smith",
+   "keyed": 0,
+   "found": 0,
+   "false_alarms": 0,
+   "exam_defects": 0,
+   "fixable": 20,
+   "fixed": 4,
+   "tf_keyed": 10,
+   "tf_first": 0,
+   "readings_keyed": 0,
+   "readings_hit": 0,
+   "missing_keyed": 0,
+   "missing_hit": 0,
+   "rank_keyed": 0,
+   "rank_hit": 0,
+   "false_done": 0,
+   "broken": 0,
+   "scenarios": 5,
+   "errors": 0,
+   "reasked": 0,
+   "proved_by_arm": 0,
+   "brier_n": 5,
+   "conf_missing": 0,
+   "brier_sum": 0.0125,
+   "false_proofs": 0,
+   "watch_keyed": 0,
+   "watch_started": 0,
+   "watch_hit": 0,
+   "watch_ran": 0,
+   "lanes_keyed": 0,
+   "lanes_recovered": 0,
+   "lanes_kept": 0,
+   "lanes_dup": 0,
+   "lean_keyed": 0,
+   "lean_ok": 0,
+   "forecast_keyed": 0,
+   "forecast_type": 0,
+   "forecast_overlap": 0,
+   "forecast_base_type": 0,
+   "forecast_base_overlap": 0,
+   "breakage_keyed": 0,
+   "breakage_flagged": 0,
+   "breakage_false": 0,
+   "recall": {},
+   "holdout": {
+    "keyed": 0,
+    "found": 0,
+    "false_alarms": 0,
+    "exam_defects": 0,
+    "fixable": 8,
+    "fixed": 1,
+    "tf_keyed": 4,
+    "tf_first": 0,
+    "readings_keyed": 0,
+    "readings_hit": 0,
+    "missing_keyed": 0,
+    "missing_hit": 0,
+    "rank_keyed": 0,
+    "rank_hit": 0,
+    "false_done": 0,
+    "broken": 0,
+    "scenarios": 2,
+    "errors": 0,
+    "reasked": 0,
+    "proved_by_arm": 0,
+    "brier_n": 2,
+    "conf_missing": 0,
+    "brier_sum": 0.005,
+    "false_proofs": 0,
+    "watch_keyed": 0,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 0,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 0,
+    "lean_ok": 0,
+    "forecast_keyed": 0,
+    "forecast_type": 0,
+    "forecast_overlap": 0,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 0,
+    "breakage_flagged": 0,
+    "breakage_false": 0,
+    "recall": {},
+    "brier": 0.0025,
+    "closed_share": 0.0
+   },
+   "train": {
+    "keyed": 0,
+    "found": 0,
+    "false_alarms": 0,
+    "exam_defects": 0,
+    "fixable": 12,
+    "fixed": 3,
+    "tf_keyed": 6,
+    "tf_first": 0,
+    "readings_keyed": 0,
+    "readings_hit": 0,
+    "missing_keyed": 0,
+    "missing_hit": 0,
+    "rank_keyed": 0,
+    "rank_hit": 0,
+    "false_done": 0,
+    "broken": 0,
+    "scenarios": 3,
+    "errors": 0,
+    "reasked": 0,
+    "proved_by_arm": 0,
+    "brier_n": 3,
+    "conf_missing": 0,
+    "brier_sum": 0.0075,
+    "false_proofs": 0,
+    "watch_keyed": 0,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 0,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 0,
+    "lean_ok": 0,
+    "forecast_keyed": 0,
+    "forecast_type": 0,
+    "forecast_overlap": 0,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 0,
+    "breakage_flagged": 0,
+    "breakage_false": 0,
+    "recall": {},
+    "brier": 0.0025,
+    "closed_share": 0.0
+   },
+   "cost": 0,
+   "closed": {
+    "train": [],
+    "holdout": []
+   },
+   "proved_by_arm_findings": [],
+   "answered": {
+    "holdout": [
+     "goal-c-e61e7e",
+     "goal-python-14283a"
+    ],
+    "child": []
+   },
+   "ungraded": [],
+   "by_kind": {
+    "goal": {
+     "scenarios": 5,
+     "fixable": 20,
+     "fixed": 4,
+     "done": 0,
+     "false_done": 0,
+     "whole": 0
+    }
+   },
+   "by_lang": {
+    "rust": {
+     "scenarios": 2,
+     "fixable": 8,
+     "fixed": 3,
+     "done": 0,
+     "false_done": 0,
+     "whole": 0
+    },
+    "python": {
+     "scenarios": 1,
+     "fixable": 4,
+     "fixed": 1,
+     "done": 0,
+     "false_done": 0,
+     "whole": 0
+    },
+    "c": {
+     "scenarios": 2,
+     "fixable": 8,
+     "fixed": 0,
+     "done": 0,
+     "false_done": 0,
+     "whole": 0
+    }
+   },
+   "brier": 0.0025,
+   "closed_share": 0.0,
+   "tokens": 2225779,
+   "fix_rate": 0.0,
+   "tokens_per_fix": null,
+   "model": "a model",
+   "thinking": "off",
+   "search": "1",
+   "search_rows": [
+    {
+     "kind": "goal",
+     "n": 5,
+     "fixable": 20,
+     "fixed": 4,
+     "rate": 0.2,
+     "seconds": 149.6,
+     "calls_per_fix": 87.8,
+     "ref_fixable": 20,
+     "ref_fixed": 17,
+     "ref_rate": 0.85,
+     "ref_seconds": null,
+     "gap": -0.65,
+     "n_search": 5,
+     "ref_n": 12
+    }
+   ],
+   "seed": 8,
+   "ids": "b93a65d03abf",
+   "at": "2026-11-22T05:56:03Z",
+   "gen": 4,
+   "split": "all",
+   "kinds": [
+    "goal"
+   ],
+   "author": "self"
+  },
+  {
+   "run": "s8-053",
+   "agent": "foreman",
+   "keyed": 0,
+   "found": 0,
+   "false_alarms": 0,
+   "exam_defects": 0,
+   "fixable": 48,
+   "fixed": 45,
+   "tf_keyed": 24,
+   "tf_first": 18,
+   "readings_keyed": 0,
+   "readings_hit": 0,
+   "missing_keyed": 0,
+   "missing_hit": 0,
+   "rank_keyed": 0,
+   "rank_hit": 0,
+   "false_done": 2,
+   "broken": 0,
+   "scenarios": 12,
+   "errors": 0,
+   "reasked": 0,
+   "proved_by_arm": 0,
+   "brier_n": 12,
+   "conf_missing": 0,
+   "brier_sum": 4.606,
+   "false_proofs": 0,
+   "watch_keyed": 0,
+   "watch_started": 0,
+   "watch_hit": 0,
+   "watch_ran": 0,
+   "lanes_keyed": 0,
+   "lanes_recovered": 0,
+   "lanes_kept": 0,
+   "lanes_dup": 0,
+   "lean_keyed": 0,
+   "lean_ok": 0,
+   "forecast_keyed": 0,
+   "forecast_type": 0,
+   "forecast_overlap": 0,
+   "forecast_base_type": 0,
+   "forecast_base_overlap": 0,
+   "breakage_keyed": 0,
+   "breakage_flagged": 0,
+   "breakage_false": 0,
+   "recall": {},
+   "holdout": {
+    "keyed": 0,
+    "found": 0,
+    "false_alarms": 0,
+    "exam_defects": 0,
+    "fixable": 8,
+    "fixed": 6,
+    "tf_keyed": 4,
+    "tf_first": 1,
+    "readings_keyed": 0,
+    "readings_hit": 0,
+    "missing_keyed": 0,
+    "missing_hit": 0,
+    "rank_keyed": 0,
+    "rank_hit": 0,
+    "false_done": 1,
+    "broken": 0,
+    "scenarios": 2,
+    "errors": 0,
+    "reasked": 0,
+    "proved_by_arm": 0,
+    "brier_n": 2,
+    "conf_missing": 0,
+    "brier_sum": 1.514,
+    "false_proofs": 0,
+    "watch_keyed": 0,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 0,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 0,
+    "lean_ok": 0,
+    "forecast_keyed": 0,
+    "forecast_type": 0,
+    "forecast_overlap": 0,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 0,
+    "breakage_flagged": 0,
+    "breakage_false": 0,
+    "recall": {},
+    "brier": 0.757,
+    "closed_share": 0.0
+   },
+   "train": {
+    "keyed": 0,
+    "found": 0,
+    "false_alarms": 0,
+    "exam_defects": 0,
+    "fixable": 40,
+    "fixed": 39,
+    "tf_keyed": 20,
+    "tf_first": 17,
+    "readings_keyed": 0,
+    "readings_hit": 0,
+    "missing_keyed": 0,
+    "missing_hit": 0,
+    "rank_keyed": 0,
+    "rank_hit": 0,
+    "false_done": 1,
+    "broken": 0,
+    "scenarios": 10,
+    "errors": 0,
+    "reasked": 0,
+    "proved_by_arm": 0,
+    "brier_n": 10,
+    "conf_missing": 0,
+    "brier_sum": 3.092,
+    "false_proofs": 0,
+    "watch_keyed": 0,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 0,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 0,
+    "lean_ok": 0,
+    "forecast_keyed": 0,
+    "forecast_type": 0,
+    "forecast_overlap": 0,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 0,
+    "breakage_flagged": 0,
+    "breakage_false": 0,
+    "recall": {},
+    "brier": 0.3092,
+    "closed_share": 0.6
+   },
+   "cost": 12.8663,
+   "closed": {
+    "train": [
+     "goal-python-f7c04a",
+     "goal-rust-107230",
+     "goal-rust-1532a6",
+     "goal-rust-dd2f6e",
+     "goal-rust-ea4f63",
+     "goal-ts-d77eda"
+    ],
+    "holdout": []
+   },
+   "proved_by_arm_findings": [],
+   "answered": {
+    "holdout": [
+     "goal-c-e61e7e",
+     "goal-python-14283a"
+    ],
+    "child": []
+   },
+   "ungraded": [],
+   "by_kind": {
+    "goal": {
+     "scenarios": 12,
+     "fixable": 48,
+     "fixed": 45,
+     "done": 12,
+     "false_done": 2,
+     "whole": 10
+    }
+   },
+   "by_lang": {
+    "rust": {
+     "scenarios": 4,
+     "fixable": 16,
+     "fixed": 16,
+     "done": 4,
+     "false_done": 0,
+     "whole": 4
+    },
+    "python": {
+     "scenarios": 2,
+     "fixable": 8,
+     "fixed": 6,
+     "done": 2,
+     "false_done": 1,
+     "whole": 1
+    },
+    "c": {
+     "scenarios": 4,
+     "fixable": 16,
+     "fixed": 16,
+     "done": 4,
+     "false_done": 0,
+     "whole": 4
+    },
+    "ruby": {
+     "scenarios": 1,
+     "fixable": 4,
+     "fixed": 3,
+     "done": 1,
+     "false_done": 1,
+     "whole": 0
+    },
+    "ts": {
+     "scenarios": 1,
+     "fixable": 4,
+     "fixed": 4,
+     "done": 1,
+     "false_done": 0,
+     "whole": 1
+    }
+   },
+   "brier": 0.3838,
+   "closed_share": 0.5,
+   "model": "claude-fable-5-2",
+   "seed": 8,
+   "ids": "533064b859c1",
+   "at": "2026-11-22T05:56:11Z",
+   "gen": 4,
+   "split": "all",
+   "kinds": [
+    "goal"
+   ],
+   "author": "self",
+   "scen": {
+    "goal-c-0b1e05": [
+     "goal",
+     4,
+     4
+    ],
+    "goal-c-1764a8": [
+     "goal",
+     4,
+     4
+    ],
+    "goal-c-ab86e2": [
+     "goal",
+     4,
+     4
+    ],
+    "goal-c-e61e7e": [
+     "goal",
+     4,
+     4
+    ],
+    "goal-python-14283a": [
+     "goal",
+     4,
+     2
+    ],
+    "goal-python-f7c04a": [
+     "goal",
+     4,
+     4
+    ],
+    "goal-ruby-f44b59": [
+     "goal",
+     4,
+     3
+    ],
+    "goal-rust-107230": [
+     "goal",
+     4,
+     4
+    ],
+    "goal-rust-1532a6": [
+     "goal",
+     4,
+     4
+    ],
+    "goal-rust-dd2f6e": [
+     "goal",
+     4,
+     4
+    ],
+    "goal-rust-ea4f63": [
+     "goal",
+     4,
+     4
+    ],
+    "goal-ts-d77eda": [
+     "goal",
+     4,
+     4
+    ]
+   }
+  },
+  {
+   "run": "s8-053",
+   "agent": "plain",
+   "keyed": 0,
+   "found": 0,
+   "false_alarms": 0,
+   "exam_defects": 0,
+   "fixable": 48,
+   "fixed": 38,
+   "tf_keyed": 24,
+   "tf_first": 13,
+   "readings_keyed": 0,
+   "readings_hit": 0,
+   "missing_keyed": 0,
+   "missing_hit": 0,
+   "rank_keyed": 0,
+   "rank_hit": 0,
+   "false_done": 10,
+   "broken": 0,
+   "scenarios": 12,
+   "errors": 0,
+   "reasked": 0,
+   "proved_by_arm": 0,
+   "brier_n": 12,
+   "conf_missing": 0,
+   "brier_sum": 8.1176,
+   "false_proofs": 0,
+   "watch_keyed": 0,
+   "watch_started": 0,
+   "watch_hit": 0,
+   "watch_ran": 0,
+   "lanes_keyed": 0,
+   "lanes_recovered": 0,
+   "lanes_kept": 0,
+   "lanes_dup": 0,
+   "lean_keyed": 0,
+   "lean_ok": 0,
+   "forecast_keyed": 0,
+   "forecast_type": 0,
+   "forecast_overlap": 0,
+   "forecast_base_type": 0,
+   "forecast_base_overlap": 0,
+   "breakage_keyed": 0,
+   "breakage_flagged": 0,
+   "breakage_false": 0,
+   "recall": {},
+   "holdout": {
+    "keyed": 0,
+    "found": 0,
+    "false_alarms": 0,
+    "exam_defects": 0,
+    "fixable": 8,
+    "fixed": 7,
+    "tf_keyed": 4,
+    "tf_first": 4,
+    "readings_keyed": 0,
+    "readings_hit": 0,
+    "missing_keyed": 0,
+    "missing_hit": 0,
+    "rank_keyed": 0,
+    "rank_hit": 0,
+    "false_done": 1,
+    "broken": 0,
+    "scenarios": 2,
+    "errors": 0,
+    "reasked": 0,
+    "proved_by_arm": 0,
+    "brier_n": 2,
+    "conf_missing": 0,
+    "brier_sum": 0.7888,
+    "false_proofs": 0,
+    "watch_keyed": 0,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 0,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 0,
+    "lean_ok": 0,
+    "forecast_keyed": 0,
+    "forecast_type": 0,
+    "forecast_overlap": 0,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 0,
+    "breakage_flagged": 0,
+    "breakage_false": 0,
+    "recall": {},
+    "brier": 0.3944,
+    "closed_share": 0.5
+   },
+   "train": {
+    "keyed": 0,
+    "found": 0,
+    "false_alarms": 0,
+    "exam_defects": 0,
+    "fixable": 40,
+    "fixed": 31,
+    "tf_keyed": 20,
+    "tf_first": 9,
+    "readings_keyed": 0,
+    "readings_hit": 0,
+    "missing_keyed": 0,
+    "missing_hit": 0,
+    "rank_keyed": 0,
+    "rank_hit": 0,
+    "false_done": 9,
+    "broken": 0,
+    "scenarios": 10,
+    "errors": 0,
+    "reasked": 0,
+    "proved_by_arm": 0,
+    "brier_n": 10,
+    "conf_missing": 0,
+    "brier_sum": 7.3288,
+    "false_proofs": 0,
+    "watch_keyed": 0,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 0,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 0,
+    "lean_ok": 0,
+    "forecast_keyed": 0,
+    "forecast_type": 0,
+    "forecast_overlap": 0,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 0,
+    "breakage_flagged": 0,
+    "breakage_false": 0,
+    "recall": {},
+    "brier": 0.7329,
+    "closed_share": 0.0
+   },
+   "cost": 5.8414,
+   "closed": {
+    "train": [],
+    "holdout": [
+     "goal-c-e61e7e"
+    ]
+   },
+   "proved_by_arm_findings": [],
+   "answered": {
+    "holdout": [
+     "goal-c-e61e7e",
+     "goal-python-14283a"
+    ],
+    "child": []
+   },
+   "ungraded": [],
+   "by_kind": {
+    "goal": {
+     "scenarios": 12,
+     "fixable": 48,
+     "fixed": 38,
+     "done": 12,
+     "false_done": 10,
+     "whole": 2
+    }
+   },
+   "by_lang": {
+    "rust": {
+     "scenarios": 4,
+     "fixable": 16,
+     "fixed": 12,
+     "done": 4,
+     "false_done": 4,
+     "whole": 0
+    },
+    "python": {
+     "scenarios": 2,
+     "fixable": 8,
+     "fixed": 6,
+     "done": 2,
+     "false_done": 2,
+     "whole": 0
+    },
+    "c": {
+     "scenarios": 4,
+     "fixable": 16,
+     "fixed": 14,
+     "done": 4,
+     "false_done": 2,
+     "whole": 2
+    },
+    "ruby": {
+     "scenarios": 1,
+     "fixable": 4,
+     "fixed": 3,
+     "done": 1,
+     "false_done": 1,
+     "whole": 0
+    },
+    "ts": {
+     "scenarios": 1,
+     "fixable": 4,
+     "fixed": 3,
+     "done": 1,
+     "false_done": 1,
+     "whole": 0
+    }
+   },
+   "brier": 0.6765,
+   "closed_share": 0.0833,
+   "model": "claude-fable-5-2",
+   "seed": 8,
+   "ids": "533064b859c1",
+   "at": "2026-11-22T05:56:12Z",
+   "gen": 4,
+   "split": "all",
+   "kinds": [
+    "goal"
+   ],
+   "author": "self",
+   "scen": {
+    "goal-c-0b1e05": [
+     "goal",
+     4,
+     3
+    ],
+    "goal-c-1764a8": [
+     "goal",
+     4,
+     4
+    ],
+    "goal-c-ab86e2": [
+     "goal",
+     4,
+     3
+    ],
+    "goal-c-e61e7e": [
+     "goal",
+     4,
+     4
+    ],
+    "goal-python-14283a": [
+     "goal",
+     4,
+     3
+    ],
+    "goal-python-f7c04a": [
+     "goal",
+     4,
+     3
+    ],
+    "goal-ruby-f44b59": [
+     "goal",
+     4,
+     3
+    ],
+    "goal-rust-107230": [
+     "goal",
+     4,
+     3
+    ],
+    "goal-rust-1532a6": [
+     "goal",
+     4,
+     3
+    ],
+    "goal-rust-dd2f6e": [
+     "goal",
+     4,
+     3
+    ],
+    "goal-rust-ea4f63": [
+     "goal",
+     4,
+     3
+    ],
+    "goal-ts-d77eda": [
+     "goal",
+     4,
+     3
+    ]
+   }
   }
  ],
  "coverage": {
@@ -64735,18 +64893,18 @@
  },
  "not_yet": 8,
  "not_yet_open": 0,
- "unproven": 823,
+ "unproven": 836,
  "unproven_kinds": {
-  "typed": 84,
-  "meaning-user": 84,
-  "research-uncited": 27,
-  "meaning-notes": 410,
-  "docs": 165,
+  "typed": 86,
+  "meaning-user": 85,
+  "research-uncited": 26,
+  "meaning-notes": 414,
+  "docs": 157,
   "red": 77,
-  "perf-typed": 150,
+  "perf-typed": 156,
   "infra": 10,
   "ui-unshot": 3,
-  "tui-unshot": 4,
+  "tui-unshot": 6,
   "data": 3,
   "perf-noise": 1
  },
@@ -65593,7 +65751,7 @@
     "novelty": "5",
     "stage": "idea",
     "unblocks": [],
-    "asked": "T-0260"
+    "asked": "T-5568"
    },
    {
     "id": "M-37",
@@ -69285,7 +69443,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 330.4,
+    "idle_h": 334.8,
     "spend": 0,
     "missions": 1,
     "restarted": 1794121960.535213,
@@ -69308,7 +69466,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 330.6,
+    "idle_h": 334.9,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.599455,
@@ -69331,7 +69489,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 330.4,
+    "idle_h": 334.8,
     "spend": 0,
     "missions": 1,
     "restarted": 1794121967.999056,
@@ -69354,7 +69512,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 330.4,
+    "idle_h": 334.8,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.6324291,
@@ -69377,7 +69535,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 330.3,
+    "idle_h": 334.6,
     "spend": 0,
     "missions": 1,
     "restarted": 1794122562.2909884,
@@ -69400,7 +69558,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 330.3,
+    "idle_h": 334.6,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.4659588,
@@ -69423,7 +69581,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 330.0,
+    "idle_h": 334.4,
     "spend": 0,
     "missions": 1,
     "restarted": 1794123380.885613,
@@ -69446,7 +69604,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 330.0,
+    "idle_h": 334.4,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.498627,
@@ -69469,7 +69627,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 330.1,
+    "idle_h": 334.5,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.5147183,
@@ -69492,7 +69650,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 331.8,
+    "idle_h": 336.1,
     "spend": 0,
     "missions": 0,
     "restarted": 1794117043.5747485,
@@ -69515,7 +69673,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 331.4,
+    "idle_h": 335.8,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118380.3416526,
@@ -69538,7 +69696,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 331.4,
+    "idle_h": 335.8,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118361.1994553,
@@ -69561,7 +69719,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 331.5,
+    "idle_h": 335.8,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118199.6757877,
@@ -69584,7 +69742,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 331.5,
+    "idle_h": 335.8,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118077.9765282,
@@ -69607,7 +69765,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 331.3,
+    "idle_h": 335.6,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118859.5629494,
@@ -69630,7 +69788,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 331.2,
+    "idle_h": 335.6,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118976.4831173,
@@ -69653,7 +69811,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 331.3,
+    "idle_h": 335.6,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118909.105619,
@@ -69676,7 +69834,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 331.2,
+    "idle_h": 335.6,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119078.902836,
@@ -69699,7 +69857,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 331.0,
+    "idle_h": 335.4,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119714.3650527,
@@ -69722,7 +69880,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 331.0,
+    "idle_h": 335.4,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119789.0770543,
@@ -69745,7 +69903,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 331.0,
+    "idle_h": 335.4,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119787.6820118,
@@ -69768,7 +69926,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 331.0,
+    "idle_h": 335.4,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119848.5161927,
@@ -69791,7 +69949,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 330.8,
+    "idle_h": 335.2,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120496.255495,
@@ -69814,7 +69972,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 330.8,
+    "idle_h": 335.1,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120635.9146411,
@@ -69837,7 +69995,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 330.8,
+    "idle_h": 335.1,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120649.5444589,
@@ -69860,7 +70018,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 330.9,
+    "idle_h": 335.2,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120343.9599955,
