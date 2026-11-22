@@ -7401,6 +7401,10 @@ def _drive_push(p, sd, briefs, pl, g, saved=True):
         from sampo import train as strain
         if strain.landing(p) or train:  # T-3500: a land under way takes these; a merge named beside it would race it
             done = []
+    if not work:  # T-5793: a train past twice its typical time is said once, with the lanes and its age
+        late = _overdue_push(p, d, saved)
+        if late:
+            return late
     if not work and (held or done):  # said once per set of lanes; each builder's notification wakes the session
         if d.get("lanes") == held + ["done"] + done or not saved:
             return None
@@ -7647,6 +7651,25 @@ def _train_live(p):
     except Exception:  # a lock that can't be read never traps the drive
         log_error("Stop", _tb())
     return False
+
+
+def _overdue_push(p, d, saved):
+    """T-5793: a train running past twice its typical time (train.overdue_train) is one drive line, said once per train (d
+    keeps the train's key; a Stop that can't record it waits for one that can). None when no train is overdue."""
+    try:
+        from sampo import train as strain
+        o = strain.overdue_train(p)
+        if not o:
+            d.pop("overdue", None)
+            return None
+        if d.get("overdue") == o["key"] or not saved:
+            return None
+        d["overdue"] = o["key"]
+        return _line("Sampo drive: " + strain.overdue_text(o), ["; sampo pulse shows it, and kill -USR1 on the land's pid "
+                     "dumps its stacks to state/logs/stacks", "; sampo pulse shows it"])
+    except Exception:  # a record that can't be read never traps the drive
+        log_error("Stop", _tb())
+    return None
 
 
 def _merge_waits(p):

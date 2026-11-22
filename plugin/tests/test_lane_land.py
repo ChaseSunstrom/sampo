@@ -1427,6 +1427,241 @@ class StackedDependent(LandCase):
                           "a dropped dependency never lands: holding for it holds forever")
 
 
+class StackDump(LandCase):
+    """T-5793: `sampo lane land` registered no SIGUSR1 stack dump, so a SIGUSR1 sent to see where a land stood ended it.
+    Its re-exec (cmd_land's os.execv) enters cli.main again, which registers it anew."""
+
+    def dumped_in(self, *argv):
+        """Run `fm <argv>` in this process with cmd_land (and cmd) replaced by a verb that sends itself SIGUSR1: its text
+        in state/logs/stacks/<verb>-<pid>.txt once written, or None; and whether the verb was still alive after."""
+        import signal
+        seen = {}
+
+        def hang_here_land(p, args, main):
+            os.kill(os.getpid(), signal.SIGUSR1)
+            path = next((os.path.join(d, f) for d in [os.path.join(c.state_dir(), "logs", "stacks")] if os.path.isdir(d)
+                         for f in os.listdir(d) if f.endswith(f"-{os.getpid()}.txt")), None)
+            end = time.time() + 10
+            while path and time.time() < end and not os.path.getsize(path):
+                time.sleep(0.05)
+            seen["path"], seen["text"] = path, (open(path).read() if path else None)
+            return 0
+        with self.in_project(), mock.patch.object(train, "cmd_land", hang_here_land), \
+                mock.patch.object(train, "cmd", hang_here_land):
+            rc = cli.main(list(argv))
+        return rc, seen
+
+    def test_stack_dump_is_registered_for_lane_land(self):
+        rc, seen = self.dumped_in("lane", "land")
+        self.assertEqual(rc, 0)
+        self.assertIsNotNone(seen["path"], "no dump file was opened for the land")
+        self.assertTrue(os.path.basename(seen["path"]).startswith("land-"), seen)
+        self.assertIn("hang_here_land", seen["text"], "SIGUSR1 wrote every thread's stack")
+
+    def test_stack_dump_is_registered_for_lane_train(self):
+        rc, seen = self.dumped_in("lane", "train", "T-0001")
+        self.assertEqual(rc, 0)
+        self.assertIn("hang_here_land", seen["text"] or "", seen)
+
+    def test_stack_dump_is_not_registered_for_a_short_lane_verb(self):
+        parser = cli.build_parser()
+        self.assertIsNone(cli.stack_verb(parser.parse_args(["lane", "list"])))
+        self.assertEqual(cli.stack_verb(parser.parse_args(["lane", "land"])), "land")
+        self.assertEqual(cli.stack_verb(parser.parse_args(["check"])), "check")
+
+
+class StopReason(LandCase):
+    """T-5793: 2026-11-22 a land's first train was refused (a close held trunk) and the land looked wedged for an hour:
+    the stop broke the loop, then every leftover (merged and open) was queued and the land joined all of their closes, one
+    to four minutes each, before its summary named the stop; meanwhile it held the land lock and ignored --first lanes."""
+
+    def setUp(self):
+        super().setUp()
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(self.repo)
+        self.p = c.find_project(self.repo)
+
+    def leftovers(self, n):
+        """n lanes a train of one merged and left open: a land finds them as leftovers and would close each one."""
+        out = []
+        for i in range(n):
+            tid = self.lane(i + 1, f"left{i}.txt", when=OLD)
+            self.audited(tid)
+            self.returned(tid, f"Lane {i + 1}")
+            self.train(tid)
+            out.append(tid)
+        return out
+
+    def land_with(self, fake_train):
+        """A land (this process) with train.train replaced by `fake_train(real, ids)`; the closes it began are listed.
+        Returns (got, stderr text, closes begun, stderr text at the first close)."""
+        import io
+        closes, err, at_close = [], io.StringIO(), []
+        real_close, real_train = train._close, train.train
+
+        def close(p, main, tid, *a, **k):
+            closes.append(tid)
+            at_close.append(err.getvalue())
+            return real_close(p, main, tid, *a, **k)
+
+        def trained(p, main, ids, *a, **k):
+            return fake_train(lambda: real_train(p, main, ids, *a, **k), list(ids))
+        with self.in_project(), contextlib.redirect_stderr(err), mock.patch.object(train, "_close", close), \
+                mock.patch.object(train, "train", trained):
+            got = train.land(self.p, self.repo, 1)
+        return got, err.getvalue(), closes, (at_close[0] if at_close else None)
+
+    def test_stop_reason_is_printed_at_once_and_no_leftover_is_queued(self):
+        left = self.leftovers(4)
+        a = self.lane(9, "nine.txt", when=OLD)
+        self.audited(a)
+        self.returned(a, "Lane 9")
+
+        def red(real, ids):
+            raise c.PolicyError("the base is red: a test fails")
+        got, err, closes, _ = self.land_with(red)
+        self.assertIn("the base is red", got["stopped"])
+        self.assertIn("sampo lane land: stopped: the base is red", err, err)
+        self.assertEqual(closes, [], f"a stopped land closes no leftover (the next land does): {closes}")
+        self.assertEqual([self.brief(t).status for t in left], ["active"] * 4, "left merged and unclosed for the next land")
+
+    def test_stop_reason_a_train_refused_only_by_a_close_holding_trunk_is_tried_again(self):
+        a = self.lane(1, "one.txt", when=OLD)
+        self.audited(a)
+        self.returned(a, "Lane 1")
+        calls = []
+
+        def busy_once(real, ids):
+            calls.append(list(ids))
+            if len(calls) == 1:
+                raise c.LockTimeout("train lock busy")
+            return real()
+        with mock.patch.object(train, "_closing", lambda p: True):  # a hand close holds the train's lock
+            got, err, closes, _ = self.land_with(busy_once)
+        self.assertEqual(calls, [[a], [a]], f"tried again after the close: {calls} {err}")
+        self.assertEqual(got["landed"], [a], (got, err))
+        self.assertEqual(got["stopped"], "", got)
+
+    def test_stop_reason_a_refusal_with_no_close_holding_trunk_still_stops_the_land(self):
+        a = self.lane(1, "one.txt", when=OLD)
+        self.audited(a)
+        self.returned(a, "Lane 1")
+        calls = []
+
+        def busy(real, ids):
+            calls.append(list(ids))
+            raise c.LockTimeout("train lock busy")
+        got, err, closes, _ = self.land_with(busy)
+        self.assertEqual(len(calls), 1, calls)  # another train runs: land again after it, as before
+        self.assertIn("a sampo lane train is running", got["stopped"])
+        self.assertIn("sampo lane land: stopped: a sampo lane train is running", err, err)
+
+    def test_stop_reason_retries_run_out_then_the_land_stops_with_the_reason_and_one_train_line(self):
+        a = self.lane(1, "one.txt", when=OLD)
+        self.audited(a)
+        self.returned(a, "Lane 1")
+        calls = []
+
+        def busy(real, ids):
+            calls.append(list(ids))
+            raise c.LockTimeout("train lock busy")
+        with mock.patch.object(train, "_closing", lambda p: True):
+            got, err, closes, _ = self.land_with(busy)
+        self.assertEqual(len(calls), train.LOCK_RETRIES + 1, calls)
+        self.assertIn("a sampo lane train is running", got["stopped"])
+        self.assertIn("sampo lane land: stopped: a sampo lane train is running", err, err)
+        self.assertEqual(err.count(f"sampo lane land: train 1: {a}"), 1, "the train's line is said once, not per retry")
+
+    def test_stop_reason_a_slow_refusal_after_a_full_close_wait_is_tried_again_at_most_once(self):
+        a = self.lane(1, "one.txt", when=OLD)
+        self.audited(a)
+        self.returned(a, "Lane 1")
+        calls = []
+
+        def busy(real, ids):
+            calls.append(list(ids))
+            raise c.LockTimeout("train lock busy")
+        with mock.patch.object(train, "_closing", lambda p: True), mock.patch.object(train, "LOCK_FAST_S", 0.0):
+            got, err, closes, _ = self.land_with(busy)  # every refusal came after a full wait: one retry, then the stop
+        self.assertEqual(len(calls), 2, calls)
+        self.assertIn("a sampo lane train is running", got["stopped"])
+
+    def test_stop_reason_a_queued_close_alone_is_not_a_reason_to_retry(self):
+        # a close queued on the land's own closer says nothing of who holds the lock: with no hand close and no commit
+        # of the land's own running, another process's train holds it, and the land stops as before
+        a = self.lane(1, "one.txt", when=OLD)
+        self.audited(a)
+        self.returned(a, "Lane 1")
+        calls = []
+
+        def busy(real, ids):
+            calls.append(list(ids))
+            raise c.LockTimeout("train lock busy")
+        with mock.patch.object(train, "_closing", lambda p: False), mock.patch.object(train, "_own_closer", lambda: False), \
+                mock.patch.object(train._Closer, "idle", lambda self: False):
+            got, err, closes, _ = self.land_with(busy)
+        self.assertEqual(len(calls), 1, calls)
+
+    def test_stop_reason_a_stop_lets_this_lands_merged_closes_finish_and_names_the_leftovers(self):
+        left = self.leftovers(3)
+        new = []
+        for i in range(3):
+            t = self.lane(10 + i, f"new{i}.txt", when=OLD)
+            self.audited(t)
+            self.returned(t, f"Lane {10 + i}")
+            new.append(t)
+        calls = []
+
+        def second_train_red(real, ids):
+            calls.append(list(ids))
+            if len(calls) == 3:
+                raise c.PolicyError("the base is red: a test fails")
+            return real()
+        import io
+        import threading
+        err, gate, begun = io.StringIO(), threading.Event(), []
+        real_close, real_train = train._close, train.train
+
+        def close(p, main, tid, *a, **k):
+            begun.append(tid)
+            if len(begun) == 1:  # the first close runs until the land has said its stop (and shelved the leftovers)
+                for _ in range(600):
+                    if "left merged and open" in err.getvalue():
+                        break
+                    time.sleep(0.05)
+            return real_close(p, main, tid, *a, **k)
+
+        def trained(p, main, ids, *a, **k):
+            return second_train_red(lambda: real_train(p, main, ids, *a, **k), list(ids))
+        with self.in_project(), contextlib.redirect_stderr(err), mock.patch.object(train, "_close", close), \
+                mock.patch.object(train, "train", trained):
+            got = train.land(self.p, self.repo, 1)
+        text = err.getvalue()
+        mine = [t for t in got["landed"] if t not in left]
+        self.assertEqual(len(mine), 2, (got["landed"], text))
+        self.assertEqual(sorted(begun), sorted(mine), f"the two this land merged close, no leftover does: {begun}\n{text}")
+        line = next((x for x in text.splitlines() if "left merged and open for the next land" in x), "")
+        self.assertIn("sampo lane land: 3 landed lane(s) left merged and open for the next land: ", line, text)
+        for t in left:
+            self.assertIn(t, line)
+        for t in mine:
+            self.assertNotIn(t, line)
+
+    def test_stop_reason_a_trimmed_closer_starts_no_close_of_a_dropped_lane_when_the_train_ends(self):
+        ran = []
+        closer = train._Closer()
+        closer.work = lambda ids: ran.append(list(ids))
+        closer.hold(True)
+        closer.after_train(["T-1"])  # a close's commit waiting for the train
+        closer.after_train(["T-2"])
+        dropped = closer.trim({"T-2"})
+        closer.hold(False)  # the train's end puts the waiting ones back: only the kept one runs
+        closer.join()
+        self.assertEqual(dropped, ["T-1"])
+        self.assertEqual(ran, [["T-2"]], ran)
+        self.assertFalse(closer.stopped)
+
+
 class AcceptDuringMerge(LandCase):
     """T-5816: a land started while a `sampo lane merge` (a train) holds the train lock found it held and exited with a
     refusal in land.log. Accept queues the lane (first_ids) and starts no land, saying the merge is running."""

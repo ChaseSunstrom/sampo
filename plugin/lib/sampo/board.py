@@ -150,9 +150,15 @@ def part_train(p):
             trains.add(tuple(train) if isinstance(train, list) else (task,))
             if task in built:
                 waits.append(t - built.pop(task))
+    try:  # T-5793: a train running past twice its typical time; a record that can't be read says nothing
+        from sampo import train as strain
+        overdue = strain.overdue_train(p)
+    except Exception:  # noqa: BLE001
+        overdue = None
     return {"landed": landed[-LANDED_MAX:], "landed_24h": len(landed), "trains_24h": len(trains),
             "minutes_per_lane": round(sum(waits) / len(waits) / 60) if waits else None, "left_out": left,
-            "running": _train_runs(p) or any(re.search(r"\b(?:fm|sampo) lane train\b", cmd) for _, cmd in _procs())}
+            "running": _train_runs(p) or any(re.search(r"\b(?:fm|sampo) lane train\b", cmd) for _, cmd in _procs()),
+            "overdue": overdue}
 
 
 def part_loop(p):

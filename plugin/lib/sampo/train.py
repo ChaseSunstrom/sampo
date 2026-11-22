@@ -1469,6 +1469,43 @@ def train_hold(p, chain=None):
             "held": max(0.0, time.time() - at)}
 
 
+OVERDUE_X = 2.0  # T-5793: a train running past this many times its typical time is overdue
+OVERDUE_MIN_S = 300.0  # ...and past this many seconds: a typical of one minute never makes five overdue
+OVERDUE_SAMPLES = 3  # the trains that must have been timed before a typical is claimed (the median of the last 20)
+
+
+def overdue_train(p, now=None, chain=None):
+    """T-5793: the train running now when it has run past twice its typical time, else None: {lanes, age, typical, pid,
+    key} (seconds; key names this train, so a line about it is said once). Its age is from its record under the lock (when
+    its gate began), the typical the median `seconds` of the last 20 land_train events (3 at least). Reads only: never
+    the lock. The pulse and the hook's drive line say it (2026-11-22 a land stood an hour on one train, unremarked)."""
+    hold = train_hold(p, chain)
+    if not hold:
+        return None
+    now = time.time() if now is None else now
+    age = now - hold["at"]
+    if age < OVERDUE_MIN_S:
+        return None
+    secs = []
+    for e in c.ledger_tail(p, 3000, ["land_train"])[-20:]:
+        v = finite_num((e.get("data") or {}).get("seconds")) if isinstance(e.get("data"), dict) else None
+        if v is not None and v > 0:
+            secs.append(v)
+    if len(secs) < OVERDUE_SAMPLES:
+        return None
+    typical = statistics.median(secs)
+    if age <= OVERDUE_X * typical:
+        return None
+    return {"lanes": [str(t) for t in hold["lanes"]][:12], "age": round(age), "typical": round(typical),
+            "pid": hold["pid"], "key": f"{hold['pid']}@{int(hold['at'])}"}
+
+
+def overdue_text(o):
+    """T-5793: `train overdue: T-1, T-2 running 90 min (typical 10 min)` for an overdue_train() result."""
+    return (f"train overdue: {c.joinmore(o['lanes'], 4)} running {round(o['age'] / 60)} min "
+            f"(typical {round(o['typical'] / 60)} min)")
+
+
 OWN_COMMIT_WAIT_S = 10.0  # T-5368: a train waits this long, in all, for the land's own closer to let go of the lock
 _own = {"n": 0, "end": 0.0}  # this process's closer commits: how many run now, and when the last one let go (monotonic)
 _own_mu = threading.Lock()
@@ -3077,6 +3114,8 @@ def start_verify(p, main, owed):
 
 
 CLOSE_POLL_S = 3.0  # T-5368: a land waiting on its closes looks for a lane named --first (one accepted is) this often
+LOCK_RETRIES = 3  # T-5793: a train refused because a close held trunk is tried again this many times in a row, then the land stops
+LOCK_FAST_S = 30.0  # T-5793: a refusal after a full close wait (CLOSE_WAIT_S) is tried again once, never three times: that was an hour
 CLOSE_RETRIES = 2  # a close whose trunk moved under its run (a train's fast-forward) runs again this many times, then waits
 
 
@@ -3092,6 +3131,7 @@ class _Closer:
         self.work = None
         self.q, self.later, self.thread = [], [], None
         self.holding = self.stopped = False
+        self.only = None  # trim(keep): the ids that may still close (None: any)
 
     def _wake(self):  # under cv
         if self.thread is None and self.q and not self.stopped:
@@ -3100,7 +3140,7 @@ class _Closer:
 
     def put(self, ids, front=False):
         """ids close next (front: before what is queued, a train's own lanes before the leftovers) or last."""
-        ids = list(ids)
+        ids = [t for t in ids if self.only is None or t in self.only]
         if ids:
             with self.cv:
                 self.q.insert(0, ids) if front else self.q.append(ids)
@@ -3117,6 +3157,9 @@ class _Closer:
 
     def after_train(self, ids):
         with self.cv:
+            ids = [t for t in ids if self.only is None or t in self.only]
+            if not ids:
+                return
             if self.holding:
                 self.later.append(list(ids))
             else:  # the train ended meanwhile
@@ -3146,6 +3189,18 @@ class _Closer:
         with self.cv:
             if self.thread is not None:
                 self.cv.wait(timeout)
+
+    def trim(self, keep):
+        """T-5793: the land stops: only the ids in `keep` (the lanes this land merged) close from now; the running batch
+        finishes, and no other lane's close starts, not even one a train's end puts back. The ids dropped (queued, or
+        held for the train's end), for the caller to name."""
+        keep = set(keep)
+        with self.cv:
+            self.only = keep
+            dropped = [t for ids in self.q + self.later for t in ids if t not in keep]
+            self.q = [x for x in ([t for t in ids if t in keep] for ids in self.q) if x]
+            self.later = [x for x in ([t for t in ids if t in keep] for ids in self.later) if x]
+            return dropped
 
     def stop(self):
         """No batch begins from now (the running one finishes): what was queued, for the caller to say or leave."""
@@ -3246,6 +3301,8 @@ def _land_trains(p, main, batch, owed, closer=None):
         for tid in ids:  # T-5368: on the closer's thread, whose queue the trains' boundaries and the land's end feed
             if closer.stopped:  # a restart: what is not closed yet is merged and open, the next land finds it
                 break
+            if closer.only is not None and tid not in closer.only:  # T-5793: a stopped land closes only its own lanes
+                continue
             try:
                 done, left_ = close_landed(p, main, [tid], settled=settled, again=retry,
                                            commit_wait=lambda: 1.0 if closer.holding else None)
@@ -3341,6 +3398,13 @@ def _land_trains(p, main, batch, owed, closer=None):
     alone = set()  # T-5023: the express lanes taken from --first: each trains as a batch of one
     carry = _restart_carry(p)  # T-5023: a restarted land's queue: its lanes are promoted only if they were before
     first_taken = set()  # T-4013: every --first id this land took (`asked` is the ship request's flag, not this)
+    retried, slow_retried = 0, False  # T-5793: the train's refusals by a close that held trunk, in a row; one after a long wait
+    mine, shelved, said = set(), [], None  # T-5793: the lanes this land merged; the leftovers a stop left; the train line said
+
+    def halt():
+        """T-5793: the land stops: before the train's hold ends (no new close starts in the gap), only the lanes this land
+        merged close on (the running batch finishes); the leftovers wait for the next land and are named."""
+        shelved[:] = closer.trim(mine)
     while True:
         ensure_pm()  # T-5791: once per train and per idle wait: the safety net behind the landing
         release_waiting()
@@ -3398,7 +3462,9 @@ def _land_trains(p, main, batch, owed, closer=None):
                 if live else 1)
                if ready[0] in alone else len(ready) if live else batch)
         ids, ready = ready[:cut], ready[cut:]
-        print(f"sampo lane land: train {trains + 1}: {', '.join(ids)}", file=sys.stderr, flush=True)
+        if said != (trains, tuple(ids)):  # T-5793: a train tried again is not announced again
+            print(f"sampo lane land: train {trains + 1}: {', '.join(ids)}", file=sys.stderr, flush=True)
+            said = (trains, tuple(ids))
         tested.update({i: tip(by[i]) for i in ids})  # train() reads the same heads as it starts
         head0 = c._git(main, "rev-parse", "HEAD", timeout=10).strip()  # T-3851: the skills this train adds
         t_train = time.monotonic()
@@ -3409,13 +3475,28 @@ def _land_trains(p, main, batch, owed, closer=None):
         except c.PolicyError as e:
             if not hasattr(e, "left"):  # a red base, a moved branch: no later batch would land either
                 stopped = str(e)  # T-4029: with the red gate's own lines, so nobody reruns it to learn them
+                halt()
                 break
             got = {"merged": [], "left_out": e.left}
         except c.LockTimeout:
+            # T-5793: a close (a hand close's, or this land's own closer's) holding trunk is no other train: tried again
+            # after it, a few times; a train that really runs ends the land as before (land again after it)
+            # (each wait for a hand close is CLOSE_WAIT_S: a refusal after a long wait is tried again once, not three times)
+            slow = time.monotonic() - t_train >= LOCK_FAST_S
+            if retried < LOCK_RETRIES and not (slow and slow_retried) and (_closing(p) or _own_closer()):
+                retried, slow_retried = retried + 1, slow_retried or slow
+                ready = ids + ready
+                print(f"sampo lane land: train {trains + 1} waits for a close that holds trunk: tried again "
+                      f"({retried}/{LOCK_RETRIES})", file=sys.stderr, flush=True)
+                closer.wait(CLOSE_POLL_S)
+                continue
             stopped = "a sampo lane train is running: land again after it"
+            halt()
             break
         finally:
             closer.hold(False)
+        retried, slow_retried = 0, False
+        mine.update(got["merged"])
         note_park(got["left_out"])  # T-4252: before the next train starts, not in the summary
         if got.get("kept"):  # T-4007: the main checkout's local changes the fast-forward set aside
             print(f"sampo lane land: {got['kept']}", file=sys.stderr, flush=True)
@@ -3446,7 +3527,15 @@ def _land_trains(p, main, batch, owed, closer=None):
             first_ids(p, ready)  # the restarted land trains them in this order, not re-sorted
             _restart_carry(p, ready, alone)
             break
-    if restart:  # a restart's leftovers close under the new code (it finds them merged and open again)
+    if stopped:  # T-5793: said before anything is waited for (the summary comes after the closes' join)
+        print(f"sampo lane land: stopped: {stopped}", file=sys.stderr, flush=True)
+    if stopped:  # a stopped land's leftovers close at the next land (2026-11-22 it queued every leftover and joined their
+        # closes); the lanes this land merged close (halt kept them): the running and the queued ones finish
+        rest = shelved + [t for t in left if t not in queued and t not in shelved]
+        if rest:
+            print(f"sampo lane land: {len(rest)} landed lane(s) left merged and open for the next land: "
+                  f"{', '.join(rest)}", file=sys.stderr, flush=True)
+    elif restart:  # a restart's leftovers close under the new code (it finds them merged and open again)
         closer.stop()
     else:
         to_close([t for t in left if t not in queued])  # one tried at a boundary was said there

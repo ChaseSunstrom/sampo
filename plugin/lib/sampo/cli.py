@@ -12543,6 +12543,14 @@ def _worker_may(args):
 LONG_VERBS = {"check", "code", "release", "ship", "bench", "sentinel"}
 
 
+def stack_verb(args):
+    """T-5793: the name a verb's stack dump goes under, or None for a short verb. A long verb is in LONG_VERBS; `lane land` and
+    `lane train` are long too (a land stood an hour on one train, and the SIGUSR1 sent to read its stacks ended it)."""
+    if args.cmd == "lane" and getattr(args, "action", None) in ("land", "train"):
+        return args.action
+    return args.cmd if args.cmd in LONG_VERBS else None
+
+
 def _stack_dumps(verb):
     """T-1405: a long verb that hangs leaves a clue: every thread's stack goes to state/logs/stacks/<verb>-<pid>.txt on
     SIGUSR1 and once after FOREMAN_STACK_AFTER seconds (30 min: full gates under load take 25). Returns what stops it
@@ -12633,7 +12641,8 @@ def main(argv=None):
         return 2
     if args.cmd != "complete":  # a TAB press reads the briefs, never syncs or locks (round-7 review)
         _sync_in(args)
-    stop = _stack_dumps(args.cmd) if args.cmd in LONG_VERBS else None
+    dump_verb = stack_verb(args)  # T-5793: a re-exec'd land comes through here again
+    stop = _stack_dumps(dump_verb) if dump_verb else None
     try:
         from sampo import recover  # T-3928: a long job journals itself, so a reboot that kills it is found again
         with recover.around(args, argv):

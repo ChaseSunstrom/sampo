@@ -226,5 +226,62 @@ class Pulse(ForemanTestCase):
         self.assertEqual(sorted(r["result"] for r in self.manual()), ["exit 2", "exit 3", "stopped by RuntimeError"])
 
 
+    # T-5793: a land's train that runs past twice its typical time is flagged, naming the train and its age, by the pulse
+    # and by the hook's drive line (2026-11-22 a land stood an hour on one train and nothing on the board said so)
+
+    def timed(self, minutes, n=5):
+        for i in range(n):  # n landed trains of `minutes` each: the typical time
+            c.log_event(self.p, "land_train", data={"land": "L-1", "train": i + 1, "lanes": [f"T-{i}"],
+                                                    "seconds": minutes * 60, "gate_s": 60, "wait_s": 0, "at": time.time()})
+
+    def running(self, ids, age_s):
+        """A train of another live process (a sleeping child) that began age_s ago: its record beside the train lock."""
+        import json
+        import subprocess
+        from sampo import bus, train
+        child = subprocess.Popen(["sleep", "120"])
+        self.addCleanup(child.wait)
+        self.addCleanup(child.kill)
+        info = bus._proc(child.pid)
+        rec = {"proc": f"{bus.host_id()}|{child.pid}|{info[1]}", "pid": child.pid, "root": self.repo, "lanes": list(ids),
+               "at": time.time() - age_s}
+        os.makedirs(os.path.join(self.p.dir, "train"), exist_ok=True)
+        with open(os.path.join(self.p.dir, "train", train.TRAIN_RUNNING), "w") as f:
+            json.dump(rec, f)
+
+    def test_train_overdue_is_flagged_in_the_pulse_with_the_lanes_and_the_age(self):
+        from sampo import train
+        self.timed(10)
+        self.running(["T-1", "T-2"], 90 * 60)
+        got = train.overdue_train(self.p)
+        self.assertEqual(got["lanes"], ["T-1", "T-2"])
+        self.assertEqual((round(got["age"] / 60), round(got["typical"] / 60)), (90, 10))
+        snap = pulse.pulse(self.p)
+        self.assertEqual(snap["train"]["overdue"]["lanes"], ["T-1", "T-2"])
+        self.assertIn("train overdue: T-1, T-2 running 90 min (typical 10 min)", pulse.text(snap))
+        self.assertNotEqual(pulse.digest(snap), pulse.digest({**snap, "train": {**snap["train"], "overdue": None}}),
+                            "a wait returns when a train turns overdue")
+
+    def test_train_overdue_not_flagged_within_twice_its_typical_time_or_without_a_typical(self):
+        from sampo import train
+        self.running(["T-1"], 90 * 60)
+        self.assertIsNone(train.overdue_train(self.p), "no timed train yet: no typical to compare with")
+        self.timed(10)
+        self.assertIsNotNone(train.overdue_train(self.p))
+        self.running(["T-1"], 19 * 60)
+        self.assertIsNone(train.overdue_train(self.p), "19 min of a typical 10: not yet twice")
+        self.assertNotIn("overdue", pulse.text(pulse.pulse(self.p)))
+
+    def test_train_overdue_is_said_once_by_the_hook_per_train(self):
+        self.timed(10)
+        self.running(["T-1", "T-2"], 90 * 60)
+        d = {}
+        line = hooks._overdue_push(self.p, d, True)
+        self.assertIn("train overdue: T-1, T-2 running 90 min (typical 10 min)", line or "")
+        self.assertIsNone(hooks._overdue_push(self.p, d, True), "said once for this train")
+        self.assertIsNotNone(hooks._overdue_push(self.p, {}, True), "a Stop with no record of it says it")
+        self.assertIsNone(hooks._overdue_push(self.p, {}, False), "not recorded as said: said at a Stop that can")
+
+
 if __name__ == "__main__":
     unittest.main()

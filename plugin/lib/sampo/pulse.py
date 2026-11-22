@@ -96,7 +96,8 @@ def digest(snap):
     t = snap["train"]
     payload = {"jobs": [[r["id"], r["state"], r["end"], r["result"]] for r in snap["jobs"]],
                "lanes": [[x["task"], x["state"], x["steps"]["done"], x["steps"]["total"]] for x in snap["lanes"]],
-               "train": [t.get(k) for k in ("landed_24h", "trains_24h", "minutes_per_lane", "left_out", "running")]}
+               "train": [t.get(k) for k in ("landed_24h", "trains_24h", "minutes_per_lane", "left_out", "running")]
+               + [(t.get("overdue") or {}).get("key")]}  # T-5793: a train turning overdue is a change (its age is not)
     return hashlib.sha1(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
 
 
@@ -156,6 +157,9 @@ def text(snap):
     per = f"{t['minutes_per_lane']} min a lane" if t.get("minutes_per_lane") is not None else "no lane timed yet"
     lines.append(f"train: {t['landed_24h']} landed in 24h by {t['trains_24h']} trains · {per} · "
                  f"{t['left_out']} left out by a red train · running: {'yes' if t['running'] else 'no'}")
+    if t.get("overdue"):  # T-5793: past twice its typical time: the lanes and the age
+        from sampo import train
+        lines.append(train.overdue_text(t["overdue"]))
     lines.append("")
     rs = snap["jobs"]
     now = snap.get("now")
