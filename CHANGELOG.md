@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- A land that stops now prints its reason at once and leaves unclosed lanes for the next land, a train refused only by a close holding trunk is retried after it, lane land and lane train register the SIGUSR1 stack dump, and pulse and the drive line flag a train past twice its typical time (T-5793).
 - A lane whose ignored .cargo/config.toml holds only [build] target-dir, jobs or incremental is now removable, so merged kith lanes no longer stay open on their own target-dir config (T-5466).
 - The train's map union refuses a symlinked, hard-linked or non-regular target, or one behind a symlinked folder, and parks the lane instead of writing through it (T-5836).
 - Sampo pulse and the Board report a train as running while it holds the train lock, so a train inside a lane land shows as running (T-5820).
