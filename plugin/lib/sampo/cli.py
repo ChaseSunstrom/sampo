@@ -926,11 +926,20 @@ def cmd_task(args):
         code, shown, tried, median = 0, "", None, ""
         bench =getattr(args, "bench", None)
         run_file = getattr(args, "run_file", None)
+        # T-5517: where a run goes (a lane-held task's lane), and whose files the tree stamp names; a typed result or a
+        # --bench (timed on the caller's tree) stays with the caller
+        run_root = p.root
+        if bench is None and args.cmd is None:
+            pre0 = c.find_brief(p, args.id)
+            run_root = task_root(p, pre0) if pre0 else p.root
         run_label, run_argv0 = None, None  # T-4139: what a --run-file script is recorded as (repo-relative, quoted) and its $0
         if run_file is not None:  # T-4139: a script inside the lane: the bytes the guard judges are the bytes that run
             if args.run is not None or args.cmd is not None or bench is not None:
                 raise UsageError("give the script as --run-file PATH alone: no --run, typed result or --bench")
-            real, lane = os.path.realpath(os.path.join(os.getcwd(), run_file)), os.path.realpath(p.root)
+            real, lane = os.path.realpath(os.path.join(os.getcwd(), run_file)), os.path.realpath(run_root)
+            home = os.path.realpath(p.root)
+            if lane != home and os.path.commonpath([real, home]) == home:  # T-5517: main's path to a script: the lane's copy runs
+                real = os.path.realpath(os.path.join(lane, os.path.relpath(real, home)))  # resolved again: a link in the lane can't lead out
             if os.path.commonpath([real, lane]) != lane:  # a ../ path or a link out of the lane is refused, never run
                 raise UsageError(f"--run-file {run_file} is outside the lane ({lane}): a script runs inside it")
             if not os.path.isfile(real):
@@ -952,9 +961,9 @@ def cmd_task(args):
                                  f"(the script's own path, as bash FILE sets it)")
             label = os.path.relpath(real, lane)
             shown_path = "./" + label if label.startswith("-") else label  # a name that starts with - reads as bash's option
-            guard_run_file(p, need_brief(p, args.id), real, data, shown_path)  # judged on these bytes (the guard's script rules)
-            nroot, ntext, _ = c.normalize_verify(p.root, text)  # run_command would rewrite this text: it isn't the judged one
-            if nroot != p.root or ntext != text:
+            guard_run_file(p, need_brief(p, args.id), real, data, shown_path, run_root)  # judged on these bytes (the guard's script rules)
+            nroot, ntext, _ = c.normalize_verify(run_root, text)  # run_command would rewrite this text: it isn't the judged one
+            if nroot != run_root or ntext != text:
                 raise UsageError(f"--run-file {run_file}: sampo would rewrite its text before running it (a unittest line or "
                                  f"a main-checkout path): keep the script's own commands as written")
             args.run, run_label, run_argv0 = text, "bash " + shlex.quote(shown_path), shown_path  # $0: the path bash FILE gives
@@ -998,7 +1007,7 @@ def cmd_task(args):
             if getattr(args, "background", False):  # T-3536: a long run never holds a tool call past its limit
                 return _evidence_bg(p, args)
             t0 = time.monotonic()
-            code, output, timing = _repeat_runs(p.root, args.run, args.repeat,
+            code, output, timing = _repeat_runs(run_root, args.run, args.repeat,
                                                 c.load_scaled(args.timeout if args.timeout > 0 else None), run_argv0)
             took = round((time.monotonic() - t0) / max(args.repeat, 1), 1)  # T-3418: the slow-verify note reads it
             shown_cmd = run_label or args.run  # T-4139: a --run-file script is recorded by its path, the text is what ran
@@ -1024,10 +1033,12 @@ def cmd_task(args):
             raise UsageError("sampo task evidence needs --run CMD (preferred) or CMD RESULT")
         else:
             cmd, result = args.cmd, args.result
-        tree = c.worktree_id(p.root)
+        tree = c.worktree_id(run_root)
         if start_tree is not None and args.run is not None:  # T-3536: it tested the files as they were at its start
             result += " · files changed during the run" if tree != (start_tree or None) else ""
             tree = start_tree or None
+        if args.run is not None and bench is None:
+            result += _ran_in(p, run_root)  # T-5517: the lane it ran in, when that isn't where it was called
         ran = args.run is not None or bench is not None
         if not ran:
             tried = None
@@ -1059,14 +1070,15 @@ def cmd_task(args):
     if sub == "audit":
         if args.lens not in c.AUDIT_LENSES:
             raise UsageError(f"unknown lens {args.lens!r}; one of {', '.join(c.AUDIT_LENSES)}")
-        tree = c.worktree_id(p.root)
+        pre = need_brief(p, args.id)
+        tree = c.worktree_id(task_root(p, pre))  # T-5517: the files the audit read are the lane's, called from anywhere
         b, _ = mutate(p, args.id, lambda b: b.add_audit(args.lens, args.how, args.result, tree=tree),
                       "audit", {"lens": args.lens, "how": args.how[:200], "result": args.result[:300]})
         return out(args, c.brief_summary(b), f"{b.id}: audit ({args.lens}) recorded.")
     if sub == "done":
         from sampo import docs as sdocs
-        since, tree = c.last_change(p, args.id), c.worktree_id(p.root)
         pre = need_brief(p, args.id)
+        since, tree = c.last_change(p, args.id), c.worktree_id(task_root(p, pre))  # T-5517: the lane's tree, as its evidence is stamped
         tree = c.audit_tree_past_merges(p, pre, tree)  # T-2784: other lanes' merges alone don't stale audits
         if pre.status == "dropped":  # T-0679 chaos test: a dropped task isn't finished by closing it again
             raise c.PolicyError(f"{pre.id} is dropped: reopen it first (sampo task set {pre.id} status=planned)")
@@ -1530,13 +1542,13 @@ def guard_stored(p, b, cmd):
         raise c.PolicyError(f"sampo won't run the stored command `{c.fit(cmd, 100)}`: {fmguard.message(block, ctx)}")
 
 
-def guard_run_file(p, b, real, data, label):
+def guard_run_file(p, b, real, data, label, root=None):
     """T-4139: the bytes `--run-file` will run, judged the way the guard judges `bash PATH` (_script_verdict on these
     bytes, not a second read of the path: the same budget, chunks, cache and script rules), with the task's grants.
     PolicyError when refused. The caller runs these same bytes."""
     import fmguard
     ctx = _guard_ctx(p, b)
-    found = fmguard._script_verdict(real, p.root, "sh", ctx, 0, given=data)
+    found = fmguard._script_verdict(real, root or p.root, "sh", ctx, 0, given=data)  # T-5517: the root it runs in
     block = fmguard.check("Bash", {"command": f"bash {shlex.quote(label)}"}, ctx, found=found)
     if block:
         raise c.PolicyError(f"sampo won't run --run-file {label}: {fmguard.message(block, ctx)}")
@@ -3487,6 +3499,23 @@ def task_prove_hunks(p, b, args):
     return 0 if complete else 1
 
 
+def task_root(p, b):
+    """T-5517 (the T-3940 test, shared): the folder a task's code lives in: its lane's, while that folder exists and its
+    branch is not merged into the caller's HEAD, else the caller's own (p.root). Evidence and prove run there, so a call
+    from the main checkout never records trunk's result as the lane's."""
+    lane, br = b.meta.get("lane"), b.meta.get("lane_branch")
+    if (lane and br and os.path.isdir(lane) and os.path.exists(os.path.join(lane, ".git"))  # a leftover folder is no worktree
+            and os.path.realpath(lane) != os.path.realpath(p.root)
+            and c._git(p.root, "merge-base", "--is-ancestor", br, "HEAD", proc=True).returncode == 1):
+        return lane
+    return p.root
+
+
+def _ran_in(p, root):
+    """T-5517: the note a recorded result carries when it ran in a folder other than the caller's."""
+    return f" · ran in lane {os.path.relpath(root, p.root)}" if root != p.root else ""
+
+
 def _has_testcase(root, f):
     """T-3808: whether a changed file holds a unittest TestCase class (a class statement, not a mention; read bounded)."""
     try:
@@ -3515,13 +3544,11 @@ def task_prove(p, args):
     base = b.meta.get("base")
     if not base:
         raise UsageError(f"{b.id} has no start commit on record: prove needs the tree the task started from")
-    root = p.root
-    lane, br = b.meta.get("lane"), b.meta.get("lane_branch")
-    if lane and br and os.path.isdir(lane) and c._git(root, "merge-base", "--is-ancestor", br, "HEAD", proc=True).returncode == 1:
+    root = task_root(p, b)
+    if root != p.root:
         # T-3940: the change lives only in the lane: its committed tree is the "current" one (a dirty lane would prove code not in its commit)
-        if c._git(lane, "status", "--porcelain", fail="?").strip():
-            raise UsageError(f"{b.id}: its lane {lane} has uncommitted work: commit it, then prove (prove reads the lane's commit)")
-        root = lane
+        if c._git(root, "status", "--porcelain", fail="?").strip():
+            raise UsageError(f"{b.id}: its lane {root} has uncommitted work: commit it, then prove (prove reads the lane's commit)")
     changed = [f for f in smap.changed(root, base) if smap._TEST.search(f) and os.path.isfile(os.path.join(root, f))]
     named = [f for f in changed if c.TESTISH.search(os.path.basename(f))]
     # T-3808: a tests-folder file is a test when it's named as one or holds a TestCase; run.py and forkcli.py are code
@@ -3960,7 +3987,7 @@ def _evidence_bg(p, args):
     os.makedirs(d, exist_ok=True)
     base = os.path.join(d, str(time.time_ns()))
     argv = [sys.executable, os.path.join(c.PLUGIN_ROOT, "bin", "sampo"), *(a for a in _ARGV if a != "--background")]
-    env = dict(os.environ, FOREMAN_EVIDENCE_TREE=c.worktree_id(p.root) or "")
+    env = dict(os.environ, FOREMAN_EVIDENCE_TREE=c.worktree_id(task_root(p, need_brief(p, args.id))) or "")  # T-5517: the lane's, when it holds the task
     # the wrapper outlives the run to write its exit code; start_new_session makes both one process group to kill
     proc = subprocess.Popen(["sh", "-c", '"$@" >"$0.log" 2>&1; echo $? >"$0.tmp"; mv "$0.tmp" "$0.exit"', base, *argv],
                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -6479,7 +6506,7 @@ def cmd_check(args):
             shutil.rmtree(shim, ignore_errors=True)
     if args.action == "run" and not getattr(args, "repeat", 0):  # T-4514: one wide check of a kind a tree
         # (a builder's own wide check is refused earlier, by the PreToolUse hook: hooks._builder_check_deny)
-        with c.check_claim(resolve(args), "affected" if getattr(args, "affected", False) else "full"):
+        with c.check_claim(_check_project(args, say=False), "affected" if getattr(args, "affected", False) else "full"):
             return _gated_check(args)
     return _gated_check(args)
 
@@ -6503,8 +6530,25 @@ def _gated_check(args):
     return _cmd_check(args)
 
 
-def _cmd_check(args):
+def _check_project(args, say=True):
+    """T-5517: resolve(args), but `sampo check --evidence ID` for a task a lane holds runs its gates in that lane (a
+    project whose files are the lane's) and stamps its tree: from the main checkout it recorded trunk's result as the
+    lane's. args.ran_in carries ' · ran in lane REL' for the recorded result when the folder moved."""
     p = resolve(args)
+    args.ran_in = ""
+    if getattr(args, "evidence", None) and args.action == "run" and not getattr(args, "lock", False):
+        b = c.find_brief(p, args.evidence)
+        root = task_root(p, b) if b else p.root
+        if root != p.root:
+            args.ran_in = _ran_in(p, root)[3:]
+            if say:
+                print(f"sampo: {b.id} is held by a lane: the gates run in {root}", file=sys.stderr, flush=True)
+            return c.Project(p.slug, root, p.dir, lane=root)
+    return p
+
+
+def _cmd_check(args):
+    p = _check_project(args)
     a = args.action  # T-3416: project config (gates, templates, validators) is the main session's, not a lane's
     if p.lane and (a in ("add", "rm", "paths") or (a in ("onwrite", "ambient", "affected") and args.words)
                    or (a == "affected" and getattr(args, "clear", False))):
@@ -6660,7 +6704,8 @@ def _cmd_check(args):
         if args.evidence:
             _record_check(p, args, lambda b, step, ac: b.add_evidence(
                 "sampo check: " + "; ".join(checks),
-                f"exit 0 · {len(checks)} passed on this tree ({cached}){'; ' + left_out if left_out else ''}"[:600],
+                f"exit 0 · {len(checks)} passed on this tree ({cached}){'; ' + left_out if left_out else ''}"
+                .replace(" · ", f" · {args.ran_in} · " if args.ran_in else " · ", 1)[:600],
                 step=step, ac=ac, tree=tree, ran=True), "fm check", "cached pass")
         out(args, {"results": [{"cmd": x, "exit": 0, "cached": cached} for x in checks], "failed": 0,
                    "skipped_tests": skip},
@@ -6768,6 +6813,8 @@ def _cmd_check(args):
                   f"exit 0 · {len(results)} passed: ") + (f"({left_out}) " if left_out else "") + "; ".join(
             f"{cmd} → {c.run_result(code, output)}" + (f" ({notes[cmd]})" if cmd in notes else "")
             for cmd, code, output, _ in shown)
+        if args.ran_in:  # T-5517: the lane the gates ran in, kept inside the 600-character cut
+            result = result.replace(" · ", f" · {args.ran_in} · ", 1)
         _record_check(p, args, lambda b, step, ac: b.add_evidence(
             "sampo check: " + "; ".join(checks), result[:600], step=step, ac=ac, tree=tree, ran=True),
             "fm check", result[:300])
