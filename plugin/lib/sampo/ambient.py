@@ -101,7 +101,8 @@ def run(p):
                 else:
                     _forget_skip(p)  # a run starts the set again: its next skip is noted again
                     before = c.worktree_tree(p.root)  # T-3270: the verdict is for the tree the run began on
-                    code, output = c.run_command(p.root, cmd, limit, niced=True, env=env)
+                    # T-5589: an early warning no one waits on: low, so a land's gate and a lane's criteria take freed slots first
+                    code, output = c.run_command(p.root, cmd, limit, niced=True, env=env, low=True)
                     cut = _no_verdict(code, output, limit)
                     if cut:  # T-4823: no verdict is no red and no pass: last.json and the pass record stay as they were
                         _say(p, f"Ambient tests: {cut}: {c.fit(cmd, 150)}", keep_red=True)  # never over an unread red

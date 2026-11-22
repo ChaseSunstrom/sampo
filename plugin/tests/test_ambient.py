@@ -100,6 +100,15 @@ class Ambient(HookCase):
         with open(os.path.join(self.repo, "nice.txt")) as f:
             self.assertEqual(int(f.read()), min(19, os.nice(0) + c.NICE_LANE), "ran at the lane gates' nice, over ours")
 
+    def test_the_ambient_run_asks_for_its_slots_at_the_background_class(self):  # T-5589
+        seen = os.path.join(self.tmp, "slot-class")
+        self.fm("check", "affected", "python3 -c 'import os; open(\"%s\", \"w\").write(os.environ.get(\"FOREMAN_SLOT_LOW\", \"no\"))' {names}"
+                % seen)
+        self.fm("check", "ambient", "on")
+        self.edit(GOOD + "# touched\n")
+        with open(seen) as f:
+            self.assertEqual(f.read(), "1", "an edit's early warning yields freed slots to a gate and a lane's criteria")
+
     def test_a_run_that_moves_the_tree_records_no_verdict(self):
         # T-3270: a test that writes a file changes the tree during its run: that run proves nothing about any tree
         self.fm("check", "ambient", "on")

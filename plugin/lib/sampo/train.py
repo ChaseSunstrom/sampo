@@ -4021,6 +4021,9 @@ def _run_check(argv, cwd):
     # T-4514: SAMPO_CHECK_LOG is the file this process writes to, which a second check of the kind is told to read
     log = c.stdout_log()
     env = {**_scrub_env(os.environ), "SAMPO_LANE_CHILD": "1"}
+    # T-5589: the check `sampo lane accept` starts is one someone waits on: its tests take freed slots ahead of the
+    # background and ordinary runs (an explicit SAMPO_SLOT_PRIORITY=0 opts out, as c.run_command keeps it)
+    env[c.SLOT_PRIORITY] = env.get(c.SLOT_PRIORITY) or "1"
     if log:
         env["SAMPO_CHECK_LOG"] = log
     proc = subprocess.Popen(argv, cwd=cwd, env=env,

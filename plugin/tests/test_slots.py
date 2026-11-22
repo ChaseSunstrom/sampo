@@ -1,4 +1,5 @@
 """T-3252: every run.py on the machine shares one pool of CPU slots, so four runners don't put 64 workers on 16 CPUs."""
+import json
 import os
 import subprocess
 import sys
@@ -22,6 +23,7 @@ class Slots(ForemanTestCase):
             os.environ.pop(k, None)  # this test's own runner set one of them
         self.addCleanup(self.patch.stop)
         for name, value in (("_HELD", {"n": 0, "until": 0.0}), ("_DEFER", {"first": None}),  # T-4789: one process, many tests
+                            ("_LOW", {"until": None}),  # T-5589: the background class's yield window starts afresh
                             ("_SAID", [])):  # T-3421: the waiting line is once per process: each test starts unsaid
             patched = mock.patch.object(run, name, value)
             patched.start()
@@ -64,6 +66,50 @@ class Slots(ForemanTestCase):
         p.wait(30)
         self.assertEqual(seen, [True], "the lane run took the slot only after the priority run had it")
         self.assertEqual(self.marks(until=0), [], "a priority run drops its marker once it holds a slot")
+
+    def test_a_freed_slot_goes_to_the_gate_then_the_ordinary_run_then_the_background_one_whoever_asked_first(self):
+        # T-5589: the background class asks FIRST and polls hardest; the run someone waits on still has the slot first
+        flag, order, lock = os.path.join(self.tmp, "gate-had-it"), [], threading.Lock()
+        holder = subprocess.Popen(
+            [sys.executable, "-c", "import sys; sys.path.insert(0, %r); import run\n"
+             "with run.cpu_slot(wait=5, poll=0.01):\n    print('held', flush=True)\n    sys.stdin.read()\n" % run.HERE],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: (holder.kill(), holder.wait(), holder.stdout.close()))
+        self.assertEqual(holder.stdout.readline().strip(), "held", "the slot was not free")
+
+        def asks(label, low):
+            with run.cpu_slot(wait=60, poll=0.005, low=low):
+                with lock:
+                    order.append((label, os.path.exists(flag), [x for x, _, _ in order]))
+                time.sleep(0.15)  # holds it: the next one cannot take it meanwhile
+
+        background = threading.Thread(target=asks, args=("background", True), daemon=True)
+        background.start()
+        time.sleep(0.1)
+        ordinary = threading.Thread(target=asks, args=("ordinary", False), daemon=True)
+        ordinary.start()
+        gate = self.priority_waiter(flag)
+        self.assertTrue(self.marks(), "a waiting priority run marks the pool")
+        time.sleep(0.2)  # all three poll for the slot
+        holder.stdin.close()
+        gate.wait(30)
+        ordinary.join(30)
+        background.join(30)
+        self.assertEqual([o[0] for o in order], ["ordinary", "background"])
+        self.assertTrue(order[0][1], "the ordinary run took the slot only after the gate had it")
+        self.assertEqual(order[1][2], ["ordinary"], "the background run went last, though it asked first")
+
+    def test_a_background_run_still_gets_a_slot_within_the_bound_beside_a_waiting_run_that_is_never_served(self):
+        # T-5589: the age bump: a priority run and an ordinary one that wait for ever (their markers live, no slot taken)
+        # leave the background run no more than LOW_MAX and DEFER_MAX behind them, then it competes as any run does
+        for prefix in ("prio-", "wait-"):
+            mark = run._mark(run._slot_folder(), prefix)
+            self.addCleanup(lambda m=mark: (os.close(m[0]), os.path.exists(m[1]) and os.unlink(m[1])))
+        start = time.monotonic()
+        with mock.patch.object(run, "LOW_MAX", 0.3), mock.patch.object(run, "DEFER_MAX", 0.3):
+            with run.cpu_slot(wait=5, poll=0.01, low=True) as s:
+                self.assertEqual(s, 0, "the slot came before the wait ran out, not as a give-up")
+        self.assertLess(time.monotonic() - start, 5, "a broken age bump would leave the background run waiting its whole wait")
 
     def test_a_lane_run_defers_to_a_priority_run_for_half_its_wait_only(self):
         # a lane's run under a deadline would otherwise wait out a long gate and end NOT_STARTED
@@ -391,6 +437,64 @@ class Idle(unittest.TestCase):
             policy, nice = self.child(name)
             self.assertEqual(policy, os.SCHED_OTHER, name)
             self.assertLessEqual(nice, max(10, os.nice(0)), name)  # a niced parent keeps its own nice
+
+
+class Callers(ForemanTestCase):
+    """T-5589: which runs ask for their slots at the high class: the land's gate and probe, and the check `sampo lane
+    accept` starts, which someone waits on. A builder's own runs, `--evidence` ones included, stay ordinary."""
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        self.seen = os.path.join(self.tmp, "slot-class")
+        self.lane = os.path.join(self.tmp, "lane")
+        for name, text in (("calc.py", "def add(a, b):\n    return a + b\n"),
+                           ("test_calc.py", "import unittest\n\n\nclass T(unittest.TestCase):\n    def test_a(self):\n"
+                                            "        self.assertTrue(True)\n")):
+            with open(os.path.join(self.repo, name), "w") as f:
+                f.write(text)
+        self.git("add", "-A")
+        self.git("commit", "-qm", "calc")
+        probe = "import os; open(%r, 'a').write(os.environ.get('FOREMAN_SLOT_PRIORITY') or 'normal'); open(%r, 'a').write(chr(10))"
+        self.fm("check", "add", f'python3 -c "{probe % (self.seen, self.seen)}"')
+        self.fm("check", "affected", f'python3 -c "{probe % (self.seen, self.seen)}" {{names}}')
+        self.git("worktree", "add", "-q", "-b", "foreman/lane", self.lane)
+        self.tid = json.loads(self.fm("task", "new", "Lane", "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true",
+                                      "--step", "s", "--json", "--focus", cwd=self.lane).stdout)["id"]
+        with open(os.path.join(self.lane, "calc.py"), "a") as f:
+            f.write("# changed\n")
+        self.git("add", "calc.py", cwd=self.lane)
+        self.git("commit", "-qm", "lane", cwd=self.lane)
+
+    def git(self, *args, cwd=None):
+        return subprocess.run(["git", "-C", cwd or self.repo, *args], capture_output=True, text=True, check=True).stdout
+
+    def classes(self):
+        return open(self.seen).read().split() if os.path.exists(self.seen) else []
+
+    ENV = {"FOREMAN_SLOT_PRIORITY": "", "SAMPO_SLOT_PRIORITY": ""}  # this test's own runner may run with one
+
+    def test_a_builders_own_evidence_runs_stay_ordinary(self):
+        # a builder records evidence on every step: those runs must not stand level with the land's gate
+        self.fm("check", "--fresh", cwd=self.lane, env=self.ENV)
+        self.fm("check", "--fresh", "--evidence", self.tid, "--step", "1", cwd=self.lane, env=self.ENV)
+        self.fm("check", "--affected", cwd=self.lane, env=self.ENV, check=False)
+        self.fm("check", "--affected", "--evidence", self.tid, "--step", "1", cwd=self.lane, env=self.ENV, check=False)
+        self.assertEqual(self.classes(), ["normal"] * 4)
+
+    def test_the_check_sampo_lane_accept_starts_asks_at_the_high_class(self):
+        from sampo import train
+        probe = [sys.executable, "-c", "import os; print(os.environ.get('FOREMAN_SLOT_PRIORITY') or 'normal')"]
+        with mock.patch.dict(os.environ, {"FOREMAN_SLOT_PRIORITY": ""}):
+            done, _ = train._run_check(probe, self.tmp)
+            self.assertEqual(done.stdout.strip(), "1", "someone waits on the accept's check")
+        with mock.patch.dict(os.environ, {"FOREMAN_SLOT_PRIORITY": "0"}):
+            done, _ = train._run_check(probe, self.tmp)
+            self.assertEqual(done.stdout.strip(), "0", "an opt-out is kept")
+
+    def test_the_lands_gate_asks_at_the_high_class(self):
+        self.fm("lane", "train", self.tid, env=self.ENV)
+        # whatever ran before it in the lane stays ordinary; the gate on the merged tree is the last run
+        self.assertEqual(self.classes()[-1:], ["1"], "the train's gate ran at the high class")
 
 
 if __name__ == "__main__":
