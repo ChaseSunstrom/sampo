@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- The rename scan now covers the demo recorders, `demo/record_live.py` says Sampo throughout, and the scan's baseline drops from 16 to the real 13 (T-3957).
 - `sampo scorecard` reads the direction's seven measures (asks not landed, landed not shipped, lanes waiting, agent CPU share, tokens per closed task, steers per day, Kalevala towers climbing) against named bars, and the hourly tick captures one task for a measure past its bar on two ticks in a row (T-3845).
 - Self-check now names lanes that outlived their task and background jobs still listed long after their agent reported, each with its count and age, and a hand close removes its own merged lane (T-3540).
 - The guard no longer refuses a python heredoc whose only mention of Sampo is inside strings or comments (for example after cd DIR; or a chain of plain commands); code that imports sampo, execs its string or imports from an unknown folder is still refused (T-3538).
