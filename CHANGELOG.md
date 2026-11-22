@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- sampo recover now reads the user journal and kernel log first and names the likely cause of a session loss (OOM kill, reboot, user-wide SIGKILL) instead of assuming a restart, lists each open lane's last command from the guard's per-task stamp in the minute before it, and holds a lane that preceded two losses (not offered for relaunch, refused by lane recover until sampo recover --relea… (T-5903).
 - sampo audit run logs one review_cost event per run with its lens reviewers' summed tokens and dollars, and tests pin that it follows the review depth map (T-5842).
 - A live land train runs the hook timing bench only when a lane changes a file the hooks load and the repo-shape run only for the classes a changed file reaches (docs-only trains run none), and each land_train event carries seconds per phase (T-5935).
 - A live land trains every express lane at the head as one train, capped only by an explicit --batch, so fifty-four urgent lanes no longer take seven gates (T-5848).
