@@ -4,6 +4,7 @@ class on the same inputs does its other classes first, then waits for the owner 
 A red or dead owner, an owner too old, differing inputs or SAMPO_NO_JOIN=1 mean the class runs as before."""
 import contextlib
 import io
+import json
 import os
 import shutil
 import signal
@@ -172,6 +173,25 @@ class Join(Fixture):
         self.assertTrue(self.second_waits(e2), self.text(e2))
         self.finish((p1, e1), (p2, e2))
         self.assertRegex(self.text(e2), r"joined 1\b")
+
+    def last(self, where):
+        """T-5557: the newest record of a run written from `where`, read the way the check reads it (--last --json)."""
+        d = getattr(self, where)
+        got = subprocess.run([sys.executable, os.path.join(d, "plugin", "tests", "run.py"), "--last", "--json"],
+                             capture_output=True, text=True, timeout=120, env=self.env, cwd=d)
+        self.assertEqual(got.returncode, 0, got.stderr)
+        return json.loads(got.stdout)
+
+    def test_a_fully_joined_run_records_ok_with_its_joined_count(self):  # T-5557: every class joined, none run here
+        p1, e1, p2, e2 = self.two("b")
+        self.assertTrue(self.second_waits(e2), self.text(e2))
+        self.finish((p1, e1), (p2, e2))
+        rec = self.last("b")
+        self.assertTrue(rec["ok"], "a run whose every class was joined is green: " + repr(rec))
+        self.assertEqual((rec["ran"], rec["cached"], rec["joined"]), (0, 0, 1), rec)
+        self.assertEqual(rec["failed"], [])
+        self.assertRegex(rec["lines"][0], r"^green at \S+ \(0 tests, joined 1[;)]")
+        self.assertRegex(self.text(e2), r"(?m)^OK$")
 
 
 class Marker(unittest.TestCase):

@@ -1461,7 +1461,8 @@ def record_lines(rec):
     selection: <what was asked>)`."""
     at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(rec.get("t") or 0))
     if rec.get("ok"):
-        bits = [f"{rec.get('ran', 0)} tests"] + ([f"{rec['cached']} more green in the cache"] if rec.get("cached") else [])
+        bits = [f"{rec.get('ran', 0)} tests"] + ([f"{rec['cached']} more green in the cache"] if rec.get("cached") else []) \
+            + ([f"joined {rec['joined']}"] if rec.get("joined") else [])  # T-5557: the classes another run's green vouched for
         return [f"green at {at} ({', '.join(bits)}{'; selection: ' + rec['selection'] if rec.get('selection') else ''})"]
     out = [f"red at {at}: {f['class']}{'.' + f['test'] if f.get('test') else ''}{': ' + f['first'] if f.get('first') else ''}"
            for f in rec.get("failed") or []]
@@ -3560,7 +3561,8 @@ def _suite(a):
                     "worktree": where[0], "tree": tree_id(rtree[1]) if rtree else "",
                     "tree_end": tree_id(end_tree[1]) if end_tree else "", "run_id": run_id or "",
                     "argv": sys.argv[1:], "whole": entire, "selection": "" if entire else sel.strip(),
-                    "ok": not failed and not cpu_red and bool(total or skip) and not ENDED, "ran": total, "cached": sum(skip.values()),
+                    "ok": not failed and not cpu_red and bool(total or skip or joined) and not ENDED, "ran": total,
+                    "cached": sum(skip.values()), "joined": len(joined),  # T-5557: a run whose every class was joined is green
                     "n_failed": len(names), "n_not_run": len(stopped), **slot_fields(t0, time.time()),
                     "classes": len({owner(r[0]) for r in results}),  # T-4491: the deadline line says 'N of M classes ran'
                     "classes_not_run": len({owner(r[0]) for r in stopped}),
