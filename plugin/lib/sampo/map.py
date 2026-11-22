@@ -578,6 +578,17 @@ def broad(root, share=0.1):
     return total, sorted(((table[i], k) for i, k in n.items() if k >= need), key=lambda x: (-x[1], x[0]))
 
 
+def _names_changelog(root, rel):
+    """T-5587: True when the test file `rel` (under root) says CHANGELOG anywhere, or can't be read (keep the test)."""
+    if not rel:
+        return True
+    try:
+        with open(os.path.join(root, rel), encoding="utf-8", errors="replace") as f:
+            return "CHANGELOG" in f.read(2_000_000)
+    except OSError:
+        return True
+
+
 def ran_tests(root, base, tree, paths, detail=None):
     """T-3603: the test files of the classes the test runner's cache (plugin/tests/run.py: per class, what its last
     green runs read and the functions they ran) says ran a changed function of paths or read a changed file whole,
@@ -610,6 +621,7 @@ def ran_tests(root, base, tree, paths, detail=None):
                 hits.add(i)
     out = set()
     star = next((i for i, k in enumerate(table) if k == "*"), -1)
+    chlog = next((i for i, k in enumerate(table) if k == "CHANGELOG.md"), -1)
     wholepy = {i for i in hits if i not in fn and table[i].endswith(".py") and table[i][:1] != "?"}  # a probe is no read
     for cid, recs in classes.items() if hits else ():
         # a record from before function keys names each module the class imported as read whole: only a newer one counts
@@ -623,13 +635,20 @@ def ran_tests(root, base, tree, paths, detail=None):
         # functions it ran still count from all three, and a class that stopped stat'ing or opening a source file
         # stops being selected by every edit to it at its next green run, not three runs later
         idx = set(live[0][2]).union(i for r in live[1:] for i in r[2] if i not in wholepy)
-        if hits.isdisjoint(idx):
+        reach = hits.intersection(idx)
+        if not reach:
             continue
-        if detail is not None:
-            for i in hits.intersection(idx):
-                detail[table[i]] = detail.get(table[i], 0) + 1
         mod = cid.rsplit(".", 1)[0].rpartition(".")[2] + ".py"  # run.py's id: the TestCase's module, then its name
         own = next((table[i].partition("::")[0] for i in idx if os.path.basename(table[i].partition("::")[0]) == mod), None)
+        # T-5587: CHANGELOG.md (every lane appends a line) is held by shared paths that stat or read it (the session
+        # note, doctor's release age): only a class whose test file names CHANGELOG checks what it says
+        if chlog in reach and not _names_changelog(root, own):
+            reach = reach - {chlog}
+            if not reach:
+                continue
+        if detail is not None:
+            for i in reach:
+                detail[table[i]] = detail.get(table[i], 0) + 1
         if own and c.TESTISH.search(mod) and os.path.isfile(os.path.join(root, own)):
             out.add(own)
     return sorted(out)
