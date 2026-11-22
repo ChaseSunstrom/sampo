@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- The guard refuses a git command that moves trunk or takes HEAD off it (commit, merge, cherry-pick, rebase, reset, pull, am, revert, a branch checkout or switch, a forced branch move, update-ref) in the main checkout while a live merge train holds it, naming the train and how long it has run, so a stray commit no longer voids hours of gate time (T-5077).
 - The home resolves to ~/.claude/sampo only when ~/.claude/foreman is no real folder (absent or a link), else ~/.claude/foreman; a project whose root moved keeps its slug through an alias record; the guard, hooks, fast build and state restore follow the same rule and protect both names (T-5060).
 - A resumed Smith run whose held-tests record can't be read now drops its keep check instead of passing every red, and a test that printed PASSED but failed stays FAILED (T-5051).
 - The merge train's base probe and each lane's probe stamp their tests/run.py run with an id and name every failing test with its first exception line from that run's record in the base-red reason, the lane's blame and its flaky note, so nobody reruns to learn them (T-5047).
