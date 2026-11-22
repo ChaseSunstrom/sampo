@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- `sampo outcomes --panel` prints the fixed-or-reverted-after-close rate of tasks that adopted a Dissent item against tasks with none, each with its n, from the briefs and a panel_outcome row logged at close, with no model call (T-3951).
 - Sessions and subagents start knowing the one-call routines (the start line, a by-hand note once a routine is under way, and a `do` tool in Sampo Code and `sampo mcp`, the one mcp tool that changes things); a routine may not name a verb only the user runs, and plugin/macros is guarded like Sampo's code (T-3923).
 - `sampo update [--check] [--dry-run] [--undo]` fetches origin, refuses a dirty tree, a non-release branch or diverged history with one line each, fast-forwards, runs the plugin and home migrations only when their dry runs find work, re-checks sampo-fast's sum, and `--undo` puts the old commit and its migrations back (T-3881).
 - Three category skills (skill-writing, problem-solving, coverage) load once a session on prompt words, at the plan stage of an M or L task, and on a step's second failed evidence run (T-3855).
