@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- The brief's section caps are now 800 and 1200 bytes, with callers filtered to code and to strong scope defs (T-5682).
 - sampo card reach scores the lexical ranker on each card's own examples held out one at a time, with hit_at_1, hit_at_3 and unreached cards (T-5609).
 - A builder brief names up to three read cards that fit its task on two rare shared words, under "## Calling cards" (T-5605).
 - The write hook runs rustfmt on a .rs file after an Edit or Write, quietly and bounded, so builders stop running cargo fmt as turns (T-5600).
