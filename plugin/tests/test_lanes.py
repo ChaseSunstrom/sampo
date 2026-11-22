@@ -6396,5 +6396,121 @@ class LaneSay(_LaneRepo):
         self.assertEqual(slanes.reviewer_findings(msg)[0], ("adversary", "HIGH", "a.py:3", "the cap is never read"))
 
 
+class PatchIdentity(unittest.TestCase):  # T-6025: a review is carried by the exact bytes of a commit's change, whitespace included
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.git("init", "-q", "-b", "main")
+        self.write("f.py", "def f(x):\n    if x:\n        a = 1\n    return 0\n")
+        self.git("add", "f.py")
+        self.git("commit", "-qm", "base")
+        self.base = self.git("rev-parse", "HEAD")
+
+    def git(self, *a):
+        r = subprocess.run(["git", "-C", self.tmp, "-c", "user.email=t@t", "-c", "user.name=t", *a], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout.strip()
+
+    def write(self, name, text):
+        with open(os.path.join(self.tmp, name), "w") as f:
+            f.write(text)
+
+    def change(self, branch, line):
+        """A commit on `branch` off the base that rewrites the `return` line of f.py as `line`."""
+        self.git("checkout", "-q", "-B", branch, self.base)
+        self.write("f.py", f"def f(x):\n    if x:\n        a = 1\n{line}\n")
+        self.git("commit", "-qam", branch)
+        return branch
+
+    def test_patch_ids_a_reindented_line_is_not_the_reviewed_commit(self):
+        reviewed = self.change("reviewed", "    return a")
+        moved = self.change("moved", "        return a")  # the same line, indented into the if: a different program
+        self.assertNotEqual(slanes.patch_ids(self.tmp, reviewed, self.base), slanes.patch_ids(self.tmp, moved, self.base))
+
+    def test_patch_ids_trailing_whitespace_is_not_the_reviewed_commit(self):
+        reviewed = self.change("reviewed", "    return a")
+        padded = self.change("padded", "    return a ")
+        self.assertNotEqual(slanes.patch_ids(self.tmp, reviewed, self.base), slanes.patch_ids(self.tmp, padded, self.base))
+
+    def test_patch_ids_a_rebased_copy_keeps_the_reviewed_id(self):
+        reviewed = self.change("reviewed", "    return a")
+        self.git("checkout", "-q", "-B", "trunk", self.base)
+        self.write("g.py", "G = 1\n")
+        self.git("add", "g.py")
+        self.git("commit", "-qm", "trunk moved")
+        self.git("checkout", "-q", "-B", "copy", reviewed)
+        self.git("rebase", "-q", "trunk")
+        got = slanes.patch_ids(self.tmp, "copy", "trunk")
+        self.assertEqual(got, slanes.patch_ids(self.tmp, reviewed, self.base))
+        self.assertEqual(len(got), 1)
+
+    def test_patch_ids_a_git_without_verbatim_carries_nothing(self):
+        reviewed = self.change("reviewed", "    return a")
+        with unittest.mock.patch.object(slanes, "_verbatim_ok", return_value=False):
+            self.assertIsNone(slanes.patch_ids(self.tmp, reviewed, self.base), "no ids: no review is carried to any commit")
+
+    def test_patch_ids_the_probe_checks_that_whitespace_counts(self):
+        real = subprocess.run
+
+        def stable(argv, *a, **k):  # a git that takes --verbatim and still ignores whitespace
+            return real([x for x in argv if x != "--verbatim"] + ["--stable"], *a, **k) if "patch-id" in argv else real(argv, *a, **k)
+        slanes._VERBATIM.clear()
+        self.addCleanup(slanes._VERBATIM.clear)
+        with unittest.mock.patch.object(slanes.subprocess, "run", side_effect=stable):
+            self.assertFalse(slanes._verbatim_ok())
+
+    def test_patch_ids_an_old_git_is_named_and_probed_once(self):  # T-6025 review: the operator reads the cause
+        calls = []
+
+        def old(argv, *a, **k):  # git < 2.38: the usage error for an unknown option
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 129, "", "usage: git patch-id")
+        slanes._VERBATIM.clear()
+        self.addCleanup(slanes._VERBATIM.clear)
+        with unittest.mock.patch.object(slanes.subprocess, "run", side_effect=old):
+            self.assertEqual(slanes.patch_ids_why(), "git < 2.38: patch-id --verbatim unsupported")
+            self.assertIsNone(slanes.patch_ids(self.tmp, "HEAD", "HEAD"))
+            self.assertEqual(slanes.patch_ids_why(), slanes.NO_VERBATIM)
+        self.assertLessEqual(len(calls), 2, "asked once for the two diffs, then remembered")
+
+    def test_patch_ids_a_stalled_git_is_no_ids(self):
+        reviewed = self.change("reviewed", "    return a")
+        real = subprocess.run
+
+        def stall(argv, *a, **k):
+            if "patch-id" in argv:
+                raise subprocess.TimeoutExpired(argv, 1)
+            return real(argv, *a, **k)
+        slanes._VERBATIM.clear()
+        self.addCleanup(slanes._VERBATIM.clear)
+        with unittest.mock.patch.object(slanes.subprocess, "run", side_effect=stall):
+            self.assertIsNone(slanes.patch_ids(self.tmp, reviewed, self.base))
+            self.assertIn("could not run", slanes.patch_ids_why(), "a stall is not blamed on the git's version")
+
+    def test_patch_ids_every_patch_id_in_the_library_is_the_verbatim_one(self):
+        """Walker: the one place that spells `git patch-id` is lanes.patch_ids (serve, big and the train read identity
+        through it), and it asks for --verbatim; no other module may hash a patch another way."""
+        import ast
+        import glob
+        root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib", "sampo")
+        spellings, callers = [], []
+        for f in sorted(glob.glob(os.path.join(root, "*.py"))):
+            with open(f, encoding="utf-8") as fh:
+                tree = ast.parse(fh.read())
+            for n in ast.walk(tree):
+                if isinstance(n, ast.Constant) and isinstance(n.value, str) and n.value in ("patch-id", "--stable", "--unstable"):
+                    spellings.append((os.path.basename(f), n.value))
+                if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "patch_ids":
+                    callers.append(os.path.basename(f))
+        self.assertEqual(spellings, [("lanes.py", "patch-id")],
+                         "git patch-id is spelled once, in lanes.py's one command (the probe and the hash share it), never "
+                         "--stable or --unstable")
+        self.assertTrue({"serve.py", "big.py"} <= set(callers), callers)
+        import inspect
+        self.assertIn("_patch_id_cmd(", inspect.getsource(slanes.patch_ids), "the hash runs the one command")
+        self.assertIn("_verbatim_ok()", inspect.getsource(slanes.patch_ids), "and only on a git the probe passed")
+        self.assertIn('"--verbatim"', inspect.getsource(slanes._patch_id_cmd))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -5822,6 +5822,24 @@ def merge_own_content(root, sha):
     return "" if again.stdout.split()[0] == tree.stdout.strip() else "content of its own beyond its parents' merge"
 
 
+def line_starts_at(root, tip, cut):
+    """T-6025: True when the line `tip` was committed on (first parents) starts at `cut`: its oldest commit's first parent is
+    `cut`, which is where a lane cut from `cut` begins. A cut the line does not start at (a stale cut, one recorded for
+    another hand-out, a lane rebuilt elsewhere) says nothing about which commits are the lane's own, so the caller counts
+    none. Fails closed: an unreadable range is False. A tip that adds nothing over `cut` has an empty line: True."""
+    log = _git(root, "rev-list", "--first-parent", "--reverse", "--parents", f"{cut}..{tip}")
+    if log.returncode:
+        return False
+    rows = log.stdout.splitlines()
+    return not rows or row_parent(rows[0]) == cut
+
+
+def row_parent(row):
+    """The first parent in a `rev-list --parents` row ('' for a root commit)."""
+    ids = row.split()
+    return ids[1] if len(ids) > 1 else ""
+
+
 def merges_with_content(root, rev, base):
     """T-5968: the merge commits in `base..rev` that carry content of their own, as (sha, why) pairs oldest first; None when
     git could not list them."""
@@ -5831,14 +5849,59 @@ def merges_with_content(root, rev, base):
     return [(sha, why) for sha in log.stdout.split() if (why := merge_own_content(root, sha))]
 
 
+_VERBATIM = []  # [bool]: the probe's definite answer, once git gave one (a yes or a no is asked once per process)
+NO_VERBATIM = "git < 2.38: patch-id --verbatim unsupported"  # what an operator reads when no review can be carried
+
+
+def _patch_id_cmd(root):
+    """T-6025: the one `git patch-id` every identity of a reviewed commit is hashed with: --verbatim keeps the whitespace in
+    (--stable strips it, so a re-indented Python line kept the id of the commit that was reviewed)."""
+    return ["git", *(["-C", root] if root else []), "patch-id", "--verbatim"]
+
+
+def _verbatim_ok():
+    """T-6025: True when this git's `patch-id --verbatim` tells two changes apart that differ only in whitespace (git 2.38+;
+    an older git refuses the flag, and one that took it and still ignored whitespace would carry a re-indented line). A yes
+    and a definite no (git refused the flag, or hashed both alike) are remembered for the process, so a git that cannot is
+    probed once; a probe that could not run or timed out (a busy host, not the git's version) is asked again next time.
+    Fails closed: anything but a yes makes patch_ids return None; `patch_ids_why` says which."""
+    if _VERBATIM:
+        return _VERBATIM[0]
+    one = "diff --git a/f b/f\n--- /dev/null\n+++ b/f\n@@ -0,0 +1,2 @@\n+if x:\n+    y = 1\n"
+    try:  # outside any repository: patch-id reads stdin only, so a lane or a root that is gone cannot fail the probe
+        got = [subprocess.run(_patch_id_cmd(""), input=t, capture_output=True, text=True, timeout=30)
+               for t in (one, one.replace("+    y", "+      y"))]
+    except (OSError, subprocess.SubprocessError):
+        return False
+    ids = [r.stdout.split()[:1] for r in got]
+    if any(r.returncode == 129 for r in got):  # git's usage error: it does not know the flag
+        _VERBATIM.append(False)
+    elif any(r.returncode for r in got) or not all(ids):
+        return False
+    else:
+        _VERBATIM.append(ids[0] != ids[1])
+    return _VERBATIM[0]
+
+
+def patch_ids_why():
+    """T-6025: '' when this git hashes patches verbatim, else the cause patch_ids gives no ids for, as the hold's message
+    names it (an operator reads it: the fix is a newer git)."""
+    if _verbatim_ok():
+        return ""
+    return NO_VERBATIM if _VERBATIM else "git patch-id could not run (no answer in time): nothing can be carried as reviewed"
+
+
 def patch_ids(root, rev, base, no_merges=False, first_parent=False):
-    """T-5968: the content of the commits `base..rev` as a list of one patch id per commit (git patch-id --stable, oldest
-    first; an empty commit has no patch, so it counts as 'empty'; a merge counts as 'merge', or 'merge-own:TREE' when it
-    carries content of its own), or None when git could not say. A rebase moves every commit's sha but keeps each patch id:
-    two lists are equal when the same changes, in the same order, are there, so a review recorded for one carries to the
-    other, and a commit added, dropped or changed in between does not.
+    """T-5968: the content of the commits `base..rev` as a list of one patch id per commit (git patch-id --verbatim: the
+    whitespace is part of the change, T-6025; oldest first; an empty commit has no patch, so it counts as 'empty'; a merge
+    counts as 'merge', or 'merge-own:TREE' when it carries content of its own), or None when git could not say (a git that
+    cannot hash verbatim counts too: no ids, so no review is carried). A rebase moves every commit's sha but keeps each patch
+    id: two lists are equal when the same changes, in the same order, are there, so a review recorded for one carries to the
+    other, and a commit added, dropped or changed in between (a re-indented line too) does not.
     no_merges leaves the merge commits out. first_parent walks only the line `rev` itself was committed on (a merge's other
     parent, what was merged in, is not that line's own work)."""
+    if not _verbatim_ok():
+        return None
     log = _git(root, "rev-list", "--reverse", "--parents", *(["--no-merges"] if no_merges else []),
                *(["--first-parent"] if first_parent else []), f"{base}..{rev}")
     if log.returncode:
@@ -5856,8 +5919,10 @@ def patch_ids(root, rev, base, no_merges=False, first_parent=False):
         if not diff.stdout.strip():
             out.append("empty")
             continue
-        pid = subprocess.run(["git", "-C", root, "patch-id", "--stable"], input=diff.stdout, capture_output=True,
-                             text=True, timeout=120)
+        try:
+            pid = subprocess.run(_patch_id_cmd(root), input=diff.stdout, capture_output=True, text=True, timeout=120)
+        except (OSError, subprocess.SubprocessError):  # a hash that did not finish is no id, never a crash or a match
+            return None
         line = pid.stdout.split()
         if pid.returncode or not line:
             return None

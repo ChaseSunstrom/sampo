@@ -849,7 +849,7 @@ def _integrate_lane(p, tid, path):
         unreviewed = lanes.review_hold(brief, reviewed_at)
         reviewed_ids = lanes.patch_ids(path, reviewed_at, branch) if not unreviewed else None
         if not unreviewed and reviewed_ids is None:
-            unreviewed = "the reviewed commits could not be read"
+            unreviewed = lanes.patch_ids_why() or "the reviewed commits could not be read"  # T-6025: an old git is named
     except Exception as e:  # a review that can't be read is a hold, never a landing
         unreviewed = f"the review could not be read ({type(e).__name__})"
     if unreviewed:
@@ -871,6 +871,8 @@ def _integrate_lane(p, tid, path):
         now_ids = lanes.patch_ids(p.root, tip, branch)
     except Exception:
         now_ids = None
+    if now_ids is None and lanes.patch_ids_why():  # T-6025: the same old git, named
+        return f"kept in {path}: {lanes.REVIEW_HELD}: {lanes.patch_ids_why()}"
     if now_ids is None or now_ids != reviewed_ids:
         return (f"kept in {path}: {lanes.REVIEW_HELD}: the lane's commits changed after its review (rebase, gate or "
                 f"a new commit); sampo lane pilot {tid}, or sampo lane accept {tid} --audit LENS HOW RESULT")

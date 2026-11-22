@@ -4,6 +4,7 @@ Merge commit on the build branch (with the task's changelog line). A red stage c
 a re-run after a crash finishes the merge that was under way."""
 import argparse
 import os
+import unittest.mock
 
 import test_big_run as tbr
 
@@ -274,6 +275,129 @@ class Stages(Base):
         self.assertIn("1 commit(s)", r.stdout + r.stderr, "only the hand commit is unreviewed: the child's own is carried")
         self.assertIn("no child's reviewed work", r.stdout + r.stderr)
         self.assertEqual(self.git("rev-parse", "HEAD"), head, "nothing reached the build branch")
+
+    def set_meta(self, kid, **kv):
+        b = c.find_brief(self.p, kid)
+        for k, v in kv.items():
+            if v is None:
+                b.meta.pop(k, None)
+            else:
+                b.meta[k] = v
+        c.save_brief(self.p, b)
+
+    def test_a_child_with_no_recorded_lane_cut_counts_no_reviewed_commits(self):  # T-6025 (a): no fallback to the brief's base
+        tid, kids = self.parent()
+        self.finish(tid, kids)
+        below = self.git("rev-parse", f"big/{tid}")  # the base its brief kept: below the hand commit
+        alias = self.hand_commit(tid)
+        own = self.commit_in(alias, "child.py", msg="the child's own commit on top of the hand commit")
+        self.set_meta(next(iter(kids.values())), lane_cut=None, base=below, accepted_tip=own)  # a legacy child: no cut
+        head = self.git("rev-parse", "HEAD")
+        r = self.close(tid)
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("2 commit(s)", r.stdout + r.stderr, "with no cut the child's own commit counts for nothing either")
+        self.assertIn("no child's reviewed work", r.stdout + r.stderr)
+        self.assertEqual(self.git("rev-parse", "HEAD"), head, "nothing reached the build branch")
+
+    def test_a_child_handed_out_again_counts_from_its_new_cut_not_the_first(self):  # T-6025 (b)
+        tid, kids = self.parent()
+        self.finish(tid, kids)
+        kid = next(iter(kids.values()))
+        first = self.git("rev-parse", f"big/{tid}")
+        big._record_lane_cut(self.p, c.find_brief(self.p, kid), first)  # the first hand-out
+        alias = self.hand_commit(tid)  # a hand commit lands between the two hand-outs
+        hand = self.git("rev-parse", f"big/{tid}")
+        big._record_lane_cut(self.p, c.find_brief(self.p, kid), hand)  # the second hand-out
+        self.assertEqual(self.meta(kid).get("lane_cut"), hand, "the cut is where the newest lane started")
+        own = self.commit_in(alias, "child.py", msg="the second lane's own commit")
+        self.set_meta(kid, accepted_tip=own)
+        head = self.git("rev-parse", "HEAD")
+        r = self.close(tid)
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("1 commit(s)", r.stdout + r.stderr, "only the hand commit is unreviewed: the second lane's own is carried")
+        self.assertEqual(self.git("rev-parse", "HEAD"), head, "nothing reached the build branch")
+
+    def test_the_work_of_an_earlier_lane_still_counts_after_the_child_is_handed_out_again(self):  # T-6025 (b)
+        tid, kids = self.parent()
+        self.finish(tid, kids)
+        kid = next(iter(kids.values()))
+        first = self.git("rev-parse", f"big/{tid}")
+        big._record_lane_cut(self.p, c.find_brief(self.p, kid), first)
+        alias = self.hand_commit(tid, name="lane1.py")  # stands for the first lane's own commit, merged onto big/ID
+        one = self.git("rev-parse", f"big/{tid}")
+        self.set_meta(kid, accepted_tip=one)
+        big._record_lane_cut(self.p, c.find_brief(self.p, kid), one)  # handed out again: the first lane's review is kept
+        two = self.commit_in(alias, "lane2.py", msg="the second lane")
+        self.set_meta(kid, accepted_tip=two)
+        r = self.close(tid)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(self.meta(kid).get("prior_lanes"), "the first lane's cut and review are kept as flat strings")
+
+    def test_a_cut_that_cannot_be_replaced_fails_the_hand_out_instead_of_keeping_the_old_one(self):  # T-6025 (b)
+        tid, kids = self.parent()
+        self.finish(tid, kids)
+        kid = next(iter(kids.values()))
+        big._record_lane_cut(self.p, c.find_brief(self.p, kid), self.git("rev-parse", f"big/{tid}"))
+        self.hand_commit(tid)
+        with unittest.mock.patch.object(cli, "mutate", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                big._record_lane_cut(self.p, c.find_brief(self.p, kid), self.git("rev-parse", f"big/{tid}"))
+
+    def test_a_stamp_whose_line_does_not_start_at_its_cut_counts_none(self):  # T-6025: the cut is checked against the stamp
+        tid, kids = self.parent()
+        self.finish(tid, kids)
+        before = self.git("rev-parse", f"big/{tid}")
+        alias = self.hand_commit(tid)
+        own = self.commit_in(alias, "child.py", msg="the child's own commit")  # hand commit, then the child's, on big/ID
+        self.git("checkout", "-q", "--detach", before, cwd=alias)
+        elsewhere = self.commit_in(alias, "else.py", msg="a commit off the line")  # not an ancestor of the stamp
+        self.child_stamps(next(iter(kids.values())), elsewhere, accepted=own)
+        r = self.close(tid)
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("no child's reviewed work", r.stdout + r.stderr)
+
+    def rebased_lane(self, redo):
+        """T-6025 review: two children cut from the same tip of a file; the second lands first (it adds lines above), the
+        first's reviewed commit is then re-applied on top of it (`redo(alias)`: same bytes, new line offsets, or not)."""
+        self.commit("long.txt", "".join(f"line {i}\n" for i in range(1, 21)))
+        tid, kids = self.parent()
+        self.finish(tid, kids)
+        cut = self.git("rev-parse", f"big/{tid}")
+        one, two = list(kids.values())[:2]
+        lane = os.path.join(self.tmp, "lanewt")
+        self.git("worktree", "add", "-q", "-b", "lane1", lane, cut)
+        with open(os.path.join(lane, "long.txt"), "w") as f:
+            f.write("".join(f"line {i}\n" if i != 15 else "line 15 reviewed\n" for i in range(1, 21)))
+        self.git("commit", "-qam", "the first child's reviewed change", cwd=lane)
+        reviewed = self.git("rev-parse", "HEAD", cwd=lane)
+        alias = os.path.join(self.tmp, "bigwt")
+        self.git("worktree", "add", "-q", alias, f"big/{tid}")
+        with open(os.path.join(alias, "long.txt"), "w") as f:  # the other child lands lines above the reviewed one
+            f.write("above 1\nabove 2\nabove 3\n" + "".join(f"line {i}\n" for i in range(1, 21)))
+        self.git("commit", "-qam", "the second child's change", cwd=alias)
+        landed = self.git("rev-parse", "HEAD", cwd=alias)
+        self.child_stamps(two, cut, accepted=landed)
+        self.child_stamps(one, cut, accepted=reviewed)
+        redo(alias, reviewed)
+        return tid
+
+    def test_a_clean_rebase_of_a_reviewed_commit_is_still_carried(self):  # T-6025 review: line offsets are not content
+        tid = self.rebased_lane(lambda alias, reviewed: self.git("cherry-pick", reviewed, cwd=alias))
+        r = self.close(tid)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_a_rebased_commit_with_a_changed_line_is_held(self):  # T-6025 review: only a changed content line is
+        def redo(alias, reviewed):
+            self.git("cherry-pick", "-n", reviewed, cwd=alias)
+            with open(os.path.join(alias, "long.txt")) as f:
+                text = f.read()
+            with open(os.path.join(alias, "long.txt"), "w") as f:
+                f.write(text.replace("line 15 reviewed\n", "line 15 reviewed \n"))  # one trailing space
+            self.git("commit", "-qam", "the same change, re-spaced", cwd=alias)
+        tid = self.rebased_lane(redo)
+        r = self.close(tid)
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("1 commit(s)", r.stdout + r.stderr)
 
     def merged_pair(self, tid, kids, extra=False):
         """big/<ID> takes a merge of two commits two reviews cover (a child's accepted tip, another's reviewed tip); with

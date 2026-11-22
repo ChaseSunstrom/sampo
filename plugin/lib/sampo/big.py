@@ -26,6 +26,7 @@ import os
 import posixpath
 import re
 import sys
+from collections import Counter
 
 from sampo import core as c
 
@@ -1348,20 +1349,55 @@ def task_close(p, args):
     return _record(p, args, b, sha, tip, gate)  # outside the locks: pm_record and pm_set take the pm one themselves
 
 
+LANE_PRIORS = 64  # "CUT:TIP" strings of earlier hand-outs a brief keeps: 32 hand-outs of one child, ~5 KB of front matter at
+# most; past that the oldest fall off, and their work is held at the close ("no child's reviewed work"), never carried
+_FULL_SHA = r"[0-9a-f]{40}|[0-9a-f]{64}"
+
+
+def _prior_lanes(meta):
+    """The `prior_lanes` entries of a brief that are well formed: ['CUT:TIP', ...] with both halves full shas. The one
+    reader of the field, for the writer (what it keeps) and the close (what it counts): an entry that is not one is dropped
+    by both alike."""
+    got = meta.get("prior_lanes") or []
+    return [r for r in (got if isinstance(got, list) else [got])
+            if isinstance(r, str) and re.fullmatch(f"(?:{_FULL_SHA}):(?:{_FULL_SHA})", r)]
+
+
 def _record_lane_cut(p, kid, cut):
-    """T-5968: the commit a child's lane starts from (`lane_cut` on its brief, set once at launch: the integration branch's
-    tip its brief names as <BASE>, which the builder's `sampo lane start` holds its lane to), where its own work starts: the
-    close counts the child's reviewed commits from here, never from whatever the build branch holds."""
+    """T-5968: the commit a child's lane starts from (`lane_cut` on its brief, set at every hand-out: the integration
+    branch's tip its brief names as <BASE>, which the builder's `sampo lane start` holds its lane to), where its own work
+    starts: the close counts the child's reviewed commits from here, never from whatever the build branch holds.
+    T-6025: a child handed out again gets the new cut (the first would count every commit that landed on big/ID since as the
+    new lane's own, a hand commit among them); what the earlier lane was reviewed at moves to `prior_lanes` with its own cut,
+    so work it already landed stays covered. A cut that cannot be recorded for a child that already has one raises (the
+    caller does not launch it: the old cut is stale); with none on record the child just counts none at the close."""
     from sampo import cli
-    if kid.meta.get("lane_cut"):
+    old = str(kid.meta.get("lane_cut") or "")
+    if old == cut:
         return
-    if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", cut or ""):
-        try:
-            cli.mutate(p, kid.id, lambda x: x.meta.setdefault("lane_cut", cut), "big_lane_cut", {"cut": cut})
-            kid.meta["lane_cut"] = cut
-        except Exception as e:  # noqa: BLE001 — the lane is cut; a cut not recorded only makes the close hold this child's work
-            print(f"big: {kid.id}: its lane cut was not recorded ({type(e).__name__}); the close will hold its commits",
-                  file=sys.stderr)
+    if not re.fullmatch(_FULL_SHA, cut or ""):
+        if old:
+            raise c.PolicyError(f"{kid.id}: the integration branch tip {cut!r} is not a commit: its lane cut was not renewed")
+        return
+
+    def put(x):
+        was = str(x.meta.get("lane_cut") or "")
+        tips = [str(x.meta[k]) for k in ("accepted_tip", "reviewed_tip") if x.meta.get(k)]
+        if was and was != cut and tips:  # flat "CUT:TIP" strings: the brief's front matter keeps no nested values
+            prior = _prior_lanes(x.meta)
+            for t in tips:
+                if f"{was}:{t}" not in prior:
+                    prior.append(f"{was}:{t}")
+            x.meta["prior_lanes"] = prior[-LANE_PRIORS:]
+        x.meta["lane_cut"] = cut
+    try:
+        cli.mutate(p, kid.id, put, "big_lane_cut", {"cut": cut})
+        kid.meta["lane_cut"] = cut
+    except Exception as e:  # noqa: BLE001 — see above: stale cut = no launch; no cut = the close holds this child's work
+        if old:
+            raise
+        print(f"big: {kid.id}: its lane cut was not recorded ({type(e).__name__}); the close will hold its commits",
+              file=sys.stderr)
 
 
 def _unreviewed(p, b, head, tip):
@@ -1369,12 +1405,16 @@ def _unreviewed(p, b, head, tip):
     some child of `b` was accepted or reviewed at (its accepted_tip / reviewed_tip stamp; patch ids, so a rebase of the child
     keeps it), and every merge commit among them holds nothing of its own (its tree is its parents' re-merge), else why the
     close must not merge them. Unreadable history is a hold (fails closed). A child's reviewed commits are counted from where
-    its lane was cut (`lane_cut`, else the base on its brief), along its own line only: never `head..stamp`, which holds
-    whatever else the build branch carried (a hand commit a lane then started on). A child with neither recorded counts none."""
+    its lane was cut (`lane_cut`, recorded at every hand-out; earlier hand-outs in `prior_lanes`), along its own line only:
+    never `head..stamp`, which holds whatever else the build branch carried (a hand commit a lane then started on).
+    T-6025: no fallback: a child with no recorded cut counts none, and so does a lane whose line does not start at its cut
+    (the stamp's history was not cut where the brief says: what sits under it is not the child's). The patch ids are
+    whitespace-exact (lanes.patch_ids), and counted as a multiset: a patch twice on the branch needs two reviewed copies."""
     from sampo import lanes
     mine = lanes.patch_ids(_main(p), tip, head, no_merges=True)
     if mine is None:
-        return "the commits on the integration branch could not be read; nothing was merged"
+        return (f"{lanes.patch_ids_why() or 'the commits on the integration branch could not be read'}; "
+                f"nothing was merged")  # T-6025: an old git is named, not blamed on the branch
     own = lanes.merges_with_content(_main(p), tip, head)
     if own is None:
         return "the merges on the integration branch could not be read; nothing was merged"
@@ -1384,23 +1424,30 @@ def _unreviewed(p, b, head, tip):
     mine = [i for i in mine if i != "empty"]  # a commit with no change carries nothing to review
     if not mine:
         return ""
-    seen = set()
+    reviewed = Counter()  # patch id -> how many reviewed commits carry it (a patch twice on big/ID needs two)
     for kid in c.load_briefs(p, include_archive=True):
         if kid.meta.get("parent") != b.id:
             continue
-        for stamp in (kid.meta.get("accepted_tip"), kid.meta.get("reviewed_tip")):
-            cut = str(kid.meta.get("lane_cut") or "")
-            if stamp and not cut:  # a child launched before the cut was recorded: the base its brief kept, when it is behind the stamp
-                base = str(kid.meta.get("base") or "")
-                if re.fullmatch(r"[0-9a-f]{7,64}", base) and _g(p, "merge-base", "--is-ancestor", base, str(stamp)).returncode == 0:
-                    cut = base
-            if stamp and cut:
-                got = lanes.patch_ids(_main(p), str(stamp), cut, no_merges=True, first_parent=True)
-                seen.update(got or [])
-    extra = [i for i in mine if i not in seen]
+        by_cut = {str(kid.meta.get("lane_cut") or ""):
+                  [str(kid.meta[k]) for k in ("accepted_tip", "reviewed_tip") if kid.meta.get(k)]}
+        for r in _prior_lanes(kid.meta):
+            old_cut, _, old_tip = r.partition(":")
+            by_cut.setdefault(old_cut, []).append(old_tip)
+        for cut, stamps in by_cut.items():
+            lane = Counter()  # one lane's reviewed commits: the larger of its stamps' (accepted covers reviewed)
+            for stamp in stamps:
+                if not re.fullmatch(_FULL_SHA, cut) or not re.fullmatch(_FULL_SHA, stamp):
+                    continue  # no recorded cut (a legacy child, or one never cut): counts none, never a guessed base
+                if not lanes.line_starts_at(_main(p), stamp, cut):
+                    continue  # the lane was not cut where the child's brief says: its line holds what it did not write
+                got = lanes.patch_ids(_main(p), stamp, cut, no_merges=True, first_parent=True)
+                lane |= Counter(got or [])
+            reviewed += lane
+    extra = list((Counter(mine) - reviewed).elements())
     if extra:
         return (f"{len(extra)} commit(s) on {b.meta.get('big_branch') or 'big/' + b.id} are no child's reviewed work "
-                f"(a hand commit on the integration branch): review it through a child task; nothing was merged")
+                f"(a hand commit on the integration branch, or a child's work whose lane cut is not on record or does not "
+                f"match its review): review it through a child task; nothing was merged")
     return ""
 
 
@@ -1599,7 +1646,9 @@ def _hand_out(p, args):
                 with contextlib.redirect_stdout(buf):  # builder_brief's own text is replaced by the block below
                     lanes.builder_brief(p, kid, argparse.Namespace(json=True, model=None))
                 data = json.loads(buf.getvalue())
-                _record_lane_cut(p, kid, _ref(p, f"big/{b.id}"))  # the brief's <BASE>: the tip the child's lane starts from
+                # the brief's <BASE>: the tip the child's lane starts from (T-6025: a renewal that fails reports the child as
+                # not cut; its old cut then holds its lane's work at the close, since that lane starts elsewhere)
+                _record_lane_cut(p, kid, _ref(p, f"big/{b.id}"))
             except Exception as e:  # noqa: BLE001 — one child's lane failing to cut is its own report; the rest go on
                 if getattr(e, "batch", False):
                     held = str(e)
