@@ -3,6 +3,7 @@ exit code, stdout, stderr and state-file effects (events.jsonl lines compared wi
 native side decides the calls it can prove Python allows silently and hands every other one to hooks/hook with the
 same argv, env and stdin bytes. Without cargo (or SAMPO_FAST_BIN) only the shim's Python fallback runs."""
 import atexit
+import contextlib
 import fcntl
 import glob
 import hashlib
@@ -14,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -32,30 +34,113 @@ TRANSCRIPTS = os.path.join(os.path.expanduser("~"), ".claude", "projects")
 _BIN = []
 
 
+def find_cargo():
+    return shutil.which("cargo") or next((p for p in [os.path.expanduser("~/.cargo/bin/cargo")]
+                                          if os.access(p, os.X_OK)), None)
+
+
+def target_root():
+    return os.environ.get("CARGO_TARGET_DIR") or os.path.join(
+        os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "sampo", "cargo-target")
+
+
+KEPT_HOURS = 6  # a build folder nobody used for this long goes
+
+
+def native_key(native):
+    """T-5879: what a build of `native` depends on, as one digest: where it is, every source file's bytes, and the size
+    and mtime build.rs embeds for each watched file. Cargo calls a path crate fresh by mtime and gives two checkouts
+    one slot (cargo issue 12516), so a tree whose files are older than the last build there, or whose files another
+    process built over, was run as the other tree's binary: a build folder per key never meets that."""
+    h = hashlib.sha1(os.path.realpath(native).encode())
+    for dirpath, dirs, files in os.walk(native):  # the manifests and the crates: not the installed binary beside them
+        dirs[:] = sorted(d for d in dirs if dirpath != native or d == "crates")
+        for name in sorted(files):
+            path = os.path.join(dirpath, name)
+            if dirpath == native and not name.startswith("Cargo."):
+                continue
+            with open(path, "rb") as f:
+                h.update(f"{os.path.relpath(path, native)} {hashlib.sha1(f.read()).hexdigest()}\n".encode())
+    plugin = os.path.dirname(native)
+    for rel in WATCHED:
+        try:
+            st = os.stat(os.path.join(plugin, rel))
+            h.update(f"{rel} {st.st_size} {st.st_mtime_ns}\n".encode())
+        except OSError:
+            h.update(f"{rel} missing\n".encode())
+    return h.hexdigest()[:20]
+
+
+def _profile_dirs(root):
+    """Every `lane` profile folder under `root`: the old shared one, and one per key."""
+    out = [os.path.join(root, "lane")]
+    with contextlib.suppress(OSError):
+        out += [os.path.join(root, n, "lane") for n in sorted(os.listdir(root)) if n.startswith("k-")]
+    return [d for d in out if os.path.isdir(d)]
+
+
+def _tidy(root, keep):
+    """Under the lock: remove the build folders (the old shared `lane` too) idle for KEPT_HOURS, so a train's
+    subset trees leave about 20 MB each for hours, not for good."""
+    now = time.time()
+    for name in os.listdir(root):
+        path = os.path.join(root, name)
+        if path == keep or not (name == "lane" or name.startswith("k-")) or not os.path.isdir(path):
+            continue
+        used = os.path.join(path, ".used")
+        with contextlib.suppress(OSError):
+            if now - os.stat(used if os.path.exists(used) else path).st_mtime > KEPT_HOURS * 3600:
+                shutil.rmtree(path, ignore_errors=True)
+
+
+def _seed(root, mine):
+    """The registry crates another build folder compiled, copied in (never this crate's own artifacts nor an
+    incremental cache): a new key pays for the one crate it changes, as the shared folder did."""
+    have = os.path.join(mine, "lane")
+    if os.path.isdir(have):
+        return
+    old = [d for d in _profile_dirs(root) if os.path.isdir(os.path.join(d, ".fingerprint"))
+           and os.path.dirname(d) != mine]
+    if not old:
+        return
+    try:
+        shutil.copytree(max(old, key=os.path.getmtime), have, symlinks=True,
+                        ignore=shutil.ignore_patterns("incremental", "sampo-fast*", "sampo_fast*"))
+    except (OSError, shutil.Error):
+        shutil.rmtree(have, ignore_errors=True)  # cold: slower, the same answer
+
+
+def build_fast(native, root, cargo):
+    """`cargo build --profile lane` of `native` into a build folder of its own under `root` (see native_key), and a
+    copy of the binary in a private temp folder. Build and copy run under one lock: the folder is `native`'s alone,
+    but root holds the others'."""
+    os.makedirs(root, exist_ok=True)
+    mine = os.path.join(root, "k-" + native_key(native))
+    with open(os.path.join(root, "sampo-fast.lock"), "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        os.makedirs(mine, exist_ok=True)
+        with open(os.path.join(mine, ".used"), "w"):
+            pass
+        _tidy(root, mine)
+        _seed(root, mine)
+        r = subprocess.run(["nice", "-n", "10", cargo, "build", "--locked", "--profile", "lane",
+                            "--manifest-path", os.path.join(native, "Cargo.toml")],
+                           env=dict(os.environ, CARGO_TARGET_DIR=mine, CARGO_INCREMENTAL="0"), capture_output=True,
+                           text=True, timeout=900)
+        if r.returncode:
+            raise AssertionError("cargo build failed:\n" + r.stderr[-4000:])
+        tmp = tempfile.mkdtemp(prefix="sampo-fast-")
+        atexit.register(shutil.rmtree, tmp, True)
+        return shutil.copy2(os.path.join(mine, "lane", "sampo-fast"), tmp)
+
+
 def fast_bin():
-    """SAMPO_FAST_BIN, else `cargo build --profile lane` into the shared target dir (once per process); None
-    without cargo."""
+    """SAMPO_FAST_BIN, else this checkout's own build (build_fast; once per process); None without cargo."""
     if not _BIN:
         path = os.environ.get("SAMPO_FAST_BIN") or os.environ.get("FOREMAN_FAST_BIN")  # importing sampo renames it
-        cargo = shutil.which("cargo") or next((p for p in [os.path.expanduser("~/.cargo/bin/cargo")]
-                                               if os.access(p, os.X_OK)), None)
+        cargo = find_cargo()
         if not path and cargo:
-            target = os.environ.get("CARGO_TARGET_DIR") or os.path.join(
-                os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "sampo", "cargo-target")
-            os.makedirs(target, exist_ok=True)
-            # every checkout builds to the one target/lane/sampo-fast, stamped with its own sources: build and copy
-            # under one lock, or a train's tree can run a lane's binary (which defers every call)
-            with open(os.path.join(target, "sampo-fast.lock"), "w") as lock:
-                fcntl.flock(lock, fcntl.LOCK_EX)
-                r = subprocess.run(["nice", "-n", "10", cargo, "build", "--locked", "--profile", "lane",
-                                    "--manifest-path", os.path.join(NATIVE, "Cargo.toml")],
-                                   env=dict(os.environ, CARGO_TARGET_DIR=target), capture_output=True, text=True,
-                                   timeout=900)
-                if r.returncode:
-                    raise AssertionError("cargo build failed:\n" + r.stderr[-4000:])
-                tmp = tempfile.mkdtemp(prefix="sampo-fast-")
-                atexit.register(shutil.rmtree, tmp, True)
-                path = shutil.copy2(os.path.join(target, "lane", "sampo-fast"), tmp)
+            path = build_fast(NATIVE, target_root(), cargo)
         _BIN.append(path)
     return _BIN[0]
 
@@ -545,6 +630,94 @@ class Passthrough(Base):
             "schedulers": sorted(hooks.SCHEDULERS), "outward_mcp": hooks.OUTWARD_MCP, "reads": sorted(hooks._READS),
             "outline_lines": hooks.OUTLINE_LINES, "snap_span": budget.SNAP_SPAN, "pace_floor": budget.PACE_FLOOR,
             "untimed": "PreToolUse" in hooks.UNTIMED, "watched": list(WATCHED)})
+
+
+class Concurrent(Base):
+    """T-5879: sampo-fast built for two checkouts at once."""
+
+    run_stub = Passthrough.run_stub
+
+    def checkout(self, name, spawn_note):
+        """A checkout of its own under tmp: the native sources, the stub hook and the mirrored Python, spawn.py ending
+        in `spawn_note` (two trees differ there)."""
+        plug = os.path.join(self.tmp, name, "plugin")
+        shutil.copytree(NATIVE, os.path.join(plug, "native"), ignore=shutil.ignore_patterns("target"))
+        os.makedirs(os.path.join(plug, "hooks"))
+        shutil.copy2(SHIM, os.path.join(plug, "hooks", "fast"))
+        with open(os.path.join(plug, "hooks", "hook"), "w") as f:
+            f.write(STUB)
+        os.chmod(os.path.join(plug, "hooks", "hook"), 0o755)
+        for rel in WATCHED[1:] + (".claude-plugin/plugin.json",):
+            os.makedirs(os.path.dirname(os.path.join(plug, rel)), exist_ok=True)
+            shutil.copy2(os.path.join(PLUGIN, rel), os.path.join(plug, rel))
+        with open(os.path.join(plug, "lib", "sampo", "spawn.py"), "a") as f:
+            f.write(spawn_note)
+        return plug
+
+    def age(self, plug, hours):
+        """Every file of the tree as old as an rsync -t or a restored copy leaves it: older than any build before."""
+        when = time.time() - hours * 3600
+        for dirpath, _, files in os.walk(plug):
+            for name in files:
+                os.utime(os.path.join(dirpath, name), (when, when))
+
+    def decides(self, plug, binary):
+        """Whether `binary`, installed in the tree, answers a read itself: it does when its stamps are the tree's."""
+        os.makedirs(os.path.join(plug, "native"), exist_ok=True)
+        path = os.path.join(plug, "native", "sampo-fast")
+        shutil.copyfile(binary, path)
+        os.chmod(path, 0o755)
+        with open(binary, "rb") as f, open(path + ".sha256", "w") as out:
+            out.write(f"{hashlib.sha256(f.read()).hexdigest()}  sampo-fast\n")
+        os.chmod(path + ".sha256", 0o644)
+        data = json.dumps({"tool_name": "Read", "tool_input": {"file_path": HOOK}, "session_id": "s",
+                           "cwd": self.repo}).encode()
+        return self.run_stub([os.path.join(plug, "hooks", "fast"), "PreToolUse"], data)[1] is None
+
+    def test_checkouts_each_run_a_binary_of_their_own_sources(self):
+        """T-5879: two checkouts whose Python differs build at the same time into the shared cache, and each runs the
+        binary stamped from its own files, also when its files are older than the other's build (the 16:06Z cull: a
+        stale-source and a mirrored-constants failure no checkout had caused)."""
+        cargo = find_cargo()
+        if not cargo or os.environ.get("SAMPO_FAST_BIN") or os.environ.get("FOREMAN_FAST_BIN"):
+            self.skipTest("this claim builds the binary itself: it needs cargo and no SAMPO_FAST_BIN")
+        a, b = self.checkout("a", ""), self.checkout("b", "# only in b\n")
+        self.age(b, 5)
+        built, errors = {}, []
+
+        def build(name, plug):
+            try:
+                built[name] = build_fast(os.path.join(plug, "native"), target_root(), cargo)
+            except BaseException as e:  # noqa: BLE001: reported by the test thread
+                errors.append(e)
+        threads = [threading.Thread(target=build, args=(n, p)) for n, p in (("a", a), ("b", b))]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(errors, [])
+        self.assertNotEqual(native_key(os.path.join(a, "native")), native_key(os.path.join(b, "native")))
+        self.assertTrue(self.decides(a, built["a"]), "a runs a binary stamped from a's files")
+        self.assertTrue(self.decides(b, built["b"]), "b runs a binary stamped from b's files")
+        self.assertFalse(self.decides(b, built["a"]), "a's binary defers on b's files: the stamps differ")
+        with open(os.path.join(b, "lib", "sampo", "spawn.py"), "a") as f:  # b's folder, new files, old mtimes
+            f.write("# b again, a different size\n")
+        self.age(b, 6)
+        again = build_fast(os.path.join(b, "native"), target_root(), cargo)
+        self.assertTrue(self.decides(b, again), "b rebuilt over its own earlier build: the binary is b's new files'")
+
+
+    def test_tidy_removes_the_idle_build_folders_and_keeps_the_rest(self):
+        root = os.path.join(self.tmp, "root")
+        long_ago = time.time() - (KEPT_HOURS + 1) * 3600
+        for name, when in (("k-idle", long_ago), ("k-recent", time.time()), ("k-mine", long_ago), ("lane", long_ago),
+                           ("other", long_ago)):
+            os.makedirs(os.path.join(root, name))
+            with open(os.path.join(root, name, ".used"), "w"):
+                pass
+            os.utime(os.path.join(root, name, ".used"), (when, when))
+        _tidy(root, os.path.join(root, "k-mine"))
+        self.assertEqual(sorted(os.listdir(root)), ["k-mine", "k-recent", "other"])
 
 
 class Recorded(Base):
