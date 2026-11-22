@@ -268,11 +268,15 @@ def _scope_paths(values):
 
 
 def _create(p, title, type, tier, status, raw=None, scope=(), depends=(), source="user", priority="normal", explore=False, net=True,
-            meta=None):
+            meta=None, asked=False):
+    """`asked` (T-5494): the user's own words became this task (sampo capture and sampo intake with their source user):
+    `asked: verbatim`. Every other path is Sampo's own, `asked: derived`: the source defaults to user there too (task
+    new, big, carry-over), so the source alone can't tell them apart."""
     scope = _scope_paths(scope)
     tid = c.next_id(p, net=net)  # T-3329: the hook captures pass net=False, so no prompt or stop waits on the claims remote
     b = c.Brief.new(tid, title, type, tier, raw=raw, scope=scope, depends=depends, source=source,
                     priority=priority, status=status, explore=explore)
+    b.meta["asked"] = "verbatim" if asked else "derived"
     b.meta.update(meta or {})  # T-4221: fields the caller needs on the very first write (a plan key), not a second save later
     c.save_brief(p, b, touch=False)
     return b
@@ -309,7 +313,8 @@ def cmd_intake(args):
             b = _create(p, _title(item.text), item.type, c.guess_tier(item.type, item.text), "captured",
                         raw=_raw_with_block(item, r), scope=item.scopes, depends=item.refs,
                         priority="urgent" if item.urgent else "normal", explore=item.explore,
-                        source=getattr(args, "source", None) or "user")  # T-2554: genesis for the tower's briefs
+                        source=getattr(args, "source", None) or "user",  # T-2554: genesis for the tower's briefs
+                        asked=(getattr(args, "source", None) or "user") == "user")  # T-5494: the user's block, not a Mission's
             if _block(item, r, "skip"):
                 b.set_section("Non-goals", "".join(f"- {s}\n" for s in _block(item, r, "skip")))
                 c.save_brief(p, b, touch=False)
@@ -391,7 +396,8 @@ def cmd_capture(args):
         b = _create(p, _title(text), type_, args.tier or c.guess_tier(type_, text), "captured",
                     raw=raw, scope=args.scope or (), source=args.source,
                     depends=list(dict.fromkeys(c._REF_RE.findall(args.text or ""))),  # T-0334: as fm intake does
-                    priority="urgent" if args.urgent else "normal", explore=explore)
+                    priority="urgent" if args.urgent else "normal", explore=explore,
+                    asked=args.source == "user")  # T-5494: a discovered, followup, self or cross-project capture is not the user's
         from sampo import triggers  # T-4743: a capture that went the fold's way is marked: that is what the allowance counts
         c.log_event(p, "capture", task=b.id, session=session(), data=dict(
             {"source": args.source, "type": type_},
@@ -5722,9 +5728,11 @@ def cmd_queue(args):
         with c.lock(p.dir):
             c.log_event(p, "replan", data={"order": [b.id for b in order]}, session=session())
             c.regen_views(p, briefs, concerns=links)  # T-4217: STATE.md carries the concern order the verb printed
-    data = {"order": [{**c.brief_summary(b), **({"concern": {k: links[b.id][k] for k in ("id", "said", "via")
-                                                             if k in links[b.id]}}
-                                                if b.id in links else {})} for b in order],
+    asked = {b.id for b in order if c.is_asked(b)}  # T-5494: the user's own words, the rest Sampo's
+    data = {"order": [{**c.brief_summary(b), "asked": b.id in asked,
+                       **({"concern": {k: links[b.id][k] for k in ("id", "said", "via") if k in links[b.id]}}
+                          if b.id in links else {})} for b in order],
+            "split": {"asked": len(asked), "derived": len(order) - len(asked)},
             "cycles": cycles, "dangling": [list(d) for d in dangling]}
     lines = []
     for i, b in enumerate(order, 1):
@@ -5737,6 +5745,12 @@ def cmd_queue(args):
         if why:  # T-0383: what fm relate inferred, and why
             lines.append("   ↳ " + " · ".join(why))
     lines = lines or ["Queue empty."]
+    if order:  # T-5494: the split, each side's ids in queue order (a long side is cut at six, said)
+        def side(label, on):
+            ids = [b.id for b in order if (b.id in asked) is on]
+            return f"{label} ({len(ids)})" + (": " + ", ".join(ids[:6]) + (f" and {len(ids) - 6} more" if len(ids) > 6 else "")
+                                              if ids else "")
+        lines.append(side("Asked by you", True) + " · " + side("Derived", False))
     if getattr(args, "cost", False) and order:  # T-1878
         from sampo import cost
         data["quote"] = cost.queue_quote(p, order)

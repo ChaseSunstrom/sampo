@@ -5369,10 +5369,37 @@ def inherit_concerns(briefs, concerns):
     return out
 
 
+_DERIVED_META = ("carried_from", "from", "inferred_why")  # T-5494: what Sampo wrote into a brief it derived itself
+
+
+def is_asked(b):
+    """T-5494: the user said this task (their verbatim words), not Sampo or an agent derived it. The brief's own
+    `asked` field decides (written where the user's words become a task: sampo capture and sampo intake); a brief
+    from before the field has none, and reads as asked when its source is the user's (concerns.USER_SOURCES), no
+    provenance note is in its raw request and it carries no carried_from, from or inferred_why. Reads the brief only,
+    so a hook may call it."""
+    mark = b.meta.get("asked")
+    if mark:
+        return mark == "verbatim"
+    if b.meta.get("source") not in ("user", "intake", "steer") or any(b.meta.get(k) for k in _DERIVED_META):
+        return False
+    # a stub (T-3573) is not read from its file for this: a queue of hundreds of old briefs would parse every one
+    return b._fml is None or not _NOTE_RAW.search(b.section("Raw request"))
+
+
+def _ask_rank(b):
+    """T-5494: (0, created) for the user's own ask, the longest waiting first (a stamp that sorts as text); (1, "")
+    for everything derived."""
+    return (0, str(b.meta.get("created") or "")) if is_asked(b) else (1, "")
+
+
 def _key(b, link=None):
-    """Active first, urgent next (the hoists), then a task linked to an open concern (T-4201), then type, then age."""
-    return (0 if b.status in ("active", "verifying") else 1, 0 if b.priority == "urgent" else 1,
-            concern_rank(link), RANK.get(b.type, 99), id_num(b.id))
+    """Active first, urgent next (the hoists), then the user's own asks (T-5494: the oldest first), then a task linked
+    to an open concern (T-4201), then type, then age. A derived task keeps today's type order; an asked one is
+    ordered by when it was said, the type only breaking a tie (an intake block made in one second stays canonical)."""
+    asked, created = _ask_rank(b)
+    return (0 if b.status in ("active", "verifying") else 1, 0 if b.priority == "urgent" else 1, asked,
+            concern_rank(link), created, RANK.get(b.type, 99), id_num(b.id))
 
 
 def _deps(b):
@@ -5498,7 +5525,8 @@ def rank_inbox(briefs, concerns=None):
     def key(b):  # whole days waited: a float age read at each call would order same-second captures by the clock
         value = SOURCE_VALUE.get(b.meta.get("source"), 1) + 2 * wanted[b.id] + min(int(age_days(b.meta.get("created")) or 0) / 7, 2)
         value += title_tilt(learned, b.title)  # T-1664: fm inbox prefer's choices, at most 2 either way
-        return (0 if b.priority == "urgent" else 1, concern_rank((concerns or {}).get(b.id)), RANK.get(b.type, 99),
+        asked, created = _ask_rank(b)  # T-5494: the user's own asks first, the longest waiting first; derived ones by RANK
+        return (0 if b.priority == "urgent" else 1, asked, concern_rank((concerns or {}).get(b.id)), created, RANK.get(b.type, 99),
                 -value / TIER_EFFORT.get("L" if is_big(b) else b.tier, 2), id_num(b.id))  # T-4201: a task the user's ask made comes first
     by_id = {b.id: b for b in briefs}
     pending = {b.id: b for b in briefs if b.status == "captured" and not batched(b, by_id)}
@@ -5506,7 +5534,7 @@ def rank_inbox(briefs, concerns=None):
     learned = learned_weights(os.path.dirname(os.path.dirname(first.path))) if first else {}
     order, _ = _topo(list(pending), {i: [d for d in deps[i] if d in pending] for i in pending},
                      {i: key(b) for i, b in pending.items()}, {i: b.meta.get("group") for i, b in pending.items()},
-                     2, brk=True)  # a cycle: as ranked; the group follows its first member unless urgent or a concern says otherwise
+                     3, brk=True)  # a cycle: as ranked; the group follows its first member unless urgent, asked or a concern says otherwise
     return [pending[i] for i in order]
 
 
@@ -5557,7 +5585,7 @@ def order_queue(briefs, archived=(), concerns=None):
                 dangling.append((b.id, d))
         deps[b.id] = ds
     key = {b.id: _key(b, concerns.get(b.id)) for b in runnable}
-    order, remaining = _topo(list(deps), deps, key, {b.id: b.meta.get("group") for b in runnable}, 3)
+    order, remaining = _topo(list(deps), deps, key, {b.id: b.meta.get("group") for b in runnable}, 4)  # T-5494: asked too
     cycles = _cycles({i: [d for d in deps[i] if d in remaining] for i in remaining})
     return [by_id[i] for i in order + sorted(remaining, key=key.get)], cycles, dangling
 
