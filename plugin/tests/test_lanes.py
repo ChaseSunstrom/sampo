@@ -1606,6 +1606,15 @@ class Lanes(ForemanTestCase):
             return ""
         return (head + text.split(head)[1].split("\n## ")[0]).rstrip("\n")
 
+    def test_BriefRanges_name_a_step_symbol_and_a_big_file(self):  # T-5965: Read: path:start-end (symbol)
+        big = "".join(f"# pad {i}\n" for i in range(1600)) + "def stuck_line(p):\n    return p\n"
+        self._commit_files({"pkg/lanes.py": big, "pkg/small.py": "def tiny():\n    return 1\n"}, "a big module")
+        text = self._task_brief("Stuck", "stuck_line works :: true", "Fix `lanes.stuck_line` in pkg/small.py",
+                                ["pkg/small.py"])
+        self.assertIn("Read: pkg/lanes.py:1601-1602 (stuck_line)", text, "a module.name in a step resolves to its range")
+        big_scope = self._task_brief("Big", "x :: true", "Read pkg/lanes.py", ["pkg/lanes.py"])
+        self.assertIn("Read: pkg/lanes.py (1602 lines): read ranges", big_scope, "a scope file over 1,500 lines")
+
     def test_brief_carries_the_outline_of_each_scope_file(self):  # T-5682: a scope file's defs with their lines, capped
         many = "".join(f"def fn_{i}(x):\n    return x + {i}\n\n\n" for i in range(70))
         self._commit_files({"pkg/many.py": many, "pkg/small.py": "def tiny():\n    return 1\n\n\ndef tiny_two():\n    return 2\n",

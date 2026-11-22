@@ -48,6 +48,7 @@ The contract — break none of it:
   For one function run `sampo sym PATH:NAME` (its body, its uses, its callers), for a file's map `sampo outline PATH`,
   and to read a body Read with offset and limit (400 lines at most), never the whole file. A whole-file Read, or a
   grep for a name the brief already lists, costs more than the card (T-5682).
+- Ranges: a file over 1,500 lines is read by the ranges on the brief's "Read:" lines, never whole (T-5965).
 - Run every check in the foreground: one Bash call with a timeout up to 600000 ms (10 minutes), passed as the Bash
   tool's timeout parameter on every test call (left out, it is 2 minutes); a run that could take longer is split into
   modules or `-k` slices. Never use run_in_background for your own checks, never end your turn while a job of yours is
