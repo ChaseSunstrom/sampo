@@ -1,4 +1,5 @@
 """T-3928: a restart nobody announced. Long jobs journal themselves; sampo recover brings back what a reboot interrupted."""
+import functools
 import json
 import os
 import subprocess
@@ -6,6 +7,7 @@ import time
 import unittest
 from unittest import mock
 
+import test_lanes
 from helpers import ForemanTestCase
 
 from sampo import bus, hooks, lanes, recover
@@ -210,6 +212,144 @@ class Recover(ForemanTestCase):
         self.assertIn("Nothing to recover", self.fm("recover").stdout)
         self.old_entry()  # an older boot than the machine's real one, too
         self.assertIn("left:", self.fm("recover").stdout)  # FOREMAN_NO_BACKGROUND: it can't restart, and says so
+
+
+class ParkedReturned(ForemanTestCase):
+    """T-5765: a lane the land parked for a merge conflict whose builder already returned is recoverable at once: its
+    builder_proc is the launching session, which stays alive, so "alive" is no sign of a builder at work."""
+    git, stopped_builder = test_lanes.Lanes.git, test_lanes.Lanes.stopped_builder
+    mark, live_proc = test_lanes.LaneRecovery.mark, test_lanes.LaneRecovery.live_proc
+
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        self.env = {"FM_STALL_CACHE_S": "0"}
+
+    def parked(self, kind="conflict", returned=0, launch=-3600, **meta):
+        """A `kind`-parked lane on a live launcher (this test's process). `returned`: seconds from now its builder's stop
+        was stamped, None for no return; `launch`: seconds from now its builder was launched (before the return)."""
+        tid, path = self.stopped_builder(proc=self.live_proc(), wip=f"{kind}.py")
+        stamps = {"builder": c.iso(time.time() + launch)}
+        if returned is not None:
+            stamps["builder_returned"] = c.iso(time.time() + returned)
+        self.mark(tid, kind, arg="x.py", **stamps, **meta)
+        return tid, path
+
+    def recover(self, tid, *extra):
+        return self.fm("lane", "recover", tid, *extra, check=False, env=self.env)
+
+    def test_parked_returned_conflict_is_recoverable_at_once_and_the_builder_merges_and_resolves_it(self):
+        tid, path = self.parked()
+        r = self.recover(tid, "--json")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(os.path.isdir(path), "the lane was taken back")
+        with open(json.loads(r.stdout)["path"], encoding="utf-8") as f:
+            text = f.read()
+        self.assertIn("git merge", text, "the builder merges main in itself and resolves the clash")
+        self.assertNotIn("fm-resolver", text, "a conflicted lane is removed by resume: the resolver agent doesn't expect that")
+
+    def committed(self, **kw):
+        """A returned conflict park as the land leaves it: the work committed, the park naming that tip."""
+        tid, path = self.parked(**kw)
+        self.git("add", "-A", cwd=path)
+        self.git("commit", "-qm", "built", cwd=path)
+        tip = self.git("rev-parse", "HEAD", cwd=path).strip()
+        self.mark(tid, None, lane_stop_tip=tip)
+        return tid, path
+
+    def test_parked_returned_at_its_tip_ignores_a_file_time_moved_by_the_return_checkout(self):
+        # review 1: the return-time checkout touches files after builder_returned; HEAD is still the park's tip
+        tid, path = self.committed()
+        later = time.time() + 30
+        os.utime(os.path.join(path, "conflict.py"), (later, later))
+        r = self.recover(tid)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(os.path.isdir(path))
+
+    def test_parked_returned_at_its_tip_with_a_file_changed_since_is_refused_and_says_what_changed(self):
+        tid, path = self.committed()
+        with open(os.path.join(path, "conflict.py"), "w") as f:
+            f.write("x = 2\n")
+        later = time.time() + 30
+        os.utime(os.path.join(path, "conflict.py"), (later, later))
+        r = self.recover(tid)
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("builder returned, but the lane changed since", out)
+        self.assertNotIn("process is alive", out)
+        self.assertTrue(os.path.isdir(path))
+
+    def test_parked_returned_is_asked_once_a_minute_by_the_stop_hook_path(self):
+        from sampo import lanes as slanes
+        tid, path = self.parked()
+        p = c.find_project(self.repo)
+        calls = []
+        real = slanes._returned_park_now
+        slanes._returned_park_now = lambda *a, **k: (calls.append(1), real(*a, **k))[1]
+        self.addCleanup(setattr, slanes, "_returned_park_now", real)
+        old = os.environ.pop("FM_STALL_CACHE_S", None)
+        if old is not None:
+            self.addCleanup(os.environ.__setitem__, "FM_STALL_CACHE_S", old)
+        self.assertEqual(slanes.stop_causes(p)[tid][0], "merge_conflict")
+        self.assertEqual(slanes.stop_causes(p)[tid][0], "merge_conflict")
+        self.assertEqual(len(calls), 1, "the second Stop is answered from the 60 s cache")
+        slanes.stop_causes(p, fresh=True)
+        self.assertEqual(len(calls), 2, "fresh re-reads")
+
+    def test_parked_returned_then_resumed_builder_is_still_refused(self):
+        tid, path = self.parked()
+        later = time.time() + 30  # the returned builder was resumed (SendMessage) and wrote since
+        os.utime(os.path.join(path, "conflict.py"), (later, later))
+        self.assertNotEqual(self.recover(tid).returncode, 0)
+        self.assertTrue(os.path.isdir(path), "a resumed builder at work keeps its lane")
+
+    def test_parked_returned_before_a_fresh_launch_is_no_return(self):
+        tid, path = self.parked(launch=60)  # relaunched after the return mark: the old mark is not its own
+        self.assertNotEqual(self.recover(tid).returncode, 0)
+        self.assertTrue(os.path.isdir(path))
+
+    def test_parked_returned_refusal_still_holds_for_a_builder_that_never_returned(self):
+        for kind in ("conflict", "refused"):  # T-5850: a red merge's return is a stop at once too, so no return is the case
+            tid, path = self.parked(kind, None)
+            self.assertNotEqual(self.recover(tid).returncode, 0, kind)
+            self.assertTrue(os.path.isdir(path), kind)
+
+    def test_parked_returned_fails_closed_when_git_times_out(self):
+        # review: a timed-out git is returncode 124 with empty stdout: not a clean tree, not a quiet lane
+        import types
+        from sampo import lanes as slanes
+        tid, path = self.committed()
+        b = c.find_brief(c.find_project(self.repo), tid)
+        real = functools.partial(slanes._git, timeout=10)
+
+        def stub(failing):
+            def git(cwd, *args):
+                if args[0] in failing:
+                    return types.SimpleNamespace(returncode=124, stdout="", stderr="timeout")
+                return real(cwd, *args)
+            return git
+        self.assertTrue(slanes._returned_park_now(b, stub(())), "control: the committed park at its tip is quiet")
+        for failing in (("status",), ("rev-parse",)):
+            self.assertFalse(slanes._returned_park_now(b, stub(failing)), failing)
+        b.meta.pop("lane_stop_tip")  # no tip: the file-time rule, whose reads also fail closed
+        for failing in (("ls-files",), ("log",)):
+            self.assertFalse(slanes._returned_park_now(b, stub(failing)), failing)
+        self.assertEqual(slanes._newest(path, stub(("ls-files",))), float("inf"))
+
+    def test_launcher_alive_is_not_a_live_builder_once_the_conflict_park_has_its_return(self):
+        tid, path = self.parked()
+        r = self.recover(tid)
+        out = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 0, out)
+        self.assertNotIn("process is alive", out)
+        self.assertNotIn("left alone", out)
+        self.assertFalse(os.path.isdir(path), "recovered: the lane is taken back")
+
+    def test_launcher_alive_without_a_return_still_says_the_builder_may_be_working(self):
+        tid, path = self.parked(returned=None)
+        r = self.recover(tid)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("process is alive", r.stdout + r.stderr)
 
 
 if __name__ == "__main__":

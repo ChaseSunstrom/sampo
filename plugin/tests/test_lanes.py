@@ -3037,14 +3037,42 @@ class LaneRecovery(ForemanTestCase):
         self.stall_env()
         os.environ["FM_STALL_MIN"] = "15"  # the real limit: a 1-minute-old park is far inside it
         for kind, cause in (("conflict", "merge_conflict"), ("refused", "red_after_merge")):
-            for mark in ({"accepted_at": c.now()}, {"builder_returned": c.now()}, {"reviewed_tip": "a" * 40}):
-                tid, _ = self.stopped_builder(proc=self.live_proc())
-                self.mark(tid, kind, ago=60, **mark)
+            for mark in ("accepted_at", "builder_returned", "reviewed_tip"):
+                tid, path = self.stopped_builder(proc=self.live_proc())
+                # T-5765: stamped after the launch and the lane's files (a return before the launch is a relaunch's leftover);
+                # the land's park names its tip, and a lane still on it has not moved past the stop
+                self.mark(tid, kind, ago=60, lane_stop_tip=self.git("rev-parse", "HEAD", cwd=path).strip(),
+                          **{mark: "a" * 40 if mark == "reviewed_tip" else c.now()})
                 got = slanes.stop_causes(p, fresh=True).get(tid)
                 self.assertEqual(got and got[0], cause, (kind, mark))
             plain, _ = self.stopped_builder(proc=self.live_proc())
             self.mark(plain, kind, ago=60)
             self.assertNotIn(plain, slanes.stop_causes(p, fresh=True), f"no report mark: the quiet rule holds ({kind})")
+
+    def test_a_lane_resolved_in_place_after_its_park_is_no_stop_cause_and_awaits_its_merge(self):
+        """T-5765 steer (T-5837's shape): lane_stop_tip is the park's tip, accepted_at and reviewed_tip are the resolved
+        commit, HEAD is that new commit on a clean tree. The accept mark must not keep the old conflict a cause."""
+        from sampo import lanes as slanes
+        p = c.find_project(self.repo)
+        self.stall_env()
+        for proc in (None, self.live_proc()):  # an ended builder and the launching session still alive
+            stuck, spath = self.finished_builder()  # parked and still at its tip: stays a cause, never awaits a merge
+            moved, mpath = self.finished_builder(wip="resolved.py")
+            for tid, path in ((stuck, spath), (moved, mpath)):
+                tip = self.git("rev-parse", "HEAD", cwd=path).strip()
+                self.mark(tid, "conflict", ago=60, lane_stop_tip=tip, accepted_at=c.now(), builder_returned=c.now(),
+                          **({"builder_proc": proc} if proc else {}))
+            with open(os.path.join(mpath, "resolved.py"), "w") as f:
+                f.write("x = 2\n")
+            self.git("add", "-A", cwd=mpath)
+            self.git("commit", "-qm", "resolved in place", cwd=mpath)
+            self.mark(moved, None, reviewed_tip=self.git("rev-parse", "HEAD", cwd=mpath).strip())
+            causes = slanes.stop_causes(p, fresh=True)
+            self.assertEqual(causes.get(stuck, ("",))[0], "merge_conflict", "still at its park tip")
+            self.assertNotIn(causes.get(moved, ("",))[0], ("merge_conflict", "red_after_merge"), f"moved past its park ({proc})")
+            waiting = slanes.awaiting_merge(p, c.load_briefs(p), quiet_min=0, fresh=True)
+            self.assertIn(moved, waiting, proc)
+            self.assertNotIn(stuck, waiting, proc)
 
     def test_a_recovered_lane_carries_no_report_marks_so_its_new_builder_keeps_the_quiet_rule(self):
         """T-5850 review: resume's reset clears accepted_at, builder_returned and reviewed_tip with the rest of the old

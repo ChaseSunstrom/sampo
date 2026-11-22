@@ -1260,12 +1260,18 @@ def _stalled(p, briefs, limit):
 def _newest(path, git):
     """The newest file change (tracked or untracked, not ignored) or commit in a lane, as an epoch."""
     newest = 0.0
-    for f in git(path, "ls-files", "-co", "--exclude-standard").stdout.splitlines()[:20000]:  # ponytail: judged on 20000
+    listed = git(path, "ls-files", "-co", "--exclude-standard")
+    if listed.returncode:
+        return float("inf")  # a git that failed (a timeout is 124, stdout empty) read nothing: never "quiet"
+    for f in listed.stdout.splitlines()[:20000]:  # ponytail: judged on 20000
         try:
             newest = max(newest, os.stat(os.path.join(path, f)).st_mtime)
         except OSError:
             pass
-    return max(newest, float(git(path, "log", "-1", "--format=%ct").stdout.strip() or 0))
+    last = git(path, "log", "-1", "--format=%ct")
+    if last.returncode:
+        return float("inf")
+    return max(newest, float(last.stdout.strip() or 0))
 
 
 def _stall_limit():
@@ -1365,6 +1371,87 @@ def _usage_wall():
     return time.strftime("%H:%M", time.localtime(max(full))) if full else None
 
 
+def _returned_park(p, b, kind, git, fresh=False):
+    """T-5765: a lane the land parked for a merge conflict whose builder had already returned (its own stop stamped
+    builder_returned, still its launch's: _builder_returned) and that holds nothing newer than that return (no file or
+    commit, so a returned builder resumed by SendMessage is not taken from) is a stop cause at once: builder_proc is the
+    launching session, alive after its builder returns, so a live process proves nothing here and the quiet wait is
+    for a builder that may still be at work, which a returned one with no later work is not. Only a conflict: a
+    refused merge is the post-merge verify's, which has its own classes. The Stop hook asks every turn: the answer is
+    kept 60 s per lane (FM_STALL_CACHE_S, like stalled) unless `fresh`; the brief's stamps are part of the key."""
+    import json
+
+    if kind != "conflict" or not _builder_returned(b):
+        return False
+    try:
+        ttl = float(os.environ.get("FM_STALL_CACHE_S") or 60)
+    except ValueError:
+        ttl = 60
+    key = "|".join(str(b.meta.get(k) or "") for k in ("lane", "lane_stop", "lane_stop_tip", "builder", "builder_returned"))
+    cache = os.path.join(p.dir, "returned_park.json")
+    seen = {}
+    try:
+        with open(cache) as f:
+            seen = json.load(f)
+        if not isinstance(seen, dict):
+            seen = {}
+    except (OSError, ValueError):
+        pass
+    row = seen.get(b.id)
+    if (not fresh and ttl > 0 and isinstance(row, dict) and row.get("key") == key
+            and 0 <= time.time() - float(row.get("at") or 0) < ttl):
+        return bool(row.get("v"))
+    got = _returned_park_now(b, git)
+    if ttl > 0:
+        seen[b.id] = {"key": key, "at": time.time(), "v": got}
+        try:
+            c.write_atomic(cache, json.dumps(seen))
+        except OSError:
+            pass
+    return got
+
+
+def _returned_park_now(b, git):
+    """The uncached answer: parked, and nothing in the lane after the builder's return. A park that names its tip (the
+    land's own) with HEAD still on it and a clean tree has nothing newer however its file times read: the checkout that
+    ran at the return moves them. Without a tip, or with a dirty tree, a file or commit newer than the return counts."""
+    lane = b.meta["lane"]
+    tip = b.meta.get("lane_stop_tip")
+    if tip:
+        head = git(lane, "rev-parse", "HEAD")
+        if head.returncode or head.stdout.strip() != tip:
+            return False  # a commit since the park (unjudged work), or git failed: fail closed
+        status = git(lane, "status", "--porcelain")
+        if status.returncode:
+            return False  # a timeout (124, stdout empty) is not a clean tree
+        if not status.stdout.strip():
+            return True
+    return _newest(lane, git) <= c.parse_ts(b.meta["builder_returned"]).timestamp() + 2
+
+
+def _moved_past(b, at, git):
+    """T-5765: the lane has a commit the park did not judge: parked()'s test (HEAD off lane_stop_tip, or with no tip a
+    last commit after the stop `at`), read with positive evidence only: a git that failed (a timeout is 124, stdout
+    empty) is not "moved", so the stop stays a cause. An accept or review mark can't keep a stale park alive."""
+    lane = b.meta["lane"]
+    if tip := b.meta.get("lane_stop_tip"):
+        head = git(lane, "rev-parse", "HEAD")
+        return not head.returncode and bool(head.stdout.strip()) and head.stdout.strip() != tip
+    last = git(lane, "log", "-1", "--format=%ct")
+    return not last.returncode and float(last.stdout.strip() or 0) > at + 2
+
+
+def _reported_stop(p, b, kind, git, fresh=False):
+    """T-5850 + T-5765: a parked lane whose builder reported is a stop cause at once. The main thread's accept or review
+    always is; a conflict park whose builder returned also needs _returned_park's quiet lane (nothing after the return);
+    a red merge's return is enough. A return a relaunch left behind (_builder_returned false) is no report."""
+    if b.meta.get("accepted_at") or b.meta.get("reviewed_tip"):
+        return True
+    if not _builder_returned(b):
+        return False
+    return _returned_park(p, b, kind, git, fresh) if kind == "conflict" else True
+
+
 def stop_causes(p, briefs=None, fresh=False):
     """T-2354: {task id: (cause, detail)} for lanes whose builder came back without the work merged. A stopped process
     (this host) is proof it ended. A live one proves nothing (builder_proc is the main session's): it is a cause only
@@ -1372,7 +1459,9 @@ def stop_causes(p, briefs=None, fresh=False):
     file or commit in the lane since; a fresh one may still be a builder at work. T-5850: a lane whose builder reported
     (_reported: builder_returned, accepted_at or reviewed_tip) has no builder at work, so its conflict or red is a cause
     at once (the night of 2026-11-22: 14 accepted lanes the land parked were refused 15 minutes, builder_proc being the
-    main session, alive). A guard refusal is a grant to ask for,
+    main session, alive). T-5765: except a conflict park whose only mark is the builder's return, which also needs
+    nothing in the lane after the return (_returned_park: a returned builder resumed by SendMessage is not taken from).
+    A guard refusal is a grant to ask for,
     whoever's process it is. Another host, no process record, a merged or blocked lane: no cause, nothing to recover.
     `fresh` re-reads the lanes instead of the 60 s stalled cache."""
     from sampo import bus
@@ -1397,7 +1486,9 @@ def stop_causes(p, briefs=None, fresh=False):
         if kind == "guard":
             out[tid] = ("guard_refused", arg)
             continue
-        if kind in _STOP_KINDS and (state == "stopped" or _reported(b) or (
+        if kind in _STOP_KINDS and _moved_past(b, at, git):
+            kind = None  # T-5765: resolved in place after the park: the old stop is no cause, the normal path judges it
+        if kind in _STOP_KINDS and (state == "stopped" or _reported_stop(p, b, kind, git, fresh) or (
                 (time.time() - at) / 60 >= _stall_limit() and _newest(b.meta["lane"], git) <= at + 2)):
             out[tid] = (_STOP_KINDS[kind], "")
         elif state == "alive":
@@ -1599,7 +1690,8 @@ def recover(p, b, main, args):
     - a stalled live builder (builder_proc is the main session's, alive after its builder returns) is stopped through
       its own agent first; --agent-stopped says it was, and the lane must still be quiet when this runs;
     - a conflict or refused merge on a live process counts only when it is old and the lane shows no work since
-      (stop_causes), so a fresh one is never taken from a builder that may still be at work;
+      (stop_causes), so a fresh one is never taken from a builder that may still be at work; a conflict park whose
+      builder already returned, with no work after the return, counts at once (T-5765, _returned_park);
     - anything this can't tell (another host, no record) is left alone, and the reason said. --force is never used.
     A lane gets RECOVERIES_MAX recoveries; the next stop blocks its task with the cause and the attempts."""
     from sampo import bus
@@ -1617,8 +1709,10 @@ def recover(p, b, main, args):
     got = stop_causes(p, [b], fresh=True).get(b.id)
     if not got:
         raise c.PolicyError(f"{b.id} has no stop cause: " + (
-            f"its builder's process is alive and its lane is neither stalled nor quiet since a merge attempt that is "
-            f"{_stall_limit():g}+ min old, so its builder may be working; left alone" if state == "alive"
+            (f"its builder returned, but the lane changed since (a commit, or a file newer than its return), so a builder "
+             f"resumed after it may be working; left alone" if _stop(b)[0] == "conflict" and _builder_returned(b) else
+             f"its builder's process is alive and its lane is neither stalled nor quiet since a merge attempt that is "
+             f"{_stall_limit():g}+ min old, so its builder may be working; left alone") if state == "alive"
             else f"its lane is merged (fm lane rm {b.id})"))
     cause, detail = got
     label = STOP_CAUSES[cause][0]
@@ -1651,7 +1745,7 @@ def recover(p, b, main, args):
         brief = os.path.join(p.dir, "audits", f"{b.id}.conflict.md")
         after = (f"Merging this branch into main conflicted in: {c.joinmore(files, 20) or 'see the conflict brief'}. Run `git merge "
                  f"{_git(main, 'rev-parse', '--abbrev-ref', 'HEAD').stdout.strip() or 'HEAD'}` in your worktree, resolve "
-                 f"the clash keeping both sides' intent, run the task's tests and commit."
+                 f"the clash keeping both sides' intent, run the task's tests and commit; you merge and resolve it yourself."
                  + (f" What clashed: {brief}" if os.path.exists(brief) else ""))
     elif cause == "red_after_merge":
         after = recovery_after(p, b)
