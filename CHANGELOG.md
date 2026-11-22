@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- The builder brief now points at the agent definition's contract instead of repeating its 9.7 KB, and the Sampo-repo-only rules reach a builder only in a project with the test runner (T-5595).
 - Subagents follow the usage pace: while it holds, an Agent launch runs on haiku, a Workflow or a fork waits, and a session caps its live subagents at three (T-5562).
 - An Agent or Task call that names no Sampo type (or general-purpose), or runs a Sampo type on Opus, gets a PreToolUse note naming the cheaper fit (Haiku for lookups, Sonnet for build and review, Opus only for art and UI), and Workflow stages accept both the sampo:fm-builder and sampo:builder spellings (T-5497).
 - A train merge that takes a docs/map shard over its cap now moves the lane's new bullets to a shard with room (or a new one) and repoints their MASTER.md links, and one that takes MASTER.md over shortens the lane's index lines, instead of leaving the lane out (T-5381).
