@@ -7015,7 +7015,7 @@ def _queue_line(p, briefs):  # T-2374: the install grants waiting on the user, f
 
 
 def _headless():
-    return c.headless()
+    return c.headless() or c.headless_pilot()  # T-5889: the pilot's claude -p is headless whatever the process chain says
 
 
 def _asks(text):

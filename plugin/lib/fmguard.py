@@ -6599,7 +6599,7 @@ def _may_set(text):
         text = re.sub(r"[\"'\\]", "", text)
     return any(h in text for h in _STATE_HINTS)
 _SAMPO_PROGS = ("sampo", "fm")
-_SAMPO_NAMES = "FOREMAN_STATE|FOREMAN_HOME|SAMPO_HOME|FOREMAN_PILOT_CLAUDE|FOREMAN_PILOT_VERB|FOREMAN_PILOT_HEADLESS"  # T-5766: the programs the lane pilot runs detached, unseen by this guard
+_SAMPO_NAMES = "FOREMAN_STATE|FOREMAN_HOME|SAMPO_HOME|FOREMAN_PILOT_CLAUDE|FOREMAN_PILOT_VERB|FOREMAN_PILOT_HEADLESS|FOREMAN_PILOT_LANE"  # T-5766 (T-5889: the lane too): the programs the lane pilot runs detached, unseen by this guard
 _SAMPO_LIST = tuple(_SAMPO_NAMES.split("|"))
 _GEN_NAMES = r"HOME|TMPDIR|TMP|TEMP|XDG_\w+"
 _STATE_UNQUOTE = lazy(r"\\\n|[\"'\\]")  # the shell joins FOREMAN_"STATE" and FOREMAN_\STATE into one word

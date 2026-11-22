@@ -713,6 +713,30 @@ class LanePilot(ForemanTestCase):
         self.assertEqual(argv[argv.index("--max-turns") + 1], str(pilotsig.MAX_TURNS))
         self.assertGreater(float(argv[argv.index("--max-budget-usd") + 1]), 0)
 
+    def headless_edit_call(self, under, guard=True):  # T-5889: the headless run's call, its lane under a Claude folder or not
+        self.park()
+        self.claude(commit=True)
+        self.claim(os.getpid(), served=RETURNED)
+        with mock.patch.object(pilotsig, "spawn", return_value=1), \
+                mock.patch.object(pilotsig, "_guard_denies", return_value=guard), \
+                mock.patch.object(pilotsig, "_claude_folder", return_value=under):
+            self.assertEqual(pilotsig.resolve_run(self.p, TID)["outcome"], "returned")
+        return self.claude_calls()[0]
+
+    def test_resolve_HeadlessEdit_in_a_lane_under_a_claude_folder_runs_in_bypass_with_the_confining_marker(self):  # T-5889
+        call = self.headless_edit_call(True)
+        self.assertEqual(call["argv"][call["argv"].index("--permission-mode") + 1], "bypassPermissions")
+        self.assertEqual(call["headless"], "1", "bypass never runs without the marker the guard confines it by")
+        self.assertIn("--disallowedTools", call["argv"])
+
+    def test_resolve_HeadlessEdit_with_no_guard_answer_does_not_run_in_bypass(self):  # T-5889 round 2
+        call = self.headless_edit_call(True, guard=False)
+        self.assertEqual(call["argv"][call["argv"].index("--permission-mode") + 1], "acceptEdits")
+
+    def test_resolve_HeadlessEdit_in_a_lane_elsewhere_keeps_accept_edits(self):  # T-5889
+        call = self.headless_edit_call(False)
+        self.assertEqual(call["argv"][call["argv"].index("--permission-mode") + 1], "acceptEdits")
+
     def test_resolve_review_the_stub_claude_is_honoured_only_as_one_executable_under_the_state_dir(self):  # review 3
         self.park()
         self.claude()

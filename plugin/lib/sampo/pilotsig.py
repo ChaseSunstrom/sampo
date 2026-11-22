@@ -568,7 +568,8 @@ def _unmerged(lane):
 
 def _claude_env(lane=None, agent=""):
     """The headless agent's environment: the pilot's, as its own main session (the pilot's session id is not its), marked
-    (core.HEADLESS_ENV) so the hooks confine that main session to the lane as they do a subagent builder. T-5868: for the
+    (core.HEADLESS_ENV) so the hooks confine that main session to the lane as they do a subagent builder, and naming the lane
+    (core.PILOT_LANE_ENV, T-5889: the confine root comes from it, not from the cwd a command moves to). T-5868: for the
     resolver, and for any agent while the lane has unmerged paths, its `sampo` runs the main install's plugin
     (SAMPO_LANE_CHILD ends py.lane_reexec's hand-over to the lane's own), which imports modules and cards that still hold
     conflict markers and fails. (The resolver's own `git merge` makes the conflict after it starts: the lane may be clean now.)"""
@@ -576,6 +577,7 @@ def _claude_env(lane=None, agent=""):
     for k in ("CLAUDE_CODE_SESSION_ID", "FOREMAN_SESSION_ID", "FOREMAN_PILOT"):
         env.pop(k, None)
     env[c.HEADLESS_ENV] = "1"
+    env[c.PILOT_LANE_ENV] = os.path.realpath(lane) if lane else ""  # T-5889: the guard's confine root, whatever the cwd; never the pilot's own
     if agent in c.ns_names("fm-resolver") or _unmerged(lane):
         env["SAMPO_LANE_CHILD"] = "1"
     return env
@@ -607,14 +609,91 @@ def _note_claude(p, tid, pid):
         return False
 
 
+def _claude_folder(lane):
+    """T-5889: whether the lane's real path sits under a Claude config dir: $CLAUDE_CONFIG_DIR (default ~/.claude), or any
+    folder named exactly `.claude` (a lane worktree is <repo>/.claude/worktrees/agent-<id>). Claude Code treats every path
+    there as sensitive."""
+    real = os.path.realpath(lane or ".")
+    home = os.path.realpath(os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude"))
+    return ".claude" in real.split(os.sep) or real == home or real.startswith(home + os.sep)
+
+
+GUARD_PROBE_S = 10.0  # per call: well under the hook's 20 s in hooks.json, past which Claude Code kills it and reads no objection
+
+
+def _guard_answer(hook, lane, agent, path):
+    """The PreToolUse hook's answer to a Write of `path` from a headless run of `agent` in `lane` (its environment, a cwd that is
+    no project's): "deny" (exit 2, or a permissionDecision of deny), "other" (it ran and did not deny), or None (it did not
+    run or answer inside GUARD_PROBE_S)."""
+    payload = {"hook_event_name": "PreToolUse", "session_id": "pilot-guard-probe", "cwd": tempfile.gettempdir(),
+               "permission_mode": "bypassPermissions", "tool_name": "Write",
+               "tool_input": {"file_path": path, "content": "probe"}}
+    try:
+        r = subprocess.run([hook, "PreToolUse"], input=json.dumps(payload), capture_output=True, text=True,
+                           env=_claude_env(lane, agent), cwd=tempfile.gettempdir(), timeout=GUARD_PROBE_S)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode == 2:
+        return "deny"
+    try:
+        out = json.loads(r.stdout or "{}")
+    except ValueError:
+        return "other"
+    spec = out.get("hookSpecificOutput") if isinstance(out, dict) else None
+    return "deny" if r.returncode == 0 and isinstance(spec, dict) and spec.get("permissionDecision") == "deny" else "other"
+
+
+def _guard_denies(lane, plugin, agent):
+    """T-5889 round 2: whether the guard of `plugin` (hooks/fast, the PreToolUse entry Claude Code would run) confines a headless
+    run of `agent` to `lane`: it must NOT deny a Write inside the lane (the control: a deny for another reason, a guard that
+    refuses everything, proves nothing) and must deny a Write outside it (the lane's parent folder). The probe is the run's
+    precondition for bypassPermissions, which has no check of its own: a plugin that does not load, or a hook that exits other
+    than 2 (Claude Code takes it as no objection) would leave the run with no bound. A hook that does not answer inside
+    GUARD_PROBE_S, under the 20 s at which Claude Code kills it, counts as no deny. Anything but both answers is False."""
+    hook = os.path.join(plugin or "", "hooks", "fast")
+    if not (plugin and os.path.isfile(hook) and os.access(hook, os.X_OK)):
+        return False
+    real = os.path.realpath(lane)
+    if _guard_answer(hook, lane, agent, os.path.join(real, "sampo-guard-probe")) != "other":
+        return False
+    return _guard_answer(hook, lane, agent, os.path.join(os.path.dirname(real), "sampo-guard-probe")) == "deny"
+
+
+def _permission_mode(lane, plugin=None, agent=""):
+    """T-5889: the headless run's permission mode. acceptEdits auto-approves an edit, except of a path Claude Code holds
+    sensitive, which it asks about; with `-p` nobody answers, so every file in a lane under a Claude config dir was refused
+    (9 of 16 resolver runs ended so, 0 of a morning's 4 committed). The narrower fix does not work: acceptEdits with
+    `--allowedTools "Edit(<lane>/**)"` is refused as "a sensitive file" just the same (probed). There the run uses
+    bypassPermissions, bounded by Sampo's PreToolUse guard and by nothing else: core.HEADLESS_ENV and core.PILOT_LANE_ENV
+    (_claude_env) make the guard hold this main session to the lane it was started in, wherever its cwd goes, as it does a
+    subagent builder; a Write, Edit, NotebookEdit or shell write the guard classifies outside the lane or into Sampo
+    state is refused, and with no lane that resolves every write is. That holds while the hook runs and answers: a
+    hook that does not load, times out or exits other than 2 is no bound at all, so bypass starts only when _guard_denies
+    saw this plugin's guard refuse an outside write just now, else acceptEdits (the run then fails on the refusal, as before).
+    A hook that times out on a later call of the run stays fail-open under bypass: accepted, and bounded by MAX_TURNS,
+    MAX_USD and VERB_WALL_S. A lane elsewhere keeps acceptEdits: bypass only where the refusal is."""
+    if not _claude_folder(lane):
+        return "acceptEdits"
+    return "bypassPermissions" if _guard_denies(lane, plugin, agent) else "acceptEdits"
+
+
 def _headless(p, tid, lane, agent, prompt, left):
     """One `claude -p` run of `agent` in the lane's own worktree, cut (its process group killed) after `left` seconds.
     True when it ended inside the time; its output goes to pilot.log (stdout) as its last bytes. It reads only the user's
     settings and MCP servers (the lane's own .claude/settings.json and .mcp.json are repo-controlled, and `-p` trusts the
-    folder without asking) and is bounded in turns and dollars."""
-    argv = [*claude_cmd(), "-p", prompt, "--agent", agent, "--plugin-dir", _plugin_dir(),
+    folder without asking) and is bounded in turns and dollars. Its permission mode is _permission_mode's (T-5889): the
+    resolver and the review pilot both run here, so both edit a lane under ~/.claude. In bypass it has no web or MCP tool.
+    No Sampo plugin to load (no .claude-plugin/plugin.json under _plugin_dir) means no guard: no run is started."""
+    plugin = _plugin_dir()
+    if not os.path.isfile(os.path.join(plugin, ".claude-plugin", "plugin.json")):
+        print(f"pilot resolve: no Sampo plugin at {plugin}; no claude is started")
+        return False
+    mode = _permission_mode(lane, plugin, agent)
+    argv = [*claude_cmd(), "-p", prompt, "--agent", agent, "--plugin-dir", plugin,
             "--setting-sources", "user", "--strict-mcp-config", "--max-turns", str(MAX_TURNS), "--max-budget-usd", MAX_USD,
-            "--permission-mode", "acceptEdits", "--allowedTools", "Bash"]
+            "--permission-mode", mode, "--allowedTools", "Bash"]
+    if mode == "bypassPermissions":
+        argv += ["--disallowedTools", "WebFetch,WebSearch,mcp__*"]  # nothing here needs the network, and the guard sees no URL
     if not _note_claude(p, tid, "starting"):
         print("pilot resolve: the start could not be recorded on the brief; no claude is started")
         return False

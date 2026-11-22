@@ -3337,14 +3337,60 @@ def builder_confine(p, b, agent=""):
     """T-4785 round 9: the guard's confine pair (the lane's worktree, its main checkout) for the active brief `b` when a
     builder works it in a lane `p`, else None. T-5681: and for any editing agent (`agent`, the hook payload's agent_type,
     in EDITING_AGENT_NAMES) working in a lane, with or without a brief: a fixer or resolver has no builder brief. The
-    hook, a stored command's guard and a settings write all confine by this one rule, so a change to it reaches the three."""
+    hook, a stored command's guard and a settings write all confine by this one rule, so a change to it reaches the three.
+    T-5889 round 2: under the lane pilot's headless claude (headless_pilot()) the pair comes from the pilot's own
+    environment (headless_lane), never from the payload's cwd or from a project lookup, and never fails open: with no
+    lane named, or none that resolves, it is a pair that refuses every path."""
+    if headless_pilot():
+        return _headless_confine()
     lane = getattr(p, "lane", None)
     if not lane:
         return None
-    return (lane, main_worktree(lane)) if agent in EDITING_AGENT_NAMES or headless_pilot() or (b and b.meta.get("builder")) else None
+    return (lane, main_worktree(lane)) if agent in EDITING_AGENT_NAMES or (b and b.meta.get("builder")) else None
 
 
 HEADLESS_ENV = "FOREMAN_PILOT_HEADLESS"  # T-5766: the lane pilot's `claude -p` sets it: that main session is a builder, confined
+PILOT_LANE_ENV = "FOREMAN_PILOT_LANE"  # T-5889: and names the lane (its real path) the session is confined to, wherever its cwd goes
+NO_LANE = "/.sampo-pilot-lane-unresolved"  # the confine root when the pilot's lane can't be read: with main "/", every path is outside
+
+
+def headless_lane():
+    """T-5889 round 2: the real path of the lane the pilot's headless claude was started in (PILOT_LANE_ENV), or None when it
+    is unset, empty, relative, not a folder, or not a linked worktree's root (a `.git` file)."""
+    raw = os.environ.get(PILOT_LANE_ENV) or ""
+    if not raw or not os.path.isabs(raw):
+        return None
+    lane = os.path.realpath(raw)
+    return lane if os.path.isdir(lane) and os.path.isfile(os.path.join(lane, ".git")) else None
+
+
+def _gitfile_main(lane):
+    """The main checkout a linked worktree's `.git` file points at (gitdir: <main>/.git/worktrees/<name>), read with no git
+    process, or None."""
+    try:
+        with open(os.path.join(lane, ".git"), encoding="utf-8") as f:
+            line = f.readline().strip()
+        if not line.startswith("gitdir:"):
+            return None
+        gitdir = os.path.realpath(os.path.join(lane, line[len("gitdir:"):].strip()))
+        common = os.path.dirname(os.path.dirname(gitdir))  # <main>/.git
+        return os.path.dirname(common) if os.path.basename(common) == ".git" and os.path.basename(os.path.dirname(gitdir)) == "worktrees" else None
+    except (OSError, ValueError):
+        return None
+
+
+def _headless_confine():
+    """The confine pair for a headless pilot run: (lane, its main checkout), or the refuse-everything pair. It never raises:
+    a git that times out falls back to the lane's own `.git` file."""
+    lane = headless_lane()
+    if not lane:
+        return (NO_LANE, "/")
+    try:
+        main = main_worktree(lane)
+    except Exception:
+        main = None
+    return (lane, main or _gitfile_main(lane))
+
 
 
 def headless_pilot():

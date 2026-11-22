@@ -26,7 +26,8 @@ def put(root, rel, text):
     return path
 
 
-class ConflictEdit(ForemanTestCase):
+class LaneCase(ForemanTestCase):
+    """A repo with a plugin, and a lane worktree under <repo>/.claude/worktrees (a Claude config-style folder)."""
     def setUp(self):
         super().setUp()
         self.fm("init")
@@ -53,6 +54,8 @@ class ConflictEdit(ForemanTestCase):
         with open(os.path.join(self.lane, "plugin/tests/test_claims.py"), encoding="utf-8") as f:
             self.assertIn("<<<<<<<", f.read())
 
+
+class ConflictEdit(LaneCase):
     def test_a_pilot_run_from_a_lane_loads_the_main_checkout_s_plugin(self):
         self.assertEqual(os.path.realpath(pilotsig._plugin_dir(self.lane_plugin)), os.path.realpath(self.main_plugin),
                          "the lane's own plugin dir is the --plugin-dir: its files are 'sensitive' to the resolver")
@@ -97,10 +100,250 @@ class ConflictEdit(ForemanTestCase):
         def said(path):
             return self.hook("PreToolUse", {"tool_name": "Edit", "cwd": self.lane,
                                             "tool_input": {"file_path": path, "old_string": "a", "new_string": "b"}},
-                             env={"FOREMAN_PILOT_HEADLESS": "1"}).stdout
+                             env={"FOREMAN_PILOT_HEADLESS": "1", "FOREMAN_PILOT_LANE": os.path.realpath(self.lane)}).stdout
         self.conflict()
         self.assertNotIn("blocked", said(lane_file), "the resolver's own lane's conflicted file")
         self.assertIn("blocked confine", said(main_file), "the same edit outside the lane")
+
+
+class HeadlessEdit(LaneCase):
+    """T-5889: `claude -p --permission-mode acceptEdits` can't edit a file under ~/.claude (or any `.claude` folder, which a
+    lane worktree sits in): Claude Code treats the path as sensitive, asks, and with `-p` nobody answers, so 9 of 16 resolver
+    runs ended on a refusal and none of a morning's 4 committed. Such a run now uses bypassPermissions; Sampo's PreToolUse
+    guard (the HEADLESS_ENV marker) is what confines it to its lane."""
+
+    def argv(self, lane, env=None, guard=True):
+        """The claude argv of one resolver run; the hook probe's answer is `guard` (the real probe has its own tests)."""
+        real = subprocess.Popen
+        proc = mock.Mock(pid=4242)  # an int: a stub's pid must never reach os.killpg (T-5899); _kill_group is patched too
+        proc.wait.return_value = 0
+        with mock.patch.dict(os.environ, env or {}), \
+                mock.patch.object(pilotsig, "_guard_denies", return_value=guard), \
+                mock.patch.object(pilotsig, "_note_claude", return_value=True), \
+                mock.patch.object(pilotsig, "_kill_group"), \
+                mock.patch.object(pilotsig.subprocess, "Popen",
+                                  side_effect=lambda argv, **kw: proc if "--agent" in argv else real(argv, **kw)) as popen:
+            pilotsig._headless(None, "T-0001", lane, "sampo:fm-resolver", "go", 30.0)
+        return next(x[0][0] for x in popen.call_args_list if "--agent" in x[0][0])
+
+    def mode(self, argv):
+        return argv[argv.index("--permission-mode") + 1]
+
+    def said(self, tool, cwd=None, env="lane", **tool_input):
+        """The PreToolUse hook's answer to `tool` from a bypass main session of the pilot: its environment as _claude_env
+        sets it (env "lane": the marker and the lane; "marker": the marker alone; a dict: exactly that)."""
+        e = {"lane": {"FOREMAN_PILOT_HEADLESS": "1", "FOREMAN_PILOT_LANE": os.path.realpath(self.lane)},
+             "marker": {"FOREMAN_PILOT_HEADLESS": "1"}}.get(env, env) if isinstance(env, str) else env
+        return self.hook("PreToolUse", {"tool_name": tool, "cwd": cwd or self.lane, "permission_mode": "bypassPermissions",
+                                        "tool_input": tool_input}, env=e).stdout
+
+    def outside_writes(self):
+        """Writes that no resolver has a reason to make: Claude Code's own config, a context file, a skill, trunk's code."""
+        home = os.path.expanduser("~")
+        return {"CLAUDE.md": os.path.join(home, ".claude", "CLAUDE.md"),
+                "agent": os.path.join(home, ".claude", "agents", "x.md"),
+                "skill": os.path.join(home, ".claude", "skills", "x", "SKILL.md"),
+                "trunk file": os.path.join(self.repo, "x.py"),
+                "trunk doc": os.path.join(self.repo, "docs", "notes.md")}
+
+    def refuses_outside_and_allows_inside(self, **where):
+        for name, path in self.outside_writes().items():
+            self.assertIn("blocked", self.said("Write", file_path=path, content="x", **where), f"Write of {name}")
+            self.assertIn("blocked", self.said("Edit", file_path=path, old_string="a", new_string="b", **where), f"Edit of {name}")
+            self.assertIn("blocked", self.said("NotebookEdit", notebook_path=path, new_source="x", **where), f"NotebookEdit of {name}")
+            self.assertIn("blocked", self.said("Bash", command=f"echo x > {path}", **where), f"a shell write of {name}")
+        self.assertNotIn("blocked", self.said("Write", file_path=os.path.join(self.lane, "new.py"), content="x", **where))
+        self.assertNotIn("blocked", self.said("Bash", command=f"echo x > {os.path.join(self.lane, 'new.txt')}", **where))
+
+    def test_the_run_is_confined_from_a_nested_git_repo_it_made_under_the_lane(self):
+        """T-5889 round 2: `mkdir sub && git init sub && cd sub` left the hook's cwd in a repo that is no registered
+        project's worktree, so the cwd-derived confinement vanished. The lane comes from the pilot's environment."""
+        sub = os.path.join(self.lane, "sub")
+        os.makedirs(sub)
+        git(sub, "init", "-q")
+        self.refuses_outside_and_allows_inside(cwd=sub)
+        self.assertNotIn("blocked", self.said("Write", cwd=sub, file_path=os.path.join(sub, "n.py"), content="x"))
+
+    def test_the_run_is_confined_from_a_cwd_outside_the_lane(self):
+        out = os.path.join(self.tmp, "elsewhere")
+        os.makedirs(out)
+        self.refuses_outside_and_allows_inside(cwd=out)
+
+    def test_the_run_is_confined_from_the_trunk_checkout_as_its_cwd(self):
+        self.refuses_outside_and_allows_inside(cwd=self.repo)
+
+    def test_no_lane_named_refuses_every_write_even_inside_the_lane(self):
+        for env in ("marker", {"FOREMAN_PILOT_HEADLESS": "1", "FOREMAN_PILOT_LANE": ""},
+                    {"FOREMAN_PILOT_HEADLESS": "1", "FOREMAN_PILOT_LANE": os.path.join(self.tmp, "no-such-lane")},
+                    {"FOREMAN_PILOT_HEADLESS": "1", "FOREMAN_PILOT_LANE": os.path.join(self.lane, "plugin", ".claude-plugin", "plugin.json")}):
+            for cwd in (self.lane, os.path.join(self.tmp, "x-out")):
+                os.makedirs(cwd, exist_ok=True)
+                for path in [*self.outside_writes().values(), os.path.join(self.lane, "new.py")]:
+                    self.assertIn("blocked", self.said("Write", cwd=cwd, env=env, file_path=path, content="x"), (env, cwd, path))
+                    self.assertIn("blocked", self.said("Edit", cwd=cwd, env=env, file_path=path, old_string="a", new_string="b"))
+                    self.assertIn("blocked", self.said("Bash", cwd=cwd, env=env, command=f"echo x > {path}"))
+
+    def test_a_confine_root_survives_main_worktree_failing_and_find_project_raising(self):
+        from sampo import core, hooks
+        lane = os.path.realpath(self.lane)
+        env = {"FOREMAN_PILOT_HEADLESS": "1", "FOREMAN_PILOT_LANE": lane}
+        with mock.patch.dict(os.environ, env):
+            for failing in (lambda gr: None, mock.Mock(side_effect=OSError("git timed out"))):
+                with mock.patch.object(core, "main_worktree", failing):
+                    got = core.builder_confine(None, None, "")
+                    self.assertEqual(got[0], lane, "the lane is the pilot's, whether or not its main checkout resolves")
+                    self.assertTrue(got[1], "the main checkout is still named, read from the lane's own .git file")
+            import fmguard
+            pl = {"cwd": os.path.join(self.tmp, "elsewhere"), "tool_name": "Write", "tool_input": {}}
+            with mock.patch.object(core, "find_project", side_effect=RuntimeError("no project")):
+                ctx = hooks._guard_ctx(pl, fmguard)[0]
+            self.assertEqual(os.path.realpath(ctx.confine[0]), lane)
+            for path in self.outside_writes().values():
+                self.assertIn("confine", fmguard.classify_write(path, ctx))
+            self.assertNotIn("confine", fmguard.classify_write(os.path.join(lane, "new.py"), ctx))
+
+    def test_a_command_cannot_set_the_lane_the_run_is_confined_to(self):
+        for text in ("FOREMAN_PILOT_LANE=/ sampo status", "env FOREMAN_PILOT_LANE=/ sampo lane list", "export FOREMAN_PILOT_LANE=/"):
+            out = self.said("Bash", command=text)
+            self.assertIn('"permissionDecision": "deny"', out, text)  # nobody answers an ask in a headless run
+
+    def test_the_pilot_names_the_lane_in_the_run_s_environment(self):
+        env = pilotsig._claude_env(self.lane, "sampo:fm-resolver")
+        self.assertEqual(env.get("FOREMAN_PILOT_LANE"), os.path.realpath(self.lane))
+        with mock.patch.dict(os.environ, {"FOREMAN_PILOT_LANE": "/elsewhere"}):
+            self.assertEqual(pilotsig._claude_env(self.lane).get("FOREMAN_PILOT_LANE"), os.path.realpath(self.lane))
+
+    def test_bypass_starts_only_when_the_hook_answers_deny_to_an_outside_write(self):
+        plugin = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(pilotsig.__file__))))
+        with mock.patch.dict(os.environ, {"FOREMAN_HOME": self.home}):
+            self.assertTrue(pilotsig._guard_denies(self.lane, plugin, "sampo:fm-resolver"),
+                            "the real hook refuses an outside write from this lane, from a cwd that is no project's")
+        self.assertEqual(self.mode(self.argv(self.lane, guard=False)), "acceptEdits", "no guard answer: the narrower mode")
+        self.assertEqual(self.mode(self.argv(self.lane, guard=True)), "bypassPermissions")
+        broken = os.path.join(self.tmp, "no-plugin")
+        os.makedirs(os.path.join(broken, "hooks"))
+        self.assertFalse(pilotsig._guard_denies(self.lane, broken, "sampo:fm-resolver"), "a hook that is not there answers no deny")
+
+    def test_the_bypass_run_has_no_web_or_mcp_tools(self):
+        argv = self.argv(self.lane)
+        self.assertEqual(self.mode(argv), "bypassPermissions")
+        denied = argv[argv.index("--disallowedTools") + 1].split(",")
+        self.assertTrue({"WebFetch", "WebSearch", "mcp__*"} <= set(denied), denied)
+        self.assertNotIn("--disallowedTools", self.argv(self.lane, guard=False), "the narrower mode is unchanged")
+
+    def probe(self, answer):
+        """_guard_denies with the hook replaced by `answer(payload)` -> (returncode, stdout); returns (verdict, run kwargs, payloads)."""
+        import json
+        plugin = os.path.join(self.tmp, "fake-plugin")
+        os.makedirs(os.path.join(plugin, "hooks"), exist_ok=True)
+        hook = put(plugin, "hooks/fast", "#!/bin/sh\n")
+        os.chmod(hook, 0o755)
+        seen = []
+
+        def run(argv, input=None, **kw):
+            payload = json.loads(input)
+            seen.append((payload, kw))
+            rc, out = answer(payload)
+            return subprocess.CompletedProcess(argv, rc, out, "")
+        with mock.patch.object(pilotsig.subprocess, "run", side_effect=run):
+            return pilotsig._guard_denies(self.lane, plugin, "sampo:fm-resolver"), seen
+
+    @staticmethod
+    def deny():
+        import json
+        return 0, json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny"}})
+
+    def test_the_guard_probe_gives_up_well_before_the_hook_is_killed(self):
+        """T-5889 review: a hook answering after its hooks.json timeout is killed in the real run, which Claude Code takes as
+        no objection; a probe that waits as long unlocks bypass for a guard that slow."""
+        import json
+        with open(os.path.join(os.path.dirname(pilotsig.__file__), "..", "..", "hooks", "hooks.json"), encoding="utf-8") as f:
+            hooks = json.load(f)["hooks"]["PreToolUse"]
+        limit = min(h["timeout"] for g in hooks for h in g["hooks"] if h["command"].endswith("/hooks/fast"))
+        self.assertLessEqual(pilotsig.GUARD_PROBE_S, limit / 2)
+        verdict, seen = self.probe(lambda payload: self.deny())
+        self.assertTrue(seen)
+        self.assertTrue(all(kw["timeout"] == pilotsig.GUARD_PROBE_S for _, kw in seen))
+
+    def test_a_probe_that_times_out_is_no_deny(self):
+        with mock.patch.object(pilotsig.subprocess, "run", side_effect=subprocess.TimeoutExpired("hook", 1)):
+            plugin = os.path.join(self.tmp, "slow-plugin")
+            put(plugin, "hooks/fast", "#!/bin/sh\n")
+            os.chmod(os.path.join(plugin, "hooks", "fast"), 0o755)
+            self.assertFalse(pilotsig._guard_denies(self.lane, plugin, "sampo:fm-resolver"))
+
+    def test_the_guard_probe_needs_a_write_inside_the_lane_to_pass_as_its_control(self):
+        """T-5889 review: a deny for another reason (core, Sampo state) is not the lane confinement; a guard that refuses
+        everything proves nothing."""
+        lane = os.path.realpath(self.lane)
+
+        def inside(payload):
+            return os.path.realpath(payload["tool_input"]["file_path"]).startswith(lane + os.sep)
+        denies_all, _ = self.probe(lambda payload: self.deny())
+        self.assertFalse(denies_all, "a deny of the write inside the lane is not the confinement")
+        confining, seen = self.probe(lambda payload: (0, "{}") if inside(payload) else self.deny())
+        self.assertTrue(confining)
+        self.assertTrue(any(inside(pl) for pl, _ in seen) and any(not inside(pl) for pl, _ in seen), "both writes are asked")
+        allows_all, _ = self.probe(lambda payload: (0, "{}"))
+        self.assertFalse(allows_all)
+        exit2, _ = self.probe(lambda payload: (0, "{}") if inside(payload) else (2, ""))
+        self.assertTrue(exit2, "exit 2 is a deny too")
+
+    def test_no_plugin_to_load_means_no_run(self):
+        """A claude with no Sampo plugin has no guard: nothing is started."""
+        nowhere = os.path.join(self.tmp, "no-plugin-dir")
+        os.makedirs(nowhere)
+        with mock.patch.object(pilotsig, "_plugin_dir", return_value=nowhere), \
+                mock.patch.object(pilotsig, "_note_claude", return_value=True), \
+                mock.patch.object(pilotsig, "_kill_group") as killed, \
+                mock.patch.object(pilotsig.subprocess, "Popen",
+                                  side_effect=AssertionError("claude started without the guard")) as popen:
+            # no stub process at all: a Mock's pid must never reach os.killpg (T-5899); both are patched out
+            self.assertFalse(pilotsig._headless(None, "T-0001", self.lane, "sampo:fm-resolver", "go", 30.0))
+        popen.assert_not_called()
+        killed.assert_not_called()
+
+    def test_a_lane_under_a_claude_folder_runs_in_bypass_with_every_bound_kept(self):
+        argv = self.argv(self.lane)
+        self.assertEqual(self.mode(argv), "bypassPermissions", "acceptEdits is refused on every file under .claude")
+        self.assertEqual(argv[argv.index("--setting-sources") + 1], "user")
+        self.assertIn("--strict-mcp-config", argv)
+        self.assertEqual(argv[argv.index("--max-turns") + 1], str(pilotsig.MAX_TURNS))
+        self.assertGreater(float(argv[argv.index("--max-budget-usd") + 1]), 0)
+        self.assertEqual(pilotsig._claude_env(self.lane, "sampo:fm-resolver").get("FOREMAN_PILOT_HEADLESS"), "1",
+                         "the marker is what confines the session: bypass never runs without it")
+
+    def test_a_lane_under_the_configured_claude_dir_runs_in_bypass(self):
+        cfg = os.path.join(self.tmp, "cfg-home")
+        lane = os.path.join(cfg, "foreman", "lane")
+        os.makedirs(lane)
+        self.assertEqual(self.mode(self.argv(lane, {"CLAUDE_CONFIG_DIR": cfg})), "bypassPermissions")
+
+    def test_a_lane_elsewhere_keeps_accept_edits(self):
+        lane = os.path.join(self.tmp, "plain", "lane")
+        os.makedirs(lane)
+        self.assertEqual(self.mode(self.argv(lane, {"CLAUDE_CONFIG_DIR": os.path.join(self.tmp, "other-cfg")})),
+                         "acceptEdits", "a lane outside a Claude folder needs no bypass")
+
+    def test_a_lane_that_only_looks_like_a_claude_folder_keeps_accept_edits(self):
+        lane = os.path.join(self.tmp, "my.claude", "claude-x", "lane")
+        os.makedirs(lane)
+        self.assertEqual(self.mode(self.argv(lane, {"CLAUDE_CONFIG_DIR": os.path.join(self.tmp, "other-cfg")})), "acceptEdits")
+
+    def test_in_bypass_the_guard_still_confines_the_run_to_its_lane_and_keeps_state_out_of_reach(self):
+        lane_file = os.path.join(self.lane, "plugin", "lib", "sampo", "pilotsig.py")
+        main_file = os.path.join(self.repo, "x.py")
+        state_file = os.path.join(self.home, "state", "projects", "x", "briefs", "T-0001.md")
+
+        said = self.said
+        self.assertNotIn("blocked", said("Edit", file_path=lane_file, old_string="x", new_string="y"), "its own lane")
+        self.assertNotIn("blocked", said("Write", file_path=os.path.join(self.lane, "new.py"), content="x"), "a new file in it")
+        self.assertIn("blocked confine", said("Edit", file_path=main_file, old_string="a", new_string="b"), "outside the lane")
+        self.assertIn("blocked confine", said("Write", file_path=main_file, content="x"), "a new file outside the lane")
+        self.assertIn("blocked confine", said("Bash", command=f"echo x > {main_file}"), "a shell write outside the lane")
+        self.assertIn("blocked", said("Write", file_path=state_file, content="x"), "a direct write into Sampo state")
+        self.assertIn("blocked", said("Edit", file_path=state_file, old_string="a", new_string="b"), "an edit of Sampo state")
+        self.assertIn("blocked", said("Bash", command=f"echo x > {state_file}"), "a shell write into Sampo state")
 
 
 class KillGroupPid(ForemanTestCase):
