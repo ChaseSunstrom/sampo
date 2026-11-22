@@ -400,7 +400,7 @@ class Grow(_Moons):
                 mock.patch.object(models, "_local", side_effect=lambda *a: iter([prof("ollama", "http://127.0.0.1:11434/v1", "gen")])), \
                 mock.patch.object(models, "embedding_profiles", return_value=[]), \
                 mock.patch.object(models, "systemone_profiles", return_value=[]), \
-                mock.patch.object(models, "local_off", return_value=True):
+                mock.patch.object(models, "flag_off", return_value=True):
             self.assertEqual([x["name"] for x in self.ms._generative(False)], ["mine"])
             self.assertEqual(list(self.ms._generative(True)), [], "a sensitive project has no model at all then")
 

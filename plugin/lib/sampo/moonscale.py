@@ -602,8 +602,11 @@ def _generative(sensitive):
         ok = []
         for prof in list(conf.values()) + list(models._local()):
             host = urllib.parse.urlsplit(prof.get("base_url") or "").hostname or ""
+            here = models.is_loopback(host)
+            if here and models.flag_off():  # T-5504: the user's "stop running the local models here"
+                continue
             if prof.get("kind") == "openai" and prof.get("model") not in skip and (
-                    models.is_loopback(host) or (prof.get("own") and not sensitive)):
+                    here or (prof.get("own") and not sensitive)):
                 ok.append(prof)
         yield from models.for_purpose(ok, None)  # T-3744: moons text isn't a 3D coder's job
     except (models.ModelError, OSError, ValueError):
