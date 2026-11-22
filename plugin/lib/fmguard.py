@@ -471,7 +471,7 @@ def _message(block, ctx):
                 f"task: sampo task new \"<title>\" --type FIX --tier S --ac \"<done when>\" --step \"<step>\" --focus "
                 f"(bigger work: /sampo:intake; sampo next says what's next).")
     if cat == "state-direct":
-        diff = re.search(r"/audits/(T-\d+)\.diff$", str(detail))  # T-0413
+        diff = re.search(r"/audits/(T-\d+)\.(?:diff|src\.diff|tests\.md|review\.md)$", str(detail))  # T-0413, T-5683
         return (f"Ward: blocked state-direct: {detail} is Sampo state. Change it through fm "
                 f"(sampo task …, sampo capture, sampo checkpoint{f'; sampo audit prep {diff[1]} rewrites it' if diff else ''}); "
                 f"direct writes are never authorized.")

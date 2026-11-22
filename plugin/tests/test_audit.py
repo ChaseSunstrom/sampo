@@ -278,3 +278,180 @@ class DesignLens(HookCase):
             diff = f.read()
         self.assertIn("lane_work.py", diff, "the lane's own change, not merge-base HEAD..tip (empty once merged)")
         self.assertNotIn("later_work.py", diff, "not the work merged after it")
+
+    def test_prep_gives_reviewers_the_non_test_diff(self):  # T-5683: a reviewer reads the code, not every test line
+        self.prep()
+        self.write("app.py", "".join(f"SRC_{i} = {i}\n" for i in range(12)))
+        self.write("tests/test_app.py", "".join(f"assert TEST_{i} == {i}\n" for i in range(12)))
+        text = self.brief()[1]
+        p = c.find_project(self.repo)
+        with open(os.path.join(p.dir, "audits", f"{self.tid}.src.diff")) as f:
+            body = f.read()
+        self.assertIn("SRC_3", body)
+        self.assertNotIn("tests/test_app.py", body, "no test-path file in the non-test diff")
+        self.assertNotIn("TEST_3", body)
+        self.assertIn(f"{self.tid}.src.diff", text, "the brief names it as the diff to review")
+        self.assertIn(f"{body.count(chr(10))} lines", text, "with its line count")
+
+    def test_prep_writes_a_test_summary(self):  # T-5683: per test file its counts and functions, and the full diff
+        self.prep()
+        self.write("app.py", "x = 1\n")
+        self.write("tests/test_app.py", "def test_one():\n    assert 1\n\n\ndef test_two():\n    assert 2\n")
+        p = c.find_project(self.repo)
+        b = c.find_brief(p, self.tid)
+        b.add_ac("the parser keeps the flag", verify="python3 plugin/tests/run.py test_app -k flag")
+        c.save_brief(p, b)
+        text = self.brief()[1]
+        with open(os.path.join(p.dir, "audits", f"{self.tid}.tests.md")) as f:
+            summary = f.read()
+        self.assertIn("tests/test_app.py", summary)
+        self.assertIn("+6 −0 lines", summary)
+        self.assertIn("test_one", summary)
+        self.assertIn("test_two", summary)
+        self.assertIn("python3 plugin/tests/run.py test_app -k flag", summary, "the criteria's verify commands")
+        self.assertIn(f"{self.tid}.tests.md", text, "the brief names the summary")
+        self.assertIn(os.path.join(p.dir, "audits", f"{self.tid}.diff"), text, "and the full diff's path")
+
+    def test_prep_with_only_test_changes_keeps_the_full_diff(self):  # T-5683
+        self.prep()
+        self.write("tests/test_app.py", 'def test_one():\n    return "BODY_MARK"\n')
+        p = c.find_project(self.repo)
+        full = os.path.join(p.dir, "audits", f"{self.tid}.diff")
+        text = self.brief()[1]
+        self.assertIn(f"Diff to review: {full}", text, "the full diff is the one to review")
+        self.assertFalse(os.path.exists(os.path.join(p.dir, "audits", f"{self.tid}.src.diff")))
+        self.assertFalse(os.path.exists(os.path.join(p.dir, "audits", f"{self.tid}.tests.md")), "no summary")
+        with open(full) as f:
+            self.assertIn("BODY_MARK", f.read())
+        self.assertNotIn("BODY_MARK", text, "a test body is not carried in the touched functions")
+
+    def test_prep_pack_is_shorter_than_the_full_diff(self):  # T-5683: about 45% test lines
+        self.prep()
+        self.write("app.py", "".join(f"SRC_{i} = {i}\n" for i in range(55)))
+        self.write("tests/test_app.py", "".join(f"assert TEST_{i} == {i}\n" for i in range(45)))
+        self.brief()
+        p = c.find_project(self.repo)
+        with open(os.path.join(p.dir, "audits", f"{self.tid}.diff")) as f:
+            whole = f.read()
+        with open(os.path.join(p.dir, "audits", f"{self.tid}.src.diff")) as f:
+            part = f.read()
+        self.assertIn("TEST_44", whole, "the full diff keeps every test line")
+        self.assertLessEqual(len(part), 0.6 * len(whole), "the non-test pack is at least 40% shorter")
+
+    def test_a_conftest_or_helper_stays_in_the_non_test_diff(self):  # T-5683 review: support files are code to read
+        self.prep()
+        self.write("tests/conftest.py", "CONFTEST_MARK = 1\n")
+        self.write("tests/helpers.py", "HELPER_MARK = 1\n")
+        self.write("tests/test_app.py", "def test_one():\n    assert 1\n")
+        self.brief()
+        p = c.find_project(self.repo)
+        with open(os.path.join(p.dir, "audits", f"{self.tid}.src.diff")) as f:
+            body = f.read()
+        self.assertIn("CONFTEST_MARK", body)
+        self.assertIn("HELPER_MARK", body)
+        self.assertNotIn("def test_one", body, "only test_* files go to the summary")
+
+    def test_the_full_diff_is_named_with_its_fixtures_and_duplicates_elided(self):  # T-5683 review
+        self.prep()
+        self.write("app.py", "x = 1\n")
+        self.write("tests/test_app.py", "def test_one():\n    assert 1\n")
+        text = self.brief()[1]
+        self.assertIn("fixtures and duplicate hunks elided", text)
+
+    def test_an_unsplit_prep_removes_the_split_files_of_an_earlier_prep(self):  # T-5683 review: no stale pack
+        self.prep()
+        self.write("app.py", "x = 1\n")
+        self.write("tests/test_app.py", "def test_one():\n    assert 1\n")
+        self.brief()
+        p = c.find_project(self.repo)
+        audits = os.path.join(p.dir, "audits")
+        self.assertTrue(os.path.exists(os.path.join(audits, f"{self.tid}.tests.md")))
+        os.unlink(os.path.join(self.repo, "tests", "test_app.py"))
+        text = self.brief()[1]
+        self.assertFalse(os.path.exists(os.path.join(audits, f"{self.tid}.src.diff")), "the stale pack is gone")
+        self.assertFalse(os.path.exists(os.path.join(audits, f"{self.tid}.tests.md")), "and its summary")
+        self.assertIn(f"Diff to review: {os.path.join(audits, self.tid + '.diff')} (", text)
+
+
+class _Brief:
+    """A stand-in for the brief: the summary reads only its id and its criteria's verify commands."""
+    id = "T-0001"
+
+    def verify_cmds(self):
+        return []
+
+
+class SplitTests(ForemanTestCase):
+    """T-5683 (review round 1): which files split out as tests, and what the summary says about each test file."""
+
+    def test_split_tests_classifies_each_file_by_its_b_path(self):
+        cases = [("tests/conftest.py", False), ("plugin/tests/helpers.py", False),
+                 ("plugin/tests/fixtures/run.txt", False), ("plugin/tests/util.py", False),
+                 ("plugin/lib/app.py", False), ("plugin/tests/test_app.py", True), ("lib/test_app.py", True)]
+        for path, is_test in cases:
+            with self.subTest(path=path):
+                src, tests = cli._split_tests(block(path, RULE))
+                self.assertEqual(bool(tests), is_test)
+                self.assertEqual(src + tests, block(path, RULE), "no text is lost")
+
+    def test_a_rename_is_classified_by_its_new_path_and_a_production_one_is_flagged(self):
+        moved_out = ("diff --git a/plugin/lib/app.py b/plugin/tests/test_app.py\nsimilarity index 90%\n"
+                     "rename from plugin/lib/app.py\nrename to plugin/tests/test_app.py\n" + RULE)
+        moved_in = ("diff --git a/plugin/tests/test_app.py b/plugin/lib/app.py\nsimilarity index 90%\n"
+                    "rename from plugin/tests/test_app.py\nrename to plugin/lib/app.py\n" + RULE)
+        src, tests = cli._split_tests(moved_out)
+        self.assertEqual(src, "")
+        self.assertIn("rename to plugin/tests/test_app.py", tests)
+        self.assertIn("RENAMED FROM PRODUCTION", cli._test_summary("/", _Brief(), moved_out, "/full.diff"))
+        src, tests = cli._split_tests(moved_in)
+        self.assertIn("rename to plugin/lib/app.py", src)
+        self.assertEqual(tests, "")
+
+    def test_a_deleted_test_file_is_flagged(self):
+        gone = ("diff --git a/tests/test_gone.py b/tests/test_gone.py\ndeleted file mode 100644\n"
+                "@@ -1,2 +0,0 @@\n-def test_gone():\n-    assert 1\n")
+        self.assertIn("DELETED", cli._test_summary("/", _Brief(), gone, "/full.diff"))
+
+    def test_the_summary_flags_a_weakened_test(self):
+        weak = block("plugin/tests/test_app.py", "@@ -1,3 +1,2 @@\n-    assert x == 1\n+    pass\n-def test_gone():\n")
+        text = cli._test_summary("/", _Brief(), weak, "/full.diff")
+        row = next(x for x in text.splitlines() if x.startswith("- plugin/tests/test_app.py"))
+        self.assertIn("WEAKENED?", row)
+        self.assertIn("asserts −1 +0", row)
+        self.assertIn("test defs −1 +0", row)
+        self.assertIn("skips and xfails +1", row, "the bare pass counts as a skip")
+
+    def test_an_added_skip_or_xfail_is_flagged(self):
+        for line in ("@pytest.mark.skip\n", "@unittest.skip('later')\n", "@pytest.mark.xfail\n"):
+            with self.subTest(line=line):
+                text = cli._test_summary("/", _Brief(), block("plugin/tests/test_app.py", f"@@ -0,0 +1 @@\n+{line}"),
+                                         "/full.diff")
+                self.assertIn("WEAKENED?", text)
+
+    def test_the_summary_keeps_the_risky_rows_inside_the_row_cap(self):
+        benign = [block(f"plugin/tests/test_{i:02d}.py", "@@ -0,0 +1 @@\n+x = 1\n") for i in range(70)]
+        weak = block("plugin/tests/test_zz.py", "@@ -1 +1 @@\n-    assert x\n+    pass\n")
+        text = cli._test_summary("/", _Brief(), "".join(benign) + weak, "/full.diff")
+        rows = [x for x in text.splitlines() if x.startswith("- plugin/tests/test_")]
+        self.assertEqual(len(rows), cli.TEST_SUMMARY_ROWS, "the cap")
+        self.assertIn("plugin/tests/test_zz.py", rows[0], "the flagged file leads, so the cut cannot hide it")
+        self.assertIn("… and 11 more test files", text, "71 files, 60 shown")
+
+    def test_a_new_test_function_shows_at_most_40_of_its_lines(self):
+        body = "@@ -0,0 +1,61 @@\n+def test_long():\n" + "+    assert 1\n" * 60
+        text = cli._test_summary("/", _Brief(), block("plugin/tests/test_app.py", body), "/full.diff")
+        shown = [x for x in text.splitlines() if x.startswith("    | ")]
+        self.assertEqual(len(shown), 40, "the cap per file")
+        self.assertIn("def test_long", shown[0])
+        self.assertIn("    … 21 more added lines", text)
+
+    def test_a_helper_named_testing_is_not_a_test_function(self):
+        # the def pattern is test_* or test( only: a helper called testing_x is a helper, not a new test body
+        body = "@@ -0,0 +1,2 @@\n+def testing_helper(x):\n+    return x\n"
+        text = cli._test_summary("/", _Brief(), block("plugin/tests/test_app.py", body), "/full.diff")
+        self.assertNotIn("    | def testing_helper", text)
+
+    def test_a_function_the_diff_adds_whole_is_named_apart_from_one_it_changes(self):
+        diff = (block("plugin/lib/app.py", "@@ -0,0 +1,2 @@\n+def new_fn():\n+    return 1\n")
+                + block("plugin/lib/app.py", "@@ -3 +3 @@\n-def old_fn(a):\n+def old_fn(a, b):\n"))
+        self.assertEqual(cli._added_defs(diff), {("plugin/lib/app.py", "new_fn")})

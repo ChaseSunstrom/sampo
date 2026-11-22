@@ -1161,6 +1161,11 @@ class StateDirect(GuardCase):
                   self.write("{fhome}/state/projects/x/audits/T-0012.diff")):
             self.assertBlocked(r, "state-direct")
             self.assertIn("sampo audit prep T-0012 rewrites it", g.message(r, self.ctx()))
+        # T-5683: the split pack's files are prep's output too
+        for name in ("src.diff", "tests.md", "review.md"):
+            r = self.write("{fhome}/state/projects/x/audits/T-0012." + name)
+            self.assertBlocked(r, "state-direct")
+            self.assertIn("sampo audit prep T-0012 rewrites it", g.message(r, self.ctx()))
         self.assertNotIn("fm audit prep", g.message(self.write("{fhome}/state/projects/x/a.md"), self.ctx()))
 
     def test_archives_clones_and_target_dirs_write_where_they_point(self):
