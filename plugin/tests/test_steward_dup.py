@@ -70,13 +70,20 @@ class Dup(SampoTestCase):
         self.assertAlmostEqual(rows[0]["score"], 1.0, places=2)
 
     def test_a_task_that_is_part_of_another_is_a_fold_candidate_not_a_duplicate(self):
-        a, b = self.task(LOGIN), self.task(LOGIN_PART)
+        a, b = self.task(LOGIN), self.task(LOGIN_PART)  # LOGIN_PART is the whole, and the newer
         self.task(CHART)
         self.task(DOCKER)
         rows = self.rows()
-        self.assertEqual([(r["kind"], r["keep"], r["fold"]) for r in rows], [("fold", a, b)], rows)
+        self.assertEqual([(r["kind"], r["keep"], r["fold"]) for r in rows], [("fold", b, a)], rows)
         self.assertGreaterEqual(rows[0]["score"], sd.FOLD)
         self.assertLess(rows[0]["score"], sd.DUP)
+
+    def test_a_part_folds_into_the_whole_when_the_whole_is_the_older(self):
+        whole, part = self.task(LOGIN_PART), self.task(LOGIN)
+        self.task(CHART)
+        self.task(DOCKER)
+        rows = self.rows()
+        self.assertEqual([(r["kind"], r["keep"], r["fold"]) for r in rows], [("fold", whole, part)], rows)
 
     def test_unrelated_tasks_make_no_pair(self):
         for spec in (LOGIN, CHART, DOCKER):
@@ -202,10 +209,9 @@ class Dup(SampoTestCase):
             b.add_ac(f"The {t} path number {i} no longer fails on input {i * 7} and logs once", verify="true")
             b.add_ac("The change is covered by a test " + "and a long pasted log line " * 400)
             briefs.append(b)
-        t0 = time.monotonic()
-        rows = sd.find(briefs)
-        took = time.monotonic() - t0
-        self.assertLess(took, 2.0, f"400 tasks took {took:.2f}s")
+        info = {}
+        rows = sd.find(briefs, info=info)
+        self.assertFalse(info["timed_out"], "400 tasks should finish inside the pairing budget")
         self.assertLessEqual(len(rows), sd.MAX_ROWS)
 
     def test_a_pasted_log_is_clipped_to_max_tokens(self):
@@ -262,6 +268,51 @@ class Dup(SampoTestCase):
             cli.resolve, cli.out = orig_resolve, orig_out
         self.assertIn("2 left out (--limit)", out[0][1])
         self.assertEqual(out[0][0]["left_out"], 2)
+
+    def test_an_unreadable_brief_is_counted_and_never_reads_as_all_clear(self):
+        from sampo import cli
+        a, b = self.task(LOGIN), self.task(LOGIN_REWORDED)
+        with open(os.path.join(self.p.dir, "tasks", "T-0999.md"), "w") as f:
+            f.write("---\nid: T-0999\nstatus: planned\n")  # no closing fence: unreadable
+        info = {}
+        rows = sd.run(self.p, types.SimpleNamespace(), info)
+        self.assertEqual([(r["keep"], r["fold"]) for r in rows], [(a, b)])
+        self.assertEqual(info["unreadable"], 1)
+        out = []
+        orig_resolve, orig_out = cli.resolve, cli.out
+        cli.resolve = lambda args: self.p
+        cli.out = lambda args, data, text: out.append((data, text))
+        try:
+            sd.cmd_dup(types.SimpleNamespace(json=False))
+        finally:
+            cli.resolve, cli.out = orig_resolve, orig_out
+        data, text = out[0]
+        self.assertEqual(data["unreadable"], 1)
+        self.assertIn("1 brief(s) unreadable", text)
+
+    def test_a_state_error_is_raised_not_read_as_no_rows(self):
+        self.task(LOGIN)
+        self.task(LOGIN_REWORDED)
+        orig = c.load_briefs
+
+        def broken(*a, **k):
+            raise c.CorruptState("state file: broken")
+        c.load_briefs = broken
+        try:
+            with self.assertRaises(c.CorruptState):
+                self.rows()
+        finally:
+            c.load_briefs = orig
+
+    def test_a_pair_that_sums_to_just_under_one_is_a_duplicate_at_dup_one(self):
+        a, b = self.task(CHART), self.task(CHART)
+        orig = sd.similar
+        sd.similar = lambda vecs, floor, deadline=None, info=None: [(0, 1, 0.9999999)]
+        try:
+            rows = self.rows(dup=1.0)
+        finally:
+            sd.similar = orig
+        self.assertEqual([(r["kind"], r["keep"], r["fold"]) for r in rows], [("duplicate", a, b)], rows)
 
     def test_only_one_steward_verb_is_registered(self):
         import re

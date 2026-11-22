@@ -1,9 +1,9 @@
 """T-5019 (slice of T-4315, the steward): `sampo steward dup` finds open tasks that say the same thing twice. Each open
 task's title and acceptance criteria become one sparse vector of hashed words and word pairs (bigrams) weighted by
 TF-IDF over the open tasks, and two tasks whose cosine passes DUP are a duplicate, passing FOLD a fold candidate (one
-reads as part of the other: close the newer into the older). No training and no model: a pass over a few hundred
-tasks takes milliseconds, pure Python, and the same tasks give the same rows. Models advise, proof decides: a row is a
-suggestion, nothing here closes, edits or merges a task.
+reads as part of the other: the part folds into the whole, the newer into the older when neither contains the other).
+No training and no model: a pass over a few hundred tasks takes milliseconds, pure Python, and the same tasks give the
+same rows. Models advise, proof decides: a row is a suggestion, nothing here closes, edits or merges a task.
 
 Bounded: at most MAX_TASKS tasks (the newest), MAX_TOKENS tokens per task, MAX_CLIP characters of each criterion, from 30
 open tasks on a word in more than max(5, 34%) of them (boilerplate: "the", "sampo") is left out of both the vector and
@@ -18,7 +18,7 @@ import zlib
 from sampo import core as c
 
 DUP = 0.8          # cosine at which two open tasks are a duplicate
-FOLD = 0.45        # ... and at which one reads as part of the other (fold the newer into the older)
+FOLD = 0.45        # ... and at which one reads as part of the other (fold the part into the whole)
 DIM = 1 << 16      # hash buckets: a collision of two words is rare at a few hundred tokens a task
 MAX_TASKS = 1500   # open tasks read, the newest
 MAX_TOKENS = 400   # tokens one task's text keeps (a pasted log is clipped, not read whole)
@@ -147,10 +147,19 @@ def _linked(a, b):
     return b.id in da or a.id in db
 
 
+def containment(x, y):
+    """The share of x's weight that y shares, from 0 to 1: 1 when every word of x is a word of y. The vectors are unit
+    length, so this is the shared weight over x's own total: a short task inside a longer one scores high one way and
+    low the other."""
+    total = sum(x.values())
+    return sum(min(w, y[k]) for k, w in x.items() if k in y) / total if total else 0.0
+
+
 def find(briefs, dup=DUP, fold=FOLD, limit=MAX_ROWS, budget=BUDGET_S, info=None):
     """Duplicate and fold rows over the open briefs among these, best first: {"kind": "duplicate"|"fold", "keep": the
-    older task's id, "fold": the newer's, "score", "keep_title", "fold_title"}. A fold row names the newer task as the
-    one to fold into the older.
+    task that stays, "fold": the one that folds into it, "score", "keep_title", "fold_title"}. A duplicate keeps the
+    older. A fold keeps the whole and folds the part: the task whose words sit inside the other's; when neither
+    contains the other, the newer folds into the older.
     info: a dict that gets left_out (rows cut by limit), timed_out, skipped (buckets over MAX_POST) and clipped (open
     tasks beyond MAX_TASKS), so a partial answer says so."""
     info = info if info is not None else {}
@@ -167,8 +176,13 @@ def find(briefs, dup=DUP, fold=FOLD, limit=MAX_ROWS, budget=BUDGET_S, info=None)
         a, b = open_[i], open_[j]
         if _linked(a, b):
             continue
-        rows.append({"kind": "duplicate" if s >= dup else "fold", "keep": a.id, "fold": b.id, "score": round(s, 3),
-                     "keep_title": a.title, "fold_title": b.title})
+        s = round(s, 6)  # an identical pair sums to 0.9999999 in floats: the verdict reads the rounded score
+        kind = "duplicate" if s >= dup else "fold"
+        keep, part = a, b
+        if kind == "fold" and containment(vecs[i], vecs[j]) > containment(vecs[j], vecs[i]):
+            keep, part = b, a  # the older is the part: most of its words sit in the newer, the whole
+        rows.append({"kind": kind, "keep": keep.id, "fold": part.id, "score": round(s, 3),
+                     "keep_title": keep.title, "fold_title": part.title})
     rows.sort(key=lambda r: (-r["score"], _num(r["keep"]), _num(r["fold"])))
     info["left_out"] = max(0, len(rows) - max(0, limit))
     return rows[:max(0, limit)]
@@ -193,10 +207,11 @@ def run(p, args=None, info=None):
             limit = max(0, int(limit))
         except (TypeError, ValueError):
             raise UsageError(f"--limit wants a whole number, got {limit!r}") from None
-    try:
-        briefs = c.load_briefs(p)
-    except (OSError, ValueError, c.CorruptState):
-        return []
+    errs = []  # a brief that will not parse is counted in the output, never read as a clean list
+    # a state error (CorruptState) propagates: the verb names it, never a false all-clear
+    briefs = c.load_briefs(p, errors=errs)
+    info = {} if info is None else info
+    info["unreadable"] = len(errs)
     return find(briefs, dup=dup, fold=fold, limit=limit, info=info)
 
 
@@ -231,8 +246,10 @@ def cmd_dup(args):
     info = {}
     rows = run(p, args, info)
     notes = []
+    if info.get("unreadable"):
+        notes.append(f"{info['unreadable']} brief(s) unreadable, not compared")
     if info.get("left_out"):
-        notes.append(c.more(rows + [None] * info["left_out"], len(rows), "--limit")[1])
+        notes.append(f"{info['left_out']} left out (--limit)")
     if info.get("timed_out"):
         notes.append("stopped at the time budget: the list may be incomplete")
     if info.get("clipped"):
