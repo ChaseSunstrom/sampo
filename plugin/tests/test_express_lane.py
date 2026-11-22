@@ -69,6 +69,25 @@ class ExpressLand(ExpressBase):
         r = self.land("--batch", "3")
         self.assertEqual(self.trains(r), [ids[2], f"{ids[0]}, {ids[1]}"], r.stderr)
 
+    def test_t5848_live_express_lanes_past_the_default_batch_train_as_one_train(self):
+        # T-5848: no --batch given: every leading express lane trains together, not TRAIN_BATCH (8) at a time
+        ids = self.made(c.TRAIN_BATCH + 2)
+        self.fm("lane", "mode", "live")
+        express = ids[:c.TRAIN_BATCH + 1]
+        for t in express:
+            self.fm("task", "set", t, "type=PERFORMANCE")
+        self.queue(*express)
+        r = self.land()
+        self.assertEqual(self.trains(r), [", ".join(express), ids[-1]], r.stderr)
+
+    def test_t5848_gated_express_lanes_still_train_alone_with_no_batch_given(self):
+        ids = self.made(3)
+        for t in ids[:2]:
+            self.fm("task", "set", t, "type=PERFORMANCE")
+        self.queue(*ids[:2])
+        r = self.land()
+        self.assertEqual(self.trains(r), [ids[0], ids[1], ids[2]], r.stderr)
+
     def test_without_first_the_batch_is_unchanged(self):
         ids = self.made(3)
         self.fm("task", "set", ids[2], "type=PERFORMANCE")

@@ -2806,7 +2806,7 @@ def land(p, main, batch=None):
             held.enter_context(c.lock(os.path.join(p.dir, "land"), timeout=1))
         except c.LockTimeout:
             raise c.PolicyError("another sampo lane land is running; it lands these lanes too") from None
-        return _land(p, main, batch or c.TRAIN_BATCH)
+        return _land(p, main, batch)  # T-5848: None stays None down to _land_trains: only an explicit --batch caps express lanes
 
 
 def first_ids(p, add=(), peek=False):
@@ -2858,7 +2858,7 @@ def land_key(b):
 def is_express(b):
     """T-5023: a performance fix, a security fix or an urgent lane (the ones land_key sorts first): named --first, it
     trains next and alone, a batch of one, so no ordinary lane's gate holds it back. The gate itself is never skipped.
-    T-5726: in live mode the express lanes at the head train together instead (one train, up to the batch size).
+    T-5726: in live mode the express lanes at the head train together instead (one train; T-5848: all of them, an explicit --batch aside).
     Several express lanes train in the order they were named --first (FIFO), not re-sorted by land_key."""
     return b.type in ("PERFORMANCE", "SECURITY") or b.priority == "urgent"
 
@@ -3001,6 +3001,8 @@ def _land_trains(p, main, batch, owed, closer=None):
     from sampo import cli
     from sampo import lanes
     closer = closer or _Closer()
+    asked_batch = batch  # T-5848: the --batch the user gave (None: the default, which never caps a live express train)
+    batch = batch or c.TRAIN_BATCH
     stamp = _code_stamp()  # the code this process loaded
     briefs = c.load_briefs(p)
     branch = _git(main, "symbolic-ref", "--short", "-q", "HEAD").stdout.strip() or "HEAD"
@@ -3215,7 +3217,9 @@ def _land_trains(p, main, batch, owed, closer=None):
         # gated it trains alone, live the express lanes at the head (up to `batch`) train together: twenty performance
         # lanes were twenty trains, each with its own gate and bench; a red one is bisected as in any train
         live = live_mode(p)
-        cut = ((max(1, min(batch, next((i for i, t in enumerate(ready) if t not in alone), len(ready)))) if live else 1)
+        # T-5848: the default batch does not cap them (54 urgent lanes trained as seven gates); an explicit --batch does
+        cut = ((max(1, min(asked_batch or len(ready), next((i for i, t in enumerate(ready) if t not in alone), len(ready))))
+                if live else 1)
                if ready[0] in alone else len(ready) if live else batch)
         ids, ready = ready[:cut], ready[cut:]
         print(f"sampo lane land: train {trains + 1}: {', '.join(ids)}", file=sys.stderr, flush=True)
