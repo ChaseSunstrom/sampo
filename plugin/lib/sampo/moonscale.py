@@ -603,7 +603,8 @@ def _generative(sensitive):
         for prof in list(conf.values()) + list(models._local()):
             host = urllib.parse.urlsplit(prof.get("base_url") or "").hostname or ""
             here = models.is_loopback(host)
-            if here and models.flag_off():  # T-5504: the user's "stop running the local models here"
+            if here and models.flag_off():  # T-5504: the user's "stop running the local models here"; configured() and
+                # _local() drop them too, this guards a listing that reaches here some other way
                 continue
             if prof.get("kind") == "openai" and prof.get("model") not in skip and (
                     here or (prof.get("own") and not sensitive)):
