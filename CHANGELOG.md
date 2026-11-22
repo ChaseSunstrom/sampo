@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- `sampo backtest --card NAME` accepts a calling card with a "hand" list of regexes and reports how many by-hand Bash runs it would have replaced in the recorded sessions, with the result bytes and tokens (bytes // 4) those runs read (T-5612).
 - `sampo card help NAME` prints a card's call line from its schema (required and optional keys, one example) in three lines, and `sampo card call` prints its facts as compact JSON with empty values dropped (T-5608).
 - MCP clients can now find a read calling card with card_find and run it with card_call, in one native call each (T-5603).
 - A lane's check recorded as evidence (the accept's own check included) now asks for test slots at the high class and the ambient edit run at the background class, so a land's gate and a lane's criteria get freed slots before background reruns, each class bounded so none starves (T-5589).
