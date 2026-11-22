@@ -70,6 +70,17 @@ class LandCase(TrainCase):
         with open(self.changelog) as f:
             return f.read()
 
+    def leftovers(self, n):
+        """n lanes a train of one merged and left open: a land finds them as leftovers and would close each one."""
+        out = []
+        for i in range(n):
+            tid = self.lane(i + 1, f"left{i}.txt", when=OLD)
+            self.audited(tid)
+            self.returned(tid, f"Lane {i + 1}")
+            self.train(tid)
+            out.append(tid)
+        return out
+
     def audited(self, *ids):
         for tid in ids:
             self.fm("task", "audit", tid, "self", "one fm-reviewer pass on the branch", "no findings")
@@ -1647,17 +1658,6 @@ class StopReason(LandCase):
         os.chdir(self.repo)
         self.p = c.find_project(self.repo)
 
-    def leftovers(self, n):
-        """n lanes a train of one merged and left open: a land finds them as leftovers and would close each one."""
-        out = []
-        for i in range(n):
-            tid = self.lane(i + 1, f"left{i}.txt", when=OLD)
-            self.audited(tid)
-            self.returned(tid, f"Lane {i + 1}")
-            self.train(tid)
-            out.append(tid)
-        return out
-
     def land_with(self, fake_train):
         """A land (this process) with train.train replaced by `fake_train(real, ids)`; the closes it began are listed.
         Returns (got, stderr text, closes begun, stderr text at the first close)."""
@@ -2248,6 +2248,37 @@ class StaleCheckStart(LandCase):
             log = self.land_here()
         self.assertEqual(self.spawned, [])
         self.assertIn(f"{a}: held: no passing affected check at its tip (its newest affected run is older", log)
+
+
+class SummaryCount(LandCase):
+    """T-5883: 'Land: 74 lane(s) landed in 1 train(s)' after a 7-lane train: the land counted every merged-and-open lane
+    it found at its start (a restart, a land cut short, a train by hand) as landed by this run. The summary's landed
+    count is the sum of its trains' lanes; the lanes carried in are named apart."""
+
+    def test_summary_count_equals_the_trains_lanes_when_merged_open_lanes_were_carried_in(self):
+        left = self.leftovers(3)  # merged and open before this land starts, as a restart's predecessor leaves them
+        new = []
+        for i in range(2):
+            t = self.lane(10 + i, f"new{i}.txt", when=OLD)
+            self.audited(t)
+            self.returned(t, f"Lane {10 + i}")
+            new.append(t)
+        r = self.land()
+        text = r.stdout
+        m = re.search(r"Land: (\d+) lane\(s\) landed in (\d+) train\(s\)", text)
+        self.assertTrue(m, text)
+        rows = [int(n) for n in re.findall(r"(?m)^  Train \d+: (\d+) lane\(s\)", text)]
+        self.assertEqual(int(m.group(1)), sum(rows), text + r.stderr)
+        self.assertEqual(int(m.group(2)), len(rows), text)
+        self.assertEqual(sum(rows), len(new), text)
+        self.assertIn(f"{len(left)} merged earlier", text)  # the carried ones are labelled, not counted as landed
+
+    def test_summary_count_with_only_carried_lanes_names_no_train_landing(self):
+        left = self.leftovers(2)
+        r = self.land()
+        text = r.stdout
+        self.assertIn("Land: 0 lane(s) landed in 0 train(s)", text)
+        self.assertIn(f"{len(left)} merged earlier", text)
 
 
 if __name__ == "__main__":

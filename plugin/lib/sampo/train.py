@@ -3780,6 +3780,7 @@ def _land_trains(p, main, batch, owed, closer=None):
                 and not _git(main, "merge-base", "--is-ancestor", t, "HEAD").returncode)
     # a land cut short (or a train by hand) left these merged and open: they only need their close
     landed = [b.id for b in briefs if b.status not in c.CLOSED and merged(b)]
+    earlier = list(landed)  # T-5883: merged before this run: closed here, never counted among the lanes its trains landed
     # T-3969: closed already, its merged lane still on disk: _close's done branch removes it
     gone = [b.id for b in briefs if b.status == "done" and os.path.isdir(b.meta.get("lane") or "") and merged(b)]
     parked, ready, trains, stopped, stale, restart = [], [], 0, "", set(), False
@@ -4186,7 +4187,7 @@ def _land_trains(p, main, batch, owed, closer=None):
     grant, said = shipped or (None, "")
     hand.extend((t, f"waits for {f} (an express trunk-red FIX) to land, then closes again") for t, f in fixwait.items())  # T-5791
     hand = list(dict(hand).items())  # a leftover retried after its brief changed: its newest answer
-    return {"landed": landed, "closed": [t for t, _ in closed], "hand": hand, "settled": settled, "parked": parked, "trains": trains,
+    return {"landed": landed, "merged_earlier": earlier, "closed": [t for t, _ in closed], "hand": hand, "settled": settled, "parked": parked, "trains": trains,
             "stopped": stopped, "restart": restart, "ship": said, "ship_grant": grant, "lines": closed,
             "train_times": times, "ship_asked": asked, "ship_failed": ship_failed}
 
@@ -4876,7 +4877,9 @@ def cmd_land(p, args, main):
         else:
             wait = f"ship still running: {os.path.join(p.dir, 'ship.log')}"
             got["ship"], got["ship_log"] = wait, os.path.join(p.dir, "ship.log")
-    lines = [f"Land: {len(got['landed'])} lane(s) landed in {got['trains']} train(s): {_closed_text(got)}, "
+    old = len(got.get("merged_earlier") or [])  # T-5883: the summary's landed count is this run's trains' lanes; the carried are named apart
+    lines = [f"Land: {len(got['landed']) - old} lane(s) landed in {got['trains']} train(s)"
+             f"{f' (and {old} merged earlier)' if old else ''}: {_closed_text(got)}, "
              f"{len(got['hand'])} left for a hand close, {len(got['parked'])} parked."
              if got["landed"] or got["parked"] or got["stopped"] else "Land: no finished lane waits on a merge."]
     lines += [f"  Train {t['train']}: {len(t['lanes'])} lane(s), gate {t['gate']} min, waiting {t['waiting']} min"
