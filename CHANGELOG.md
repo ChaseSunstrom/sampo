@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- `sampo wired` lists the public functions in plugin/lib/sampo that no verb or hook reaches, as file:line rows from a static ast scan (T-5016).
 - `kalevala gen` now also writes a GIANT task for the generation, with Design from the setup, one XL milestone per tower and a plan that passes `big check`, and keeps its id on the gen record (T-5014).
 - Hook caches (breaker, lock-busy record, leads, seen-marks, session and boot marks) are written without an fsync via write_atomic(durable=False), cutting the fsync stalls in slow hooks while state files keep the durable default (T-5000).
 - SVG technique cards: a technique-by-work-type grid with a writer prompt per cell, keeping a card only when its example SVG passes the works gates and shows the technique (T-4996).
