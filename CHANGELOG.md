@@ -11,6 +11,8 @@
 
 ### Everything else
 
+- The guard no longer refuses a python heredoc whose only mention of Sampo is inside strings or comments (for example after cd DIR; or a chain of plain commands); code that imports sampo, execs its string or imports from an unknown folder is still refused (T-3538).
+- `sampo models local off|on` keeps every model served on this machine unused (Ollama, LM Studio and every loopback profile; an own remote box stays): the hourly night job had loaded an 8B model here after the user's "stop running the local models here", because nothing durable held the stop (T-5504).
 - install-user now rewrites an outdated Sampo block in the user CLAUDE.md to the current text, the old '# Foreman' block included, and leaves every other byte of the file alone (T-3506).
 - The miss, toolproof, grants, incident and rollback modules now write to hooks.log through the shared logger, so each error is written once, repeats collapse and the log rotates; they still fail open if the logger cannot be imported (T-3431).
 - sampo check affected now refuses a template without {tests} or {names} (--literal overrides), and a lane can no longer change the project's gates or templates (T-3416).

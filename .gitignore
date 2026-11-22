@@ -2,6 +2,7 @@
 state/
 research/models/bench.jsonl
 models.json
+local-models-off
 tui.projects/
 local/
 backups/
