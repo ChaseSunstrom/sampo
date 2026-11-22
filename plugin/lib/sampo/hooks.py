@@ -3617,6 +3617,31 @@ def _stamp_pause(pl):
             log_error("PreToolUse", _tb())  # no stamp reads as the user's pause: the strict side
 
 
+def _read_line(path, n=100):
+    try:
+        with open(path, encoding="ascii") as f:
+            return f.readline(n).strip()
+    except (OSError, ValueError):
+        return ""
+
+
+def _stamp_lastcmd(p, tid, cmd):
+    """T-5903: the guard's one small write per Bash call of a task's session, for sampo recover after a session loss: the
+    command (cut to 200 characters, nothing else done to it: redaction and plain text are the report's) and its time,
+    the boot id and the session's cgroup scope. It imports nothing: a plain open and a replace, one file per task. Any
+    error is the caller's to drop."""
+    tid = str(tid or "")
+    if not (0 < len(tid) <= 40 and tid[0].isalnum() and tid.isascii() and all(ch.isalnum() or ch in "._-" for ch in tid)):
+        return
+    d = os.path.join(p.dir, "lastcmd")
+    os.makedirs(d, exist_ok=True)
+    path, tmp = os.path.join(d, tid + ".json"), os.path.join(d, f".{tid}.{os.getpid()}.tmp")
+    scope = _read_line("/proc/self/cgroup", 400).rsplit("/", 1)[-1]
+    with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as f:
+        json.dump({"ts": time.time(), "cmd": str(cmd)[:1000], "boot": _read_line(BOOT_ID), "scope": scope[:100]}, f)
+    os.replace(tmp, path)
+
+
 def _workflow_stages(pl):
     """T-5680: a Workflow whose agent() stage names no sampo:fm-* agentType and no haiku or sonnet model would run on the
     session's Opus with no turn cap, so the call is denied and the stages named. A check that breaks denies the call
@@ -4067,6 +4092,11 @@ def _pre_tool_use(raw):
         return 2 if decision[0] == "deny" else 0
     if tool == "Bash":
         _stamp_pause(pl)
+        if p and act:  # T-5903: the task's last command and its time, for sampo recover after a session loss
+            try:
+                _stamp_lastcmd(p, act.id, _target(pl.get("tool_input") or {}))
+            except Exception:
+                log_error("PreToolUse", _tb())
     try:
         saved = _snapshot_note(pl, guard) if tool == "Bash" else None  # T-0884: in every session, quiet ones too
     except Exception:

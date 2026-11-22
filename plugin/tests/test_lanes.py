@@ -51,6 +51,14 @@ class Lanes(ForemanTestCase):
         args = ["task", "new", title, "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true", "--step", "s", "--json"]
         return first(self.fm(*args, *(["--focus"] if focus else []), cwd=cwd).stdout)["id"]
 
+    def test_unverified_through_p_from_a_lane_folder_is_still_refused(self):
+        """T-0948: `-p SLUG` names the main project, so the project has no lane; the folder the builder runs in does."""
+        tid = self.new("Main work", self.repo)
+        slug = c.find_project(self.repo).slug
+        r = self.fm("-p", slug, "lane", "merge", tid, "--unverified", "the gate is wrong", cwd=self.lane, check=False)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("main thread", r.stdout + r.stderr)
+
     def test_a_worktree_is_a_lane_with_its_own_active_task(self):
         main = self.new("Main work", self.repo)
         lane = self.new("Lane work", self.lane)  # must not pause the main checkout's task

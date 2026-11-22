@@ -1101,7 +1101,7 @@ def cmd_lane(args):
         why = getattr(args, "unverified", None)
         if why is not None and not why.strip():
             raise c.PolicyError("--unverified needs a reason (what makes the criteria's re-run wrong)")
-        if why is not None and p.lane:  # T-0948: a builder can't waive its own gate
+        if why is not None and (p.lane or c.caller_is_lane()):  # T-0948: a builder can't waive its own gate (-p too)
             raise c.PolicyError("--unverified is for the main thread: a builder can't waive its own gate")
         merged = merge(p, b, main, why)
         from sampo import bus
@@ -1719,6 +1719,8 @@ def recover(p, b, main, args):
     path = b.meta.get("lane") or ""
     if not b.meta.get("lane") or not os.path.isdir(path) or b.status in c.CLOSED or b.status == "blocked":
         raise c.PolicyError(f"{b.id} has no lane to recover ({b.status}); fm lane brief {b.id} starts a builder")
+    from sampo import recover as lost  # T-5903: a lane whose commands came right before two session losses is not relaunched
+    lost.refuse_held(p, b.id)
     if _pilot_has(p, b.id):  # T-5766: a headless resolver or builder (or its claude, after a killed pilot) is in the lane
         raise c.PolicyError(f"{b.id}'s lane {path} is held by the lane pilot (a headless agent is working in it): a recovery "
                             f"would race it; it returns the lane or reports it when it ends")
@@ -1968,6 +1970,8 @@ def resume(p, b, main, args, ended=False, recover=None, after=""):
     lane_recover event records) and `after` (why the lane came back, for the new brief)."""
     from sampo import bus
     from sampo import cli
+    from sampo import recover as lost  # T-5903: the hold is asked before anything of the lane is touched
+    lost.refuse_held(p, b.id)
     why = "" if ended else (getattr(args, "force", None) or "").strip()
     if not ended and not why and b.id not in stopped(p, [b]):
         state = bus.proc_state(b.meta.get("builder_proc"))
@@ -4668,6 +4672,8 @@ def builder_brief(p, b, args, resume_branch=None, after="", stacked=None):
     thread reviews the branch, merges it, refocuses the task here, re-runs its criteria and closes it."""
     from sampo import budget
     from sampo import cli
+    from sampo import recover as lost  # T-5903: a lane whose commands came right before two kills gets no builder
+    lost.refuse_held(p, b.id)
     if getattr(args, "model", None) == LOCAL and b.tier != "S":  # T-5884: the small-model run is for small tasks only
         raise c.PolicyError(f"{b.id} is {b.tier}: a local builder takes an S task only (sampo lane brief {b.id} for a "
                             "Claude builder; an L task stays in the main thread)")
@@ -5011,7 +5017,9 @@ def local_argv(name, tid):
 
 
 def _local_brief(p, b):
-    """T-5884: the profile name on a local builder's brief; PolicyError when the brief is not one or is closed."""
+    """T-5884: the profile name on a local builder's brief; PolicyError when the brief is not one, is closed, or is held."""
+    from sampo import recover as lost  # T-5903: local_launch and local_run are a way back into a lane, like resume
+    lost.refuse_held(p, b.id)
     name = str(b.meta.get("builder_local") or "")
     if b.meta.get("builder_model") != LOCAL or not name:
         raise c.PolicyError(f"{b.id} is not a local builder's lane (its builder is "

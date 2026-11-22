@@ -10469,7 +10469,12 @@ def _build_parser(only=None):
                    help="wake an idle session: its watcher prints the mail, else one line typed into its tmux pane")
     s = add("recover", lazy("sampo.recover", "cmd_recover"), tier=("Running elsewhere", 1295),
             help="after a restart nobody announced: restart the interrupted lands, trains and runs with their own arguments, "
-                 "abort a half-done merge, drop old locks and leases, snapshot dead builders' lanes (T-3928)")
+                 "abort a half-done merge, drop old locks and leases, snapshot dead builders' lanes (T-3928); first names the "
+                 "likely cause of the loss (OOM, reboot, SIGKILL) and each lane's last command, and holds a lane that "
+                 "preceded two losses (T-5903)")
+    s.add_argument("--release", metavar="ID", help="lift a lane's hold after a loss (the lane's commands were read); "
+                   "needs --why, writes a loss_released ledger line, and is for the main thread, not a builder")
+    s.add_argument("--why", metavar="TEXT", help="--release: what you read in the lane's commands and what you changed")
     s = add("jobs", lazy("sampo.jobsreg", "cmd_jobs"), tier=("Running elsewhere", 1297),
             help="background jobs: add NAME --why WHY registers one you started by hand, end ID [RESULT] closes it, "
                  "ls (the default) lists them beside the running long jobs; sampo recover never restarts a hand-registered one (T-5031)")

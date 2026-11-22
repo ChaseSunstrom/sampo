@@ -3407,6 +3407,18 @@ def headless_pilot():
     return os.environ.get(HEADLESS_ENV) == "1"
 
 
+def caller_is_lane():
+    """Whether the process that runs this verb is a builder in a lane: the folder it runs in belongs to a lane, or it runs
+    under the lane pilot's headless claude. `-p SLUG` names the main project (lane None), so the project a verb was
+    handed can't say who is calling; the verbs the main thread alone may run ask this as well as `p.lane`."""
+    if headless_pilot():
+        return True
+    try:
+        return bool(getattr(find_project(os.getcwd()), "lane", None))
+    except OSError:
+        return False
+
+
 def find_project(cwd, create=False):
     gr = git_root(cwd)
     if gr:

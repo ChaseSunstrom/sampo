@@ -74,7 +74,7 @@ class Recover(ForemanTestCase):
             self.assertFalse(os.path.exists(a))
             rep2 = recover.recover(self.p)
         self.assertEqual(started, [["lane", "land", "--first", "T-0001,T-0002"]], "not restarted twice")
-        self.assertEqual({k: v for k, v in rep2.items() if k != "relaunch"},
+        self.assertEqual({k: v for k, v in rep2.items() if k not in ("relaunch", "loss")},
                          {"restarted": [], "left": [], "merges": [], "locks": [], "leases": 0, "snapshots": [], "fsync": False})
 
     def test_a_job_that_cannot_start_stays_listed(self):
