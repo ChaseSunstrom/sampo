@@ -29,9 +29,9 @@ Rules:
 - Run it in the foreground: one Bash call with a timeout up to 600000 ms, passed as the Bash tool's timeout parameter (left out, it is 2 minutes). Never use run_in_background, never end your turn while a job of yours is still running, and never sleep to wait: each such stop wakes the main thread for nothing (T-4816). If the harness moves the call to the background anyway, wait for it in the foreground with `timeout 590 tail --pid=PID -f /dev/null`, then read its output (T-4826).
 - If you can't make it fail for the reported reason, say so and what you tried; never hand back a test that passes.
 
-Return (≤ 6 lines and ≤ 1500 characters; write the full return to `.fm-scratch/report.txt` in your worktree with the Write tool, and name that path here; not report.md, which Claude Code refuses a subagent's Write to):
+Return (plain text, at most 6 lines and ≤ 1500 characters; write no report file):
 - **Command** — the exact command that fails now, ready for `sampo task prove <ID> --run "<command>"`.
-- **Failure** — the last lines of its output, showing the reported reason.
+- **Failure** — the one output line that shows the reported reason.
 - **Test** — the file and test name you added, what it asserts, and the commit sha.
 - **Not checked** — what you didn't explore.
 - **Noticed:** — one line per thing outside this task worth its own task (a second bug, a missing test, a confusing name), or `Noticed: none`.

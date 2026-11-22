@@ -8311,26 +8311,32 @@ def _mark_builder(pl, returned):
         log_error("builder mark", _tb())
 
 
-REPORT_FILE = os.path.join(".fm-scratch", "report.txt")  # T-5963: not report.md, which Claude Code refuses a subagent's Write to
-REPORT_FILE_CAP = 65536  # the most of it read: a report's close block is its end
-
-
-def _report_file_fields(pl):
-    """T-5963: the close fields of the report file in the agent's working folder ({} when it has none): a regular
-    file (no symlink), the last REPORT_FILE_CAP bytes, read as a message's own close block is. The caller checks the
-    folder is the named task's lane."""
+def _tip_fields(pl):
+    """T-5963: the close fields on the tip commit of the open task's lane whose folder is the agent's working folder
+    ({} when none): the commit message's trailer block (lanes.lane_trailers with no base reads the tip alone, 10 s
+    git call, names this task's id or gives {}). Nothing is read from a file the agent wrote. Only a builder's stop
+    (a general-purpose or claude stop could store a stale intermediate tip first, and the first stored wins). The task
+    is the one the tip's CHANGELOG names, read as one brief (no scan of the brief index, which a stop would rewrite);
+    it counts only when it is open and its lane is the agent's folder. Any error gives {}: never an error out of the
+    SubagentStop hook."""
     from sampo import lanes as slanes
-    path = os.path.join(_cwd(pl), REPORT_FILE)
-    try:
-        if os.path.islink(path) or not os.path.isfile(path):
-            return {}
-        with open(path, "rb") as fh:
-            fh.seek(0, os.SEEK_END)
-            fh.seek(max(0, fh.tell() - REPORT_FILE_CAP))
-            text = fh.read().decode("utf-8", "replace")
-    except OSError:
+    if not re.fullmatch(r"(?:[\w-]+:)?fm-builder", str(pl.get("agent_type") or "")):
         return {}
-    return slanes.close_fields(text, tail=True)
+    try:
+        cwd = os.path.realpath(_cwd(pl))
+        p = c.find_project(cwd)
+        if not p:
+            return {}
+        msg = c._git(cwd, "log", "-1", "--no-merges", "--format=%B", timeout=10, fail="")
+        tid = (slanes._commit_close(msg[:20000]) or {}).get("id")
+        b = c.find_brief(p, tid) if tid else None
+        lane = str(b.meta.get("lane") or "") if b else ""
+        if not lane or b.status in c.CLOSED or os.path.realpath(lane) != cwd:
+            return {}
+        return slanes.lane_trailers(lane, "", b.id)
+    except Exception:  # bookkeeping: never the subagent's own event
+        log_error("close fields", _tb())
+        return {}
 
 
 def _close_fields(pl):
@@ -8344,10 +8350,8 @@ def _close_fields(pl):
     if not re.fullmatch(r"(?:[\w-]+:)?(?:fm-builder|general-purpose|claude)", who):  # T-5774: not the fixer or the resolver
         return
     got = slanes.close_fields(pl.get("last_assistant_message"), tail=True)
-    from_file = False
-    if not got:  # T-5963: a message of a few lines; its close lines are in the lane's report file
-        got = _report_file_fields(pl)
-        from_file = bool(got)
+    if not got:  # T-5963: a message of a few lines; its close lines are trailers on the lane's tip commit
+        got = _tip_fields(pl)
     if not got.get("id") or not slanes.close_text(got):
         if not got:
             _close_refused(pl, who)
@@ -8358,8 +8362,6 @@ def _close_fields(pl):
         lane = str(b.meta.get("lane") or "") if b else ""
         if not lane or b.status in c.CLOSED or not os.path.isdir(lane):
             return
-        if from_file and os.path.realpath(_cwd(pl)) != os.path.realpath(lane):
-            return  # the file is the lane's own: one read from another folder names some other task's lane
         head = c._git(c.main_worktree(p.root) or p.root, "rev-parse", "HEAD", timeout=10).strip()
         if not head or c._git(lane, "rev-list", "--count", "HEAD", "--not", head, timeout=10).strip() in ("", "0"):
             return  # no commit since the lane was made: nothing of its own to close

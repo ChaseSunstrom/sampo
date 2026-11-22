@@ -8,6 +8,7 @@ brief's Log says so, and land's message names that cause instead of 'no CHANGELO
 # map-links: plugin/lib/sampo/lanes.py
 import os
 import re
+import subprocess
 
 from test_lane_land import OLD, LandCase
 
@@ -89,13 +90,13 @@ class StoredAtTheStop(LandCase):
         self.assertIn("LENSES: cost: one read; error: fails closed", fields)
         self.assertIn(f"CHANGELOG: Does a thing ({tid}).", fields)
 
-    def test_a_fixer_or_resolver_report_is_stored_like_a_builders(self):  # T-5681 review: the same editing set
+    def test_a_fixer_or_resolver_report_is_not_stored_as_a_builders(self):  # T-5774 narrowed T-5681's editing set
         for n, agent in ((1, "sampo:fm-fixer"), (2, "sampo:fm-resolver")):
             tid = self.lane(n, f"f{n}.txt")
             block = BLOCK.replace("T-0007", tid)
             self.hook("SubagentStop", {"agent_type": agent, "agent_id": f"a1b2c3d{n}",
                                        "last_assistant_message": f"Done.\n\n{block}\nNoticed: none\n"})
-            self.assertIn(f"CHANGELOG: Does a thing ({tid}).", self.brief(tid).section("Close fields"), agent)
+            self.assertEqual(self.brief(tid).section("Close fields").strip(), "", agent)
 
     def test_a_report_whose_lines_are_not_its_end_leaves_a_log_line_naming_why(self):
         tid = self.lane(1, "a.txt")
@@ -105,45 +106,77 @@ class StoredAtTheStop(LandCase):
         self.assertEqual(self.stop(tid, "No close lines here at all.\n")[0], "")
 
 
-class FromTheReportFile(LandCase):
-    """T-5963: Claude Code refuses a subagent's Write to a file named report.md (and summary/findings/analysis), so the
-    full report goes to .fm-scratch/report.txt; a short message with no close lines takes them from that file."""
+class FromTheTipCommit(LandCase):
+    """T-5963: Claude Code refuses a subagent's Write to report.md and returns the text instead, and a rename is no fix,
+    so the full report stays out of files. A builder's message is a few plain lines and its close lines are trailers on
+    its lane's tip commit; a message with no close lines takes them from there."""
 
-    def stop(self, tid, msg, text, cwd=None, agent="sampo:fm-builder"):
+    def commit(self, tid, msg):
         lane = os.path.join(self.tmp, "lane1")
-        os.makedirs(os.path.join(lane, ".fm-scratch"), exist_ok=True)
-        if text is not None:
-            with open(os.path.join(lane, ".fm-scratch", "report.txt"), "w") as fh:
-                fh.write(text)
+        with open(os.path.join(lane, "t.txt"), "w") as fh:
+            fh.write(msg)
+        subprocess.run(["git", "-C", lane, "add", "t.txt"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", lane, "commit", "-qm", msg], check=True, capture_output=True)
+        return lane
+
+    def stop(self, tid, msg, cwd=None, agent="sampo:fm-builder"):
         self.hook("SubagentStop", {"agent_type": agent, "agent_id": "a1b2c3d4", "last_assistant_message": msg,
-                                   "cwd": cwd or lane})
+                                   "cwd": cwd or os.path.join(self.tmp, "lane1")})
         return self.brief(tid).section("Close fields").strip()
 
-    def test_a_short_message_takes_its_close_lines_from_the_lane_report_file(self):
+    def trailers(self, tid):
+        return "Work (%s)\n\n%s" % (tid, BLOCK.replace("T-0007", tid))
+
+    def test_a_short_message_takes_its_close_lines_from_the_lane_tip_commit(self):
         tid = self.lane(1, "a.txt")
-        fields = self.stop(tid, "branch b, sha abc, all criteria met; full report in .fm-scratch/report.txt\n",
-                           "Everything.\n\n" + BLOCK.replace("T-0007", tid) + "\nNoticed: none\n")
+        self.commit(tid, self.trailers(tid))
+        fields = self.stop(tid, "branch b\nsha abc\ncriterion 1: pass\n")
         self.assertIn(f"CHANGELOG: Does a thing ({tid}).", fields)
         self.assertIn("LESSON: a rule it taught.", fields)
 
-    def test_close_lines_in_the_message_win_over_the_file(self):
+    def test_close_lines_in_the_message_win_over_the_commit(self):
         tid = self.lane(1, "a.txt")
-        other = BLOCK.replace("T-0007", tid).replace("a rule it taught", "the file's lesson")
-        fields = self.stop(tid, "Done.\n\n" + BLOCK.replace("T-0007", tid), other)
-        self.assertIn("LESSON: a rule it taught.", fields)
+        self.commit(tid, self.trailers(tid).replace("a rule it taught", "the commit's lesson"))
+        self.assertIn("LESSON: a rule it taught.", self.stop(tid, "Done.\n\n" + BLOCK.replace("T-0007", tid)))
 
-    def test_a_file_outside_the_lane_or_for_another_agent_or_symlinked_is_not_read(self):
+    def test_a_tip_without_trailers_other_folders_and_other_agents_store_nothing(self):
         tid = self.lane(1, "a.txt")
-        block = BLOCK.replace("T-0007", tid)
-        self.assertEqual(self.stop(tid, "Done.\n", block, agent="sampo:fm-scout"), "", "a scout's file")
-        self.assertEqual(self.stop(tid, "Done.\n", block, cwd=self.repo), "", "the main checkout's cwd is not the lane")
-        lane = os.path.join(self.tmp, "lane1", ".fm-scratch")
-        real = os.path.join(self.tmp, "elsewhere.txt")
-        with open(real, "w") as fh:
-            fh.write(block)
-        os.replace(os.path.join(lane, "report.txt"), os.path.join(self.tmp, "gone.txt"))
-        os.symlink(real, os.path.join(lane, "report.txt"))
-        self.assertEqual(self.stop(tid, "Done.\n", None), "", "a symlink is not followed")
+        self.commit(tid, "Plain commit (%s)\n\nno close lines\n" % tid)
+        self.assertEqual(self.stop(tid, "Done.\n"), "", "a tip with no trailers")
+        self.commit(tid, self.trailers(tid) + "\nsome prose after\n")
+        self.assertEqual(self.stop(tid, "Done.\n"), "", "prose after the block is not a trailer block")
+        self.commit(tid, self.trailers(tid))
+        self.assertEqual(self.stop(tid, "Done.\n", cwd=self.repo), "", "the main checkout is no lane")
+        self.assertEqual(self.stop(tid, "Done.\n", agent="sampo:fm-scout"), "", "a scout stores none")
+
+    def test_only_a_builder_stop_stores_tip_trailers(self):
+        # a general-purpose or claude stop could store a stale intermediate tip first, and the first stored wins
+        tid = self.lane(1, "a.txt")
+        self.commit(tid, self.trailers(tid))
+        for agent in ("general-purpose", "claude"):
+            self.assertEqual(self.stop(tid, "Done.\n", agent=agent), "", agent)
+        self.assertIn("CHANGELOG", self.stop(tid, "Done.\n", agent="fm-builder"))
+
+    def test_a_tip_that_names_another_task_stores_nothing(self):
+        tid = self.lane(1, "a.txt")
+        self.commit(tid, self.trailers("T-0099"))
+        self.assertEqual(self.stop(tid, "Done.\n"), "")
+
+    def test_a_cwd_outside_the_lane_and_a_failing_lookup_store_nothing_and_raise_nothing(self):
+        from unittest import mock
+
+        from sampo import hooks as shooks
+        tid = self.lane(1, "a.txt")
+        self.commit(tid, self.trailers(tid))
+        other = os.path.join(self.tmp, "elsewhere")
+        os.makedirs(other)
+        self.assertEqual(self.stop(tid, "Done.\n", cwd=other), "")
+        pl = {"agent_type": "sampo:fm-builder", "agent_id": "a1b2c3d4", "last_assistant_message": "Done.\n",
+              "cwd": os.path.join(self.tmp, "lane1")}
+        for what in ("find_project", "find_brief"):
+            with mock.patch.object(shooks.c, what, side_effect=RuntimeError("boom")):
+                self.assertEqual(shooks._tip_fields(pl), {}, what)  # never an error out of SubagentStop
+        self.assertEqual(self.brief(tid).section("Close fields").strip(), "")
 
 
 class LandSaysWhy(LandCase):
