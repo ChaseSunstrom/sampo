@@ -1144,6 +1144,28 @@ class PilotAtPark(LandCase):
         self.assertIn(("resolve", a), seen, "the pilot was never asked for the parked lane")
         self.assertLess(seen.index(("resolve", a)), seen.index(("train", [b])), "asked only after the train: " + str(seen))
 
+    def test_a_paused_project_starts_no_resolver_at_the_park(self):  # review 2
+        from sampo import pilotsig
+        with open(os.path.join(self.repo, "same.txt"), "w") as f:
+            f.write("main\n")
+        a = self.lane(1, "same.txt", "lane\n", when=OLD)
+        self.git("add", "same.txt")
+        self.git("commit", "-qm", "main moves")
+        b = self.lane(2, "b.txt", when=OLD)
+        self.audited(a, b)
+        self.returned(a, "Lane one")
+        self.returned(b, "Lane two")
+        c.update_meta(self.p, paused=True)  # the user pauses while the land runs: the land's own start check is past
+        with mock.patch.dict(os.environ), mock.patch.object(train, "paused_stop", return_value=None), \
+                mock.patch.object(pilotsig, "enabled", return_value=True), \
+                mock.patch.object(pilotsig, "claude_found", return_value=True), \
+                mock.patch.object(pilotsig, "_start", return_value=mock.Mock(pid=1)) as popen, \
+                self.in_project():
+            os.environ.pop("FOREMAN_NO_BACKGROUND", None)
+            got = train.land(self.p, self.repo, 1)
+        self.assertEqual([t for t, _ in got["parked"]], [a], got)
+        self.assertEqual(popen.call_count, 0, "a resolver started in a paused project")
+
     def test_a_pilot_that_raises_never_costs_the_land(self):
         from sampo import pilotsig
         with open(os.path.join(self.repo, "same.txt"), "w") as f:

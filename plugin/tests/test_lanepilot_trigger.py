@@ -531,6 +531,36 @@ class LanePilot(ForemanTestCase):
             self.assertEqual(pilotsig.tick(self.p), [live], "the freed place starts the waiting park")
             self.assertEqual(popen.call_count, 1)
 
+    def test_PilotAtPark_a_paused_project_starts_no_tick_resolve_or_review_pilot(self):  # T-5876 review 2
+        self.park()
+        self.claude()
+        self.background()
+        c.update_meta(self.p, paused=True)  # the project's own pause: a message that is just "pause"
+        with mock.patch.object(pilotsig, "_start", return_value=mock.Mock(pid=1)) as popen, \
+                mock.patch.object(pilotsig, "budget_high", return_value=False), \
+                mock.patch.object(lanes, "stop_causes", return_value={TID: ("merge_conflict", "")}):
+            self.assertEqual(pilotsig.tick(self.p), [])
+            self.assertIsNone(pilotsig.resolve(self.p, TID))
+            self.assertIsNone(pilotsig.spawn(self.p, TID))
+            self.assertEqual(popen.call_count, 0, "a pilot started while the project is paused")
+        c.update_meta(self.p, paused=False)
+        live = self.live_pid()
+        with mock.patch.object(pilotsig, "_start", return_value=mock.Mock(pid=live)) as popen, \
+                mock.patch.object(pilotsig, "budget_high", return_value=False):
+            self.assertEqual(pilotsig.resolve(self.p, TID), live, "unpaused again, the same park starts")
+            self.assertEqual(popen.call_count, 1)
+
+    def test_PilotAtPark_a_run_that_raises_drops_its_claim_before_its_tick(self):  # T-5876 review 2
+        self.park()
+        self.claude()
+        self.claim(os.getpid(), served=RETURNED)
+        ticks = []
+        with mock.patch.object(pilotsig, "_headless", side_effect=RuntimeError("boom")), \
+                mock.patch.object(pilotsig, "tick", side_effect=lambda p: ticks.append(self.claimed()) or []):
+            with self.assertRaises(RuntimeError):
+                pilotsig.resolve_run(self.p, TID)
+        self.assertEqual(ticks, [None], "the dead run's claim must not hold a MAX_LIVE slot at its tick")
+
     def test_resolve_cap_after_two_failed_resolves_the_lane_is_reported_and_no_third_starts(self):
         self.park()
         self.claude(commit=False)  # the agent leaves the lane as it found it: parked still

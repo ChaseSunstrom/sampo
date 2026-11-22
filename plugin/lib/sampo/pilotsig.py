@@ -68,6 +68,18 @@ def enabled():
     return os.environ.get(SWITCH, "on").strip().lower() not in OFF
 
 
+def _off(p):
+    """True when no pilot starts: background off, the switch off, the machine-wide pause, or this project's own pause (meta
+    "paused", set by a message that is just "pause"; the check ahead.py and hooks.py use). A meta that can't be read is a
+    pause: a paid run never starts on a doubt."""
+    if os.environ.get("FOREMAN_NO_BACKGROUND") or not enabled() or c.panicked():
+        return True
+    try:
+        return bool(c.read_meta(p).get("paused"))
+    except Exception:  # noqa: BLE001
+        return True
+
+
 def verb_path():
     """The verb this python runs: the plugin's own bin/sampo (this file's plugin folder), or a test's stub."""
     here = os.path.dirname(os.path.abspath(__file__))  # plugin/lib/sampo
@@ -151,7 +163,7 @@ def spawn(p, tid):
     """The one detached pilot for a task's lane: its pid, or None when none starts (background off, sampo paused, the
     switch off, the task closed or gone, a live pilot already holds the claim, or this return was reported already). The
     claim is written after the start, under the project lock, and names the return it serves (pilot_for)."""
-    if os.environ.get("FOREMAN_NO_BACKGROUND") or not enabled() or c.panicked():
+    if _off(p):
         return None
 
     def claim_and_start():
@@ -466,12 +478,13 @@ def budget_high():
 
 
 def tick(p):
-    """The explicit pilot tick (the land's park hook calls it): `resolve` for each open lane that stopped with a conflict or
-    uncommitted work, the pids started. This and the park hook are the only starts: the lead's reads (lanes.recovery_line,
-    fm next, the drive) never launch a paid session. One lane's failure costs none of the others."""
+    """The explicit pilot tick: `resolve` for each open lane that stopped with a conflict or uncommitted work, the pids
+    started. Its callers are the land (the park hook at the land's end) and a resolver run's end (T-5876, so a park that
+    waited on MAX_LIVE starts at once); with note_park's per-park `resolve` they are the only starts: the lead's reads
+    (lanes.recovery_line, fm next, the drive) never launch a paid session. One lane's failure costs none of the others."""
     from sampo import lanes
     started = []
-    if os.environ.get("FOREMAN_NO_BACKGROUND") or not enabled() or c.panicked():
+    if _off(p):
         return started
     for tid, (cause, _) in sorted(lanes.stop_causes(p).items()):
         if cause not in ("uncommitted", "merge_conflict"):
@@ -496,7 +509,7 @@ def resolve(p, tid):
     its pid, or None when none starts. Under the pilot's own single-flight claim (a live pilot_pid starts none, so a second
     park within it is quiet) and its off switches (background off, paused, SAMPO_LANE_PILOT=off: quiet). A lane that has
     had RESOLVE_TRIES attempts, or a host with no claude, is reported once and started no more."""
-    if os.environ.get("FOREMAN_NO_BACKGROUND") or not enabled() or c.panicked():
+    if _off(p):
         return None
     b = c.find_brief(p, tid)
     if b is None or b.status in c.CLOSED or held(b):
@@ -645,11 +658,15 @@ def _returned(p, tid, what):
 def _then_tick(fn):
     """T-5876: a resolver run's end hands its place to the next: after `fn` returns (any outcome) one `tick` starts a park
     that waited on MAX_LIVE. The run's own claim is already dropped, and RESOLVE_TRIES and MAX_LIVE bound what the tick starts.
-    A tick that fails never costs the run its answer."""
+    A run that raised drops its own claim first, so a dead claim holds no slot. A tick that fails never costs the run its
+    answer."""
     @functools.wraps(fn)
     def wrapped(p, tid):
         try:
             return fn(p, tid)
+        except BaseException:
+            _release(p, tid)  # a no-op unless the claim is still this pilot's
+            raise
         finally:
             try:
                 tick(p)
