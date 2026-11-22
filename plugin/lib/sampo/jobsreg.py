@@ -8,7 +8,9 @@ import contextlib
 import json
 import os
 import re
+import tempfile
 import time
+import types
 import uuid
 
 from sampo import core as c
@@ -24,6 +26,25 @@ _CTRL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 def _clean(text, width):
     """One line, controls gone, cut to width: what a caller typed is stored as data, never as a layout."""
     return c.fit(" ".join(_CTRL.sub(" ", str(text)).split()), width)
+
+
+def is_secret(path, root=None):
+    """T-5591 review: whether a file's name says it holds a credential: the guard's own test (fmguard._is_credential),
+    so the registry never reads or names what the guard would refuse to read."""
+    import fmguard  # plugin/lib, beside sampo/
+    return fmguard._is_credential(os.path.realpath(path), types.SimpleNamespace(
+        home=os.path.expanduser("~"), project_root=root, scratch=()))
+
+
+def log_ok(p, path):
+    """T-5591 review: a log a registry row may name is a file under the project's state, ~/.cache, or a temp or scratch
+    run folder, and never a credential. A row's log is tailed by sampo pulse, so this is what it may read."""
+    real = os.path.realpath(str(path))
+    roots = [p.dir, os.path.join(os.path.expanduser("~"), ".cache"), tempfile.gettempdir(),
+             os.path.join(p.root, ".fm-scratch")]
+    inside = any(real == os.path.realpath(r) or real.startswith(os.path.realpath(r).rstrip(os.sep) + os.sep)
+                 for r in roots if r)
+    return inside and not is_secret(real, p.root)
 
 
 def _path(p, jid):
@@ -93,6 +114,9 @@ def add(p, name, why, pid=None, log=None):
         raise ValueError("a job needs a name and a why (--why 'what it is for')")
     if pid is not None and (isinstance(pid, bool) or not isinstance(pid, int) or pid < 1):
         raise ValueError(f"pid must be a positive process id, not {pid!r}")
+    if log and not log_ok(p, os.path.abspath(str(log))):
+        raise ValueError("a job's log must be a file under the project's state, ~/.cache or a temp folder, and never a "
+                         "credential (.env, keys, tokens)")
     now = time.time()
     with c.lock(recover._dir(p)):
         _prune(p, now)

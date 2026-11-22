@@ -80,6 +80,84 @@ def _kind(args):
     return cmd if cmd in ("run", "ship") else None
 
 
+# T-5591: the verbs that register themselves in the jobs registry while they run (sampo pulse and sampo jobs show them),
+# keyed by the verb's name: the registry's row is "sampo <verb>"
+REGISTERED_WHY = {
+    "lane land": "lands the reviewed lanes on the trunk",
+    "lane train": "one gate run over the finished lanes, then their merges",
+    "lane verify": "the full suite on each landed merge",
+    "lane precheck": "a lane's criteria, checked ahead of its merge",
+    "check": "the project's gate commands: the full gate",
+    "task finish": "the one-call close: checks, audits, docs, done and commit",
+}
+
+
+def _registered(args):
+    """The REGISTERED_WHY key of a verb that registers, or None. A --bg starter returns at once (the job it starts
+    registers itself); a check of one affected test set, of one lock or of one step's evidence is a short run, not a gate."""
+    cmd, action = getattr(args, "verb", None), getattr(args, "action", None)
+    if getattr(args, "bg", False):
+        return None
+    if cmd == "lane" and action in ("land", "train", "verify", "precheck"):
+        return f"lane {action}"
+    if cmd == "check" and action in (None, "run") and not any(getattr(args, k, None) for k in ("affected", "lock", "evidence")):
+        return "check"
+    if cmd == "task" and getattr(args, "task_cmd", None) == "finish":
+        return "task finish"
+    return None
+
+
+class Exit:
+    """What the verb ends with: cli.main sets code to the rc it returns, and the registry row says 'exit N' (T-5591)."""
+    code = None
+
+
+def _mapped(err):
+    """The exit code cli.main maps an error to, or None: a PolicyError is 2, a LockTimeout 3, a CorruptState 4, a
+    UsageError, a KeyError or any other ValueError 1. Most specific first (CorruptState is a ValueError)."""
+    from sampo import cli
+    code = getattr(err, "exit_code", None)
+    if isinstance(code, int):
+        return code
+    for kind, rc in ((c.PolicyError, 2), (c.LockTimeout, 3), (c.CorruptState, 4), (cli.UsageError, 1),
+                     (KeyError, 1), (ValueError, 1)):
+        if isinstance(err, kind):
+            return rc
+    return None
+
+
+def _result(job, err):
+    if isinstance(err, SystemExit):  # argparse's usage error, a verb's sys.exit(N)
+        return f"exit {err.code if isinstance(err.code, int) else 1}"
+    if err is not None:
+        code = _mapped(err)
+        return f"exit {code}" if code is not None else f"stopped by {type(err).__name__}"
+    return f"exit {job.code if isinstance(job.code, int) else 0}"
+
+
+@contextlib.contextmanager
+def registered(p, label, job):
+    """Hand-register the running verb as a 'manual' job (the record sampo jobs add writes: nothing here restarts it).
+    A registry that can't be written never stops the verb; the row is ended with its result on any exit."""
+    from sampo import jobprog, jobsreg
+    e = None
+    with contextlib.suppress(Exception):
+        log = jobprog.log_path(os.getpid())
+        if log and not jobsreg.log_ok(p, log):  # a stdout the registry may not name (a credential): registered without it
+            log = None
+        e = jobsreg.add(p, f"sampo {label}", REGISTERED_WHY[label], pid=os.getpid(), log=log)
+    err = None
+    try:
+        yield job
+    except BaseException as x:
+        err = x
+        raise
+    finally:
+        if e:
+            with contextlib.suppress(Exception):
+                jobsreg.end(p, e["id"], _result(job, err))
+
+
 @contextlib.contextmanager
 def journal(p, kind, argv, cwd=None):
     """Record the job in the running journal for as long as the body runs; any exit that runs the finally (clean, an
@@ -102,20 +180,31 @@ def journal(p, kind, argv, cwd=None):
 
 @contextlib.contextmanager
 def around(args, argv):
-    """cli.main's one call site: journal the command when it is one of the long jobs; nothing otherwise."""
-    kind = _kind(args)
+    """cli.main's one call site: journal the command when it is one of the long jobs, and register the long verbs in the
+    jobs registry (T-5591); nothing otherwise. Yields an Exit whose code the caller sets to the verb's rc."""
+    kind, label, job = _kind(args), _registered(args), Exit()
     p = None
-    if kind:
+    if kind or label:
         try:
             from sampo import cli
-            p = cli.resolve(args)
+            p = cli.resolve(args, create=False)  # no project here: nothing is made, and nothing is journaled or registered
         except Exception:  # run --all-projects, no project here: not journaled
             p = None
     if p is None:
-        yield
-    else:
-        with journal(p, kind, argv):
-            yield
+        yield job
+        return
+    with contextlib.ExitStack() as stack:
+        if kind:
+            stack.enter_context(journal(p, kind, argv))
+        if label:
+            stack.enter_context(registered(p, label, job))
+            fn = getattr(args, "fn", None)
+            if callable(fn):  # the rc the verb returns is its exit code: set here, not in cli.main
+                def run(a, _fn=fn):
+                    job.code = _fn(a)
+                    return job.code
+                args.fn = run
+        yield job
 
 
 def entries(p):

@@ -9862,6 +9862,11 @@ def _build_parser(only=None):
     s.add_argument("--why", help="add: what the job is for (required)")
     s.add_argument("--pid", type=int, help="add: the job's process id (without it the job runs until ended)")
     s.add_argument("--log", help="add: the file the job writes its output to")
+    s = add("pulse", lazy("sampo.pulse", "cmd_pulse"), tier=("Running elsewhere", 1298),
+            help="the board in one screen: load, free disk, lanes, the train, the long jobs with their logs' last lines; "
+                 "--wait N returns early when a job ends or the board changes (T-5591)")
+    s.add_argument("--wait", type=float, metavar="N",
+                   help="return when a job ends or the board changes, or after N seconds (at most 170)")
     s = add("lease", lazy("sampo.bus", "cmd_lease"), tier=("Running elsewhere", 1300), help="function-level edit leases between sessions (T-0708)")
     s.add_argument("action", nargs="?", default="list", choices=["list", "take", "drop", "stats"],
                    help="stats: lease blocks, resolved without the main thread, median minutes (T-3950)")

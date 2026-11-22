@@ -36,7 +36,7 @@ class Jobsreg(ForemanTestCase):
 
     def test_a_hand_started_job_registers_with_a_why_and_lists(self):
         e = jobsreg.add(self.p, "cargo build --release", "the release build the next lane needs", pid=os.getpid(),
-                        log="build.log")
+                        log=os.path.join(self.tmp, "build.log"))  # a log under the temp folder (T-5591 review: no relative log)
         (r,) = [r for r in jobsreg.rows(self.p) if r["source"] == "manual"]
         self.assertEqual((r["id"], r["name"], r["why"], r["state"], r["pid"]),
                          (e["id"], "cargo build --release", "the release build the next lane needs", "running", os.getpid()))
