@@ -23,8 +23,9 @@ from sampo import instr
 INSTRUMENTS = tuple(sorted(instr.TOOLS))
 ID_MAX = 80  # an id is cut here: the row is printed
 CHECKS_MAX = 2000  # more checks than any pack holds: refused, not scored
-CMD_MAX = 2000  # a command is read to here
+CMD_MAX = 2000  # a command is read to here; Smith cuts a run's target to 200 characters, so only other callers reach it
 EVENTS_MAX, LINE_MAX = 100_000, 200_000  # read_events: lines kept, and the longest line read
+READ_MAX = 50_000_000  # read_events: characters read in all, blank and junk lines included
 LAUNCHERS = ("sampo", "fm")
 SEPARATORS = (";", "&&", "||", "|", "&")
 
@@ -76,18 +77,23 @@ def _checks(field, name):
 
 
 def read_events(path):
-    """The JSON objects of an events file, in order: a missing file is none, a line that is not an object is skipped, a
-    line over LINE_MAX is dropped unread, and at most EVENTS_MAX are kept."""
-    out = []
+    """The JSON objects of an events file, in order: a missing file, or one that is not a regular file (a FIFO would
+    block the open), is none; a line that is not an object is skipped; a line over LINE_MAX is dropped unread; at most
+    EVENTS_MAX are kept and at most READ_MAX characters are read."""
+    out, read = [], 0
+    if not os.path.isfile(path):
+        return out
     try:
         with open(path, encoding="utf-8", errors="replace") as f:
-            while len(out) < EVENTS_MAX:
+            while len(out) < EVENTS_MAX and read < READ_MAX:
                 raw = f.readline(LINE_MAX + 1)
                 if not raw:
                     break
+                read += len(raw)
                 if len(raw) > LINE_MAX and not raw.endswith("\n"):
-                    while raw and not raw.endswith("\n"):  # drain the rest of the long line without keeping it
+                    while raw and not raw.endswith("\n") and read < READ_MAX:  # drain the rest of the long line unkept
                         raw = f.readline(LINE_MAX)
+                        read += len(raw)
                     continue
                 try:
                     e = json.loads(raw)
@@ -149,7 +155,9 @@ def _instruments(events):
         else:
             continue
         tried += len(names)
-        if e.get("result") == "ok":
+        # Smith marks a run ok unless it was refused or errored, so a run is a use only when its detail says exit 0
+        # (a nonzero exit or a timeout is tried, not used): the same test Smith makes on a run's result
+        if e.get("result") == "ok" and (e["action"] != "run" or str(e.get("detail", "")).startswith("exit 0")):
             for n in names:
                 used[n] = used.get(n, 0) + 1
     return dict(sorted(used.items())), tried
@@ -169,7 +177,7 @@ def grade(result, events):
     malformed or past CHECKS_MAX; events that are not objects, and fields of the wrong type, are skipped."""
     if not isinstance(result, dict):
         raise ValueError("the result is an object {fix, keep, done, cost}")
-    events = [e for e in events or [] if isinstance(e, dict)]
+    events = [e for e in events if isinstance(e, dict)] if isinstance(events, list) else []
     fix, keep = _checks(result.get("fix"), "fix"), _checks(result.get("keep"), "keep")
     passed = sum(fix.values())
     broken = [k for k, ok in keep.items() if not ok]

@@ -5,6 +5,7 @@ import json
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 from helpers import ForemanTestCase  # noqa: F401  (puts plugin/lib on the path)
 
@@ -16,7 +17,7 @@ def act(ts, action, target="", result="ok", **kw):
 
 
 def run(cmd, ts=1.0, **kw):
-    return act(ts, "run", cmd, **kw)
+    return act(ts, "run", cmd, **{"detail": "exit 0", **kw})  # Smith's detail of a run that exited 0
 
 
 class Fix(unittest.TestCase):
@@ -56,6 +57,15 @@ class Fix(unittest.TestCase):
     def test_a_malformed_checks_field_is_refused_not_guessed(self):
         with self.assertRaises(ValueError):
             g.grade({"fix": 7, "keep": {}}, [])
+
+    def test_a_list_item_that_is_no_check_is_refused(self):
+        for bad in ([5], [{"passed": True}], [{"id": 3, "passed": True}], [None]):
+            with self.assertRaises(ValueError):
+                g.grade({"fix": bad, "keep": {}}, [])
+
+    def test_events_that_are_not_a_list_are_no_events(self):
+        for bad in (None, 5, "abc", {"event": "closed", "usd": 1}):
+            self.assertIsNone(g.grade({"fix": {}, "keep": {}}, bad)["cost"])
 
     def test_ids_are_bounded_and_plain(self):
         r = g.grade({"fix": {"x\x1b[31m" + "y" * 500: False}, "keep": {}}, [])
@@ -199,6 +209,15 @@ class Instruments(unittest.TestCase):
         self.assertEqual(r["instruments"], {"sym": 1})
         self.assertEqual(r["instruments_tried"], 3)
 
+    def test_a_run_that_exited_nonzero_is_tried_but_not_a_use(self):
+        # Smith marks a run ok unless refused or errored: its detail gives the exit ("exit 2\n..."), or a timeout
+        ev = [act(1, "run", "sampo sym x", result="ok", detail="exit 2\nno symbol x", key="k1", fresh=True),
+              act(2, "run", "sampo sym x", result="ok", detail="timed out after 120 s\n"),
+              act(3, "run", "sampo sym x", result="ok", detail="exit 0\nx: f at a.py:3")]
+        r = g.grade({"fix": {}, "keep": {}}, ev)
+        self.assertEqual(r["instruments"], {"sym": 1})
+        self.assertEqual(r["instruments_tried"], 3)
+
     def test_words_in_other_commands_are_not_instruments(self):
         ev = [run("grep -rn sampo sym src"), run("echo sampo sym"), run("cat data.csv"), run("python3 -m pytest -k logs"),
               run("sampo task list"), run("sampo symbols"), run("ls fail"), run("git log trace")]
@@ -214,9 +233,7 @@ class Instruments(unittest.TestCase):
         self.assertEqual(self.used(ev), {})
 
     def test_the_names_are_the_registry_s_own(self):
-        from sampo import instr
-        for name in instr.TOOLS:
-            self.assertIn(name, g.INSTRUMENTS)
+        self.assertEqual(set(g.INSTRUMENTS), {"sym", "fail", "logs", "data", "trace"})
 
     def test_the_list_is_sorted_and_the_total_counted(self):
         r = g.grade({"fix": {}, "keep": {}}, [run("sampo sym a:f"), run("sampo fail"), run("sampo sym b:g")])
@@ -266,6 +283,20 @@ class Events(unittest.TestCase):
     def test_read_is_bounded(self):
         path = self.write("".join(json.dumps({"ts": i}) + "\n" for i in range(g.EVENTS_MAX + 50)))
         self.assertEqual(len(g.read_events(path)), g.EVENTS_MAX)
+
+    def test_the_read_is_bounded_in_characters_too(self):
+        path = self.write("".join(json.dumps({"ts": i}) + "\n" for i in range(10)))  # 10 characters a line
+        with mock.patch.object(g, "READ_MAX", 40):
+            self.assertEqual(g.read_events(path), [{"ts": i} for i in range(4)])
+
+    def test_a_fifo_is_no_events_and_does_not_block(self):
+        if not hasattr(os, "mkfifo"):
+            self.skipTest("no FIFOs here")
+        d = tempfile.mkdtemp(prefix="fm-hardgrade-")
+        self.addCleanup(lambda: __import__("shutil").rmtree(d, ignore_errors=True))
+        path = os.path.join(d, "events.fifo")
+        os.mkfifo(path)
+        self.assertEqual(g.read_events(path), [])
 
     def test_an_overlong_line_is_dropped_not_read(self):
         path = self.write(json.dumps({"ts": 1, "pad": "x" * (g.LINE_MAX + 10)}) + "\n" + json.dumps({"ts": 2}) + "\n")
