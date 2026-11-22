@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- A train merge that takes a docs/map shard over its cap now moves the lane's new bullets to a shard with room (or a new one) and repoints their MASTER.md links, and one that takes MASTER.md over shortens the lane's index lines, instead of leaving the lane out (T-5381).
 - A land restarting on new code now runs its queued closes (up to 300 s) before it restarts, and a new land queues every merged-and-open leftover before its first train, so a restart no longer leaves merged lanes open (T-5873).
 - The PreToolUse guard's state stage serves unchanged active briefs from a small briefs-active.json index and asks git for the main checkout once per hook run, so it no longer opens every active brief on each tool call (T-5875).
 - Monitor tool commands get the same Ward decision as Bash commands (Claude Code 2.1.314 runs Bash-matching hooks for Monitor too); a hook call with no command is a denial, and sampo doctor checks the Claude Code version (T-3360).
