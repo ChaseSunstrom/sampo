@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- SVG technique cards: a technique-by-work-type grid with a writer prompt per cell, keeping a card only when its example SVG passes the works gates and shows the technique (T-4996).
 - Two art cards, art-abstract and art-landscape, draw a seeded picture from the design tokens in dark and light with at most 8 typed slots, and their check passes only once both render through works (T-4995).
 - The Ward reads bash arithmetic `$((…))` as arithmetic, so a sampo path in a command that also uses `$((n+22))` (a sed range) is no longer refused as a computed verb; a `$(…)` inside the arithmetic is still read (T-4931).
 - `sampo big adopt` makes an open task a child of a big task and `sampo big fold` merges an inbox item into it, and `sampo big check` refuses a plan that leaves a folded ask unnamed (T-4246).
