@@ -101,15 +101,6 @@ def _genv():
     return {k: v for k, v in os.environ.items() if k not in _GIT_LOCATE}
 
 
-def _git(root, flag):
-    try:
-        r = subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", root, "rev-parse",
-                            "--path-format=absolute", flag], capture_output=True, text=True, timeout=10, env=_genv())
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    return os.path.realpath(r.stdout.strip()) if r.returncode == 0 and r.stdout.strip() else None
-
-
 def _read_plain(path, limit=4096):
     """T-5974: the text of a plain file the worker may have written, or None: never a link (O_NOFOLLOW), never a FIFO or
     device (O_NONBLOCK, then fstat on the open fd), never more than limit bytes."""
@@ -129,38 +120,207 @@ def _read_plain(path, limit=4096):
         os.close(fd)
 
 
-def _layout(root):
-    """T-5974: (git dir, common dir) of root's worktree when they hold together, else None. The worker writes its git dir
-    whole (its commondir and gitdir files) and the .git file in its tree, so neither is believed on its own word: a plain
-    checkout's git dir must sit inside the tree; a linked worktree's must be <common>/worktrees/<name>, and its gitdir
-    file must name this tree's own .git (git wrote that back pointer when Sampo made the worktree; a git dir that
-    belongs to another worktree or to no worktree fails it). A forged commondir or .git file reaches no grant."""
-    gd, common = _git(root, "--git-dir"), _git(root, "--git-common-dir")
-    if not (gd and common):
+def _anchor_path(root):
+    from sampo import core
+    return os.path.join(core.state_dir(), "lanes", _lane_id(root) + ".anchor.json")
+
+
+def _derive(root):
+    """T-5974: what root's own top-level .git says, checked end to end, never anything above root (no ancestor is walked: a
+    worker that deletes its .git must not find its main checkout's). (kind, git dir, common dir) or None when it does not
+    hold together. kind: 'none' (no .git at the top: nothing to grant), 'plain' (a real folder .git: inside the tree), 'linked'
+    (a .git file at <common>/worktrees/<name> whose commondir names that common and whose gitdir names this tree's own .git:
+    git wrote both when the worktree was made; every path in it is its own realpath, objects too), 'detached' (a .git file at
+    a git dir of its own, no commondir: nothing of it is granted)."""
+    tree = os.path.realpath(root)
+    dot = os.path.join(tree, ".git")
+    try:
+        st = os.lstat(dot)
+    except FileNotFoundError:
+        return ("none", None, None)
+    except OSError:
         return None
-    tree, tops = os.path.realpath(root), []  # root itself, or a folder inside the tree: the .git is at the top of it
-    while tree not in tops:
-        tops.append(tree)
-        tree = os.path.dirname(tree)
-    # git's own discovery: the nearest folder upward with a .git entry (a file or a folder); a forged .git file in the tree
-    # is that nearest one, so it cannot borrow an ancestor's .git (a worktree under its main checkout)
-    dots = [d for d in (os.path.join(t, ".git") for t in tops) if os.path.lexists(d)][:1]
-    if gd == common:
-        return (gd, common) if gd in dots else None
+    if stat.S_ISDIR(st.st_mode):
+        return ("plain", dot, dot)
+    m = re.fullmatch(r"gitdir:[ \t]*([^\n\0]+?)[ \t]*\r?\n?", (_read_plain(dot, 4096) or "") if stat.S_ISREG(st.st_mode) else "")
+    if not m:
+        return None
+    raw = m.group(1)
+    gd = os.path.normpath(raw if os.path.isabs(raw) else os.path.join(tree, raw))  # relative paths: worktree.useRelativePaths
+    if os.path.realpath(gd) != gd or not os.path.isdir(gd):
+        return None  # a link or a dot part on the way: the .git file must name the git dir itself
+    cfile = os.path.join(gd, "commondir")
+    if not os.path.lexists(cfile):
+        return ("detached", gd, gd)
+    cd = (_read_plain(cfile, 4096) or "").strip()
+    if not cd or "\0" in cd:
+        return None
+    common = os.path.realpath(cd if os.path.isabs(cd) else os.path.join(gd, cd))
     if os.path.dirname(gd) != os.path.join(common, "worktrees"):
         return None
     back = (_read_plain(os.path.join(gd, "gitdir"), 4096) or "").strip()
     if not back or "\0" in back:
         return None
-    if not os.path.isabs(back):
-        back = os.path.join(gd, back)  # git's relative worktree paths (worktree.useRelativePaths)
-    return (gd, common) if os.path.realpath(back) in dots else None
+    if os.path.realpath(back if os.path.isabs(back) else os.path.join(gd, back)) != dot:
+        return None  # a git dir that belongs to another worktree or to none
+    objs = os.path.join(common, "objects")
+    if not os.path.isdir(objs) or os.path.realpath(objs) != objs:
+        return None
+    return ("linked", gd, common)
 
 
-def _common(root):
+_ANCHOR_KINDS = ("none", "plain", "linked", "detached")
+
+
+def _anchor(root):
+    """What Sampo recorded about root's top-level .git when it first granted or began a lane there (before any worker ran in
+    it): (kind, git dir, common dir, stale), None when there is no anchor (the file is not there), False when something is there
+    that is not a good anchor of this tree: a link, a FIFO, a folder, an oversized or unreadable file, bad JSON or a bad shape
+    (fails closed: never mistaken for 'no anchor', which would let the next grant make one from what the tree now says).
+    stale: a linked or detached worktree whose recorded git dir is no longer there (removed and made again)."""
+    path = _anchor_path(root)
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return False
+    text = _read_plain(path, 8192)
+    if text is None:
+        return False
+    try:
+        a = json.loads(text)
+    except ValueError:
+        return False
+    tree = os.path.realpath(root)
+    if not (isinstance(a, dict) and a.get("root") == tree and a.get("kind") in _ANCHOR_KINDS):
+        return False
+    kind, gd, common = a["kind"], a.get("gd"), a.get("common")
+    if kind == "none":
+        return ("none", None, None, False) if gd is None and common is None else False
+    if kind == "plain":
+        dot = os.path.join(tree, ".git")
+        return ("plain", dot, dot, False) if gd == dot and common == dot else False
+    if not all(isinstance(x, str) and os.path.isabs(x) and os.path.realpath(x) == x for x in (gd, common)):
+        return False
+    return (kind, gd, common, not os.path.lexists(gd))
+
+
+def _keep_anchor(root, kind, gd, common):
+    """Write root's anchor atomically: a tmp file made new (O_EXCL, O_NOFOLLOW, a name nobody can guess), then renamed over;
+    the tmp is gone whatever happens. True when the anchor is there."""
+    path = _anchor_path(root)
+    tmp, made = f"{path}.{os.getpid()}.{os.urandom(6).hex()}.tmp", False
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        made = True
+        with os.fdopen(fd, "w") as fh:
+            json.dump({"root": os.path.realpath(root), "kind": kind, "gd": gd, "common": common}, fh)
+        os.replace(tmp, path)
+        return True
+    except OSError:
+        if made:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+        return False
+
+
+def _layout(root, make=False):
+    """T-5974: (kind, git dir, common dir) of root's worktree, or None when it does not hold together. The worker writes its
+    git dir (HEAD, commondir, gitdir, config) and the .git file in its tree, so none of them says where the shared git dir
+    is. Sampo's own record of the tree's git layout (the anchor, made when it first granted or began a lane in it, before the
+    worker ran: make=True, by writable_for, lane_begin, lanes.start and the lane's making) is what the tree is verified
+    against: a linked worktree's .git file must name exactly that git dir, whose gitdir file must name this tree's .git, whose
+    commondir must name that common, every path its own realpath; a detached one the same git dir. A change of kind is None
+    (a tree that had no .git, a plain one or a detached one never becomes a linked one: that is a forged repository), except
+    between 'none' and 'plain', which both grant nothing beyond the tree (a worker that ran git init). A linked or detached
+    anchor whose git dir is gone (the worktree was removed and made again) is replaced, only by the same kind. An anchor that
+    is there but bad is None and is never replaced. With no anchor yet (nothing has begun a lane here), what the tree says is
+    taken once it checks out (_derive), and recorded when make."""
+    cur = _derive(root)
+    anc = _anchor(root)
+    if anc is False or cur is None:
+        return None
+    if anc is not None:
+        kind, gd, common, stale = anc
+        local = ("none", "plain")
+        if kind in local and cur[0] in local:
+            return cur  # nothing beyond the tree is granted either way
+        if cur[0] != kind or (not stale and cur != (kind, gd, common)):
+            return None
+    if (anc is None or anc[3]) and make and not _keep_anchor(root, *cur):
+        return None  # a grant made on a layout Sampo cannot keep a record of is not made
+    return cur
+
+
+def anchor_lane(root):
+    """Record root's git layout if Sampo has no record of it yet (lane start in the lane's own worktree). True when a record
+    that matches the tree is there now; never replaces a good record, nor a bad one (a link, a FIFO, bad JSON), and a
+    record whose git folder is gone is replaced only by the same kind of layout."""
+    return _layout(root, make=True) is not None
+
+
+def forget_anchor(root):
+    """Remove root's anchor and any tmp file of it, by the lane id: the worktree is being removed. Never raises."""
+    try:
+        path = _anchor_path(root)
+        base = os.path.basename(path)
+        folder = os.path.dirname(path)
+        for name in os.listdir(folder):
+            if name == base or (name.startswith(base + ".") and name.endswith(".tmp")):
+                try:
+                    os.unlink(os.path.join(folder, name))
+                except OSError:
+                    pass
+    except OSError:
+        pass
+
+
+def refresh_anchor(root):
+    """A worktree Sampo has just made: whatever record an earlier worktree at that path left is dropped and the new layout is
+    recorded, before any worker runs in it. True when the record is there."""
+    forget_anchor(root)
+    return _layout(root, make=True) is not None
+
+
+def prune_anchors(max_age=3600):
+    """Unlink the anchors whose worktree is gone (its recorded root is no longer a folder) and the tmp files an interrupted
+    write left over an hour ago. Never raises; the count removed."""
+    n = 0
+    try:
+        from sampo import core
+        folder = os.path.join(core.state_dir(), "lanes")
+        names = os.listdir(folder)
+    except OSError:
+        return 0
+    import time
+    for name in names:
+        path = os.path.join(folder, name)
+        try:
+            if name.endswith(".anchor.json"):
+                text = _read_plain(path, 8192)
+                try:
+                    root = json.loads(text).get("root") if text is not None else None
+                except (ValueError, AttributeError):
+                    root = None
+                if not isinstance(root, str) or os.path.lexists(root):
+                    continue  # one that is not a good anchor stays (it keeps its worktree refused), as does a live one
+            elif not (".anchor.json." in name and name.endswith(".tmp") and time.time() - os.lstat(path).st_mtime > max_age):
+                continue
+            os.unlink(path)
+            n += 1
+        except OSError:
+            pass
+    return n
+
+
+def _common(root, make=False):
     """The shared git dir of root's linked worktree after _layout's check, else None (a plain checkout has none apart)."""
-    lay = _layout(root)
-    return lay[1] if lay and lay[0] != lay[1] else None
+    lay = _layout(root, make)
+    return lay[2] if lay and lay[0] == "linked" else None
 
 
 # T-5909: what a confined worker never writes in Sampo's state folder, so it is granted none of it: consent and trust, the
@@ -246,8 +406,8 @@ def _head_ref(root):
         r = None
     if r is not None and r.returncode == 0:
         return r.stdout.strip()
-    gd = _git(root, "--git-dir")
-    text = _read_plain(os.path.join(gd, "HEAD"), 4096) if gd else None
+    lay = _layout(root)  # the verified git dir, never the one the worker's .git file names
+    text = _read_plain(os.path.join(lay[1], "HEAD"), 4096) if lay and lay[1] else None
     m = re.match(r"ref:[ \t]*(\S[^\n]*)", text or "")
     return m.group(1).strip() if m else ""
 
@@ -311,8 +471,9 @@ def ref_grants(common, root, on_lane=False):
     is exactly refs/heads/fmw/<id> and logs/refs/heads/fmw/<id>). Any other worktree's folder gets nothing, nor does
     refs/heads, trunk, refs/tags, refs/remotes, refs/stash, packed-refs or the other logs: the kernel refuses a write there.
     ponytail: objects/ stays writable (T-5924: a private object folder with alternates takes it back)."""
-    out = [os.path.join(common, "objects")]
-    if on_lane:
+    objs = os.path.join(common, "objects")
+    out = [objs] if os.path.realpath(objs) == objs else []  # T-5974: a link there would grant its target, not objects/
+    if out and on_lane:
         out += _lane_folders_ok(common, root)
     return out
 
@@ -342,7 +503,7 @@ def lane_begin(root, head):
     ref folder); in a plain checkout the refs are inside the writable tree, so the kernel guards nothing there and the
     judge's refs_undo backstop is the only guard."""
     real, tip = _txt(head[0]), _txt(head[1])
-    common = _common(root)  # a linked worktree whose commondir, gitdir file and .git file hold together (T-5974)
+    common = _common(root, make=True)  # T-5974: a linked worktree that matches Sampo's anchor, made now if this is the first
     if not (real and tip and _safe_ref(real) and re.fullmatch(r"[0-9a-f]{40,64}", tip) and common):
         return None
     if _in_lane_ns(real):
@@ -509,9 +670,20 @@ def lane_recover(root):
 
 
 def _jgit(root, *a):
-    """The judge's own git: no fsmonitor or hook runs, whatever config a worker planted."""
-    return subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", root, *a],
-                          capture_output=True, text=True, timeout=60, env=_genv())
+    """The judge's own git: no fsmonitor or hook runs, whatever config a worker planted. T-5974: it runs on the verified
+    layout (GIT_DIR, GIT_COMMON_DIR, GIT_WORK_TREE from _layout), so git never reads the worker's .git file, commondir or
+    gitdir to find a repository, and never walks above the tree to one (GIT_CEILING_DIRECTORIES). A layout that does not
+    hold together raises Refused (an OSError, which every caller already treats as git failing)."""
+    lay = _layout(root)
+    if lay is None:
+        raise Refused(f"{root}'s git layout does not match Sampo's record of it ({_anchor_path(root)}): no git runs there")
+    env, tree = _genv(), os.path.realpath(root)
+    if lay[0] == "none":
+        env["GIT_CEILING_DIRECTORIES"] = os.path.dirname(tree)
+    else:
+        env.update(GIT_DIR=lay[1], GIT_COMMON_DIR=lay[2], GIT_WORK_TREE=tree)
+    return subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", tree, *a],
+                          capture_output=True, text=True, timeout=60, env=env)
 
 
 def refs_snapshot(root):
@@ -602,11 +774,17 @@ def _covers(a, b):
     return b == a or b.startswith(a.rstrip(os.sep) + os.sep)
 
 
-def _env_grant(path, sub, home, state):
+# where an environment folder outside the home and the tree may be: a list of Sampo's own, never read from TMPDIR (which is
+# the value being judged) or from the temp module
+_ENV_ROOTS = ("/tmp", "/var/tmp", "/dev/shm", "/var/cache", "/var/folders")
+
+
+def _env_grant(path, sub, home, state, tree=None):
     """T-5974: a folder an environment variable names (TMPDIR, XDG_CACHE_HOME, CARGO_HOME, GOPATH), or None. The grant is
     a rule on a whole folder, so a value that would cover what must stay unwritten is dropped, not granted: not absolute, the
     filesystem root, the home or any folder above it, anything above or inside Sampo's state folder, Sampo's own code,
-    or ~/.claude beyond the working folders granted by name. (The turn's environment is the lead's, not the worker's:
+    ~/.claude beyond the working folders granted by name, and anything else under the home (~/.ssh, ~/.config, a project's
+    .git) but the caches granted by name and the worker's own tree. (The turn's environment is the lead's, not the worker's:
     this is for a lead started from one that carries a value it should not.)"""
     if not path or not isinstance(path, str) or "\0" in path or not os.path.isabs(path):
         return None
@@ -617,6 +795,13 @@ def _env_grant(path, sub, home, state):
         return None
     if _covers(claude, real) and not any(_covers(os.path.join(claude, x), real) for x in _CLAUDE_WRITABLE):
         return None
+    rhome = os.path.realpath(home)
+    if _covers(rhome, real) and not (tree and _covers(os.path.realpath(tree), real)) and not any(
+            _covers(os.path.join(rhome, x), real) for x in _HOME_WRITABLE + tuple(os.path.join(".claude", c) for c in _CLAUDE_WRITABLE)):
+        return None  # under the home, outside the named caches and the tree: not a working folder
+    if not _covers(rhome, real) and not (tree and _covers(os.path.realpath(tree), real)) and not any(
+            _covers(os.path.realpath(x), real) for x in _ENV_ROOTS + (f"/run/user/{os.getuid()}",)):
+        return None  # outside the home too: only scratch and system cache folders, never a repository's .git or /opt/go
     return os.path.join(path, sub) if sub else path
 
 
@@ -627,18 +812,24 @@ def writable_for(root):
     from sampo import core
     home, state = os.path.expanduser("~"), os.path.realpath(core.state_dir())
     tree = os.path.realpath(root)
+    fallback = not os.environ.get("FOREMAN_STATE") and os.path.abspath(core.state_dir()) in [
+        os.path.abspath(x) for x in core.state_fallbacks()]
     if state == tree or state.startswith(tree + os.sep):
         raise Refused(f"this tree holds Sampo's state folder ({state}): a write grant on the tree would cover it; run the "
                       "worker from a git worktree of the repository instead")
     out = [tree, "/tmp", "/var/tmp", *_DEVICES]
-    if _git(root, "--git-dir"):
-        lay = _layout(root)  # T-5974: the worker writes its git dir and its .git file: neither is granted on its own word
-        if lay is None:
-            raise Refused("this worktree's git dir does not hold together (its commondir, its gitdir back pointer and its "
-                          ".git file disagree: a worker rewrote them, or git moved): no grant is made from it")
-        git_dir, common = lay
+    # T-5974: the worker writes its git dir and its .git file: neither is granted on its own word, the git locations are
+    # Sampo's anchor (made here, before the worker runs, when this is the first grant) and the tree is checked against it
+    lay = _layout(root, make=True)
+    if lay is None:
+        raise Refused(f"this worktree's git layout does not match Sampo's record of it ({_anchor_path(root)}) or does not hold "
+                      "together (its .git file, its commondir and its gitdir back pointer disagree: a worker rewrote or "
+                      "deleted them, the anchor is not a plain file of this tree, or the worktree was made another kind): no "
+                      "grant is made from it; if the worktree is yours, `fm lane rm`/`fm lane recover` it, or remove that file")
+    kind, git_dir, common = lay
+    if kind in ("plain", "linked"):
         out.append(git_dir)  # a worktree's own HEAD and index; a plain checkout's .git is inside the tree anyway
-        if common != git_dir:  # shared with the main checkout: its objects and its own lane's folders only
+        if kind == "linked":  # shared with the main checkout: its objects and its own lane's folders only
             # T-5974: the lane folders follow lane_ref(root) and only while Sampo's own record says a turn is in flight and
             # HEAD is on that lane: the name HEAD holds picks nothing, it only switches this worktree's own folder on
             on_lane = _own_lane(root, _head_ref(root)) and _recorded(root) is not None
@@ -648,12 +839,22 @@ def writable_for(root):
     out += state_grants(state)
     out += _worker_sessions_grant(root, state)
     for var, sub in (("TMPDIR", ""), ("XDG_CACHE_HOME", ""), ("CARGO_HOME", "registry"), ("GOPATH", "pkg")):
-        if g := _env_grant(os.environ.get(var), sub, home, state):
+        if g := _env_grant(os.environ.get(var), sub, home, state, tree):
             out.append(g)
     seen = []
     for p in out:
         if os.path.lexists(p) and os.path.realpath(p) not in seen:
             seen.append(os.path.realpath(p))
+    for g in seen:  # T-5974: a rule on a folder grants everything beneath it, so none may cover the state folder (the tree's
+        # own check is above; this is every other grant: ~/.cache and the home's other caches). The three temp roots are the
+        # one exception: every worker needs them and fm bench and the test suite keep a fresh state folder in one, so a
+        # state folder there is a choice (FOREMAN_STATE, or the bench's own) that Sampo cannot make narrower. A state folder
+        # that is one of core's per-user fallbacks (made because the default was unwritable) is not a choice: refused
+        if g in ("/tmp", "/var/tmp", "/dev/shm") and not fallback:
+            continue
+        if _covers(g, state):
+            raise Refused(f"a write grant on {g} would cover Sampo's state folder ({state}): run the worker with the state "
+                          "folder outside it (FOREMAN_STATE)")
     return seen
 
 

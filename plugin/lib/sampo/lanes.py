@@ -792,6 +792,8 @@ def start(p, args):
     held = str(b.meta.get("lane") or "")
     if held and os.path.realpath(held) != os.path.realpath(p.root):
         raise c.PolicyError(f"{b.id} belongs to lane {held}, not this one ({p.root}): start the task this lane is for")
+    from sampo import landlock
+    landlock.anchor_lane(p.root)  # T-5974: no record of this worktree's git layout yet: made now, before the build (never replaced)
     path = os.path.join(p.dir, "audits", f"{b.id}.builder.md")
     try:
         with open(path, encoding="utf-8", errors="replace") as f:
@@ -873,6 +875,8 @@ def _new_lane(p, b, main, branch, spike=False):
     if r.returncode:
         raise cli.UsageError(f"git worktree add failed: {r.stderr.strip()[:300]}")
     path = os.path.realpath(path)
+    from sampo import landlock
+    landlock.refresh_anchor(path)  # T-5974: Sampo's own record of the new worktree's git layout, before any worker runs in it
     pruned = lane_new_cargo(p, path)  # T-4717, T-4764: a Rust lane's own cargo commands reach its own target folder (a hint)
 
     def give(x):
@@ -2176,6 +2180,9 @@ def resume(p, b, main, args, ended=False, recover=None, after=""):
         r = _git(main, "worktree", "remove", *(["--force"] if why else []), path)
         if r.returncode:
             raise cli.UsageError(f"git worktree remove failed: {r.stderr.strip()[:300]}")
+        from sampo import landlock
+        landlock.forget_anchor(path)  # T-5974: the old worktree's record of its git layout goes with it
+        landlock.prune_anchors()
     _git(main, "worktree", "prune")
     have = _ref_ok(main, branch)
 
@@ -7485,6 +7492,9 @@ def remove(p, b, main, drop=None, keep=False, ended=None):
             r = _git(main, "worktree", "remove", path)
         if r.returncode:
             raise cli.UsageError(f"git worktree remove failed: {r.stderr.strip()[:300]}")
+    from sampo import landlock
+    landlock.forget_anchor(path)  # T-5974: the lane's record of its git layout goes with its worktree, and any left by one gone
+    landlock.prune_anchors()
     procs = end_lane_procs(path)  # T-4720: git removed the folder (or it was gone): what is left running in it (no terminal) goes with it
     drop_lane_cargo_dir(p.slug, path)  # T-4764: the lane's own cargo target folder goes with the lane (never while held)
     line = auto_prune(p, force=True)  # T-4764: and the cap is looked at: the folders over it go, oldest first
@@ -8935,6 +8945,9 @@ def _remove_finished(main, row, slug=None):
             if back.returncode:
                 why += f"; and putting its lock back failed: {(back.stderr.strip() or f'exit {back.returncode}')[:200]}"
         return why
+    from sampo import landlock
+    landlock.forget_anchor(path)  # T-5974: its record of the git layout goes with the worktree
+    landlock.prune_anchors()
     end_lane_procs(path)  # T-4720: what still stands in the removed folder goes with it
     if slug:
         drop_lane_cargo_dir(slug, path)  # T-4764: the lane's cargo folder goes with it (best effort, never while held)
