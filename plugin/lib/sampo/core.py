@@ -3323,8 +3323,14 @@ def main_worktree(gr):
     main checkout (a .git folder, not a file) or a submodule (its common dir isn't a .git folder)."""
     if not os.path.isfile(os.path.join(gr, ".git")):
         return None
+    memo = _ACTIVE_MEMO  # T-5875: within one hook run a lane's guard context asks twice (find_project, builder_confine):
+    if memo is not None and ("main_worktree", gr) in memo:  # one git spawn, not two, under the load that makes each slow
+        return memo[("main_worktree", gr)]
     common = _git(gr, "rev-parse", "--path-format=absolute", "--git-common-dir", timeout=10).strip()
-    return os.path.realpath(os.path.dirname(common)) if os.path.basename(common) == ".git" else None
+    out = os.path.realpath(os.path.dirname(common)) if os.path.basename(common) == ".git" else None
+    if memo is not None and common:  # an empty answer (git failed or timed out) is asked again, as before
+        memo[("main_worktree", gr)] = out
+    return out
 
 
 def builder_confine(p, b, agent=""):
@@ -5219,6 +5225,9 @@ BRIEF_CLOSED = "briefs-closed.json"  # T-2031: {"v": 1, "e": {file name: [inode,
 # T-3573: of every brief that isn't active or verifying (closed, or open in another state): what active_brief_fast skips
 BRIEF_OPEN = "briefs-open.json"  # T-3573: the open briefs', each entry with a 6th item, {heading: body} of BRIEF_SNIPS
 BRIEF_SNIPS = ("Steps", "Grant requests")  # what listings read of every open brief (brief_summary, grants.queued)
+BRIEF_ACTIVE = "briefs-active.json"  # T-5875: BRIEF_OPEN's entries of the active and verifying briefs alone (~100 of 1,900):
+# what the PreToolUse hook reads (a 1 MB index costs more to parse than the active briefs cost to read)
+ACTIVE_STATUS = ("active", "verifying")
 
 
 def _brief_index(p, name=BRIEF_INDEX):
@@ -5277,6 +5286,34 @@ def _read_brief(path, idx=None, fresh=None):
     return b
 
 
+def _active_slice(p, live, old):
+    """T-5875: the index the PreToolUse guard reads: the entries of the active and verifying briefs in live (the open
+    index's), each one recorded from its file read when the file was already more than 2 s old (a same-size rewrite in
+    the same clock tick keeps the key, so an entry made from a younger file could never be told from the new content).
+    An entry already in old under the same key was recorded so and is kept; any other is built from the file itself
+    (never from live's, which may have been made while the file was young), and a file under 2 s old has none yet:
+    the guard reads it, and the load after it ages indexes it."""
+    out, now = {}, time.time()
+    for name, e in live.items():
+        if e[3].get("status") not in ACTIVE_STATUS:
+            continue
+        kept = _indexed(old.get(name), e[:3])
+        if kept and len(kept) == 6:
+            out[name] = kept
+            continue
+        path = os.path.join(p.dir, "tasks", name)
+        try:
+            with open(path, encoding="utf-8") as f:
+                st = os.fstat(f.fileno())
+                b = Brief.parse(f.read(), path)
+        except (OSError, ValueError):
+            continue
+        key = [st.st_ino, st.st_mtime_ns, st.st_size]
+        if now - st.st_mtime > 2 and key == e[:3] and b.status in ACTIVE_STATUS:
+            out[name] = _entry(key, b)
+    return out
+
+
 def load_briefs(p, include_archive=False, errors=None):
     out, paths = [], brief_paths(p, include_archive)
     tdir = os.path.join(p.dir, "tasks") + os.sep  # a brief moved or deleted since: forgotten
@@ -5304,6 +5341,11 @@ def load_briefs(p, include_archive=False, errors=None):
             write_atomic(os.path.join(p.dir, BRIEF_INDEX), json.dumps({"v": 1, "e": shut}, separators=(",", ":")))
         if new_live:
             write_atomic(os.path.join(p.dir, BRIEF_OPEN), json.dumps({"v": 1, "e": live}, separators=(",", ":")))
+        act_keys = os.path.join(p.dir, BRIEF_ACTIVE)
+        act_old = _brief_index(p, BRIEF_ACTIVE)
+        act = _active_slice(p, live, act_old)
+        if act != act_old or not os.path.exists(act_keys):  # T-5875: the hook's small slice of the open index
+            write_atomic(act_keys, json.dumps({"v": 1, "e": act}, separators=(",", ":")))
         if new_shut or new_live or not os.path.exists(keys):
             write_atomic(keys, json.dumps({"v": 1, "e": {k: v[:3] for k, v in fresh.items() if v[3].get("status")
                                                          not in ("active", "verifying")}}, separators=(",", ":")))
@@ -8362,7 +8404,7 @@ def active_brief(briefs, lane=None):
     return next((b for b in briefs if b.status in ("active", "verifying") and b.meta.get("lane") == lane), None)
 
 
-_ACTIVE_LINE = lazy(rb"^status:[ \t]*(?:active|verifying)[ \t]*\r?$", re.M)
+_ACTIVE_LINE = lazy(rb"^status:[ \t]*(?:active|verifying)(?:[ \t\f\v]+#[^\r\n]*)?[ \t]*\r?$", re.M)  # T-5875: a trailing comment, as _parse_value strips it
 
 
 _ACTIVE_MEMO = None  # T-3577: {tasks folder: (its stat, active hits)} while a hook runs (hooks.run sets it)
@@ -8397,11 +8439,26 @@ def _active_hits(p):
     if not closed:
         closed = {n: e[:3] for n, e in _brief_index(p).items()
                   if isinstance(e, list) and len(e) == 5 and isinstance(e[3], dict) and e[3].get("status") in CLOSED}
-    for path in brief_paths(p):
+    live, now = _brief_index(p, BRIEF_ACTIVE), time.time()  # T-5875: the active briefs' own small index (not BRIEF_OPEN's 1 MB)
+    tdir = os.path.join(p.dir, "tasks")
+    sep = tdir + os.sep
+    for name in (sorted(os.listdir(tdir)) if os.path.isdir(tdir) else ()):  # brief_paths' listing, a join and a basename fewer per brief
+        if not _BRIEF_FILE.match(name):
+            continue
+        path = sep + name
         try:
-            if closed:  # T-2022: an unchanged closed brief needs no read
+            if closed or live:  # T-2022: an unchanged closed brief needs no read
                 st = os.stat(path)
-                if closed.get(os.path.basename(path)) == [st.st_ino, st.st_mtime_ns, st.st_size]:
+                key = [st.st_ino, st.st_mtime_ns, st.st_size]
+                if closed.get(name) == key:
+                    continue
+                # T-5875: an active brief the index describes by this file's own (inode, mtime, size), written more than
+                # 2 s ago (a same-size rewrite in one clock tick could keep the key), is its stub: no open, no parse.
+                # Its status is what the index recorded of this very file; any doubt (no entry, other key, a brief
+                # written just now, another status) reads the file below, as before.
+                e = _indexed(live.get(name), key) if live and now - st.st_mtime > 2 else None
+                if e and len(e) == 6 and e[3].get("status") in ("active", "verifying"):
+                    hits.append(Brief(e[3], None, e[4], None, path, e[5]))
                     continue
             with open(path, "rb") as f:
                 head = f.read(4096)

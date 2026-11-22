@@ -6960,3 +6960,208 @@ class SpawnChokepoint(HookCase):  # T-5837 (part 2 of T-5768): the Agent branch 
         self.assertLessEqual(len(row["type"]), 60)
         self.assertLessEqual(len(row["model"]), 60)
         self.assertNotRegex(row["type"] + row["model"], r"[\x00-\x1f]")
+
+
+class GuardCtxCost(ForemanTestCase):
+    """T-5875: the PreToolUse guard's "state" stage (hooks._guard_ctx) averaged 1.4 s over 443 slow hooks on a box with
+    ~126 active briefs of 3,500: the scan opened and parsed every active brief on every call. An active brief whose
+    file is unchanged (and not just written) now comes from the briefs-open index, like a closed one is skipped."""
+
+    BRIEFS, ACTIVE, BUDGET_MS = 6000, 120, 200
+
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        self.fm("task", "new", "seed", "--type", "FIX", "--tier", "S", "--ac", "ok :: true", "--step", "s")
+        self.p = c.find_project(self.repo)
+        (seed,) = c.brief_paths(self.p)
+        with open(seed, encoding="utf-8") as f:
+            self.text = f.read()
+        os.remove(seed)
+        self.tdir = os.path.join(self.p.dir, "tasks")
+
+    def brief(self, n, status, lane=None, allow=""):
+        text = re.sub(r"(?m)^id: .*$", f"id: T-{n:04d}", self.text, count=1)
+        text = re.sub(r"(?m)^status: .*$", f"status: {status}", text, count=1)
+        text = re.sub(r"(?m)^allow: .*$", f"allow: [{allow}]" if allow else "allow: []", text, count=1)
+        if lane:
+            text = text.replace("\nsource:", f"\nlane: {lane}\nsource:", 1)
+        path = os.path.join(self.tdir, f"T-{n:04d}.md")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        return path
+
+    def fill(self, total, active, mine_allow="repo"):
+        """total briefs: `active` of them active in a lane each, one active in this checkout (the main one), the rest done."""
+        paths = {}
+        for n in range(1, total + 1):
+            if n == 1:
+                paths[n] = self.brief(n, "active", allow=mine_allow)
+            elif n <= active + 1:
+                paths[n] = self.brief(n, "active", lane=f"/lanes/agent-{n:04d}")
+            else:
+                paths[n] = self.brief(n, "done")
+        past = time.time() - 120
+        for path in paths.values():
+            os.utime(path, (past, past))
+        c._BRIEF_MEMO.clear()
+        c.load_briefs(self.p)  # what any listing does: writes the indexes the hook reads
+        c._BRIEF_MEMO.clear()
+        return paths
+
+    def ctx(self, **pl):
+        from sampo import hooks
+        import fmguard
+        c._BRIEF_MEMO.clear()
+        return hooks._guard_ctx(dict({"tool_name": "Bash", "tool_input": {"command": "ls"}, "cwd": self.repo}, **pl), fmguard)
+
+    def opened(self, fn):
+        real, seen = open, []
+
+        def spy(f, *a, **k):
+            seen.append(str(f))
+            return real(f, *a, **k)
+        with mock.patch("builtins.open", spy):
+            out = fn()
+        return out, [s for s in seen if os.sep + "tasks" + os.sep in s]
+
+    def test_budget_the_state_stage_with_6000_briefs_costs_under_200_ms(self):
+        self.fill(self.BRIEFS, self.ACTIVE)
+        self.ctx()  # warm: the interpreter's own first-call costs are not the stage's
+        took = []
+        for _ in range(7):
+            t = time.perf_counter()
+            ctx, p, act = self.ctx()
+            took.append((time.perf_counter() - t) * 1000)
+        self.assertEqual((act.id, ctx.allow), ("T-0001", {"repo"}))
+        self.assertLess(sorted(took)[len(took) // 2], self.BUDGET_MS, f"state stage ms: {[round(x) for x in took]}")
+
+    def test_unchanged_active_briefs_are_not_opened(self):
+        self.fill(300, 120)
+        (ctx, p, act), seen = self.opened(self.ctx)
+        self.assertEqual(act.id, "T-0001")
+        self.assertEqual(seen, [], "no brief file is opened: every one is unchanged and indexed")
+
+    def test_same_answers_with_and_without_the_index(self):
+        paths = self.fill(300, 120)
+        # a status line with a trailing comment parses as active (core._parse_value strips it): the prefilter must agree
+        with open(paths[1], encoding="utf-8") as f:
+            text = f.read()
+        with open(paths[1], "w", encoding="utf-8") as f:
+            f.write(re.sub(r"(?m)^status: active$", "status: active  # hold", text, count=1))
+        past = time.time() - 30
+        os.utime(paths[1], (past, past))
+        c._BRIEF_MEMO.clear()
+        c.load_briefs(self.p)
+        for lane in (None, "/lanes/agent-0007", "/lanes/agent-0121", "/lanes/none"):
+            c._BRIEF_MEMO.clear()
+            fast = c.active_brief_fast(self.p, lane)
+            for name in (c.BRIEF_ACTIVE, c.BRIEF_OPEN, c.BRIEF_CLOSED, c.BRIEF_INDEX):
+                os.remove(os.path.join(self.p.dir, name))
+            c._BRIEF_MEMO.clear()
+            slow = c.active_brief_fast(self.p, lane)
+            c._BRIEF_MEMO.clear()
+            self.assertEqual(slow and (slow.id, slow.meta, slow.preamble), fast and (fast.id, fast.meta, fast.preamble), lane)
+            self.assertEqual(slow and slow.render(), fast and fast.render(), lane)
+            self.assertEqual(bool(slow), lane != "/lanes/none", lane)  # the commented T-0001 (lane None) is found, not lost
+            c.load_briefs(self.p)  # the indexes again
+            c._BRIEF_MEMO.clear()
+
+    def test_an_edited_active_brief_is_read_again_and_its_new_grants_count(self):
+        paths = self.fill(300, 120, mine_allow="repo")
+        self.brief(1, "active", allow="repo, plugin")  # a rewrite: new inode, size and time
+        past = time.time() - 30
+        os.utime(paths[1], (past, past))
+        ctx, p, act = self.ctx()
+        self.assertEqual(ctx.allow, {"repo", "plugin"})
+
+    def test_a_brief_that_stopped_being_active_is_not_served_from_the_index(self):
+        paths = self.fill(300, 120)
+        self.brief(1, "done")
+        past = time.time() - 30
+        os.utime(paths[1], (past, past))
+        ctx, p, act = self.ctx()
+        self.assertIsNone(act)
+        self.assertEqual(ctx.allow, set())
+
+    def test_a_just_written_active_brief_is_read_not_taken_from_the_index(self):
+        # the index entry of a brief written within the last 2 s can match a same-size rewrite in the same clock tick
+        paths = self.fill(300, 120, mine_allow="repo")
+        self.brief(1, "active", allow="plugin")  # same size as "repo" is not needed: the age alone decides
+        (ctx, p, act), seen = self.opened(self.ctx)
+        self.assertIn(paths[1], seen)
+        self.assertEqual(ctx.allow, {"plugin"})
+
+    def test_a_brief_indexed_while_young_is_read_not_served_from_a_stale_entry_once_old(self):
+        paths = self.fill(300, 120, mine_allow="repo")
+        path = paths[1]
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+        now = time.time()
+        os.utime(path, (now - 0.5, now - 0.5))  # young: written 0.5 s ago
+        st = os.stat(path)
+        c.load_briefs(self.p)
+        act = os.path.join(self.p.dir, c.BRIEF_ACTIVE)
+        with open(act, encoding="utf-8") as f:
+            self.assertNotIn("T-0001.md", json.load(f)["e"], "no entry is made from a file under 2 s old")
+        # rewritten in place to the same size, inode and mtime: the key is unchanged, the content is not
+        with open(path, "r+", encoding="utf-8") as f:
+            f.write(text.replace("allow: [repo]", "allow: [plug]", 1))
+        os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
+        self.assertEqual(os.stat(path).st_size, st.st_size)
+        real = time.time
+        with mock.patch.object(time, "time", lambda: real() + 3):  # 2 s later
+            c._BRIEF_MEMO.clear()
+            ctx, p, got = self.ctx()
+            self.assertEqual(ctx.allow, {"plug"}, "the guard reads the file, not a stale entry")
+            c._BRIEF_MEMO.clear()
+            c.load_briefs(self.p)  # the load after it aged indexes it, with its content
+            with open(act, encoding="utf-8") as f:
+                self.assertEqual(json.load(f)["e"]["T-0001.md"][3]["allow"], ["plug"])
+            (ctx, p, got), seen = self.opened(self.ctx)
+            self.assertEqual((ctx.allow, seen), ({"plug"}, []))
+
+    def test_the_active_index_holds_the_active_briefs_alone_and_is_written_again_when_missing(self):
+        self.fill(300, 120)
+        path = os.path.join(self.p.dir, c.BRIEF_ACTIVE)
+        with open(path, encoding="utf-8") as f:
+            got = json.load(f)["e"]
+        self.assertEqual(len(got), 121)
+        self.assertTrue(all(e[3]["status"] == "active" and len(e) == 6 for e in got.values()))
+        os.remove(path)
+        c.load_briefs(self.p)
+        self.assertTrue(os.path.exists(path), "a missing active index is written again by a load")
+
+    def test_a_corrupt_active_index_falls_back_to_reading(self):
+        self.fill(300, 120)
+        for bad in ("{", "[]", '{"v":1,"e":[]}', '{"v":1,"e":{"T-0001.md":[1,2,3,{},"",{}]}}'):
+            with open(os.path.join(self.p.dir, c.BRIEF_ACTIVE), "w", encoding="utf-8") as f:
+                f.write(bad)
+            ctx, p, act = self.ctx()
+            self.assertEqual((act.id, ctx.allow), ("T-0001", {"repo"}), bad)
+
+    def test_a_lane_asks_git_for_its_main_checkout_once_per_hook_run(self):
+        lane = os.path.join(self.tmp, "lane-x")
+        subprocess.run(["git", "-C", self.repo, "worktree", "add", "-q", "-b", "lane-x", lane], check=True)
+        real, calls = c._git, []
+
+        def spy(root, *a, **k):
+            calls.append(a)
+            return real(root, *a, **k)
+        for memo, want in (({}, 1), (None, 2)):  # a hook run (the memo set) asks once; any other process asks each time
+            del calls[:]
+            old, c._ACTIVE_MEMO = c._ACTIVE_MEMO, memo
+            try:
+                with mock.patch.object(c, "_git", spy):
+                    p = c.find_project(lane)
+                    pair = c.builder_confine(p, None, "sampo:fm-builder")
+            finally:
+                c._ACTIVE_MEMO = old
+            self.assertEqual((p.lane, pair), (lane, (lane, os.path.realpath(self.repo))))
+            self.assertEqual(len([a for a in calls if "--git-common-dir" in a]), want, memo)
+
+    def test_the_slow_hook_line_still_names_the_state_stage(self):
+        from sampo import hooks
+        with open(hooks.__file__, encoding="utf-8") as f:
+            src = f.read()
+        self.assertRegex(src, r"ctx, p, act = _guard_ctx\(pl, guard, lanes\)\n\s+ctx\.index_inline = inline\n\s+mark\(\"state\"\)")
