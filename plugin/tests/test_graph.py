@@ -258,6 +258,40 @@ class Pack(Base):
         self.assertTrue("app/billing.py" not in files or files.index("app/billing.py") > 1)
 
 
+class WorktreeCopy(Base):
+    """T-5834: a builder's copy under .claude/worktrees/ is not the project's file: the hooks' touched events carry its
+    absolute path, and the graph must not turn it into a node or an edge."""
+
+    def touched(self, p, *paths):
+        with open(os.path.join(p.dir, "ledger.jsonl"), "a") as f:
+            for rel in paths:
+                f.write(json.dumps({"ts": "2026-03-02T10:00:00Z", "event": "touched", "task": "T-0002",
+                                    "data": {"file": os.path.join(p.root, rel)}}) + "\n")
+
+    def test_a_worktree_copy_gets_no_node_or_edge(self):
+        from sampo import core as c
+        from sampo import graph
+        p = c.find_project(self.repo)
+        copy = ".claude/worktrees/agent-1/app/auth.py"
+        self.touched(p, "app/auth.py", copy, ".claude/worktrees/agent-1/plugin/lib/x.py")
+        con = graph.db(p)
+        seen = {x for s, d, k, t, w in con.execute("SELECT src, dst, kind, t, w FROM edges").fetchall() for x in (s, d)}
+        self.assertFalse([x for x in seen if ".claude/worktrees/" in x], seen)
+        self.assertIn(("task:T-0002", "app/auth.py"),
+                      con.execute("SELECT src, dst FROM edges WHERE kind='touched'").fetchall())  # the real file stays
+
+    def test_a_rebuild_drops_the_old_worktree_copy_edges(self):
+        from sampo import core as c
+        from sampo import graph
+        p = c.find_project(self.repo)
+        con = graph.db(p)
+        con.execute("INSERT INTO edges VALUES ('task:T-0002', '.claude/worktrees/a/app/auth.py', 'touched', NULL, 1.0)")
+        con.commit()
+        self.touched(p, "app/auth.py")  # the ledger grew: the stamp moved, so the next db() rebuilds
+        con = graph.db(p)
+        self.assertEqual(con.execute("SELECT COUNT(*) FROM edges WHERE dst LIKE '%worktrees%'").fetchone()[0], 0)
+
+
 class Graphify(Base):
     def test_graphify_edges_become_file_edges(self):
         self.write("graphify-out/graph.json", json.dumps({

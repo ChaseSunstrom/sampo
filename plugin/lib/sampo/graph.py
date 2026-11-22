@@ -48,6 +48,11 @@ def db(p):
     return con
 
 
+def _worktree_copy(f):
+    """T-5834: a builder's copy of the repo under .claude/worktrees/ is no file of the project (same rule as split's)."""
+    return "/.claude/worktrees/" in "/" + f
+
+
 def _build(p, con):
     """ponytail: a full rebuild whenever anything moved; incremental (new commits and ledger lines) if it gets slow."""
     from sampo import map as smap
@@ -60,7 +65,7 @@ def _build(p, con):
                                                           for b in tasks.values()])
     log = c._git(p.root, "log", f"-{COMMITS}", "--no-renames", "--format=%x01%cI%x00%B%x00", "--name-only",
                  timeout=120) or ""
-    files = set(c._git(p.root, "ls-files", timeout=60).splitlines())
+    files = {f for f in c._git(p.root, "ls-files", timeout=60).splitlines() if not _worktree_copy(f)}
     for entry in log.split("\x01")[1:]:
         when, body, names = (entry.split("\x00") + ["", ""])[:3]
         when = _utc(when)
@@ -72,10 +77,11 @@ def _build(p, con):
             rows += [(a, b, "cochange", when, w) for a in changed for b in changed if a != b]
     for e in c.ledger_tail(p, 50000, kinds=("touched",)):
         f = (e.get("data") or {}).get("file") if e.get("event") == "touched" and e.get("task") else None
-        if f and f.startswith(p.root.rstrip("/") + "/"):
+        if f and f.startswith(p.root.rstrip("/") + "/") and not _worktree_copy(os.path.relpath(f, p.root)):
             rows.append((f"task:{e['task']}", os.path.relpath(f, p.root), "touched", _utc(str(e.get("ts", ""))), 1.0))
     m = smap.load(p)
-    rows += [(t, s, "tests", None, 0.5) for t, srcs in m["tests"].items() for s in srcs]
+    rows += [(t, s, "tests", None, 0.5) for t, srcs in m["tests"].items() for s in srcs
+             if not _worktree_copy(t) and not _worktree_copy(s)]
     rows += _code_edges(p, files)
     con.executemany("INSERT INTO edges VALUES (?,?,?,?,?)", rows)
     con.execute("CREATE INDEX IF NOT EXISTS e_src ON edges (src)")
