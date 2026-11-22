@@ -3522,6 +3522,55 @@ def resume_state(p, b, base, branch, room=RESUME_MAX):
     return _cut_to("\n".join(lines), room, cut) if lines else ""
 
 
+CARDS_MAX = 400  # T-5605: the brief's "## Calling cards" section, characters (about 100 tokens)
+CARDS_PURPOSE = 80  # the characters of a card's purpose the section names it with
+CARDS_HEAD = ("## Calling cards", "Call one in place of a hand search: `sampo card call NAME key=value`.")
+
+
+def card_purpose(cd):
+    """T-5605 review: a card's purpose as the brief reads it: one line, defanged (a card's words are data, as any text
+    quoted into a brief), cut to CARDS_PURPOSE characters; the marker defang adds is kept whole."""
+    text = c.defang(c.plain(" ".join(str(cd.get("purpose") or "").split())))
+    room = CARDS_PURPOSE + (len(c.DEFANGED) if text.startswith(c.DEFANGED) else 0)
+    return text[:room].rstrip()
+
+
+def card_block(found):
+    """T-5605: the '## Calling cards' lines for these read cards that fit, best first: at most three, each its name (with
+    its first required input, as NAME path=...) and its purpose, the whole section under CARDS_MAX. A card whose name
+    the card rule refuses is skipped, and so is a line that would pass the cap: the next card is tried. [] when no card
+    is given: a task no card fits holds no section."""
+    from sampo import callcards
+    out = []
+    for cd in found:
+        name = str(cd.get("name", ""))
+        if not callcards.NAME.fullmatch(name):
+            continue
+        req = (cd.get("inputs") or {}).get("required") or []
+        arg = f" {req[0]}=…" if req and isinstance(req[0], str) and re.fullmatch(r"[a-z][a-z0-9_]{0,40}", req[0]) else ""
+        line = f"- {name}{arg}: {card_purpose(cd)}"
+        if len("\n".join([*CARDS_HEAD, *out, line])) > CARDS_MAX:
+            continue
+        out.append(line)
+        if len(out) == 3:
+            break
+    return [*CARDS_HEAD, *out] if out else []
+
+
+def card_section(p, b):
+    """T-5605: the cards a builder's brief names: callcards.brief_fits over the title and the first 300 characters of the
+    raw request. A look, never pick: a miss files no card request. A failure logs one card_section_failed event and
+    gives no section: the brief is still made."""
+    from sampo import callcards
+    try:
+        text = " ".join([b.title or "", b.section("Raw request")[:300]])
+        fit = callcards.brief_fits(text, root=p.root)
+    except Exception as e:  # noqa: BLE001 — a card folder that fails to load never costs a builder its brief (as T-3672)
+        c.log_event(p, "card_section_failed", task=b.id, data={"error": str(e)[:200]})
+        return []
+    return card_block(fit)
+
+
 def builder_brief(p, b, args, resume_branch=None, after=""):
     """T-0234: a self-contained brief for one S/M task worked by a sampo:fm-builder subagent in its own worktree
     (Agent isolation "worktree"; its `fm focus` binds the task there), and the Agent call that launches it. The main
@@ -3691,6 +3740,9 @@ def builder_brief(p, b, args, resume_branch=None, after=""):
     warns = hot_files(p, b) + lane_fn_overlap(p, b, main, base, briefs)  # T-5725: a function an unlanded lane changes
     if warns:
         parts += ["## Warning", *warns, ""]
+    calling = card_section(p, b)  # T-5605: up to three read cards that fit the task, named, never picked
+    if calling:
+        parts += [*calling, ""]
     keeps = defect_classes(p)
     if keeps:
         parts += ["## Defects this project keeps shipping", "Reviewers confirmed these in the last 30 days; check your "

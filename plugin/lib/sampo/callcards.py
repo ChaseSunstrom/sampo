@@ -59,6 +59,8 @@ CACHE_KEEP, CACHE_WRITES = 256, 1 << 20  # cached results kept; the most a cache
 DIFF_CAP = 8 << 10
 TEXT_CAP = 8000  # text(): what a model reads back from one call
 LEXICAL_FLOOR = 0.15  # pick(): a card scoring under this doesn't fit
+BRIEF_FLOOR = 0.25  # T-5605: a builder brief names a read card scoring at this or over (LEXICAL_FLOOR names generic titles)
+BRIEF_SHARED, BRIEF_DF = 2, 5  # brief_fits: the task words a card shares with it, each in at most BRIEF_DF cards
 CALLS_CAP = 256 << 10  # calls.jsonl rotates to calls.jsonl.1 past this many bytes (about 2000 rows each)
 CLASSES = ("pass", "check_failed", "refused", "failed", "machine")  # a call's outcome class
 OK = ("applied", "facts")
@@ -1699,9 +1701,9 @@ def _card_text(card):
     return " ".join([card["name"].replace("-", " "), card.get("purpose", ""), *card.get("examples", [])])
 
 
-def scorer(root=None):
-    """A function text -> [(lexical score, card)] for every card, unordered: the cards and their idf read once, so a
-    caller scoring many texts (cardauthor.pending) pays for them once."""
+def _index(root=None):
+    """T-5605: the cards read once, with their word sets, document frequencies and scoring function: (found, docs, df,
+    score). A caller scoring many texts (cardauthor.pending), or one text and the words it shares, pays for them once."""
     found = cards(root)[0]
     docs = {n: _tokens(_card_text(cd)) for n, cd in found.items()}
     df = {}
@@ -1717,7 +1719,12 @@ def scorer(root=None):
         q = _tokens(text) & set(idf)
         qn = math.sqrt(sum(idf[t] ** 2 for t in q)) or 1.0
         return [(sum(idf[t] ** 2 for t in q & toks) / (qn * norms[n]), found[n]) for n, toks in docs.items()]
-    return score
+    return found, docs, df, score
+
+
+def scorer(root=None):
+    """A function text -> [(lexical score, card)] for every card, unordered (see _index)."""
+    return _index(root)[3]
 
 
 def rank(text, k=5, root=None):
@@ -1730,6 +1737,21 @@ def rank(text, k=5, root=None):
     out.sort(key=lambda x: (x[0] < LEXICAL_FLOOR, -pass_rate(stats.get(x[1]["name"])) if x[0] >= LEXICAL_FLOOR else 0,
                             -x[0], x[1]["name"]))
     return out[:k]
+
+
+def brief_fits(text, root=None):
+    """T-5605: the read cards a builder brief may name for this text, best first: a card scoring at BRIEF_FLOOR or over
+    that shares at least BRIEF_SHARED words with the text, each in at most BRIEF_DF cards (a generic word is in many).
+    Reads the cards and their idf only, never call_stats: the brief is a look, and pass rates play no part in it."""
+    _, docs, df, score = _index(root)
+    q = _tokens(text)
+    out = []
+    for s, cd in score(text):
+        if s < BRIEF_FLOOR or not cd["read"]:
+            continue
+        if len([t for t in q & docs[cd["name"]] if df[t] <= BRIEF_DF]) >= BRIEF_SHARED:
+            out.append((s, cd))
+    return [cd for s, cd in sorted(out, key=lambda x: (-x[0], x[1]["name"]))]
 
 
 def requests_path():
