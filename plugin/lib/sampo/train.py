@@ -2979,11 +2979,25 @@ def _land_trains(p, main, batch, owed, closer=None):
         return None
 
     queued = set()  # T-5368: the ids put on the closer (once each)
+    fixwait, freed = {}, set()  # T-5791: {task: the express FIX its close waits for}, and the (task, FIX) pairs released
+
+    def ensure_pm():  # T-5791: a pending behind verify with no runner gets one; never costs the land anything
+        try:
+            lanes.pm_ensure(p, main)
+        except Exception as e:  # noqa: BLE001 — a safety net's own failure is said, never raised into the land
+            print(f"sampo lane land: post-merge runner check failed: {type(e).__name__}: {c.fit(str(e), 160)}",
+                  file=sys.stderr, flush=True)
 
     def retry(tid, why):  # on the closer's thread: a refusal that is no verdict on the task goes round again
         # (a moved trunk is _close's own retry, CLOSE_RETRIES reruns in all: one layer, not one on top of the other)
         if why.startswith(COMMIT_WAIT) and closer.holding:  # its proof stands: the train's end commits it
             closer.after_train([tid])
+            return True
+        # T-5791: refused only for the classes an open express trunk-red FIX owns: it waits for that FIX's landing,
+        # once per FIX (a close that fails again after the FIX landed is a verdict, left for a hand close)
+        if (fid := _fix_open(p, why, tid)) and (tid, fid) not in freed and _fix_wait(p, main, tid, why):
+            fixwait[tid] = fid
+            print(f"sampo lane land: {tid}: its close waits for {fid} (an express trunk-red FIX) to land", file=sys.stderr, flush=True)
             return True
         return False
 
@@ -3004,15 +3018,27 @@ def _land_trains(p, main, batch, owed, closer=None):
         """T-5368: the trains are done and the closes are not: wait for them, but a lane named --first (a lane accepted
         meanwhile is) trains at once, its gate running beside the closes. True when one came, False once the closes are done."""
         while not closer.idle():
+            ensure_pm()  # T-5791: the closes may wait for hours: each poll asks (pm_ensure's own gap limits the spawns)
             closer.wait(CLOSE_POLL_S)
             if first_ids(p, peek=True):
                 return True
         return bool(first_ids(p, peek=True))
 
     def to_close(ids, front=False):
-        todo = [t for t in ids if t not in queued]
+        todo = [t for t in ids if t not in queued and t not in fixwait]
         queued.update(todo)
         closer.put(todo, front)
+
+    def release_waiting():
+        """T-5791: the closes whose express FIX has landed (or closed) go on the closer again; True when any did."""
+        out = [t for t in list(fixwait) if _fix_released(p, main, t, landed)]
+        for t in out:
+            freed.add((t, fixwait.pop(t)))
+            queued.discard(t)
+            print(f"sampo lane land: {t}: its FIX landed: the close is queued again", file=sys.stderr, flush=True)
+        if out:
+            to_close(out, front=True)
+        return bool(out)
 
     def note_park(pairs):  # T-4252: one line per lane left out, as it happens; plain() keeps a gate's output to one line
         for i, w in pairs:
@@ -3067,6 +3093,7 @@ def _land_trains(p, main, batch, owed, closer=None):
         back &= set(lanes.awaiting_merge(p, now, 0, fresh=True))
         sort(b for b in now if b.id in back)
     left = landed + gone  # merged and open (a train by hand, a land cut short): closed after each train's own (T-3884)
+    fixwait.update(_fix_waiting(p, main, left))  # T-5791: an earlier land's closes that wait for their FIX stay out of the closes
     waiting = set(lanes.awaiting_merge(p, briefs)) - set(landed)
     sort(x for x in briefs if x.id in waiting)
     seen = set(waiting) | set(landed)
@@ -3074,6 +3101,8 @@ def _land_trains(p, main, batch, owed, closer=None):
     carry = _restart_carry(p)  # T-5023: a restarted land's queue: its lanes are promoted only if they were before
     first_taken = set()  # T-4013: every --first id this land took (`asked` is the ship request's flag, not this)
     while True:
+        ensure_pm()  # T-5791: once per train and per idle wait: the safety net behind the landing
+        release_waiting()
         jump = first_ids(p)  # T-3796: asked for meanwhile go next, a lane finished since the land began too
         carried, carry = carry, {"ready": [], "alone": []}  # T-5023: the restart's queue counts at the first read only
         first_taken.update(jump)
@@ -3116,7 +3145,7 @@ def _land_trains(p, main, batch, owed, closer=None):
             ready = recheck(ready)
         if not ready:
             to_close([t for t in left if t not in queued])  # T-5368: the leftovers close now, a lane named meanwhile trains
-            if wait_closes():
+            if wait_closes() or release_waiting():  # T-5791: a close that waited meanwhile may have its FIX landed already
                 continue
             break
         # T-5444: live, one train for all. T-5023: an express lane at the head leaves the ordinary lanes' train; T-5726:
@@ -3188,6 +3217,7 @@ def _land_trains(p, main, batch, owed, closer=None):
         start_verify(p, main, owed)
     shipped = last if last and not last[1].startswith("nothing to ship") else shipped or last
     grant, said = shipped or (None, "")
+    hand.extend((t, f"waits for {f} (an express trunk-red FIX) to land, then closes again") for t, f in fixwait.items())  # T-5791
     hand = list(dict(hand).items())  # a leftover retried after its brief changed: its newest answer
     return {"landed": landed, "closed": [t for t, _ in closed], "hand": hand, "settled": settled, "parked": parked, "trains": trains,
             "stopped": stopped, "restart": restart, "ship": said, "ship_grant": grant, "lines": closed,
@@ -3350,6 +3380,7 @@ def land_merged(p, main, drop_empty=False):
     one is removed, its task returned to the queue, never closed. {"closed", "left": [(id, why)], "gate",
     "empty": [(id, note)], "dropped": [ids]}."""
     from sampo import cli
+    from sampo import lanes
     if why := held_by_active(p, main, ids=[]):  # T-4692: merged lanes are on the trunk: only the changelog is left to hold
         raise c.PolicyError(why)
     # T-5368: the wait for a post-merge verify (up to PM_WAIT_S) comes before the land lock: a land that came meanwhile
@@ -3392,9 +3423,30 @@ def land_merged(p, main, drop_empty=False):
                 on = []
                 gate = "one sampo check on the trunk, red"
         gate += f" ({waited})" if waited else ""
-        closed, hand = close_landed(p, main, [t for t, _ in on], who="sampo lane land --merged", settled=settled) \
-            if on else ([], [])
+        try:  # T-5791: the sweep is one of the two ways a stopped behind verify is started again; its failure costs nothing
+            lanes.pm_ensure(p, main)
+        except Exception as e:  # noqa: BLE001
+            print(f"sampo lane land --merged: post-merge runner check failed: {type(e).__name__}: {c.fit(str(e), 160)}",
+                  file=sys.stderr, flush=True)
+        # T-5791: a close that waits for its express trunk-red FIX stays open until the FIX is on the trunk (here: merged
+        # or closed); one that fails only on a FIX's classes now waits too, said in `left` with the FIX's id
+        ids = [t for t, _ in on]
+        waits, freed = {}, set()
+        for t in list(_fix_waiting(p, main, ids)):
+            if _fix_released(p, main, t, landed=ids):
+                freed.add(t)
+            else:
+                waits[t] = _fix_waiting(p, main, [t])[t]
+
+        def wait_for_fix(tid, why):
+            if (fid := _fix_open(p, why, tid)) and tid not in freed and _fix_wait(p, main, tid, why):
+                waits[tid] = fid
+                return True
+            return False
+        closed, hand = close_landed(p, main, [t for t in ids if t not in waits], who="sampo lane land --merged",
+                                    settled=settled, again=wait_for_fix) if on else ([], [])
         left.extend(hand)
+        left.extend((t, f"waits for {f} (an express trunk-red FIX) to land, then closes again") for t, f in waits.items())
         for tid, why in left:
             try:
                 _note_left(p, tid, why)
@@ -3469,12 +3521,76 @@ def _refused_before(b, tip):
     """The reason the last land's close was refused when the brief, the lane tip and Sampo's code are as they were
     then, else None."""
     for line in reversed(b.section("Log").splitlines()):
+        if QUEUED_AGAIN in line:  # T-5791: the FIX the close waited for landed: the refusal before it no longer holds
+            return None
         if m := re.search(r"^- (\S+) land: close refused: (.*) @ (\w+) (\w*)(?: (\w+))? ?$", line):
             at = c.parse_ts(m.group(1))
             if not at or time.time() - at.timestamp() > REFUSAL_TTL_S:
                 return None
             return m.group(2) if (m.group(3), m.group(4), m.group(5) or "") == (_brief_hash(b), tip, _code_id()) else None
     return None
+
+
+QUEUED_AGAIN = "land: close queued again"  # T-5791: the Log line of a close released when its express FIX landed
+_CLASS_RE = re.compile(r"\b[A-Za-z_][A-Za-z_0-9]*\.[A-Z][A-Za-z_0-9]*\b")  # a class as the gates name it: test_docs.Agents
+
+
+def _fix_open(p, why, tid=""):
+    """T-5791: the id of an open FIX filed for a semantic trunk red (meta trunk_red = its classes) whose classes are
+    every class this refusal names, else ''. A refusal naming no class, or one outside the FIX's, is a verdict on the lane."""
+    named = set(_CLASS_RE.findall(why or ""))
+    if not named:
+        return ""
+    for b in sorted(c.load_briefs(p), key=lambda x: c.id_num(x.id)):
+        red = b.meta.get("trunk_red")
+        if isinstance(red, list) and red and b.id != tid and b.status not in c.CLOSED and named <= set(red):  # never itself
+            return b.id
+    return ""
+
+
+def _fix_wait(p, main, tid, why):
+    """T-5791: a close refused only for the classes an open express trunk-red FIX owns waits for that FIX: the id goes on
+    the brief (close_waits_on) and its Log, and True is returned (the close is not a verdict on the lane). False else."""
+    from sampo import cli
+    fid = _fix_open(p, why, tid)
+    if not fid:
+        return False
+    line = f"land: close waits for {fid}: its refusal names only that FIX's classes ({c.fit(c.plain(why), 160)})"
+
+    def mark(b):
+        if b.meta.get("close_waits_on") != fid:
+            b.meta.update(close_waits_on=fid)
+            b.append_log(line)
+    cli.mutate(p, tid, mark, "close_waits", {"fix": fid})
+    return True
+
+
+def _fix_waiting(p, main, ids):
+    """T-5791: {task id: the FIX it waits for} among `ids`: the sweep leaves these to their FIX's landing."""
+    out = {}
+    for t in ids:
+        b = c.find_brief(p, t)
+        if b and (fid := b.meta.get("close_waits_on")) and b.status not in c.CLOSED:
+            out[t] = fid
+    return out
+
+
+def _fix_released(p, main, tid, landed=()):
+    """T-5791: True once, when the FIX a close waited for is merged (in `landed`) or closed: the wait is cleared, the Log
+    says the close is queued again (which also ends the refusal's memo) and the caller puts the id on the closer."""
+    from sampo import cli
+    b = c.find_brief(p, tid)
+    if not b or not (fid := b.meta.get("close_waits_on")):
+        return False
+    fix = c.find_brief(p, fid)
+    if fid not in landed and fix is not None and fix.status not in c.CLOSED:
+        return False
+
+    def free(x):
+        if x.meta.pop("close_waits_on", None):
+            x.append_log(f"{QUEUED_AGAIN}: {fid} landed")
+    cli.mutate(p, tid, free, "close_queued_again", {"fix": fid})
+    return True
 
 
 SETTLE_LOCK_S = 30  # T-5535: the wait for the brief's lock before a close settles its gaps (a timeout leaves them to finish)

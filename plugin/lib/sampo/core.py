@@ -1262,10 +1262,11 @@ LOAD_BAR = 1.5  # T-2797: load per CPU past which a lane isn't started and a gat
 SANDBOX_DROP = ("FOREMAN_", "CLAUDE", "GIT_")  # T-2822: what a sandbox's env doesn't inherit unless its builder says so
 # T-4289: the FM_ switches only a test sets (a stall or heartbeat clock, a cap, a budget): one a caller's shell carried
 # into a land reached its gate's test classes and turned test_lane_stall red for every lane. tests/run.py reads this
-# one list from this file (override_prefixes). FM_POSTMERGE_CMD and _RERUN are the operator's post-merge settings,
+# one list from this file (override_prefixes). FM_POSTMERGE_CMD, _RERUN and _SHAPE are the operator's post-merge settings,
 # read by the train and land process itself (lanes.py): no gate or test class takes them (a land keeps them: keep=).
 TEST_OVERRIDES = ("FM_STALL", "FM_HEARTBEAT", "FM_DOOR_CAP", "FM_PROMPT_VARIANT", "FM_GUARD_SCRIPT_BUDGET",
-                  "FM_GUARD_SCRIPT_HARD", "FM_ABLATE_BUDGET", "FM_PROVE_ALLOW", "FM_POSTMERGE_CMD", "FM_POSTMERGE_RERUN")
+                  "FM_GUARD_SCRIPT_HARD", "FM_ABLATE_BUDGET", "FM_PROVE_ALLOW", "FM_POSTMERGE_CMD", "FM_POSTMERGE_RERUN",
+                  "FM_POSTMERGE_SHAPE")
 
 
 def override_names(env, keep=()):

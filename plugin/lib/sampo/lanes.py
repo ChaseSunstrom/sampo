@@ -4648,8 +4648,9 @@ def _merge_gated(p, b, main, branch, tip, files):
 # ---- T-3141: a merge lands after its fast checks; the full suite runs on that merge afterwards, in a separate process
 # (a thread would share the GIL), and a red suite reverts exactly that merge commit. One record per merge sha under the
 # project's postmerge/ folder: state pending | running | green | red | reverted | conflict | inherited | settled
-# (T-5518: inherited = red only in classes trunk failed before the merge; settled = a conflict trunk now passes). Records are read and
-# written under one lock, so a second runner finds the state settled and does nothing.
+# (T-5518: inherited = red only in classes trunk failed before the merge; settled = a conflict trunk now passes;
+# T-5791: semantic = red in the repo-shape classes between two lanes each green alone: no revert, one express FIX).
+# Records are read and written under one lock, so a second runner finds the state settled and does nothing.
 
 def _pm_dir(p):
     return os.path.join(p.dir, "postmerge")
@@ -4848,6 +4849,57 @@ def pm_after_train(p, main):
         pm_spawn(p, main)
 
 
+PM_STALE_S = 20 * 60  # T-5791: a pending record this old with no live runner is nobody's: it gets one
+PM_ENSURE_GAP_S = 5 * 60  # T-5791: and a runner that dies at once is not respawned at every tick of the land loop
+
+
+def pm_ensure(p, main):
+    """T-5791: True when it spawned a runner. 2026-11-22: 133 merge records sat pending for hours because the spawn that
+    followed their merge died with its caller and nothing asked again. Asked by the land loop and the close sweep, it
+    spawns one `lane verify` when a record waits and no live runner holds the queue: a pending one older than PM_STALE_S,
+    a running one whose pid is dead, a red one (its revert waits) or a conflict the trunk has moved past. Never while a
+    live runner is running (it takes the pending ones next), never beside a conflict checked at this HEAD (a runner
+    could do nothing), and at most once per PM_ENSURE_GAP_S. No suite command: no records, nothing to ask. With
+    FOREMAN_NO_BACKGROUND set (the tests') pm_spawn spawns nothing, so nothing is asked, logged or timed here either."""
+    if os.environ.get("FOREMAN_NO_BACKGROUND") or not pm_cmd(main, p=p):
+        return False
+    recs = pm_records(p)
+    if not recs or any(r["state"] == "running" and not _pm_dead(r) for r in recs.values()):
+        return False
+    now = time.time()
+    stuck = any((r["state"] == "pending" and now - _pm_age_ts(r) >= PM_STALE_S) or (r["state"] == "running" and _pm_dead(r))
+                for r in recs.values())
+    held = any(r["state"] == "conflict" for r in recs.values())
+    if not (any(r["state"] == "red" for r in recs.values()) or (stuck and not held) or pm_conflict_due(p, main)):
+        return False
+    path = os.path.join(_pm_dir(p), ".ensure")
+    with c.lock(_pm_dir(p)):
+        try:
+            with open(path) as f:
+                last = float(json.load(f)["t"])
+        except (OSError, ValueError, KeyError, TypeError):
+            last = 0.0
+        if now - last < PM_ENSURE_GAP_S:
+            return False
+        c.write_atomic(path, json.dumps({"t": now}))
+    c.log_event(p, "postmerge_respawn", data={"pending": sum(r["state"] == "pending" for r in recs.values())})
+    pm_spawn(p, main)
+    return True
+
+
+def pm_shape_cmd(main):
+    """T-5791: the short pass that runs before the full suite: FM_POSTMERGE_SHAPE, else this repo's runner on the
+    repo-shape modules (core.REPO_SHAPE: the docs map, the left-out and renamed tests, the env switches, the fast mirror),
+    which a trunk red of 2026-11-22 (T-5774, T-5782) went unseen under for hours behind the full suite's 2 to 4 hours.
+    "" when this repo has no runner of its own: no shape pass."""
+    if os.environ.get("FM_POSTMERGE_SHAPE"):
+        return os.environ["FM_POSTMERGE_SHAPE"]
+    mods = c.repo_shape_modules()
+    if mods and os.path.exists(os.path.join(main, "plugin", "tests", "run.py")):
+        return "python3 plugin/tests/run.py " + " ".join(mods)
+    return ""
+
+
 def pm_conflict_due(p, main):
     """T-5518: True when a record in conflict was not yet checked against main's HEAD as it is now (_pm_settle stamps
     settle_head), so a pass has something new to learn. A conflict checked at this HEAD gives the next pass nothing:
@@ -4925,6 +4977,16 @@ def pm_classes(out, code):
     """The failing test classes (module.Class) a unittest run names, or the exit code."""
     got = sorted({m.rpartition(".")[0] or m for m in _FAILED.findall(out)})
     return got or [f"suite exit {code}"]
+
+
+def _pm_shape_named(out, code):
+    """T-5791: the module.Class names a shape pass that failed (exit `code`, output `out`) is a verdict on, else []. The
+    modules come from the runner's REPO_SHAPE and run in an older sha's tree, where one may not exist yet ("no test
+    matches", exit 1), and a crash or a class that never finished names nothing: none of those is a red on the merge, so the
+    caller falls through to the full suite."""
+    if _NOT_RUN.search(out) or c._NO_TEST.search(out):
+        return []
+    return [k for k in pm_classes(out, code) if not k.startswith("suite exit")]
 
 
 def _pm_claim(p, sha):
@@ -5012,6 +5074,13 @@ def _pm_trunk_red(p, tid, sha, classes, partial=False):
         f"not reverted: {', '.join(classes)} already fail on {sha[:9]}'s first parent"
     cli.mutate(p, tid, lambda x: x.append_log(note), "postmerge_inherited", {"sha": sha})
     try:
+        owner = next((b.id for b in sorted(c.load_briefs(p), key=lambda x: c.id_num(x.id))  # T-5791: after a semantic
+                      if isinstance(b.meta.get("trunk_red"), list) and set(classes) <= set(b.meta["trunk_red"])  # red the
+                      and b.id != tid and b.status not in c.CLOSED), "")  # later merges fail its classes on their first parent
+        if owner:  # an open express FIX already owns these classes (a subset of its trunk_red): no second one under a new key
+            cli.mutate(p, tid, lambda x: x.append_log(f"trunk red {', '.join(classes)}: {owner} is the open FIX for it"),
+                       "postmerge_inherited", {"sha": sha, "fix": owner})
+            return
         from sampo import eco
         key = "Trunk red: " + ", ".join(c.fit(c.plain(k), 100) for k in sorted(classes))  # the full set, in one order
         eco.capture_once(p, f"Trunk red: {names}" + f"\n\nThe full suite fails these classes on trunk before {sha[:9]} (the verify of {tid} "
@@ -5021,8 +5090,143 @@ def _pm_trunk_red(p, tid, sha, classes, partial=False):
         c.log_event(p, "postmerge_capture_failed", task=tid, data={"error": c.fit(str(e), 200)})
 
 
+def _pm_rebuild(p, main, wt, sha, r, gone):
+    """A requeued merge is judged as main was after the revert plus that merge, with none of the later ones in it: the
+    reverts of `gone` applied to wt (no-op for a first verify). False (record in conflict, settled when trunk passes) when
+    they do not apply."""
+    if gone and _git(wt, "revert", "-m", "1", "--no-commit", "--no-edit", *reversed(gone)).returncode:
+        _git(wt, "revert", "--abort")  # ours: this worktree's own revert
+        pm_set(p, sha, state="conflict", note="could not rebuild the tree to re-verify on")
+        c.log_event(p, "lane_revert_conflict", task=r["task"], data={"sha": sha, "reverts": gone})
+        _pm_settle(p, main, sha)  # T-5518: trunk as it is now may pass what the rebuild could not be judged on
+        return False
+    return True
+
+
+def _pm_judge(main, wt, sha, gone, code, out):
+    """T-5791 (out of pm_verify, so the shape pass and the full run judge a red alike; it records nothing): (reds, reach,
+    flaky, inherited, unrelated, files) of a run that ended `code` with `out`. reach is what stays blamed on the merge once
+    the flaky (green alone), docs-only (unrelated) and inherited (red on the first parent too) classes are excused. The
+    reruns move wt: to the first parent's tree last."""
+    flaky = inherited = unrelated = []
+    reds = pm_classes(out, code) if code and code != 124 else []
+    files, reach = _pm_files(main, sha), reds
+    if reds and isinstance(reds, list):  # T-3425: a docs-only merge is not blamed for a test that reads none of its files
+        unrelated = _pm_unread(main, sha, files, reds)
+        reach = [k for k in reds if k not in unrelated]
+    if code and code != 124:  # T-3216: red in the full suite but green alone is a flake, not this merge's
+        again = pm_rerun_cmd(main, reds)
+        if not again:  # T-3425: excused only after a real red alone-rerun
+            reach, unrelated = reds, []
+        if again:
+            c.wait_for_load(f"lane verify {sha[:9]}")  # T-3425: the alone-rerun waits for load like a gate
+        acode, aout = c.run_command(wt, again, c.load_scaled(900), niced=True, low=True) if again else (1, "")
+        if again and not acode:
+            flaky, reach = reds, []
+        else:
+            if again and acode and acode != 124 and not _NOT_RUN.search(aout) and isinstance(reach, list):
+                # T-5518: green alone is a flake per class: the alone run names the classes still red (a run naming
+                # none says nothing per class; one that did not finish proves nothing about the classes it lacks).
+                # A module-level error (setUpClass names the module) holds every red class of that module
+                alone = {m.rpartition(".")[0] or m for m in _FAILED.findall(aout)}
+                flaky = [k for k in reds if alone and k not in alone and k.rpartition(".")[0] not in alone]
+                reach = [k for k in reach if k not in flaky]
+            if again and isinstance(reach, list) and not reach:
+                pass  # red alone, but only in classes the docs-only merge cannot reach (or green alone): no parent run
+            elif again:  # T-3213: red alone too; does main just before this merge fail the same classes?
+                _git(wt, "reset", "--hard", "-q", f"{sha}^1")
+                if not gone or not _git(wt, "revert", "-m", "1", "--no-commit", "--no-edit", *reversed(gone)).returncode:
+                    pcode, pout = c.run_command(wt, again, c.load_scaled(900), niced=True, low=True)
+                    # T-3224: a class is inherited only when the parent names it failing; a parent run that
+                    # names none ("no test matches" for a class the merge added, a crash) leaves the red this merge's.
+                    # T-5518: per class: the classes the parent also fails are excused, the rest stay blamed
+                    named = {m.rpartition(".")[0] or m for m in _FAILED.findall(pout)}
+                    if pcode:
+                        inherited = [k for k in reach if k in named]
+                        reach = [k for k in reach if k not in named]
+    return reds, reach, flaky, inherited, unrelated, files
+
+
+def _pm_shape_class(k):
+    """T-5791: True when class `k` (module.Class) is one of the repo-shape modules' (or a named shape class)."""
+    return k in c.REPO_SHAPE or k.rpartition(".")[0] in c.REPO_SHAPE
+
+
+def _pm_green_alone(p, tid, tip):
+    """T-5791: True when the repo-shape modules were green on this very tip (the brief's check_shape, written at accept, is
+    the tip they ran at: a mark for a tip since replaced says nothing of the one that merged, `tip` = the merge's second
+    parent): the lane is not what broke them, only what it met."""
+    try:
+        b = c.find_brief(p, tid)
+    except (OSError, ValueError, c.CorruptState):
+        return False
+    return bool(b and tip and b.meta.get("check_shape") == tip)
+
+
+def _pm_reads(main, sha, files, classes):
+    """T-5791: True when one of `classes`' modules (module.Class: its source in sha's tree) names a file `files` changed,
+    by path or basename: the merge touches what the red class reads."""
+    tree = None
+    for k in classes:
+        path = k.rpartition(".")[0].replace(".", "/") + ".py"
+        tree = tree if tree is not None else _git(main, "ls-tree", "-r", "--name-only", sha).stdout.split("\n")
+        hit = [f for f in tree if f == path or f.endswith("/" + path)]
+        text = _git(main, "show", f"{sha}:{hit[0]}").stdout if len(hit) == 1 else ""
+        if text and any(f in text or os.path.basename(f) in text for f in files):
+            return True
+    return False
+
+
+def _pm_semantic(p, main, r, sha, classes, files):
+    """T-5791: True when a red merge is handled as a clash between lanes, not reverted. Only repo-shape classes, red on
+    this merge though the first parent passes them (the judge excused none), when the merged lane was green alone (its
+    brief's check_shape) and so was at least one lane that landed on trunk after its base (merge-base of the first parent
+    and the lane tip): each lane passes alone, together they fail, so no one lane is to blame. It files one express
+    FIX (trunk_red = the classes) naming both and marks the record `semantic`, which holds no land; the closes that fail
+    only on those classes wait for the FIX (train._fix_wait). False (the caller reverts, as before) when any condition
+    fails or the FIX cannot be filed."""
+    tip = lambda s: _git(main, "rev-parse", "--verify", "-q", f"{s}^2").stdout.strip()  # noqa: E731: the lane tip merged
+    if not classes or not all(_pm_shape_class(k) for k in classes) or not _pm_green_alone(p, r["task"], tip(sha)):
+        return False
+    base = _git(main, "merge-base", f"{sha}^1", f"{sha}^2").stdout.strip()
+    if not base:
+        return False
+    landed = _git(main, "log", "--first-parent", "--merges", "--format=%H", f"{base}..{sha}^1").stdout.split()
+    recs = pm_records(p)
+    # each partner's merge: green alone at the tip that merged; the ones whose changed files a red class reads come first
+    mine = {recs[s]["task"]: s for s in landed if s in recs and recs[s].get("task") and recs[s]["task"] != r["task"]
+            and _pm_green_alone(p, recs[s]["task"], tip(s))}
+    partners = sorted(mine, key=lambda t: not _pm_reads(main, sha, _pm_files(main, mine[t]), classes))  # stable
+    if not partners:
+        return False
+    from sampo import cli, eco
+    names = c.joinmore([c.fit(c.plain(k), 100) for k in sorted(classes)], 8)
+    title = f"Trunk red between two lanes: {names} ({sha[:9]})"
+    lanes = ", ".join([r["task"], *partners[:5]])
+    try:
+        fix, new = eco.capture_once(
+            p, title + f"\n\nThe repo-shape classes {', '.join(classes)} fail on {sha[:9]} (the merge of {r['task']}) "
+            f"and pass on its first parent. {r['task']} passed them alone, and so did {c.joinmore(partners, 5)}, which "
+            f"landed after {r['task']}'s base: the lanes clash, no one lane is to revert, so none was. Make them agree "
+            f"on trunk in one forward commit. Closes that fail only on these classes wait for this and close again "
+            f"when it lands (lanes: {lanes}).", "FIX", "trunk-red", key=title)
+        cli.mutate(p, fix.id, lambda x: x.meta.update(priority="urgent", trunk_red=sorted(classes)), "postmerge_semantic",
+                   {"sha": sha, "lanes": [r["task"], *partners[:5]]})
+    except Exception as e:  # noqa: BLE001: a FIX that cannot be filed leaves the verdict to the revert, as before
+        c.log_event(p, "postmerge_capture_failed", task=r["task"], data={"error": c.fit(str(e), 200)})
+        return False
+    pm_set(p, sha, state="semantic", classes=list(classes), reached_by=files[:20], fix=fix.id, partners=partners[:5])
+    c.log_event(p, "postmerge_semantic", task=r["task"], data={"sha": sha, "classes": list(classes), "fix": fix.id,
+                                                              "partners": partners[:5]})
+    note = (f"not reverted: {', '.join(classes)} fail on {sha[:9]} only with {c.joinmore(partners, 5)} landed first "
+            f"(each green alone): {fix.id} is the express FIX")
+    cli.mutate(p, r["task"], lambda x: x.append_log(note), "postmerge_semantic", {"sha": sha, "fix": fix.id})
+    return True
+
+
 def pm_verify(p, main, sha):
-    """Run the full suite on the merge in a throwaway worktree; green records it, red reverts that commit."""
+    """Run the full suite on the merge in a throwaway worktree; green records it, red reverts that commit. T-5791: the
+    repo-shape modules run first, and a red they name, blamed on this merge, is recorded without the full run."""
     from sampo import cli
     r = _pm_claim(p, sha)
     if not r:
@@ -5037,56 +5241,33 @@ def pm_verify(p, main, sha):
             return False  # the next runner tries again, three times
         # a requeued merge is judged as main was after the revert plus that merge, with none of the later ones in it
         gone = r.get("after_reverts") or []
-        if gone and _git(wt, "revert", "-m", "1", "--no-commit", "--no-edit", *reversed(gone)).returncode:
-            _git(wt, "revert", "--abort")  # ours: this worktree's own revert
-            pm_set(p, sha, state="conflict", note="could not rebuild the tree to re-verify on")
-            c.log_event(p, "lane_revert_conflict", task=r["task"], data={"sha": sha, "reverts": gone})
-            _pm_settle(p, main, sha)  # T-5518: trunk as it is now may pass what the rebuild could not be judged on
+        if not _pm_rebuild(p, main, wt, sha, r, gone):
             return True
-        full = _pm_uncached_due(p)
-        if full:
-            pm_set(p, sha, uncached=True)
-        code, out = c.run_command(wt, pm_cmd(main, uncached=full, p=p), c.load_scaled(3600),
-                                  env=cpu_env(p, gate=False), niced=True,
-                                  low=True)  # T-3757: what landed becomes the usual; T-4197; T-4570: yields slots to waiting builders
-        if _pm_tree_lost(p, sha, r, tries, wt):  # T-4728: a run in a removed folder ends 127: no merge is reverted for it
-            return False
-        flaky =inherited = unrelated = []
-        reds = pm_classes(out, code) if code and code != 124 else []
-        files, reach = _pm_files(main, sha), reds
-        if reds and isinstance(reds, list):  # T-3425: a docs-only merge is not blamed for a test that reads none of its files
-            unrelated = _pm_unread(main, sha, files, reds)
-            reach = [k for k in reds if k not in unrelated]
-        if code and code != 124:  # T-3216: red in the full suite but green alone is a flake, not this merge's
-            again = pm_rerun_cmd(main, reds)
-            if not again:  # T-3425: excused only after a real red alone-rerun
-                reach, unrelated = reds, []
-            if again:
-                c.wait_for_load(f"lane verify {sha[:9]}")  # T-3425: the alone-rerun waits for load like a gate
-            acode, aout = c.run_command(wt, again, c.load_scaled(900), niced=True, low=True) if again else (1, "")
-            if again and not acode:
-                flaky, reach = reds, []
-            else:
-                if again and acode and acode != 124 and not _NOT_RUN.search(aout) and isinstance(reach, list):
-                    # T-5518: green alone is a flake per class: the alone run names the classes still red (a run naming
-                    # none says nothing per class; one that did not finish proves nothing about the classes it lacks).
-                    # A module-level error (setUpClass names the module) holds every red class of that module
-                    alone = {m.rpartition(".")[0] or m for m in _FAILED.findall(aout)}
-                    flaky = [k for k in reds if alone and k not in alone and k.rpartition(".")[0] not in alone]
-                    reach = [k for k in reach if k not in flaky]
-                if again and isinstance(reach, list) and not reach:
-                    pass  # red alone, but only in classes the docs-only merge cannot reach (or green alone): no parent run
-                elif again:  # T-3213: red alone too; does main just before this merge fail the same classes?
-                    _git(wt, "reset", "--hard", "-q", f"{sha}^1")
-                    if not gone or not _git(wt, "revert", "-m", "1", "--no-commit", "--no-edit", *reversed(gone)).returncode:
-                        pcode, pout = c.run_command(wt, again, c.load_scaled(900), niced=True, low=True)
-                        # T-3224: a class is inherited only when the parent names it failing; a parent run that
-                        # names none ("no test matches" for a class the merge added, a crash) leaves the red this merge's.
-                        # T-5518: per class: the classes the parent also fails are excused, the rest stay blamed
-                        named = {m.rpartition(".")[0] or m for m in _FAILED.findall(pout)}
-                        if pcode:
-                            inherited = [k for k in reach if k in named]
-                            reach = [k for k in reach if k not in named]
+        full, code, out, judged = False, 0, "", None
+        shape = pm_shape_cmd(main)
+        if shape:  # T-5791: the repo-shape modules first, minutes before the suite's hours: a red they name is recorded now
+            scode, sout = c.run_command(wt, shape, c.load_scaled(900), env=cpu_env(p, gate=False), niced=True, low=True)
+            if _pm_tree_lost(p, sha, r, tries, wt):
+                return False
+            if scode and scode != 124 and _pm_shape_named(sout, scode):  # no class named: no verdict, the suite decides
+                verdict = _pm_judge(main, wt, sha, gone, scode, sout)
+                if verdict[1]:  # blamed on this merge after the flake, docs-only and parent checks: it stands for the run
+                    code, out, judged = scode, sout, verdict
+                else:  # excused (or nothing to judge): the full suite still decides, on the tree as it was
+                    _git(wt, "reset", "--hard", "-q", sha)
+                    if not _pm_rebuild(p, main, wt, sha, r, gone):
+                        return True
+        if judged is None:
+            full = _pm_uncached_due(p)
+            if full:
+                pm_set(p, sha, uncached=True)
+            code, out = c.run_command(wt, pm_cmd(main, uncached=full, p=p), c.load_scaled(3600),
+                                      env=cpu_env(p, gate=False), niced=True,
+                                      low=True)  # T-3757: what landed becomes the usual; T-4197; T-4570: yields slots to waiting builders
+            if _pm_tree_lost(p, sha, r, tries, wt):  # T-4728: a run in a removed folder ends 127: no merge is reverted for it
+                return False
+            judged = _pm_judge(main, wt, sha, gone, code, out)
+        reds, reach, flaky, inherited, unrelated, files = judged
         vanished = _tree_lost(wt)  # T-4728: judged before the finally removes it: the reruns above ran in this tree too
     finally:
         _git(main, "worktree", "remove", "--force", wt)
@@ -5124,7 +5305,10 @@ def pm_verify(p, main, sha):
         return True
     if vanished and _pm_lost_record(p, sha, r, tries):  # T-4728: no revert for a loss
         return False
-    pm_set(p, sha, state="red", classes=reach or reds or pm_classes(out, code), reached_by=files[:20])
+    classes = reach or reds or pm_classes(out, code)
+    if _pm_semantic(p, main, r, sha, classes, files):  # T-5791: two lanes' clash is no one lane's to revert
+        return True
+    pm_set(p, sha, state="red", classes=classes, reached_by=files[:20])
     return _pm_revert(p, main, sha) or True
 
 
@@ -5280,16 +5464,24 @@ def pm_run(p, main):
         if head and (newest, head) not in probed:
             probed.add((newest, head))
             if _pm_claim(p, todo[0]):  # holds the queue (other runners stop at the oldest) while HEAD runs
-                reds, cut = [], None
+                reds, cut, short, upto = [], None, [], 0
                 try:
-                    green = _pm_green_at(p, main, head, reds)
+                    green = _pm_green_at(p, main, head, reds, short)
                     # T-3800: a red HEAD run is narrowed the way a merge's own verify is (T-3216), not answered with
                     # a full suite per merge: its red classes alone at HEAD (green: flaky, the run stands), else alone
                     # on the pending merges to the first one they fail on. A requeued merge's tree is rebuilt with
                     # reverts, so those keep the oldest-first walk.
                     again = pm_rerun_cmd(main, reds) if not green and reds else ""
                     if again and not any(recs[s].get("after_reverts") for s in todo):
-                        if _pm_cmd_green_at(main, head, again):
+                        if short:
+                            # T-5791: HEAD went no further than the shape pass: its red says nothing of the rest of the
+                            # suite, so it is no flake shortcut and covers nothing. The classes alone find the first merge
+                            # they fail on; the full suite on the one before it (a real run) covers every merge up to it.
+                            cut = _pm_first_red(main, todo, again)
+                            if cut and _pm_green_at(p, main, todo[cut - 1]):
+                                upto = cut
+                            cut = None
+                        elif _pm_cmd_green_at(main, head, again):
                             green = True
                             c.log_event(p, "postmerge_flaky", data={"sha": head, "classes": reds, "covers": len(todo)})
                         else:
@@ -5299,6 +5491,9 @@ def pm_run(p, main):
                 if green:
                     _pm_cover(p, main, todo, head)
                     continue
+                if upto:  # the full suite ran on todo[upto - 1]: green there, the same as the suite on that merge itself
+                    _pm_cover(p, main, todo[:upto], todo[upto - 1])
+                    continue
                 if cut:  # the merges before the first red one passed those classes and the rest of HEAD's suite
                     _pm_cover(p, main, todo[:cut], todo[cut - 1], how=f"{', '.join(reds)} green there, the rest of "
                                                                       f"the suite green on {head[:9]}")
@@ -5307,14 +5502,30 @@ def pm_run(p, main):
             return
 
 
-def _pm_green_at(p, main, sha, reds=None):
+def _pm_green_at(p, main, sha, reds=None, short=None):
     """T-3446: the full suite on sha in a throwaway worktree; True only on a clean pass (a probe: no merge's record, but
-    an uncached pass is recorded for fm ship, T-3666). `reds` (a list) gets a red run's failing classes (T-3800)."""
+    an uncached pass is recorded for fm ship, T-3666). `reds` (a list) gets a red run's failing classes (T-3800). T-5791:
+    `short` (a list) gets a True when the probe stopped at a shape-pass red that held alone: the full suite never ran, so
+    the answer says nothing of the rest of the suite and the caller covers no merge by it."""
     tmp = c.scratch_tree("fm-verify-", main)  # T-4735: the owned scratch root, locked while this lives
     wt = os.path.join(tmp, "wt")
     try:
         if _git(main, "worktree", "add", "--detach", wt, sha).returncode:
             return False
+        shape = pm_shape_cmd(main)
+        if shape:  # T-5791: the short pass first; a red that holds alone is the probe's answer, the full suite not run
+            scode, sout = c.run_command(wt, shape, c.load_scaled(900), env=cpu_env(p, gate=False), niced=True, low=True)
+            if _tree_lost(wt):
+                raise c.PolicyError(f"{VERIFY_GONE} ({sha[:9]}); nothing judged, the next pass runs it again")
+            sreds = _pm_shape_named(sout, scode) if scode and scode != 124 else []  # none named: no verdict, the suite decides
+            if sreds:
+                again = pm_rerun_cmd(main, sreds)
+                if not (again and not c.run_command(wt, again, c.load_scaled(900), niced=True, low=True)[0]):
+                    if reds is not None:
+                        reds.extend(sreds)
+                    if short is not None:
+                        short.append(True)
+                    return False  # green alone (a flake) falls through: the full suite is the answer then
         full = _pm_uncached_due(p)
         code, out = c.run_command(wt, pm_cmd(main, uncached=full, p=p), c.load_scaled(3600), env=cpu_env(p, gate=False),
                                   niced=True, low=True)  # T-4197; T-4570
