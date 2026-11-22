@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- The always-on rules file is now `plugin/rules/sampo.md` with `plugin/rules/foreman.md` kept as a symlink to it, every reader takes the name from one constant, and the guard protects both names as core (T-5048).
 - The yardstick reads the stored bench, SWE-bench and Terminal-Bench rows into one shape and gives, per kind, Claude's pass rate minus a local model's over only the tasks both ran; duel and ablation runs stay apart from plain Sampo, infrastructure failures stay out of the rates, LAN hosts count as local, and kinds with too few paired tasks are marked (T-5006).
 - `sampo friction` no longer counts a `task wait` still running (exit 124) or ended unfinished (1), or a `task evidence --run` whose run reported a red test (101), as failed tool calls; the count and the minutes lost agree with the list (T-4999).
 - The command guard no longer refuses a write through a name set once on the line (S=/scratch) just because the same letter is also a plain word given to a program (--tier S). It now also refuses a line whose built-in here-document assigns the name (S=; : <<EOF with ${S:=rm}, then $S -rf ~), which it used to let through (T-4983).
