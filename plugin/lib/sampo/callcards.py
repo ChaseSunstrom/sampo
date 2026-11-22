@@ -1923,6 +1923,9 @@ def cmd_card(args):
         return 0
     if act == "call":
         cd = found[names[0]]
+        if args.read_only and not cd["read"]:  # T-5603: judged from this load, so the card card_call checked is the one run
+            print(f"{cd['name']} writes files: refused under --read-only (card_call runs read cards only)")
+            return 1
         try:
             inputs = json.loads(args.inputs) if args.inputs else {}
             inputs.update(_coerce(cd, args.rest))

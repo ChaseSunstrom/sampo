@@ -42,7 +42,7 @@ class RoundTrip(_Mcp):
         self.assertEqual(names, {"state", "next", "recall", "research_list", "research_read", "task_show", "checks",
                                  "lib_suggest", "lib_search", "lib_show", "outline", "sym", "impact", "why", "fail",
                                  "logs", "data", "trace", "find", "exam_scorecard", "genesis_status", "goal", "triggers", "calibration", "which", "grants", "proof", "decide",
-                                 "profile", "do"})  # T-3923: the one-call routines
+                                 "profile", "do", "card_find", "card_call"})  # T-3923: the one-call routines; T-5603: cards
         for t in by[2]["result"]["tools"]:
             self.assertEqual(t["inputSchema"]["type"], "object")
         self.assertIn("Parse dates in the importer", by[3]["result"]["content"][0]["text"])
@@ -589,3 +589,129 @@ class DecideTool(_Mcp):  # T-2489: the model layer's decide() for other agents, 
             text, err = mcp._call(p, "decide", dict(self.BASE))
         self.assertTrue(err)
         self.assertIn("no backend answered", text)
+
+
+class McpCards(_Mcp):  # T-5603: a session finds a read card and runs it in one call; a card that writes is never run here
+    def _module(self):
+        with open(os.path.join(self.repo, "mod.py"), "w") as f:
+            f.write("def parse(text):\n    return text.split()\n\n\ndef main():\n    return parse('a b')\n")
+
+    def _size(self, path):
+        return os.path.getsize(path) if os.path.exists(path) else 0
+
+    def test_card_tools_are_listed_with_their_inputs_and_the_py_callers_wait(self):
+        self.fm("init")
+        out, _ = self.talk({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+        tools = {t["name"]: t for t in out[0]["result"]["tools"]}
+        self.assertEqual(tools["card_find"]["inputSchema"]["required"], ["text"])
+        self.assertEqual(tools["card_call"]["inputSchema"]["required"], ["name"])
+        self.assertIn("21", tools["card_call"]["description"])  # py-callers took 21 to 23 s in the ledger
+        self.assertIn("read", tools["card_call"]["description"])
+
+    def test_card_find_who_calls_parse_answers_in_three_short_lines_and_files_no_request(self):
+        from sampo import callcards
+        self.fm("init")
+        self._module()
+        req = callcards.requests_path()
+        before = self._size(req)
+        out, _ = self.talk(self.call(1, "card_find", text="who calls parse"),
+                           self.call(2, "card_find", text="zzqx flurble"))
+        by = {m["id"]: m for m in out}
+        text = _text(by[1])
+        self.assertFalse(by[1]["result"]["isError"], text)
+        self.assertLessEqual(len(text.splitlines()), 3, text)
+        self.assertLess(len(text.encode()), 600, text)
+        self.assertIn("py-callers", text)
+        for line in text.splitlines():  # name: purpose, the purpose cut to 80 characters
+            name, _, purpose = line.partition(": ")
+            self.assertRegex(name, r"^[a-z][a-z0-9-]*$", line)
+            self.assertTrue(0 < len(purpose) <= 80, line)
+        self.assertFalse(by[2]["result"]["isError"])  # a miss is an answer too: pick would file a request, find doesn't
+        self.assertNotIn("py-callers", _text(by[2]))
+        self.assertEqual(self._size(req), before)
+
+    def test_card_call_runs_a_read_card_in_one_call(self):
+        self.fm("init")
+        self._module()
+        out, _ = self.talk(self.call(1, "card_call", name="py-outline", inputs={"path": "mod.py"}))
+        self.assertFalse(out[0]["result"]["isError"], _text(out[0]))
+        self.assertIn("parse", _text(out[0]))
+
+    def test_card_call_refuses_a_card_that_writes_and_an_unknown_name(self):
+        from sampo import callcards
+        self.fm("init")
+        self._module()
+        self.assertFalse(callcards.cards(self.repo)[0]["panel-funnel"]["read"])  # the write card the refusal names
+        before = open(os.path.join(self.repo, "mod.py")).read()
+        out, _ = self.talk(self.call(1, "card_call", name="panel-funnel", inputs={}),
+                           self.call(2, "card_call", name="no-such-card", inputs={}),
+                           self.call(3, "card_call", name="py-outline", inputs={"path": "mod.py"}, extra=1))
+        by = {m["id"]: m for m in out}
+        self.assertTrue(by[1]["result"]["isError"])
+        self.assertIn("read", _text(by[1]))
+        self.assertTrue(by[2]["result"]["isError"])
+        self.assertTrue(by[3]["result"]["isError"])  # an argument the schema doesn't name
+        self.assertEqual(open(os.path.join(self.repo, "mod.py")).read(), before)
+
+    def test_card_call_and_card_find_refuse_a_malformed_input_before_any_run(self):
+        self.fm("init")
+        self._module()
+        out, _ = self.talk(self.call(1, "card_call", name="py-outline", inputs="mod.py"),
+                           self.call(2, "card_call", name="py-outline", inputs={"path": "x" * 4001}),
+                           self.call(3, "card_call", name="Py Outline", inputs={}),
+                           self.call(4, "card_find", text="   "),
+                           self.call(5, "card_find", text="x" * 501))
+        by = {m["id"]: m for m in out}
+        for i in range(1, 6):
+            self.assertTrue(by[i]["result"]["isError"], (i, _text(by[i])))
+
+    def test_card_find_caps_its_answer_at_600_bytes_when_the_purposes_are_not_ascii(self):
+        import shutil
+        extra = os.path.join(self.home, "extra-cards")  # outside the repo, so card_dirs loads it
+        for i in range(3):  # 80 characters of CJK is 240 bytes: three such lines run past 600 without the byte cap
+            d = os.path.join(extra, f"py-parse-caller-{i}")
+            shutil.copytree(os.path.join(c.PLUGIN_ROOT, "cards", "py-outline"), d)
+            with open(os.path.join(d, "card.json"), encoding="utf-8") as f:
+                spec = json.load(f)
+            spec["name"], spec["purpose"] = f"py-parse-caller-{i}", "parse " + "呼び出し元を探す" * 10
+            with open(os.path.join(d, "card.json"), "w", encoding="utf-8") as f:
+                json.dump(spec, f, ensure_ascii=False)
+        self.fm("init")
+        self._module()
+        out, _ = self.talk(self.call(1, "card_find", text="who calls parse"),
+                           self.call(2, "card_find", text="parse callers"),
+                           env={"SAMPO_CALLCARDS": extra})
+        by = {m["id"]: m for m in out}
+        for i in (1, 2):
+            text = _text(by[i])
+            self.assertFalse(by[i]["result"]["isError"], text)
+            self.assertLessEqual(len(text.splitlines()), 3, text)
+            self.assertLessEqual(len(text.encode("utf-8")), 600, text)
+        self.assertTrue(any(ord(ch) > 127 for ch in _text(by[2]) + _text(by[1])), "no non-ASCII purpose was answered")
+
+    def test_card_call_read_only_refuses_a_write_card_from_its_own_load(self):
+        self.fm("init")
+        self._module()
+        before = open(os.path.join(self.repo, "mod.py")).read()
+        r = self.fm("card", "call", "panel-funnel", "--read-only", "--root", self.repo, check=False)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("writes files", r.stdout)
+        self.assertEqual(open(os.path.join(self.repo, "mod.py")).read(), before)
+        ok = self.fm("card", "call", "py-outline", "--read-only", "--inputs", '{"path": "mod.py"}', "--root", self.repo,
+                     check=False)
+        self.assertEqual(ok.returncode, 0, ok.stdout + ok.stderr)
+        self.assertIn("parse", ok.stdout)
+
+    def test_card_call_hands_back_the_error_on_stdout_even_when_stderr_has_text(self):
+        from unittest import mock
+        from sampo import mcp
+        self.fm("init")
+        self._module()
+        p = c.find_project(self.repo, create=False)
+        done = subprocess.CompletedProcess([], 1, stdout="bad_input: 'path' must be a string, not int 5\n",
+                                           stderr="warning: something the child printed\n")
+        with mock.patch.object(mcp.subprocess, "run", return_value=done) as run:  # the child's stderr, injected
+            text, err = mcp._call(p, "card_call", {"name": "py-outline", "inputs": {"path": 5}})
+        self.assertIn("--read-only", run.call_args[0][0])
+        self.assertTrue(err)
+        self.assertEqual(text, done.stdout)

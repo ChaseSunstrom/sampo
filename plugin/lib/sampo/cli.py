@@ -10151,6 +10151,8 @@ def _build_parser(only=None):
     s.add_argument("--inputs", metavar="JSON", help="call: the inputs as one JSON object")
     s.add_argument("--root", help="call: the worktree the card works in (default: this checkout)")
     s.add_argument("--no-cache", action="store_true", help="call: run even when a verified result is cached")
+    s.add_argument("--read-only", action="store_true", help="call: refuse a card that writes files, from this load "
+                                                            "(card_call passes it, so mcp runs read cards only)")
     s.add_argument("--model", default="jarvis-nothink,gpu-gemma12-32k,gpu-mimo9",
                    help="bench: model profiles, the first that answers runs both arms; author, grow: the first is the "
                         "local model a writer asks first")

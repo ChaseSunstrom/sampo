@@ -1,7 +1,7 @@
 """fm mcp (T-0245): Sampo's memory and state as read-only MCP tools over stdio — JSON-RPC 2.0, one message a line,
 stdlib only — so other agents and clients can read the project's state, next action, recall, research notes and
 briefs. Each tool runs the matching read-only fm command (the CLI stays the one implementation), except do (T-3923),
-which runs a registered one-call routine's verbs; everything sent is
+which runs a registered one-call routine's verbs, and card_find and card_call (T-5603), which serve read cards only; everything sent is
 redacted; a sensitive project serves nothing. Registering it (`claude mcp add foreman -- fm mcp`) is the user's
 step: the guard asks for the plugin category.
 T-0946: plus the stack library (lib_suggest, lib_search, lib_show) and the read-only instruments (outline, sym,
@@ -130,6 +130,15 @@ TOOLS = [
      "answers the five lines sampo do prints. The one tool here that changes state, by the routine's verbs.",
      _obj(["name"], name=_str("the routine's name, e.g. sweep-lanes", cap=40)),
      lambda a, p: ["do", _need(a, "name", r"[a-z][a-z0-9-]{0,39}")]),
+    # T-5603: a session finds a read card and runs it in one native call (the card's whole deck is never listed here)
+    ("card_find", "The calling cards that fit a task in words, read cards only: at most 3 lines, 'name: purpose' each. "
+     "A look: nothing is filed. Ask it first when a task may have a card, before a shell-out to sampo card list.",
+     _obj(["text"], text=_str("the task in words, e.g. who calls parse", QUERY_CAP)), None),
+    ("card_call", "Run a read card (card_find names them) by name, its inputs as one object, and answer what fm card call "
+     "prints. Refuses a card that writes files. py-callers takes 21 to 23 s (py-outline is quick): one call here, but "
+     "3 or more calls, or big output, belong in a shell.",
+     _obj(["name"], name=_str("a read card's name, e.g. py-outline", 40),
+          inputs={"type": "object", "description": "the card's inputs, by its schema (key: value)"}), None),
 ]
 MAX_LINE = 1_000_000
 
@@ -185,7 +194,7 @@ def _timeout():
         return 120.0
 
 
-def _fm(p, argv, stdin="", ok=(0,)):
+def _fm(p, argv, stdin="", ok=(0,), out_first=False):
     # T-0946: stdin is given (empty by default), so a tool never reads the server's own message stream
     env = dict(os.environ, FOREMAN_NO_BACKGROUND="1")
     if argv[:1] == ["do"]:  # T-3923: a routine's `lane land --bg` starts its land, as it does by hand
@@ -194,7 +203,20 @@ def _fm(p, argv, stdin="", ok=(0,)):
                        capture_output=True, text=True, errors="replace", timeout=_timeout(), env=env)
     # an allowed non-zero exit (fm find's 1, findings) with nothing on stdout is a crash's traceback, not an answer
     bad = r.returncode not in ok or (r.returncode != 0 and not r.stdout.strip())
-    return ((r.stderr or r.stdout) if bad else r.stdout), bad
+    # T-5603 review: out_first for a child that prints its answer, errors included, on stdout (fm card call does)
+    return (((r.stdout or r.stderr) if out_first else (r.stderr or r.stdout)) if bad else r.stdout), bad
+
+
+def _read_card(p, name, found=None):
+    """(card, None) for a read card, else (None, why): the check card_find and card_call share (T-5603)."""
+    from sampo import callcards
+    found = callcards.cards(p.root)[0] if found is None else found
+    cd = found.get(name)
+    if cd is None:
+        return None, f"no card is named {name}: card_find names the cards that fit a task"
+    if not cd["read"]:
+        return None, f"{name} writes files: card_call runs read cards only (fm card call runs it in a shell)"
+    return cd, None
 
 
 def _call(p, name, args):
@@ -269,6 +291,29 @@ def _call(p, name, args):
         if name == "calibration":  # T-2344: fm outcomes --judgment's JSON without its writes
             from sampo import outcomes
             return json.dumps(outcomes.snapshot(p), ensure_ascii=False), False
+        if name == "card_find":  # T-5603: callcards.rank is a look (pick would file a request on every miss); 3 read fits
+            from sampo import callcards
+            text = args.get("text")
+            if not isinstance(text, str) or not text.strip() or len(text) > QUERY_CAP:
+                return f"text: the task in words, 1 to {QUERY_CAP} characters", True
+            found = callcards.cards(p.root)[0]
+            fit = [cd for s, cd in callcards.rank(text, k=1000, root=p.root)
+                   if s >= callcards.LEXICAL_FLOOR and _read_card(p, cd["name"], found)[0]][:3]
+            if not fit:
+                return "no read card fits this: carry on with plain tools", False
+            joined = "\n".join(f"{cd['name']}: {c.fit(c.plain(cd.get('purpose', '')), 80)}" for cd in fit)
+            return joined.encode()[:600].decode("utf-8", "ignore"), False  # T-5603 review: 600 bytes, not characters
+        if name == "card_call":  # T-5603: mcp is read-only, so only a read card runs here, checked again by the child (--read-only)
+            from sampo import callcards
+            card = _need(args, "name", callcards.NAME.pattern)
+            _, why = _read_card(p, card)
+            if why:
+                return why, True
+            inputs = args.get("inputs", {})
+            payload = json.dumps(inputs, ensure_ascii=False) if isinstance(inputs, dict) else ""
+            if not payload or len(payload) > 4000:
+                return "inputs: an object of the card's inputs, at most 4000 characters", True
+            return _fm(p, ["card", "call", card, "--inputs", payload, "--root", p.root, "--read-only"], out_first=True)
         if name == "fail":
             text = args.get("text")
             if not isinstance(text, str) or not text.strip() or len(text) > TEXT_CAP:
