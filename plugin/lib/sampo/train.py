@@ -1786,9 +1786,11 @@ _own_mu = threading.Lock()
 
 @contextlib.contextmanager
 def _own_commit():
-    """T-5368: marks this process's close commit, from before it asks for the train's lock until after it lets go. The
-    closing file only exists while the lock is held, so a train that asked in the instants before it was written, or
-    after it was removed (the lock goes a moment later), found no close and was refused: it stopped the land."""
+    """T-5368: marks this process's close commit, from the instant it holds the train's lock (train_lock_closing enters it
+    then, T-5873: a commit that only waits for another process's train is not a close this land's train waits for: three
+    retries, 40 s) until after it lets go. The closing file only exists a moment after the lock is held, so a train that
+    asked in the instants before it was written, or after it was removed (the lock goes a moment later), found no close
+    and was refused: it stopped the land."""
     with _own_mu:
         _own["n"] += 1
     try:
@@ -3638,6 +3640,7 @@ class _Closer:
         self.q, self.later, self.thread = [], [], None
         self.holding = self.stopped = False
         self.only = None  # trim(keep): the ids that may still close (None: any)
+        self.fast = set()  # T-5873: ids whose close passed its criteria and waits only for its commit (after_train)
 
     def _wake(self):  # under cv
         if self.thread is None and self.q and not self.stopped:
@@ -3666,6 +3669,7 @@ class _Closer:
             ids = [t for t in ids if self.only is None or t in self.only]
             if not ids:
                 return
+            self.fast.update(ids)  # T-5873: proven: only the commit is owed (a restart's drain runs these, nothing else)
             if self.holding:
                 self.later.append(list(ids))
             else:  # the train ended meanwhile
@@ -3680,6 +3684,7 @@ class _Closer:
                     self.cv.notify_all()
                     return
                 ids = self.q.pop(0)
+                self.fast.difference_update(ids)  # before the work: its own commit wait puts them back (after_train)
             try:
                 self.work(ids)
             except Exception as e:  # noqa: BLE001 — the work reports its own; one batch never ends the worker
@@ -3717,17 +3722,21 @@ class _Closer:
             return dropped
 
     def drain(self, budget):
-        """T-5873: the land restarts on new code: the closes queued and the ones that waited for the train (hold(False) put
-        them first) run until the closer is idle or `budget` seconds pass, then it stops (the running batch finishes).
-        What was still queued after the budget, for the caller to say: each is merged and open for the next land."""
+        """T-5873: the land restarts on new code: only the proven closes (`fast`: their criteria passed, only their commit
+        is owed: a train's end put them first) still run, until the closer is idle or `budget` seconds pass; then it stops
+        (the running batch finishes). The rest of the queue is not waited for: the successor queues every merged-and-open
+        lane at its start (30 to 100 s each: sixty of them would hold every restart for the whole budget). The ids not
+        closed, for the caller to say: each is merged and open for the next land."""
         end = time.monotonic() + budget
         with self.cv:
             if self.later and not self.holding:
                 self.q[:0], self.later = self.later, []
                 self._wake()
+            skipped = [t for ids in self.q if not self.fast.issuperset(ids) for t in ids]
+            self.q = [ids for ids in self.q if self.fast.issuperset(ids)]
             while not self.idle() and (left := end - time.monotonic()) > 0:
                 self.cv.wait(min(left, 1.0))
-        return self.stop()
+        return skipped + self.stop()
 
     def join(self):
         with self.cv:
@@ -3999,7 +4008,7 @@ def _land_trains(p, main, batch, owed, closer=None):
         return False
     left = landed + gone  # merged and open (a train by hand, a land cut short): closed after each train's own (T-3884)
     fixwait.update(_fix_waiting(p, main, left))  # T-5791: an earlier land's closes that wait for their FIX stay out of the closes
-    # T-5873: every merged-and-open leftover goes on the closer before the first train (not LEFT_PER_TRAIN after one: a
+    # T-5873: every merged-and-open leftover goes on the closer before the first train (not a few per train boundary: a
     # land that restarts after its first train never reached the rest); a close refused before answers from its memo, fast.
     # One batch each: a stop's trim and a restart's drain act between batches, so one batch of sixty would run to its end
     for t in left:
@@ -4126,7 +4135,7 @@ def _land_trains(p, main, batch, owed, closer=None):
         parked += got["left_out"]
         times.append(_train_times(p, land_id, trains, got, by, time.monotonic() - t_train))
         to_close(got["merged"], front=True)  # T-5368: on the closer's thread: the next train starts at once
-        to_close([t for t in left if t not in queued and _retry_due(p, t)][:LEFT_PER_TRAIN])  # T-3969: a prepped one closes now, not hours on
+        # T-5873: no leftover slice here: the start of the land queued every one (the FIX-waiting ones are not: release_waiting)
         if got["merged"]:
             try:  # a note to the sessions never costs the land
                 announce_skills(main, head0, c._git(main, "rev-parse", "HEAD", timeout=10).strip())
@@ -4156,12 +4165,12 @@ def _land_trains(p, main, batch, owed, closer=None):
         if rest:
             print(f"sampo lane land: {len(rest)} landed lane(s) left merged and open for the next land: "
                   f"{', '.join(rest)}", file=sys.stderr, flush=True)
-    elif restart:  # T-5873: the closes queued (and the ones waiting for their commit) run first, bounded; the rest closes
-        # under the new code (the next land finds it merged and open): stop() alone dropped them all, one close per land
+    elif restart:  # T-5873: the proven closes (only their commit owed) finish, bounded; the rest closes under the new code
+        # (the next land queues every merged-and-open lane at its start): stop() alone dropped them all, one close per land
         n0 = len(closed)
         dropped = closer.drain(RESTART_CLOSE_S)
         closer.join()
-        print(f"sampo lane land: closed {len(closed) - n0} before restart ({len(dropped)} left for the next land)",
+        print(f"sampo lane land: closed {len(closed) - n0} while draining ({len(dropped)} left for the next land)",
               file=sys.stderr, flush=True)
     else:
         to_close([t for t in left if t not in queued])  # one tried at a boundary was said there
@@ -4454,9 +4463,7 @@ def _brief_hash(b):
 # ponytail: a refusal caused outside the brief, the tip and Sampo's own code (a tool on PATH, the machine) is retried
 # after this long
 REFUSAL_TTL_S = 6 * 3600
-# ponytail: leftovers retried per train boundary, so 50 prepped closes don't hold up the next train; raise it if they pile
-LEFT_PER_TRAIN = 8
-RESTART_CLOSE_S = 300  # T-5873: a land restarting on new code runs its queued closes this long (in all) before it execs
+RESTART_CLOSE_S = 60  # T-5873: a land restarting on new code runs its proven closes (only their commit owed) this long before it execs
 
 
 def _retry_due(p, tid):
@@ -4735,7 +4742,7 @@ def _commit_close(p, tid, title, path, timeout=None, changelog=""):
     from sampo import cli
     keep = "; its lane is kept" if path else ""
     try:
-        with _own_commit(), train_lock_closing(p, timeout):
+        with train_lock_closing(p, timeout, mark=_own_commit):  # T-5873: own once it holds the lock, not while it waits for one
             rc, out, err = _sampo(["task", "finish", tid, "--commit", title,
                                    *([f"--changelog={changelog}"] if changelog else [])])
     except c.LockTimeout:

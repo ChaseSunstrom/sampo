@@ -5629,10 +5629,14 @@ CLOSE_MARK = "closing"  # T-4540: the file a hand close writes under the train's
 
 
 @contextlib.contextmanager
-def train_lock_closing(p, timeout=None):
+def train_lock_closing(p, timeout=None, mark=None):
     """A hand close's trunk commit (T-4540): the train's lock, held across its whole `sampo task finish`, with a file
-    naming this process, so a train that starts meanwhile waits for the close instead of being refused at once."""
-    with train_lock(p, timeout):
+    naming this process, so a train that starts meanwhile waits for the close instead of being refused at once.
+    `mark` (T-5873): a context manager factory entered once the lock is held (a land's own-commit mark: a commit that
+    still waits for another process's train does not make this land's train wait for it)."""
+    with train_lock(p, timeout), contextlib.ExitStack() as st:
+        if mark is not None:
+            st.enter_context(mark())
         path = os.path.join(p.dir, "train", CLOSE_MARK)
         with open(path, "w") as f:
             f.write(str(os.getpid()))
