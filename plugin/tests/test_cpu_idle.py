@@ -100,7 +100,9 @@ class Idle(Base):
 
 
 class AtStart(Idle):
-    """A shell (pid 10) runs Claude Code (pid 20), which runs a hook (30) and a test (31) under it."""
+    """A shell (pid 10) runs Claude Code (pid 20), which runs a hook (30) and a test (31) under it.
+
+    reruns: Idle's tests run again here, under a process tree that stands for a session start."""
 
     def setUp(self):
         super().setUp()

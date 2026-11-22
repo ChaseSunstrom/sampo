@@ -521,11 +521,6 @@ def _session_subagents(session_id, now=None):
     return running, sorted(starts)
 
 
-def live_subagents(session_id, now=None):
-    """T-5562: how many subagents of this session are running (see _session_subagents)."""
-    return len(_session_subagents(session_id, now)[0])
-
-
 def reserve_subagent(session_id, call_id, now=None):
     """T-5562 review: take a slot for one launch before its SubagentStart event exists (that hook is async and writes the
     event after the PreToolUse decision, so parallel launches in one turn all saw none running). Under a lock, count the

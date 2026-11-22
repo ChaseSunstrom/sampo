@@ -65,7 +65,8 @@ REVIEWED = {
               "sampo/callcards.py::<module>", "sampo/callcards.py::_system_reads", "sampo/homemove.py::_parent",
               "sampo/sandbox.py::_homes", "sampo/secrets.py::_claude", "sampo/bench.py::_forms",
               "sampo/hooks.py::_cargo_note.place", "sampo/lanes.py::is_credential", "sampo/localruns.py::rows_path",
-              "sampo/smith.py::search_tree_refusal"),  # T-5553: the path a command names is only compared or read
+              "sampo/smith.py::search_tree_refusal", "sampo/budget.py::_wf_read", "sampo/budget.py::_wf_named",
+              "sampo/jobsreg.py::is_secret", "sampo/jobsreg.py::log_ok"),  # T-5911: a script, workflow or log path only read or compared  # T-5553: the path a command names is only compared or read
     **_review("read", "takes the account's login or home name to scrub or recognize it in text; never opens a path under it",
               "sampo/core.py::redact_local", "sampo/profile.py::_home", "sampo/profile.py::_logins", "sampo/page.py::_private",
               "sampo/readme.py::private_hits", "sampo/lake.py::collect", "sampo/sync.py::_namer"),
@@ -92,7 +93,8 @@ REVIEWED = {
               "folder it makes; the real home is only read, or it is the temporary HOME the function sets for a child",
               "sampo/cli.py::_attachment", "sampo/cli.py::_sign_receipt", "sampo/cli.py::cmd_audit",
               "sampo/demo.py::cmd_release_check", "sampo/mcp.py::cmd_new",
-              "sampo/replay.py::cmd_replay", "sampo/smith.py::install_warning", "sampo/tidy.py::check_global"),
+              "sampo/replay.py::cmd_replay", "sampo/smith.py::install_warning", "sampo/tidy.py::check_global",
+              "sampo/hooks.py::_big_read_rewrite"),  # T-5911: expands a Read's path to test it; its writes go to the state folder
     **_review("write", "removes or moves the session file of the id a bench run just kept, under the Claude config folder; "
               "a test points CLAUDE_CONFIG_DIR at a temp folder (test_bench)", "sampo/bench.py::_compactions"),
     **_review("write", "returns the cache folder a benchmark download writes into; real by design (a cache survives a run)",

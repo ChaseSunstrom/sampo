@@ -59,6 +59,10 @@ class KalevalaDepth(ForemanTestCase):
 
 
 class KalevalaDepthRerun(KalevalaDepth):
+    """The rerun cases of depth.
+
+    reruns: the base's tests run again beside these, under the same generated tower fixture."""
+
     def test_a_bare_rerun_keeps_the_recorded_depth(self):
         self.fm("kalevala", "start", "--depth", "3")
         self.fm("kalevala", "start")

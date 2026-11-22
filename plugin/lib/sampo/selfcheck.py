@@ -7,6 +7,7 @@ import calendar
 import collections
 import json
 import os
+import re
 import time
 
 from sampo import core as c

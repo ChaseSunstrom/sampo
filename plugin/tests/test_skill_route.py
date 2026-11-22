@@ -61,7 +61,7 @@ class Hooks(test_hooks.HookCase):
     def ups(self, prompt, sid="s1", **kw):
         return self.ctx_of(self.hook("UserPromptSubmit", dict({"prompt": prompt, "session_id": sid}, **kw)))
 
-    def fail(self, tid, step=1, cmd="false"):
+    def failing_run(self, tid, step=1, cmd="false"):
         """One failed fm evidence run on a step: the ledger line the CLI writes, then the hook the failure fires."""
         self.fm("task", "evidence", tid, "--step", str(step), "--run", cmd, check=False)
 
@@ -127,15 +127,15 @@ class Hooks(test_hooks.HookCase):
     def test_a_steps_second_failed_run_loads_problem_solving_once_and_the_first_loads_nothing(self):
         self.fm("init")
         tid = self.task(steps=("reproduce", "fix"))
-        self.fail(tid)
+        self.failing_run(tid)
         self.assertNotIn(PS, self.failure_note(tid), "one failed run is a try, not a stall")
         self.assertNotIn(PS, json.loads(self.fm("next", "--json").stdout)["skill"] or "")
-        self.fail(tid)
+        self.failing_run(tid)
         note = self.failure_note(tid)
         self.assertIn(PS, note)
         self.assertLessEqual(len(note), 300)
         self.assertEqual(json.loads(self.fm("next", "--json").stdout)["skill"], c.THINK_FOR["problem-solving"])
-        self.fail(tid)
+        self.failing_run(tid)
         self.assertNotIn(PS, self.failure_note(tid), "once a session")
         self.assertIn(PS, self.failure_note(tid, sid="s2"), "counts from the ledger: a new session still hears it")
         self.assertNotIn(PS, self.failure_note(tid, sid="s3", agent_id="a1"), "a subagent's failure is its own")
@@ -143,17 +143,17 @@ class Hooks(test_hooks.HookCase):
     def test_failures_on_another_step_or_a_pass_since_do_not_add_up(self):
         self.fm("init")
         tid = self.task(steps=("reproduce", "fix"))
-        self.fail(tid)
+        self.failing_run(tid)
         self.fm("task", "evidence", tid, "--step", "1", "--run", "true")  # a pass resets the step's count
-        self.fail(tid)
+        self.failing_run(tid)
         self.assertNotIn(PS, self.failure_note(tid, sid="reset"))
         self.assertEqual(c.step_fails(c.find_brief(self.project(), tid)), 1)
 
     def test_the_next_line_names_problem_solving_when_the_second_failure_is_already_in_the_ledger(self):
         self.fm("init")
         tid = self.task(steps=("reproduce", "fix"))
-        self.fail(tid)
-        self.fail(tid)
+        self.failing_run(tid)
+        self.failing_run(tid)
         ctx = self.ups("carry on", "next-line")
         self.assertIn(PS, ctx)
         self.assertLessEqual(len(ctx), 400)

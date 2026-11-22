@@ -2960,7 +2960,15 @@ def user_prompt_submit(pl):
         nxt = next((x[6:] for x in state if x.startswith("Next: ")), None)
         wait = False
         if nxt and _skill_once(sid, hint, peek=True):
-            if room(len(hint) + 3):
+            i = next((k for k, x in enumerate(parts) if x.startswith("Next: ")), None)
+            over = len("Sampo: " + ". ".join(parts) + ".") + len(hint) + 3 - PROMPT_BUDGET
+            if over > len(hint) + 3 and i is not None and len(parts[i]) - over - 1 >= 60:
+                # T-5911: a Next line the cap already cuts left no room for its skill, so the skill never came; its action
+                # loses the tail it was losing anyway, and the skill is what the model must load. A line that fits alone
+                # still waits for a turn with room, whole.
+                parts[i] = parts[i][:len(parts[i]) - over - 1].rstrip() + "…"
+                over = 0
+            if over <= 0:
                 _skill_once(sid, hint)
                 parts = [f"{x} ({hint})" if x.startswith("Next: ") else x for x in parts]
             else:  # no room this turn: leave the state untold so the next turn says it again, if it fits there

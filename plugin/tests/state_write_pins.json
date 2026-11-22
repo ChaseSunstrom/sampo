@@ -89,6 +89,18 @@
 ],
 1
 ],
+"sampo/budget.py::_wf_named": [
+[
+"expanduser"
+],
+1
+],
+"sampo/budget.py::_wf_read": [
+[
+"expanduser"
+],
+1
+],
 "sampo/callcards.py::<module>": [
 [
 "expanduser"
@@ -373,6 +385,12 @@
 ],
 1
 ],
+"sampo/hooks.py::_big_read_rewrite": [
+[
+"expanduser"
+],
+1
+],
 "sampo/hooks.py::_cargo_note.place": [
 [
 "expanduser"
@@ -416,6 +434,18 @@
 1
 ],
 "sampo/jeffexport.py::jeff_home": [
+[
+"expanduser"
+],
+1
+],
+"sampo/jobsreg.py::is_secret": [
+[
+"expanduser"
+],
+1
+],
+"sampo/jobsreg.py::log_ok": [
 [
 "expanduser"
 ],
