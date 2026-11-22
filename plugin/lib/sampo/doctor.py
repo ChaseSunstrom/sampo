@@ -25,6 +25,8 @@ PLUGIN = c.PLUGIN_ROOT
 RULES_MAX, BLOCK_MAX, ALWAYS_ON_MAX = 80, 5, 120
 DESCRIPTIONS_MAX = 6000  # chars (~1.5k tokens) of skill/agent/command descriptions, loaded in every session
 SKILL_MAX = 10000  # chars of one SKILL.md body: loaded whole whenever the skill runs
+# T-5601: a lean skill's SKILL.md is a stub that a compaction re-attaches whole; its steps live in references/procedure.md
+LEAN_SKILLS = {"brainstorm": 2500, "directions": 3000}  # chars of the stub, by skill folder name
 RULES_CHARS_MAX = 6400  # T-1279: the reply format moved in from the output style; chars (~1.5k tokens) of always-on rules: denser lines cost as much as more lines
 CTX_BUDGET, PROMPT_BUDGET = 1500, 400  # fmhooks' own (T-2589: a test pins them equal)
 READ_ONLY_TOOLS = {"Read", "Grep", "Glob", "WebFetch", "WebSearch"}
@@ -373,8 +375,10 @@ def check_footprint(rules_path, claude_md_path, plugin=PLUGIN, project=None, ext
                ("skills/*/SKILL.md", "agents/*.md", "commands/*.md") for f in glob.glob(os.path.join(plugin, pattern)))
     if desc > DESCRIPTIONS_MAX:
         bad.append(f"skill/agent/command descriptions {desc} chars > {DESCRIPTIONS_MAX}")
-    bad += [f"{os.path.relpath(f, plugin)} {n} chars > {SKILL_MAX}" for f in glob.glob(os.path.join(plugin, "skills/*/SKILL.md"))
-            if (n := len(_read(f) or "")) > SKILL_MAX]
+    for f in glob.glob(os.path.join(plugin, "skills/*/SKILL.md")):
+        cap = LEAN_SKILLS.get(os.path.basename(os.path.dirname(f)), SKILL_MAX)  # T-5601: a stub's own, tighter cap
+        if (n := len(_read(f) or "")) > cap:
+            bad.append(f"{os.path.relpath(f, plugin)} {n} chars > {cap}")
     grew = _ratchet(project, dict(footprint(rules_path, plugin), **(extra or {}))) if project and not bad else []
     if grew:
         return Result("footprint", "WARN", "; ".join(grew) + " over the last ship (past 2% for chars, 15% for a hook's "

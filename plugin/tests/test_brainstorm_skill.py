@@ -6,7 +6,9 @@ import unittest
 
 from helpers import ForemanTestCase
 
-SKILL = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "skills", "brainstorm", "SKILL.md")
+# T-5601: the full steps live in references/procedure.md; SKILL.md is the stub a compaction re-attaches
+SKILL = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "skills", "brainstorm", "references",
+                     "procedure.md")
 
 
 class Grounding(unittest.TestCase):
