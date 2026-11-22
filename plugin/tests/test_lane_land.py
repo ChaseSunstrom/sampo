@@ -1110,6 +1110,59 @@ class ParkMarks(LandCase):
         self.assertEqual(self.brief(b).section("Log").count("land: parked"), 1)
 
 
+class PilotAtPark(LandCase):
+    """T-5876: a conflict park starts its resolver when it is parked: five lanes parked at a train's start waited 30 to 60
+    minutes for the land's end before the lane pilot saw them."""
+
+    def setUp(self):
+        super().setUp()
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(self.repo)
+        self.p = c.find_project(self.repo)
+
+    def test_a_conflict_park_asks_the_pilot_before_the_next_train_starts(self):
+        from sampo import pilotsig
+        with open(os.path.join(self.repo, "same.txt"), "w") as f:
+            f.write("main\n")
+        a = self.lane(1, "same.txt", "lane\n", when=OLD)
+        self.git("add", "same.txt")
+        self.git("commit", "-qm", "main moves")
+        b = self.lane(2, "b.txt", when=OLD)
+        self.audited(a, b)
+        self.returned(a, "Lane one")
+        self.returned(b, "Lane two")
+        seen, real_train = [], train.train
+
+        def trained(p, main, ids, *args, **kw):
+            seen.append(("train", list(ids)))
+            return real_train(p, main, ids, *args, **kw)
+        with mock.patch.object(train, "train", trained), \
+                mock.patch.object(pilotsig, "resolve", side_effect=lambda p, t: seen.append(("resolve", t)) or None), \
+                mock.patch.object(pilotsig, "tick", return_value=[]), self.in_project():
+            got = train.land(self.p, self.repo, 1)
+        self.assertEqual([t for t, _ in got["parked"]], [a], got)
+        self.assertIn(("resolve", a), seen, "the pilot was never asked for the parked lane")
+        self.assertLess(seen.index(("resolve", a)), seen.index(("train", [b])), "asked only after the train: " + str(seen))
+
+    def test_a_pilot_that_raises_never_costs_the_land(self):
+        from sampo import pilotsig
+        with open(os.path.join(self.repo, "same.txt"), "w") as f:
+            f.write("main\n")
+        a = self.lane(1, "same.txt", "lane\n", when=OLD)
+        self.git("add", "same.txt")
+        self.git("commit", "-qm", "main moves")
+        b = self.lane(2, "b.txt", when=OLD)
+        self.audited(a, b)
+        self.returned(a, "Lane one")
+        self.returned(b, "Lane two")
+        with mock.patch.object(pilotsig, "resolve", side_effect=RuntimeError("boom")) as res, \
+                mock.patch.object(pilotsig, "tick", return_value=[]), self.in_project():
+            got = train.land(self.p, self.repo, 1)
+        self.assertTrue(res.called, "the pilot was never asked")
+        self.assertEqual([t for t, _ in got["parked"]], [a], got)
+        self.assertEqual(self.brief(b).status, "done")
+
+
 class ShipAndFirst(LandCase):
     """T-4252 review: a land that asks a detached ship after a train and also takes a --first id in the same run. The
     land's --first set and the ship request's flag were both named `asked` in _land(): the request replaced the set with

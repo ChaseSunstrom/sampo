@@ -480,6 +480,57 @@ class LanePilot(ForemanTestCase):
         self.assertIn(f"{TID}.builder.md", argv[1])
         self.assertTrue(os.path.isdir(lane))
 
+    def test_PilotAtPark_a_returned_run_ends_with_one_tick_after_its_claim_is_dropped(self):  # T-5876
+        self.park()
+        self.claude(commit=True)
+        self.claim(os.getpid(), served=RETURNED)
+        ticks = []
+        with mock.patch.object(pilotsig, "spawn", return_value=1), \
+                mock.patch.object(pilotsig, "tick", side_effect=lambda p: ticks.append(self.claimed()) or []):
+            res = pilotsig.resolve_run(self.p, TID)
+        self.assertEqual(res["outcome"], "returned", res)
+        self.assertEqual(ticks, [None], "one tick, when the run's own claim no longer counts toward MAX_LIVE")
+
+    def test_PilotAtPark_a_failed_run_ends_with_one_tick_not_one_per_try(self):  # T-5876
+        self.park()
+        self.claude(commit=False)
+        self.claim(os.getpid(), served=RETURNED)
+        with mock.patch.object(pilotsig, "tick", return_value=[]) as tick:
+            res = pilotsig.resolve_run(self.p, TID)
+        self.assertEqual(res["outcome"], "failed", res)
+        self.assertEqual(len(self.claude_calls()), pilotsig.RESOLVE_TRIES)
+        tick.assert_called_once_with(self.p)
+
+    def test_PilotAtPark_a_tick_that_raises_never_costs_the_run_its_answer(self):  # T-5876
+        self.park()
+        self.claude(commit=True)
+        self.claim(os.getpid(), served=RETURNED)
+        with mock.patch.object(pilotsig, "spawn", return_value=1), \
+                mock.patch.object(pilotsig, "tick", side_effect=RuntimeError("boom")):
+            res = pilotsig.resolve_run(self.p, TID)
+        self.assertEqual(res["outcome"], "returned", res)
+
+    def test_PilotAtPark_a_park_waiting_on_max_live_starts_when_a_run_frees_its_place(self):  # T-5876
+        self.park()
+        self.claude()
+        self.background()
+        self.fm("task", "new", "Other", "--type", "FEATURE", "--tier", "S", "--ac", "works :: true", "--step", "do it")
+        other = c.find_brief(self.p, "T-0002")
+        busy = self.live_pid()
+        other.meta["pilot_pid"], other.meta["pilot_kind"] = str(busy), pilotsig.KIND
+        c.save_brief(self.p, other)
+        live = self.live_pid()
+        with mock.patch.object(pilotsig, "MAX_LIVE", 1), mock.patch.object(pilotsig, "budget_high", return_value=False), \
+                mock.patch.object(lanes, "stop_causes", return_value={TID: ("merge_conflict", "")}), \
+                mock.patch.object(pilotsig, "_start", return_value=mock.Mock(pid=live)) as popen:
+            self.assertEqual(pilotsig.tick(self.p), [], "MAX_LIVE held: the park waits")
+            self.assertEqual(popen.call_count, 0)
+            other = c.find_brief(self.p, "T-0002")
+            other.meta.pop("pilot_pid")  # the run ended and dropped its claim
+            c.save_brief(self.p, other)
+            self.assertEqual(pilotsig.tick(self.p), [live], "the freed place starts the waiting park")
+            self.assertEqual(popen.call_count, 1)
+
     def test_resolve_cap_after_two_failed_resolves_the_lane_is_reported_and_no_third_starts(self):
         self.park()
         self.claude(commit=False)  # the agent leaves the lane as it found it: parked still

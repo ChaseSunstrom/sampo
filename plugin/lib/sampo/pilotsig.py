@@ -15,6 +15,7 @@ and MCP servers, never the lane's committed ones), bounded in turns and dollars,
 and not started over BUDGET_STOP percent of a usage window; its pid is recorded on the brief (claude_pid), so a pilot
 killed mid-run leaves a claim that still reads held. Resolvers start only from the land's park hook and `tick` (never
 from a read path); FOREMAN_PILOT_CLAUDE is honoured only as one executable file under the state dir."""
+import functools
 import json
 import os
 import re
@@ -641,6 +642,23 @@ def _returned(p, tid, what):
         c.log_event(p, "pilot_resolve", task=tid, data={"what": what, "tries": len(_resolves(b))}, session=session(tid))
 
 
+def _then_tick(fn):
+    """T-5876: a resolver run's end hands its place to the next: after `fn` returns (any outcome) one `tick` starts a park
+    that waited on MAX_LIVE. The run's own claim is already dropped, and RESOLVE_TRIES and MAX_LIVE bound what the tick starts.
+    A tick that fails never costs the run its answer."""
+    @functools.wraps(fn)
+    def wrapped(p, tid):
+        try:
+            return fn(p, tid)
+        finally:
+            try:
+                tick(p)
+            except Exception:  # noqa: BLE001
+                traceback.print_exc()  # the stderr is pilot.log
+    return wrapped
+
+
+@_then_tick
 def resolve_run(p, tid):
     """The detached resolver pilot: up to RESOLVE_TRIES headless runs for the lane (counted on its brief across parks),
     within VERB_WALL_S in all. A run that moved the lane (a new commit on a clean tree) is a builder return: _returned,

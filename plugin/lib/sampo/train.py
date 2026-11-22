@@ -3221,7 +3221,7 @@ def _park_kind(why):
     return "refused", ""
 
 
-def _pilot_parks(p, parked):
+def _pilot_parks(p, parked, tick=True):
     """T-5766: after the land marked its parks, the lane pilot is asked for each conflict park (a refusal or a guard's grant
     is a person's): one detached headless resolver, under the pilot's single-flight claim, 2 h cap and SAMPO_LANE_PILOT
     switch (pilotsig.resolve is quiet where none starts), then one pilotsig.tick for the lanes stopped before any merge.
@@ -3234,6 +3234,8 @@ def _pilot_parks(p, parked):
             pilotsig.resolve(p, tid)
         except Exception as e:  # noqa: BLE001 - the land goes on; the lane waits as it did before the pilot
             print(f"lane pilot: {tid}: no resolver: {c.fit(str(e), 200)}", file=sys.stderr)
+    if not tick:  # T-5876: a park's own ask (note_park) is for that lane; the land's end ticks for the rest
+        return
     try:
         pilotsig.tick(p)  # the stopped (uncommitted) lanes: the one other start; the lead's reads start nothing
     except Exception as e:  # noqa: BLE001
@@ -3821,6 +3823,9 @@ def _land_trains(p, main, batch, owed, closer=None):
                 mark_park(i, w)
             except Exception as e:
                 print(f"sampo lane land: {i}: its park is not marked yet: {c.fit(c.plain(str(e)), 160)}", file=sys.stderr, flush=True)
+                continue  # unmarked: the pilot would see no park; the end pass marks it and asks
+            if _park_kind(w)[0] == "conflict":  # T-5876: the resolver starts now, not 30 to 60 minutes later at the land's end
+                _pilot_parks(p, [(i, w)], tick=False)  # (never raises into the land; the end pass asks again and ticks)
 
     held = set()  # T-4767: lanes the check hold left out: read again when a train starts or one is named --first
     checking, mine = set(), set()  # T-5561: lanes whose check this land started, and those still running (or waiting for a
