@@ -59,7 +59,7 @@ def real_card_calls(since):
 
 def _declared(p, briefs):
     """(task, title, signal, landed) for each done brief that declared an Outcome within outcomes' window, plus the seeds
-    the outcome probes add in Foreman's own repo (outcomes._evaluate's own filter, so both checks agree on the set)."""
+    the outcome probes add in Sampo's own repo (outcomes._evaluate's own filter, so both checks agree on the set)."""
     out = []
     for b in briefs:
         if b.status != "done" or (c.age_days(b.meta.get("updated")) or 0) > outcomes.WINDOW_DAYS + 5:
@@ -68,7 +68,7 @@ def _declared(p, briefs):
         landed = outcomes.done_at(b)
         if sig and (age := c.age_days(landed)) is not None and age <= outcomes.WINDOW_DAYS:
             out.append((b.id, b.title, sig, landed))
-    if os.path.isfile(os.path.join(p.root, "plugin", "lib", "sampo", "outcomes.py")):  # Foreman's own repo
+    if os.path.isfile(os.path.join(p.root, "plugin", "lib", "sampo", "outcomes.py")):  # Sampo's own repo
         out += list(outcomes.SEEDS)
     return out
 

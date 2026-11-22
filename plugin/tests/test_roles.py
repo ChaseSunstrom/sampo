@@ -132,7 +132,7 @@ class Lean(ForemanTestCase):
             self.assertRegex(text, r"(?m)^maxTurns: [1-9][0-9]*$")
             self.assertRegex(text, rf"(?m)^model: {model}$")
             self.assertIn("Noticed:", text)  # the closing line the Noticed class in this file reads back
-            self.assertIn("400 words", text)
+            self.assertIn("1500 characters", text)  # T-5598: the report cap replaced the old 400 words
 
     def test_delegate_routes_review_fixes_and_merge_conflicts_to_them(self):
         delegate = read_text(os.path.join(c.PLUGIN_ROOT, "skills", "intake", "references", "delegate.md"))

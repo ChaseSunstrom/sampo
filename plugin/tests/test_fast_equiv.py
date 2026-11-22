@@ -293,6 +293,10 @@ class Agents(Base):
         agent = {"payload": {"tool_name": "Agent", "tool_input": {"prompt": "look", "description": "x"}}}
         task = {"payload": {"tool_name": "Task", "tool_input": {"prompt": "look"}}}
         self.cases([("no snapshot", agent, True), ("Task, no snapshot", task, True)])
+        fixer = {"payload": {"tool_name": "Agent", "tool_input": {"prompt": "fix", "subagent_type": "sampo:fm-fixer"}}}
+        scout = {"payload": {"tool_name": "Agent", "tool_input": {"prompt": "look", "subagent_type": "sampo:fm-scout"}}}
+        self.cases([("T-5774: a fixer launch without isolation is Python's to refuse", fixer, False),
+                    ("a scout launch is still native", scout, True)])
         self.snapshot(five_hour={"used_percentage": 40, "resets_at": far},
                       seven_day={"used_percentage": 30.5, "resets_at": far})
         self.cases([("under the pace", agent, True), ("FOREMAN_FAULT_LANE", agent, False,

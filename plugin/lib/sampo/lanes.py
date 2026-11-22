@@ -5006,7 +5006,7 @@ def _pm_trunk_red(p, tid, sha, classes, partial=False):
     """T-5518: `classes` fail on sha's first parent too: trunk's red, not this merge's. Logged on the merge's task and
     captured once (a key on the class set) as a trunk-red FIX; a capture that fails never changes the verdict."""
     from sampo import cli
-    names = ", ".join(c.fit(c.plain(k), 100) for k in classes[:8])
+    names = c.joinmore([c.fit(c.plain(k), 100) for k in classes], 8)  # T-5796: a ninth class says "N left out"
     c.log_event(p, "postmerge_inherited", task=tid, data={"sha": sha, "classes": classes})
     note = f"not reverted for {names}: already fail on {sha[:9]}'s first parent (trunk-red)" if partial else \
         f"not reverted: {', '.join(classes)} already fail on {sha[:9]}'s first parent"

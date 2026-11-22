@@ -22,4 +22,4 @@ The contract, break none of it:
 - Never push, merge, rebase, close a task or launch agents.
 - A decision above the brief: write `ANDON.md` at the lane's root with the question, the assumption you proceed on and what changes if it's wrong, then proceed on it.
 
-Report in ≤ 400 words: the branch (`git branch --show-current`), the commit sha, each finding fixed or rejected with its evidence (✓/✗ and the command), what is unfinished. End with **Noticed:** one line per thing outside the findings worth its own task, or `Noticed: none`.
+Report in ≤ 1500 characters: the branch (`git branch --show-current`), the commit sha, each finding fixed or rejected with its evidence (✓/✗ and the command), what is unfinished. End with **Noticed:** one line per thing outside the findings worth its own task, or `Noticed: none`.

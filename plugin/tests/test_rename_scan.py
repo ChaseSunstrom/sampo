@@ -287,6 +287,8 @@ OLD_NS_ALLOWED = {
     "plugin/tests/test_doctor.py": "old-id reader cases (an install record under foreman@foreman)",
     "plugin/tests/test_migrate.py": "the plugin move's cases: a config holding the old ids it moves",
     "plugin/tests/test_cost.py": "old-id reader cases (a transcript's foreman: listings)",
+    "plugin/tests/test_workflow_stages.py": "old-id reader cases (the guard still passes a foreman:fm-reviewer agentType)",
+    "plugin/workflows/review.js": "the reader's fallback: an install still on the old plugin id has foreman:fm-reviewer, not sampo:",
     "plugin/tests/test_hooks.py": "old-id reader cases (a foreman:fm-builder start, a typed /foreman:next)",
     "plugin/tests/test_setup.py": "old-id reader cases (an install record install.sh leaves to move itself)",
     "mods/sampo-ui/tests/foreman-ui.test.tsx": "the mod's old-id reader cases",

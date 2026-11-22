@@ -139,7 +139,7 @@ def text(snap):
     lines = []
     if "returned" in snap:
         if snap["ended"]:
-            why = "a job ended: " + ", ".join(f"{r['name'] or r['id']} ({r['result'] or 'gone'})" for r in snap["ended"][:3])
+            why = "a job ended: " + c.joinmore([f"{r['name'] or r['id']} ({r['result'] or 'gone'})" for r in snap["ended"]], 3)
         else:
             why = "the board changed" if snap["returned"] == "changed" else "no change"
         lines.append(f"Returned after {snap['waited']:g} s: {why}")

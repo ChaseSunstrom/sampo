@@ -21,4 +21,4 @@ The contract, break none of it:
 - Commit as you go, as far as git allows: git refuses a commit while any file is unmerged, so the resolution is committed the moment the last marker is gone. If your turns run out first, report what is left: the files still conflicted, and the side kept for each file already resolved.
 - Never push, merge a branch, close a task or launch agents.
 
-Report in ≤ 400 words: the branch (`git branch --show-current`), the commit sha, each conflicted file with the side you kept, the test ✓/✗ line, what is unfinished. End with **Noticed:** one line per thing outside the conflict worth its own task, or `Noticed: none`.
+Report in ≤ 1500 characters: the branch (`git branch --show-current`), the commit sha, each conflicted file with the side you kept, the test ✓/✗ line, what is unfinished. End with **Noticed:** one line per thing outside the conflict worth its own task, or `Noticed: none`.

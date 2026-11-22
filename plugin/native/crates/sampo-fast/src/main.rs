@@ -40,7 +40,7 @@ const MS_EPOCH: f64 = 1e11; // T-4669: budget.MS_EPOCH
 // sha1[:12] of each mirrored Python function's source (_run: less the other events' else branch; _pre_tool_use: up to
 // its GUARDED check; hooks/hook: its event parse and dispatch)
 const MIRRORS: [(&str, &str); 31] = [
-    ("hooks.run", "e9a5910273f5"), ("hooks._run", "b974126f7602"), ("hooks._pre_tool_use", "af8abeda86a5"),
+    ("hooks.run", "e9a5910273f5"), ("hooks._run", "25db3179d55c"), ("hooks._pre_tool_use", "f42d89bf1ed9"),
     ("hooks._credential_like", "a60da1d880d6"),
     ("hooks._credential_read", "6ed174ed2226"), ("hooks._outline_first", "c2ddf4904e58"),
     ("hooks._outward_denial", "1e6d4418ddd5"), ("hooks._event", "6440afe94c6e"), ("hooks._rev", "7ee872410ee6"),
@@ -123,7 +123,7 @@ fn allow(hook: &Path, rest: &[OsString], raw: &[u8], t0: Instant) -> bool {
     let Some(state) = state_dir() else { return false };
     let ok = match tool.as_str() {
         "Read" => read_ok(&pl),
-        "Agent" | "Task" => agent_ok(&state),
+        "Agent" | "Task" => agent_ok(&pl, &state),
         t if SCHEDULERS.contains(&t) => None,
         t if OUTWARD.contains(&t) => outward_ok(&pl, t, &state),
         t if t.strip_prefix(OUTWARD_MCP).is_some_and(|s| DOCS_TOOLS.contains(&s)) => outward_ok(&pl, t, &state),
@@ -254,7 +254,16 @@ fn word(s: &str) -> Option<bool> {
 }
 
 /// budget.check_subagent: no pause; a pace near the bar is Python's (weekly_lean needs the project).
-fn agent_ok(state: &Path) -> Option<()> {
+fn agent_ok(pl: &Obj, state: &Path) -> Option<()> {
+    // T-5774: _isolation_denial (T-5681) refuses an fm-fixer or fm-resolver launch without isolation "worktree": this
+    // file doesn't mirror it, so any launch naming either goes to Python
+    if let Some(Value::Object(ti)) = pl.get("tool_input") {
+        if let Some(Value::String(t)) = ti.get("subagent_type") {
+            if t.contains("fm-fixer") || t.contains("fm-resolver") {
+                return None;
+            }
+        }
+    }
     // T-3902: a horizon in budget.json (budget set --until) makes the weekly pace Python's: this file mirrors only the floor
     if fs::read(state.join("budget.json")).is_ok_and(|b| b.windows(7).any(|w| w == b"\"until\"")) {
         return None;
