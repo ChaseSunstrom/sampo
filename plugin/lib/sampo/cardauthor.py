@@ -15,6 +15,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 import threading
@@ -228,7 +229,12 @@ def parse(text):
         raise ValueError(obj)
     if "files" not in obj and isinstance(obj.get("unfit"), str) and obj["unfit"].strip():
         raise Unfit(c.fit(" ".join(obj["unfit"].split()), 300))
-    files = obj.get("files", obj)
+    return _valid_files(obj.get("files", obj))
+
+
+def _valid_files(files):
+    """The files a draft names as {file name: text}, or a ValueError saying what is wrong (parse's checks; admit reads a
+    folder through them too, so one judge decides what a card folder may hold)."""
     if not isinstance(files, dict) or "card.json" not in files:
         raise ValueError('the reply\'s object has no "files" holding a card.json')
     if len(files) > MAX_FILES:
@@ -284,9 +290,10 @@ def _gate(d, existing):
     return card, ""
 
 
-def _try(files, root):
+def _try(files, root, ignore=()):
     """Stage the files as a card, run the gate with the staged folder visible to calls, and move a passing card into
-    the store: (card name or None, why, staged folder kept for a rejection)."""
+    the store: (card name or None, why, staged folder kept for a rejection). ignore: folders (real paths) whose card
+    does not count as a name taken (T-5886: the folder an admit reads from, which SAMPO_CALLCARDS may already show)."""
     stage = os.path.join(base(), ".staging")
     os.makedirs(stage, exist_ok=True)
     top = tempfile.mkdtemp(dir=stage)
@@ -303,7 +310,7 @@ def _try(files, root):
         # review: one draft at a time from staging to the store, so a draft's tests run its own gen.py (never a
         # same-named draft staged beside it) and the names taken include the card admitted a moment ago
         with _GATE:
-            existing = cc.cards(root)[0]
+            existing = {n: cd for n, cd in cc.cards(root)[0].items() if os.path.realpath(cd["dir"]) not in ignore}
             cc._STAGED.append(top)
             try:
                 card, why = _gate(d, existing)
@@ -439,6 +446,90 @@ def author(p, req, writer=None, ask=None, root=None, max_calls=None, model=None)
            "reason": reason or "no writer answered", "tries": len(used), "writers": used}
     _record(row)
     return dict(row)
+
+
+MAX_ENTRIES = 40  # a card folder holds a handful of files; more is read as no card folder, never listed whole
+
+
+def _folder_files(d):
+    """A card folder's files as {name: text}, or a ValueError saying why it can't be read as one. Plain files only: a
+    link would read from outside the folder, a sub-folder holds nothing a card may use (__pycache__, a run's
+    leftover, is skipped)."""
+    try:
+        names = sorted(os.listdir(d))
+    except OSError as e:
+        raise ValueError(f"no such folder: {d} ({e.strerror or e})")
+    if len(names) > MAX_ENTRIES:
+        raise ValueError(f"{len(names)} entries: not a card folder (at most {MAX_FILES} files)")
+    out = {}
+    for n in names:
+        if n == "__pycache__":
+            continue
+        path = os.path.join(d, n)
+        try:
+            st = os.lstat(path)
+            if not stat.S_ISREG(st.st_mode):
+                raise ValueError(f"{n}: a card folder holds plain files only, no links or folders")
+            with open(path, "rb") as f:
+                raw = f.read(MAX_FILE + 1)
+            if len(raw) > MAX_FILE:
+                raise ValueError(f"{n} is too big: {MAX_FILE >> 10} KB at most")
+            out[n] = raw.decode("utf-8")
+        except OSError as e:
+            raise ValueError(f"{n}: {e.strerror or e}")
+        except UnicodeDecodeError:
+            raise ValueError(f"{n}: not UTF-8 text")
+    return _valid_files(out)
+
+
+def admit(folders, writer=None, root=None):
+    """T-5886: admit card folders somebody else wrote (a reused Haiku subagent, a local model, a person) through the
+    gate author() uses: [{dir, verdict admitted|rejected|unchanged, card, reason}], one per folder. The folder is only
+    read: a passing card is copied into the store, a failing one leaves nothing but the runner's lines. A ledger row
+    (writers: [writer], default "agent") is filed for an admitted card only. A folder whose files are the store's
+    card of that name byte for byte is unchanged: nothing is run or written, so a second admit is a no-op."""
+    writer = c.fit(" ".join(str(writer or "agent").split()), 40) or "agent"
+    shelf = [os.path.realpath(os.path.join(c.PLUGIN_ROOT, "cards")), os.path.realpath(store())]
+    out = []
+    for folder in folders:
+        res = {"dir": folder, "verdict": "rejected", "card": None, "reason": ""}
+        out.append(res)
+        real = os.path.realpath(folder)
+        try:
+            files = _folder_files(real)
+        except ValueError as e:
+            res["reason"] = str(e) if str(e).startswith("no such") else f"folder: {e}"
+            continue
+        try:
+            card = json.loads(files["card.json"])
+        except (ValueError, RecursionError):
+            card = None
+        name = card.get("name") if isinstance(card, dict) else None
+        if isinstance(name, str) and cc.NAME.fullmatch(name):
+            try:
+                if _folder_files(os.path.join(store(), name)) == files:
+                    res.update(verdict="unchanged", card=name)
+                    continue
+            except ValueError:
+                pass  # no such card in the store, or not a readable one: the gate decides
+        ignore = () if any(real.startswith(s + os.sep) for s in shelf) else (real,)
+        got, why, staged = _try(files, root, ignore)
+        if staged:
+            shutil.rmtree(staged, ignore_errors=True)
+        if not got:
+            res["reason"] = why
+            continue
+        purpose = " ".join(str(card.get("purpose") or name).split())
+        _record({"at": c.now(), "request": request_id(purpose), "text": c.fit(purpose, 300), "verdict": "admitted",
+                 "card": got, "reason": "", "tries": 1, "writers": [writer], "source": "admit"})
+        res.update(verdict="admitted", card=got)
+    return out
+
+
+def admit_line(r):
+    if r["verdict"] == "rejected":
+        return f"rejected: {r['dir']}: {r['reason']}"
+    return f"{r['verdict']}: {r['card']}"
 
 
 def _kinds(root):

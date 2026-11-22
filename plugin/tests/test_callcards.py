@@ -2057,5 +2057,115 @@ class Reach(Base):
         self.assertRegex(text, r"^hit@1 \d\.\d\d, hit@3 \d\.\d\d over \d+ held-out example")
 
 
+@confined
+class Admit(Base):
+    """T-5886: sampo card admit DIR...: a folder any agent wrote joins the authored store through cardauthor's gate."""
+
+    def draft(self, name="count-words", tests=None, extra=None, **spec):
+        """A card folder in the drafts dir (SAMPO_CALLCARDS), written as a Haiku subagent would write it."""
+        import test_cardauthor as ca
+        d = os.path.join(self.cards_dir, name)
+        os.makedirs(d)
+        files = {"card.json": json.dumps(dict(ca.CARD, name=name, **spec)), "gen.py": ca.GEN, "check.py": ca.CHECK,
+                 "tests.json": json.dumps(ca.TESTS if tests is None else tests)}
+        files.update(extra or {})
+        for fn, text in files.items():
+            with open(os.path.join(d, fn), "w") as f:
+                f.write(text)
+        return d
+
+    def ledger(self):
+        from sampo import cardauthor
+        return cardauthor._rows(cardauthor.ledger())
+
+    def test_admits_a_passing_folder_with_a_ledger_row(self):
+        d = self.draft()
+        p = self.fm("card", "admit", d, "--writer", "haiku")
+        self.assertIn("admitted: count-words", p.stdout)
+        self.assertTrue(os.path.isfile(os.path.join(callcards.authored_dir(), "count-words", "gen.py")))
+        self.assertTrue(os.path.isdir(d), "the writer's own folder is left where it was")
+        rows = self.ledger()
+        self.assertEqual([(r["verdict"], r["card"], r["writers"]) for r in rows], [("admitted", "count-words", ["haiku"])])
+        got = callcards.cards(self.repo)[0]["count-words"]
+        self.assertTrue(got["dir"].startswith(os.path.realpath(callcards.authored_dir())), "the store's copy is the one that is used")
+
+    def test_admits_every_folder_named_and_says_which_one_failed(self):
+        good = self.draft("count-words")
+        bad = self.draft("count-more", tests=[{"name": "wrong", "files": {"a.txt": "one two\n"}, "inputs": {"path": "a.txt"},
+                                               "expect": "facts", "facts": {"path": "a.txt", "words": 9}},
+                                              {"name": "refuses", "files": {"a.txt": "x\n"}, "inputs": {"path": "nope.txt"},
+                                               "expect": "bad_input"}])
+        p = self.fm("card", "admit", good, bad, check=False)
+        self.assertEqual(p.returncode, 1, p.stdout)
+        self.assertIn("admitted: count-words", p.stdout)
+        self.assertIn("rejected", p.stdout)
+        self.assertIn("tests: wrong", p.stdout)  # the runner's own line
+        self.assertFalse(os.path.exists(os.path.join(callcards.authored_dir(), "count-more")))
+        self.assertEqual([r["card"] for r in self.ledger()], ["count-words"], "a refusal files no ledger row")
+
+    def test_refuses_a_folder_the_gate_rejects_and_leaves_nothing_staged(self):
+        d = self.draft(tests=[{"name": "counts", "files": {"a.txt": "one two three\n"}, "inputs": {"path": "a.txt"},
+                               "expect": "facts", "facts": {"path": "a.txt", "words": 3}},
+                              {"name": "counts again", "files": {"a.txt": "one\n"}, "inputs": {"path": "a.txt"},
+                               "expect": "facts", "facts": {"path": "a.txt", "words": 1}}])  # no case it must refuse
+        p = self.fm("card", "admit", d, check=False)
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("must refuse", p.stdout)
+        self.assertFalse(os.path.exists(os.path.join(callcards.authored_dir(), "count-words")))
+        self.assertEqual(self.ledger(), [])
+        stage = os.path.join(os.path.dirname(callcards.authored_dir()), ".staging")
+        self.assertEqual(os.listdir(stage) if os.path.isdir(stage) else [], [])
+
+    def test_refuses_a_name_a_plugin_card_has_and_a_file_that_is_no_card_file(self):
+        d = self.draft("py-outline")
+        p = self.fm("card", "admit", d, check=False)
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("a card named 'py-outline' exists", p.stdout)
+        self.assertFalse(os.path.exists(os.path.join(callcards.authored_dir(), "py-outline")))
+        e = self.draft("count-more", extra={"cardkit.py": "x = 1\n"})
+        p = self.fm("card", "admit", e, check=False)
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("cardkit.py", p.stdout)
+        self.assertEqual(self.ledger(), [])
+
+    def test_refuses_a_missing_folder_and_a_symlinked_file(self):
+        p = self.fm("card", "admit", os.path.join(self.tmp, "nowhere"), check=False)
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("no such folder", p.stdout)
+        d = self.draft()
+        os.remove(os.path.join(d, "gen.py"))
+        os.symlink(os.path.join(self.repo, "a.txt"), os.path.join(d, "gen.py"))
+        p = self.fm("card", "admit", d, check=False)
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("gen.py", p.stdout)
+        self.assertEqual(self.ledger(), [])
+
+    def test_a_second_admit_of_the_same_folder_changes_nothing(self):
+        d = self.draft()
+        self.fm("card", "admit", d)
+        before = tree(os.path.dirname(callcards.authored_dir()))
+        p = self.fm("card", "admit", d)
+        self.assertEqual(p.returncode, 0, p.stdout)
+        self.assertIn("unchanged: count-words", p.stdout)
+        self.assertEqual(tree(os.path.dirname(callcards.authored_dir())), before)
+        self.assertEqual(len(self.ledger()), 1)
+
+    def test_a_changed_folder_under_an_admitted_name_is_a_clash_not_an_overwrite(self):
+        d = self.draft()
+        self.fm("card", "admit", d)
+        with open(os.path.join(d, "gen.py"), "a") as f:
+            f.write("# changed\n")
+        p = self.fm("card", "admit", d, check=False)
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("a card named 'count-words' exists", p.stdout)
+        with open(os.path.join(callcards.authored_dir(), "count-words", "gen.py")) as f:
+            self.assertNotIn("# changed", f.read())
+
+    def test_admit_names_no_folder_is_a_usage_error(self):
+        p = self.fm("card", "admit", check=False)
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("sampo card admit DIR", p.stdout + p.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

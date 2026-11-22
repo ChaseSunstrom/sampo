@@ -10508,9 +10508,10 @@ def _build_parser(only=None):
                  "reach [--json]: how often the ranker finds each card from its own examples held out, "
                  "bench [RUN]: fm code on one local model with cards off and on over an exam run's scenarios, "
                  "paired, with a sign test; no RUN sums --out; author \"<request>\": a writer, local models first, "
-                 "drafts a card, admitted only when its own tests pass confined; grow: author the pending card "
-                 "requests in a batch under --max-calls)")
-    s.add_argument("action", nargs="?", choices=["list", "show", "help", "call", "test", "rank", "reach", "bench", "author", "grow"])
+                 "drafts a card, admitted only when its own tests pass confined; admit DIR...: card folders "
+                 "another agent wrote join the store through the same confined gate (--writer names who wrote "
+                 "them); grow: author the pending card requests in a batch under --max-calls)")
+    s.add_argument("action", nargs="?", choices=["list", "show", "help", "call", "test", "rank", "reach", "bench", "author", "admit", "grow"])
     s.add_argument("name", nargs="?")
     s.add_argument("rest", nargs="*", help="call: key=value inputs; rank: the task's words")
     s.add_argument("--inputs", metavar="JSON", help="call: the inputs as one JSON object")
@@ -10526,7 +10527,8 @@ def _build_parser(only=None):
     s.add_argument("--lang", default="python", help="bench: the scenarios' language")
     s.add_argument("--out", help="bench: the rows (jsonl; default research/callcards/bench.jsonl)")
     s.add_argument("--writer", choices=["local", "haiku", "sonnet"],
-                   help="author, grow: only this writer (default: local models twice, then Sonnet once)")
+                   help="author, grow: only this writer (default: local models twice, then Sonnet once); admit: who "
+                        "wrote the folders, for the ledger row (default: agent)")
     s.add_argument("--batch", type=int, default=10, help="grow: the requests one run takes")
     s.add_argument("--max-calls", type=int, help="grow: the writer calls one run may make")
     s.add_argument("--retry", action="store_true", help="grow: ask again for requests an earlier run rejected")

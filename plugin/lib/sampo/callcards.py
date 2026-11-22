@@ -2065,6 +2065,18 @@ def cmd_card(args):
               f"call(s); {s['wins']} won, "
               f"{s['losses']} lost, sign test p={s['p']}: {s['verdict']}")
         return 0
+    if act == "admit":  # T-5886: card folders another agent wrote, through author's gate
+        from sampo import cardauthor
+        folders = [x for x in [args.name] + list(args.rest) if x]
+        if not folders:
+            raise cli.UsageError("sampo card admit DIR [DIR...]: a folder holding card.json, gen.py, check.py and tests.json")
+        res = cardauthor.admit(folders, writer=args.writer, root=root)
+        if js:
+            print(json.dumps({"cards": res}))
+        else:
+            for r in res:
+                print(cardauthor.admit_line(r))
+        return 1 if any(r["verdict"] == "rejected" for r in res) else 0
     if act in ("author", "grow"):  # T-4838
         from sampo import budget, cardauthor
         p = cli.resolve(args)
