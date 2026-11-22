@@ -220,6 +220,7 @@ class DockerRun(smith.Run):
 def profile_for(name):
     """The model profile as `sampo code` would run it: the served context, a num_ctx variant when the profile asks."""
     p = m.resolve(name)
+    m.gate_here("bench swe", profile=p)  # T-5584: a Claude profile is refused unless the user turned claude_bench on
     served = m.served_context(p)
     try:
         p, _ = m.context_variant(p, served)
@@ -492,6 +493,17 @@ def cmd(args):
     from sampo import cli
     ids = [i.strip() for i in (args.ids or "").split(",") if i.strip()] or None
     try:
+        # T-5584: a Claude profile needs the user's claude_bench; no project to read it from keeps the gate closed
+        try:
+            p = cli.resolve(args, create=False)
+        except cli.UsageError:
+            p = None
+        try:
+            profile = m.resolve(args.model)
+        except m.ModelError:
+            profile = None  # not a profile name: it calls no model, and the run refuses the name with its own reason
+        if profile is not None:
+            m.claude_gate(p, "bench swe", profile=profile)
         res = run(args.model, args.n, ids=ids, min_free=args.min_free_gb, max_steps=args.max_steps,
                   seconds=args.timeout * 60, keep_images=args.keep_images,
                   harnesses=HARNESSES if args.harness == "both" else (args.harness,),

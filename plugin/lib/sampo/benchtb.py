@@ -352,6 +352,7 @@ def run_bench(model, tasks_dir, out, n=20, category=None, only=None, max_steps=4
         raise Stop(f"{why}: sampo bench tbench builds each task's image with docker")
     _check_room()
     profile = m.resolve(model)
+    m.gate_here("bench tbench", profile=profile)  # T-5584: a Claude profile is refused unless claude_bench is on
     chosen = pick(load_tasks(tasks_dir), category, n, only)
     if not chosen:
         raise Stop(f"no task matches in {tasks_dir}" + (f" for category {category!r}" if category else ""))
@@ -396,6 +397,17 @@ def saved_runs():
 def cmd(args):
     from sampo import cli
     try:
+        # T-5584: a Claude profile needs the user's claude_bench, checked before any task set is fetched
+        try:
+            p = cli.resolve(args, create=False)
+        except cli.UsageError:
+            p = None
+        try:
+            profile = m.resolve(args.model)
+        except m.ModelError:
+            profile = None  # not a profile name: it calls no model, and the run refuses the name with its own reason
+        if profile is not None:
+            m.claude_gate(p, "bench tbench", profile=profile)
         tasks = args.tasks or fetch_tasks()
         out = os.path.join(core.state_dir(), "bench", "tbench", time.strftime("%Y%m%d-%H%M%S"))
         hs = HARNESSES if args.harness == "both" else (args.harness,)

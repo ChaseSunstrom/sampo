@@ -104,12 +104,14 @@ class Bench(CodeCase):
     def test_a_worker_cli_is_graded_the_same_way(self):
         bin_dir = os.path.join(self.tmp, "bin")
         os.makedirs(bin_dir)
-        with open(os.path.join(bin_dir, "fixer"), "w") as f:
+        # T-5584: a known runner's name (codex), so the bench's throwaway child passes the worker gate with no switch in
+        # its own home; an unknown name would be refused there (see the andon on T-5584)
+        with open(os.path.join(bin_dir, "codex"), "w") as f:
             f.write("#!/bin/sh\npython3 -c \"p='calc.py'; s=open(p).read(); open(p,'w').write(s.replace('a - b', 'a + b'))\"\n")
-        os.chmod(os.path.join(bin_dir, "fixer"), 0o755)
-        run = self.bench("--worker", "fixer {prompt}", "--seeds", "operator",
+        os.chmod(os.path.join(bin_dir, "codex"), 0o755)
+        run = self.bench("--worker", "codex", "--seeds", "operator",
                          env={"PATH": bin_dir + os.pathsep + os.environ["PATH"]})
-        self.assertEqual((run["worker"], run["model"], run["score"]), ("fixer {prompt}", None, 1.0), run)
+        self.assertEqual((run["worker"], run["model"], run["score"]), ("codex", None, 1.0), run)
 
     def test_the_previous_run_is_compared_and_a_bad_line_is_skipped(self):
         os.makedirs(os.path.dirname(self.results_path()), exist_ok=True)

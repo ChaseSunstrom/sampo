@@ -115,6 +115,8 @@ class Bench(ForemanTestCase):
         self.env = {"PATH": bindir + os.pathsep + os.environ["PATH"], "STUB_LOG": self.log,
                     "CLAUDE_CONFIG_DIR": os.path.join(self.tmp, "cc")}  # T-3364: where the stub keeps its transcript
         self.fm("init")
+        self.fm("claude-bench", "on")  # T-5584: a benchmark calls a Claude model only once the user turns it on
+        os.environ["FOREMAN_PROJECT"] = c.find_project(self.repo).slug  # T-5584: run_case runs in this process
         self.write("calc.py", "def double(x):\n    return x + x + 1\n")
         git(self.repo, "add", "calc.py")
         git(self.repo, "commit", "-qm", "calc")
@@ -824,6 +826,9 @@ class Cpus(ForemanTestCase):
         self.env = {**os.environ, "PATH": bindir + os.pathsep + os.environ["PATH"], "STUB_LOG": self.log}
         self.env.pop("PYTHON_CPU_COUNT", None)
         self.mine = sorted(os.sched_getaffinity(0))
+        self.fm("init")
+        self.fm("claude-bench", "on")  # T-5584: the session runs in this process, so it names its project
+        os.environ["FOREMAN_PROJECT"] = c.find_project(self.repo).slug
 
     def session(self, cpus, **env):
         with mock.patch.object(bench, "replay_cpus", return_value=cpus):

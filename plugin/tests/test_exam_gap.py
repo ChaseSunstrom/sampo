@@ -21,6 +21,7 @@ class Gap(ForemanTestCase):
     def setUp(self):
         super().setUp()
         self.fm("init")
+        self.fm("claude-bench", "on")  # T-5584: exam gap --ref calls a Claude model only once the user turns it on
         g = self.fm_json("exam", "gen", "--seed", "8", "--per-kind", "3", "--lang", "python", "--kind", "bug,vuln,slow")
         self.run_id = g["run"]
         self.p = c.find_project(self.repo)

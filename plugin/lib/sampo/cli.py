@@ -6706,6 +6706,55 @@ def cmd_approve_reads(args):
         else "every permission dialog is yours, as Claude Code shows it."))
 
 
+def cmd_claude_bench(args):
+    """T-5584: no benchmark, eval or comparison calls a Claude model in a project until the user turns this on. The guard
+    refuses an agent's own `on` (self-authorize); off and the bare call (which only reports) are anyone's."""
+    p = resolve(args)
+    name, rm = getattr(args, "name", None), getattr(args, "rm", False)
+    if args.state == "worker":  # T-5812: the user names a custom --worker command as non-Claude (the guard refuses an agent's)
+        if not name or not name.strip() or len(name) > 400 or any(ch in name for ch in "\n\r\0"):
+            raise UsageError("claude-bench worker needs the worker's name, the --worker value as you give it: "
+                             "sampo claude-bench worker NAME [--rm]")
+        pin = None
+        if not rm:  # the declaration is trust in one file: the realpath of what the name runs now, and its sha256
+            from sampo import smith
+            tpl = smith.all_runners().get(name, {}).get("work") or name  # the command worker_argv runs
+            pin = smith.worker_pin(name, tpl)
+            if pin is None:
+                raise UsageError(f"claude-bench worker: {name!r} does not resolve to one readable command file here (its "
+                                 "first word must be a file on your PATH or a path, and a name with spaces needs a {prompt}), "
+                                 "so there is nothing to pin. Declare it from where the command runs.")
+        with c.lock(p.dir):
+            meta = c.read_meta(p)
+            old = meta.get("non_claude_workers")
+            pins = {n: v for n, v in old.items() if isinstance(n, str) and isinstance(v, dict)} if isinstance(old, dict) else {}
+            if rm:
+                pins.pop(name, None)
+            else:
+                pins[name] = pin
+            meta["non_claude_workers"] = dict(sorted(pins.items()))
+            c.write_meta(p, meta)  # update_meta's own read-modify-write, held under this one lock
+            c.log_event(p, "claude_bench_worker", data={"worker": name, "declared": not rm, **({"pin": pin} if pin else {})},
+                        session=session())
+    elif name or rm:
+        raise UsageError("a worker name and --rm go with the worker form: sampo claude-bench worker NAME [--rm]")
+    elif args.state:
+        c.update_meta(p, claude_bench=args.state == "on")
+        with c.lock(p.dir):
+            c.log_event(p, "claude_bench", data={"on": args.state == "on"}, session=session())
+    meta = c.read_meta(p)
+    on = bool(meta.get("claude_bench"))
+    from sampo import models as _models
+    pins = _models.declared_non_claude(p)
+    declared = sorted(pins)
+    out(args, {"claude_bench": on, "non_claude_workers": declared, "pinned": pins}, f"{p.slug}: " + (
+        "benchmarks, evals and comparisons may call Claude models here (a local model is never gated)." if on
+        else "off: no benchmark, eval or comparison calls a Claude model here. The user turns it on with: "
+             "! sampo claude-bench on")
+        + (f"\nworkers declared not Claude: {', '.join(declared)}" if declared else
+           "\nno custom worker is declared not Claude (the user declares one with: ! sampo claude-bench worker NAME)"))
+
+
 def cmd_pause(args):
     """T-0436: one flag for every project. It grants nothing, and lifting it only lets back what ran before, so
     either way it's no consent to guard. T-4601: a project also holds its own pause (a user message of just "pause"), and
@@ -10757,6 +10806,11 @@ def _build_parser(only=None):
     s = add("approve-reads", cmd_approve_reads, tier=("Project and settings", 761), help="on: Sampo answers Claude Code's permission dialog for commands "
                                                        "that only read (yours to turn on; T-0974)")
     s.add_argument("state", nargs="?", choices=["on", "off"])
+
+    s = add("claude-bench", cmd_claude_bench, tier=("Project and settings", 762), help="on: Sampo may run benchmarks, evals and comparisons that call a Claude model; worker NAME [--rm]: declare a custom --worker command not Claude (both yours to run; T-5584, T-5812)")
+    s.add_argument("state", nargs="?", choices=["on", "off", "worker"])
+    s.add_argument("name", nargs="?", help="with worker: the --worker value, as you give it")
+    s.add_argument("--rm", action="store_true", help="with worker: take the declaration back")
 
     s = add("pause", cmd_pause, tier=("Project and settings", 720), help="sampo pause on stops everything Sampo runs unattended, in every project, and records who set it (off lifts it, and each project's own pause too, naming them; -p lifts only that project's; a session lifts only its own, a user's stays the user's; bare: only reports, projects included)")
     s.add_argument("state", nargs="?", choices=["on", "off"], default=None)

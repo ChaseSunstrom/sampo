@@ -23,6 +23,7 @@ class Long(ForemanTestCase):
     def setUp(self):
         super().setUp()
         self.fm("init")
+        self.fm("claude-bench", "on")  # T-5584: a long run on a Claude profile calls a Claude model only once it is on
         self.src = os.path.join(self.tmp, "src")
         subprocess.run(["git", "init", "-q", "-b", "main", self.src], check=True)
         for k, v in (("user.email", "t@example.com"), ("user.name", "t")):

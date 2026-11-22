@@ -4600,6 +4600,8 @@ def gap_ref(p, run, model="haiku", budget=None, runner=None, ids=None):
     within a week. {reused, model, n, cost?}."""
     if not ref_due(p, run, model):
         return {"reused": True, "model": model}
+    from sampo import models
+    models.claude_gate(p, "exam gap --ref (the Claude reference arm)")  # T-5584: a fresh reference is a Claude run
     res = (runner or run_agent)(p, run, "foreman", split="holdout", model=model, budget=budget,
                                 **({"ids": set(ids), "limit": len(ids)} if ids else {}))
     return {"reused": False, "model": model, "n": len(ids or []), "cost": (res or {}).get("cost")}
@@ -4858,6 +4860,11 @@ def run_agent(p, run, agent, split="all", limit=None, budget=None, model=None, t
     if search is not None and agent in LOCAL:  # T-3010: a search arm is its own arm (smith-s4): answers, work and lock
         from sampo import vsearch
         agent = _arm(agent, vsearch.parse(str(search)))  # ValueError names --search
+    from sampo import models
+    if agent in SESSIONS:  # T-5584: a Claude session in a copy of the repo
+        models.claude_gate(p, f"exam run --agent {agent}")
+    elif agent not in AGENTS:  # smith and the local agents answer through a model profile: a Claude one is gated
+        models.claude_gate(p, f"exam run --agent {agent}", profile=models.resolve(model))
     d = _answers(p, run, agent)
     if not os.path.isdir(os.path.join(root(p), run)) or not (agent in {*AGENTS, *SESSIONS} or _local(agent)):  # refused below as before
         return _run_agent(p, run, agent, split, limit, budget, model, timeout, request, jobs, planner, reason, small, ids,
@@ -5967,6 +5974,9 @@ def cmd_exam(args):
             return cli.out(args, {"rows": rows}, f"{len(rows) - len(skipped)} row(s) appended to {os.path.join(p.root, LOOP_FILE)}"
                            + "".join(f"\n  round {r['round']} {r['model']}: skipped, {r['skipped']}" for r in skipped))
         if action == "grade":
+            if (args.agent or "oracle") in SESSIONS:  # T-5584: grading a Claude session's answers is a Claude benchmark
+                from sampo import models
+                models.claude_gate(p, f"exam grade --agent {args.agent}")
             if args.model:  # T-2158: answers from before the stamp, or stamped "default", name their model here
                 who = args.agent or "oracle"
                 if who not in SESSIONS and not _local(who):

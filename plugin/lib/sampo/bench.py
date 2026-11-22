@@ -30,6 +30,7 @@ import uuid
 
 from sampo import budget as sbudget
 from sampo import core as c
+from sampo import models as smodels
 
 TEST_FILE = c.TESTISH  # T-0295: one test-file pattern
 
@@ -594,6 +595,7 @@ def _turn(wt, env, plugins, prompt, model, budget, timeout, resume=None, keep=Fa
     runs on replay_cpus() at REPLAY_NICE, and PYTHON_CPU_COUNT tells every Python it starts (a test runner sizing its
     jobs) that count, also on a tree older than the shared slot pool."""
     c.refuse_if_paused()  # T-0591
+    smodels.gate_here("a bench turn (claude -p)")  # T-5584: every claude -p start is gated, here too
     if not plugins and not settings:
         raise ValueError("a bypass-mode session needs the guard: a plugin with it, or its hook as --settings")
     cmd = ["claude", "-p", prompt, *[x for d in plugins for x in ("--plugin-dir", d)],
@@ -1421,6 +1423,10 @@ def repro(p, args):
                      f"session, {arm['runs']} run(s)):\n" + "\n".join(lines))
 
 
+# T-5584: the bench verbs whose runs call a Claude model (build, list, show, compare, scorecard, hygiene, gate do not)
+CLAUDE_VERBS = ("duel", "versions", "court", "soak", "run", "models", "stranger", "repro", "seed-review")
+
+
 def cmd_bench(args):
     from sampo import cli
     if args.bench_cmd in ("swe", "runs"):  # T-3746
@@ -1435,6 +1441,9 @@ def cmd_bench(args):
         from sampo import benchtb
         return benchtb.cmd(args)
     p = cli.resolve(args)
+    if args.bench_cmd in CLAUDE_VERBS:  # T-5584: refused up front; a run on a local --model is never refused
+        smodels.claude_gate(p, f"bench {args.bench_cmd}", profile=(
+            smodels.resolve(args.model) if args.bench_cmd == "run" and args.model else None))
     if args.bench_cmd == "seed-review":
         return seed_review(p, args)
     if args.bench_cmd == "hygiene":

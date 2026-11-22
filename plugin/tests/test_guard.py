@@ -3256,6 +3256,15 @@ class UntestedRuleSites(GuardCase):  # T-1120: sites fm bench guard --mutate dro
             ("firewall-cmd --add-port=22/tcp", "system", "firewall-cmd change"),
             ("cryptsetup luksFormat /dev/sdb", "system", "cryptsetup luksFormat"),
             ("fm approve-reads on", "self-authorize", "approve-reads on"),
+            ("sampo claude-bench on", "self-authorize", "claude-bench on"),  # T-5584
+            ("fm claude-bench on", "self-authorize", "claude-bench on"),  # T-5584
+            ("sampo -p foreman claude-bench on", "self-authorize", "claude-bench on"),  # T-5584: a global -p first
+            ("fm -p foreman claude-bench on", "self-authorize", "claude-bench on"),
+            ("fm --project foreman claude-bench on", "self-authorize", "claude-bench on"),
+            ("fm --project=foreman claude-bench on", "self-authorize", "claude-bench on"),
+            ("fm -pforeman claude-bench on", "self-authorize", "claude-bench on"),
+            ("fm --json -p foreman claude-bench on", "self-authorize", "claude-bench on"),
+            ("fm --version -p foreman claude-bench on", "self-authorize", "claude-bench on"),
             ("fm rule rm 3", "self-authorize", "sampo rule rm"),
             ("fm vetoes rm 2", "self-authorize", "sampo vetoes rm is the user's to run"),  # T-1413
             ("fm vetoes --json rm 2", "self-authorize", "sampo vetoes rm"),
@@ -3289,7 +3298,7 @@ class UntestedRuleSites(GuardCase):  # T-1120: sites fm bench guard --mutate dro
         self.assertIsNone(self.bash("fm triggers --days 7 --json"))
 
     def test_near_misses_stay_allowed(self):
-        for cmd in ("fm prove .", "fm prove --limit 3 /tmp/x", "fm posture", "fm pause on", "fm approve-reads off", "fm rule list", "fm vetoes", "fm vetoes --json", "fm rollback --list", "fm taste compile 1", "fm home export", "eval \"$(echo hi)\"", "dd if=x of=./file.img", "ufw status", "firewall-cmd --list-all",
+        for cmd in ("fm prove .", "fm prove --limit 3 /tmp/x", "fm posture", "fm pause on", "fm approve-reads off", "fm claude-bench off", "fm claude-bench", "sampo claude-bench", "sampo -p foreman claude-bench off", "fm -p foreman claude-bench", "fm -p foreman claude-bench off", "fm rule list", "fm vetoes", "fm vetoes --json", "fm rollback --list", "fm taste compile 1", "fm home export", "eval \"$(echo hi)\"", "dd if=x of=./file.img", "ufw status", "firewall-cmd --list-all",
                     "cryptsetup --version", "git config core.hooksPath", "git config --get core.hooksPath"):
             with self.subTest(cmd=cmd):
                 self.assertIsNone(self.bash(cmd))

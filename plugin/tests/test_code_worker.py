@@ -796,10 +796,15 @@ class Worker(CodeCase):
 
     def test_worker_argv(self):
         from sampo import smith
-        self.assertEqual(smith.worker_argv("codex", "do it", which=False), ["codex", "exec", "--full-auto", "do it"])
-        self.assertEqual(smith.worker_argv("my-cli --msg={prompt} -q", "a b", which=False),
-                         ["my-cli", "--msg=a b", "-q"])
-        self.assertEqual(smith.worker_argv("plain", "x y", which=False), ["plain", "x y"])
+        old = os.getcwd()
+        os.chdir(self.repo)  # T-5584: the gate reads the project the cwd is in; this one has the switch on (setUp)
+        try:
+            self.assertEqual(smith.worker_argv("codex", "do it", which=False), ["codex", "exec", "--full-auto", "do it"])
+            self.assertEqual(smith.worker_argv("my-cli --msg={prompt} -q", "a b", which=False),
+                             ["my-cli", "--msg=a b", "-q"])
+            self.assertEqual(smith.worker_argv("plain", "x y", which=False), ["plain", "x y"])
+        finally:
+            os.chdir(old)
 
 
 class Ping(CodeCase):  # T-1335

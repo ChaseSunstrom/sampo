@@ -64,12 +64,17 @@ def _events(out):
             yield e
 
 
-def run_seed(seed, model=None, worker=None, timeout=600, max_steps=40):
-    """One seed in its own temp folder: {seed, closed, reason, verify_runs, refusals, tokens, seconds, canary}."""
+HERE = object()  # T-5812: no project named: the child's meta comes from the project this process runs in
+
+
+def run_seed(seed, model=None, worker=None, timeout=600, max_steps=40, parent=HERE):
+    """One seed in its own temp folder: {seed, closed, reason, verify_runs, refusals, tokens, seconds, canary}. parent: the
+    project whose claude_bench and declared workers the child gets (T-5812); the bench command passes the one its gate
+    judged, None for none."""
     t0 = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="fm-bench-") as tmp:
         try:
-            return _run_in(tmp, seed, model, worker, timeout, max_steps, t0)
+            return _run_in(tmp, seed, model, worker, timeout, max_steps, t0, parent)
         finally:  # T-1485: a check fm code ran in its own session outlives the run; it carries the marker
             kill_marked(tmp)
 
@@ -109,7 +114,34 @@ def box(tmp, model=True):
     return env, home
 
 
-def _run_in(tmp, seed, model, worker, timeout, max_steps, t0):
+def seed_claude_meta(fhome, repo, parent):
+    """T-5812: the seed project's meta, written into the child's own Smith home (fhome) before the child starts, with the
+    parent project's real claude_bench and non_claude_workers (the user's switch and declarations) copied in, so the child
+    neither refuses a run the user allowed nor widens it: it reads them as any project does, from its meta, and no env var
+    or flag of the child's can set them. parent None (no project: the gate is closed there) copies nothing, and the child
+    makes its own meta with the gate closed. Only those two keys cross, as plain values."""
+    if parent is None:
+        return
+    from sampo import models as smodels
+    try:
+        on = smodels.claude_on(parent)
+    except core.CorruptState:
+        on = False
+    declared = smodels.declared_non_claude(parent)  # {name: {path, sha256}}: the pins cross as they are
+    root = os.path.realpath(repo)
+    slug = core.natural_slug(root)
+    pdir = os.path.join(fhome, "state", "projects", slug)
+    for sub in ("tasks", "research", "archive"):  # what core.init_project makes: find_project skips it once a meta exists
+        os.makedirs(os.path.join(pdir, sub), exist_ok=True)
+    core.write_atomic(os.path.join(pdir, "decisions.md"),
+                      "# Decisions\n\n| Date | Decision | Why | Alternatives rejected |\n|---|---|---|---|\n")
+    meta = {"slug": slug, "created": core.now(), "last_active": core.now(), "last_tidy": None, "session": {},
+            "next_id": 1, "drive": True, "path": root, "sensitive": False, "claude_bench": on,
+            "non_claude_workers": declared}
+    core.write_meta(core.Project(slug, root, pdir), meta)
+
+
+def _run_in(tmp, seed, model, worker, timeout, max_steps, t0, parent=HERE):
     repo = os.path.join(tmp, "repo")
     os.makedirs(repo)
     env, home = box(tmp, model)
@@ -119,6 +151,9 @@ def _run_in(tmp, seed, model, worker, timeout, max_steps, t0):
     git("init", "-q")
     git("add", ".")
     git("commit", "-qm", "the seed")
+    from sampo import models as smodels
+    seed_claude_meta(env["FOREMAN_HOME"], repo, smodels.here() if parent is HERE else parent)  # T-5812: the user's switch
+    # and declarations, via meta: the project the gate judged, never the cwd's
     argv = [sys.executable, FM, "code", seed["request"], "--json", "--max-steps", str(max_steps),
             "--stale-ok", "fm code bench: a throwaway seed repo in its own Smith home (T-1401)"]
     argv += ["--model", model] if model else ["--worker", worker, "--verify", seed["verify"]]
@@ -207,7 +242,7 @@ def version():
         return "?"
 
 
-def bench(seeds, model=None, worker=None, timeout=600, max_steps=40, say=None, variant=None):
+def bench(seeds, model=None, worker=None, timeout=600, max_steps=40, say=None, variant=None, parent=HERE):
     """Run the seeds; the run's record, also appended to code-bench.jsonl. A worker skips the dangerous seed: its
     own commands run before the guard judges what they did, and it keeps the real home folder."""
     results = []
@@ -216,7 +251,7 @@ def bench(seeds, model=None, worker=None, timeout=600, max_steps=40, say=None, v
             r = {"seed": seed["name"], "closed": False, "skipped": True, "reason": "skipped: a worker's own commands "
                  "aren't judged before they run"}
         else:
-            r = run_seed(seed, model, worker, timeout, max_steps)
+            r = run_seed(seed, model, worker, timeout, max_steps, parent)
         results.append(r)
         if say:
             say(r)
@@ -268,6 +303,24 @@ def cmd(args, words):
             print(f"fm code bench: no model to grade ({e}); name one with --model or a CLI with --worker",
                   file=sys.stderr)
             return 2
+    # T-5584: a Claude model, or a claude worker CLI, is refused before any setup unless the user turned claude_bench on
+    from sampo import cli
+    from sampo import models as smodels
+    try:
+        gate_p = cli.resolve(args, create=False)
+    except cli.UsageError:
+        gate_p = None  # no project: the gate stays closed
+    if worker:  # the early refusal; smith.worker_argv judges the same command again at each worker start
+        from sampo import smith
+        if smith.claude_worker(worker, smith.all_runners().get(worker, {}).get("work") or worker, p=gate_p):
+            smodels.claude_gate(gate_p, "smith bench", profile=None)
+    else:
+        try:
+            profile = smodels.resolve(model)
+        except smodels.ModelError:
+            profile = None  # not a profile name: the run refuses it with its own reason
+        if profile is not None:
+            smodels.claude_gate(gate_p, "smith bench", profile=profile)
     seeds = [known[n] for n in names] if names else SEEDS
     variants = [v.strip() for v in (getattr(args, "variants", None) or "").split(",") if v.strip()]
     if variants:  # T-1403: one run per prompt variant, each recorded, and their closed counts side by side
@@ -282,7 +335,7 @@ def cmd(args, words):
             for v in variants:
                 os.environ["FM_PROMPT_VARIANT"] = "" if v == "base" else v
                 recs[v] = bench(seeds, model, worker, getattr(args, "seed_timeout", None) or 600,
-                                getattr(args, "max_steps", None) or 40, variant=v)
+                                getattr(args, "max_steps", None) or 40, variant=v, parent=gate_p)
         finally:
             os.environ.pop("FM_PROMPT_VARIANT", None) if was is None else os.environ.update(FM_PROMPT_VARIANT=was)
         side = {v: {"closed": r["closed"], "seeds": r["seeds"], "score": r["score"]} for v, r in recs.items()}
@@ -298,7 +351,7 @@ def cmd(args, words):
             print("  a worker CLI runs with your real home folder (its sign-in lives there) and skips the dangerous "
                   "seed", flush=True)
     rec = bench(seeds, model, worker, getattr(args, "seed_timeout", None) or 600, getattr(args, "max_steps", None) or 40,
-                say=None if args.json else (lambda r: print(_line(r), flush=True)))
+                parent=gate_p, say=None if args.json else (lambda r: print(_line(r), flush=True)))
     if args.json:
         print(json.dumps(rec))
     else:

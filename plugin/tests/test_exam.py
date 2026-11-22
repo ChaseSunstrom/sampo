@@ -22,6 +22,7 @@ class ExamGen(ForemanTestCase):
     def setUp(self):
         super().setUp()
         self.fm("init")
+        self.fm("claude-bench", "on")  # T-5584: exam runs call a Claude model only once the user turns it on
 
     def gen(self, *args):
         return self.fm_json("exam", "gen", *args)
@@ -760,6 +761,7 @@ class ExamAuthors(ForemanTestCase):
         self.log = os.path.join(self.tmp, "stub.log")
         self.env = {"PATH": bindir + os.pathsep + os.environ["PATH"], "STUB_LOG": self.log}
         self.fm("init")
+        self.fm("claude-bench", "on")  # T-5584
 
     def test_child_authored_scenarios_are_kept_only_when_sound(self):
         r = self.fm_json("exam", "gen", "--seed", "1", "--per-kind", "3", "--lang", "python", "--kind", "bug",
@@ -1123,6 +1125,7 @@ class JudgmentStub:
         self.log = os.path.join(self.tmp, "stub.log")
         self.env = {"PATH": bindir + os.pathsep + os.environ["PATH"], "STUB_LOG": self.log}
         self.fm("init")
+        self.fm("claude-bench", "on")  # T-5584
 
     def gen(self, *args, env=None):
         return self.fm_json("exam", "gen", "--seed", "8", "--per-kind", "1", "--lang", "python", *args, env=env)
@@ -2232,6 +2235,7 @@ class SmithArm(ForemanTestCase):
     def setUp(self):
         super().setUp()
         self.fm("init")
+        self.fm("claude-bench", "on")  # T-5584
         self.fakes = []
 
     def tearDown(self):
@@ -2385,6 +2389,7 @@ class SearchArm(ForemanTestCase):
     def setUp(self):
         super().setUp()
         self.fm("init")
+        self.fm("claude-bench", "on")  # T-5584
         self.g = self.fm_json("exam", "gen", "--seed", "2", "--per-kind", "3", "--lang", "python", "--kind", "bug")
         self.p = c.find_project(self.repo)
 

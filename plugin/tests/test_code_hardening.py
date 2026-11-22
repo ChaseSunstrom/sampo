@@ -24,7 +24,12 @@ class InlineWorker(CodeCase):
                 self.assertIn("code.toml", r.stderr)
                 self.assertIn("[ack]", r.stderr)
                 self.assertIn("a - b", self.calc())
-        self.assertEqual(smith.worker_argv("mycli -y {prompt}", "go", which=False), ["mycli", "-y", "go"])
+        old = os.getcwd()
+        os.chdir(self.repo)  # T-5584: the worker gate reads the project the cwd is in; this one has the switch on (CodeCase)
+        try:
+            self.assertEqual(smith.worker_argv("mycli -y {prompt}", "go", which=False), ["mycli", "-y", "go"])
+        finally:
+            os.chdir(old)
         # T-1432 review: a shell wrapper's script is one word, so the flag inside it hid from the lint
         for tpl in ("sh -c 'gemini --yolo {prompt}'", "bash -lc \"claude -p {prompt} --dangerously-skip-permissions\"",
                     "env sh -c 'codex exec -a never {prompt}'"):

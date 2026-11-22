@@ -76,6 +76,7 @@ class _Bench(ForemanTestCase):
         self.env = {"PATH": bindir + os.pathsep + os.environ["PATH"], "STUB_LOG": self.log,
                     "CLAUDE_CONFIG_DIR": os.path.join(self.tmp, "cc0")}  # T-3364: where the stub keeps its transcript
         self.fm("init")
+        self.fm("claude-bench", "on")  # T-5584: a benchmark calls a Claude model only once the user turns it on
         self.write("calc.py", "def double(x):\n    return x + x + 1\n")
         self.write("README.md", "# calc\n")
         git(self.repo, "add", "calc.py", "README.md")

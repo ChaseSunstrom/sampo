@@ -130,14 +130,15 @@ def jobs(p, warn=None):
     if not meta.get("sensitive") and moonscale._local(False) and smallcards.kept_count() < smallcards.KEEP:  # T-3105: free: cards
         out.append(("cards grow", ["playbooks", "small", "grow", "--grid", "all", "--keep", str(smallcards.KEEP),
                                    "--local-only"], 0.0))  # kept across the grids, a local writer only, up to 30,000
-    from sampo import louhi
+    from sampo import louhi, models
     if not meta.get("sensitive") and moonscale._local(False) and louhi.bench_due(p):  # T-3093: free: once a Rune generation
         out.append(("model bench", ["exam", "models", "run", "--night"], 0.0))  # T-3487: its own exam lock; it runs beside a grow
-    gap_run = None if meta.get("sensitive") or budget.degrade(p) else louhi.gap_pending(p)
+    gap_run = None if meta.get("sensitive") or budget.degrade(p) or not models.claude_on(p) else louhi.gap_pending(p)  # T-5584
     if gap_run:  # T-3930: Haiku on the held-out split a local profile answered, at most weekly (reused inside 7 days)
         out.append(("frontier gap", ["exam", "gap", gap_run, "--ref"], budget.estimate("exam-arm", 3, 0.5)))
     from sampo import long
-    long_run = None if meta.get("sensitive") or budget.degrade(p) or not long.due(p) else long.newest_run(p)
+    long_run = None if meta.get("sensitive") or budget.degrade(p) or not models.claude_on(p) or not long.due(p) \
+        else long.newest_run(p)  # T-5584: a closed Claude gate books no session arm
     for arm in (a for a in long.SESSIONS if long_run and long.due(p, a)):  # T-5038: each arm with no line this week (a skipped one retries)
         out.append((f"long exam {arm}", ["exam", "long", "cycle", long_run, "--agent", arm, "--final"],
                     budget.estimate("exam-arm", 3, 0.5)))  # a session arm answers 3 goals by default
@@ -153,7 +154,7 @@ def jobs(p, warn=None):
     from sampo import scout
     if scout._is_home(p) and (age is None or age >= outside.LANDSCAPE_DAYS):  # T-3362: Sampo's own project, once a week
         out.append(("landscape", ["landscape", "--if-due", "--capture"], budget.estimate("research", 4, 0.2)))
-    lesion = None if budget.degrade(p) else next_lesion(p)
+    lesion = None if budget.degrade(p) or not models.claude_on(p) else next_lesion(p)  # T-5584: runs bench.run_arm
     if lesion:  # T-0734: a model nobody has ablated Foreman's rules and skills on yet
         out.append((f"model lesion {lesion}", ["evolve", "--target", lesion, "--drop"], budget.estimate("bench", 3, 0.5)))
     big = None if budget.degrade(p) else next(  # T-0730: optional, so it waits while usage runs ahead of pace
@@ -167,7 +168,7 @@ def jobs(p, warn=None):
     if debt:  # the oldest research question nobody has asked yet: one a night
         out.append(("research debt", ["research", "ask", c.fit(debt.title, 300), "--task", debt.id],
                     budget.estimate("research", 4, 0.2)))
-    if bench.court_cases(p, 3)[0]:
+    if models.claude_on(p) and bench.court_cases(p, 3)[0]:  # T-5584: a court case is a Claude replay
         est = budget.estimate("bench", 3, 0.5)
         out.append(("court", ["bench", "court", "--max", "3", "--budget", f"{max(0.1, est / 3):.2f}"], est))
     benched = {str((e.get("data") or {}).get("old", "")) for e in events if e.get("event") == "bench_versions"}

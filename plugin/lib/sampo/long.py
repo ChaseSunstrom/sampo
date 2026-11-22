@@ -1023,6 +1023,9 @@ def run(p, run, agent, model=None, budget=None, timeout=None, faults=(), limit=N
     """T-4424: the local arm `smith` takes --model (a profile), --timeout (minutes a goal), --reason and --small; --limit
     caps its goals (all by default: it costs no tokens); --faults is refused (no claude session to kill or pause)."""
     _agent(agent)
+    from sampo import models as gate_models
+    if agent in SESSIONS:  # T-5584: a Claude session; a local smith run is gated on its profile below
+        gate_models.claude_gate(p, f"exam long run --agent {agent}")
     from sampo import louhi
     jobs = louhi._jobs(jobs)
     bad = [f for f in faults if f not in FAULTS]
@@ -1041,6 +1044,7 @@ def run(p, run, agent, model=None, budget=None, timeout=None, faults=(), limit=N
             raise ValueError(f"--reason is how the model reasons: {', '.join(smith.REASONS)}, not {c.plain(str(reason))!r}")
         try:
             prof = smodels.resolve(model)
+            smodels.claude_gate(p, f"exam long run --agent {agent}", profile=prof)  # T-5584: a Claude --model is gated
         except smodels.ModelError as e:
             raise ValueError(f"--model {c.plain(str(model))!r}: {c.plain(str(e))}") from e
         minutes = SMITH_GOAL_T if timeout is None else timeout
@@ -1302,6 +1306,9 @@ def cmd(p, args):
     if verb in ("run", "grade", "cycle") and rest:  # T-5038: cycle = run, then grade (the night's one-argv step)
         agent = args.agent or "oracle"
         from sampo import louhi
+        if verb != "grade" and agent in louhi.SESSIONS:  # T-5584: the switch before the steer, so a refusal names it
+            from sampo import models as gate_models
+            gate_models.claude_gate(p, f"exam long {verb} --agent {agent}")
         reg = getattr(args, "regressing", None)
         if reg is not None and not 1 <= reg <= 13:
             raise cli.UsageError(f"--regressing takes a capability number from 1 to 13, not {reg}")

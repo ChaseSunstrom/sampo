@@ -713,6 +713,104 @@ def _family(model):
     return w if w in FAMILIES else ""
 
 
+CLAUDE_FAMILIES = ("claude", "haiku", "sonnet", "opus", "fable")
+
+
+def is_claude(profile):
+    """T-5584: True when a model profile calls a Claude model: an Anthropic API profile, or a Claude id through any
+    router. A loopback profile is local whatever its model is called, so it is never a Claude call."""
+    prof = profile or {}
+    host = urllib.parse.urlsplit(str(prof.get("base_url") or "")).hostname or ""
+    if prof.get("kind") == "anthropic" or host == "anthropic.com" or host.endswith(".anthropic.com"):
+        return True
+    if is_loopback(host):
+        return False
+    return _family(prof.get("model") or "") in CLAUDE_FAMILIES
+
+
+CLAUDE_GATE = "! sampo claude-bench on"  # T-5584: the command the user types; the guard refuses an agent's own
+
+
+def claude_on(p):
+    """T-5584: the user turned claude_bench on for this project (sampo claude-bench on, typed by the user). No meta
+    file means it was never turned on: the gate stays closed."""
+    from sampo import core as c
+    try:
+        meta = c.read_meta(p)
+    except (FileNotFoundError, c.CorruptState):  # T-5812: a meta that won't read keeps the gate closed, not a traceback
+        return False
+    return bool(meta.get("claude_bench")) if isinstance(meta, dict) else False
+
+
+def declared_non_claude(p):
+    """T-5812: the custom --worker names the user declared not Claude for this project (sampo claude-bench worker NAME,
+    typed by the user, kept in its meta), as {name: {path, sha256}}: the file the user pinned the name to. Empty when
+    there is no project, no meta, or a value that isn't that map; an entry without a path and a sha256 string is no
+    declaration (a name-only one, from before pinning, counts for nothing): a custom worker stays judged as Claude."""
+    from sampo import core as c
+    if p is None:
+        return {}
+    try:
+        meta = c.read_meta(p)
+    except (OSError, c.CorruptState):
+        return {}
+    pins = meta.get("non_claude_workers") if isinstance(meta, dict) else None
+    if not isinstance(pins, dict):
+        return {}
+    return {n: {"path": v["path"], "sha256": v["sha256"]} for n, v in pins.items() if isinstance(n, str) and isinstance(v, dict)
+            and isinstance(v.get("path"), str) and isinstance(v.get("sha256"), str)}
+
+
+# T-5584: the -p project the gated command named, and the state root it was named under. Scope: claude_gate sets it and
+# nothing resets it; here() reads it only while the state root is still that one, so a new root (another install, a
+# test's temp state) never inherits it. The residual: an in-process caller in the SAME state root that skips claude_gate
+# still gets the last gated project, not its cwd's. The CLI runs one command per process, so only in-process callers
+# (tests, the night's jobs run in one process) can meet it.
+_FOCUS = {"p": None, "root": None}
+
+
+def claude_gate(p, what, profile=None):
+    """T-5584: refuse a run that would call a Claude model unless the user turned claude_bench on. profile: the model
+    profile the run resolves to, so a local one is never refused; None: the run is a Claude session. p None (no
+    project) keeps the gate closed. The project p also becomes the focus here() returns, so the Claude starts that
+    follow read the -p project's switch, not the cwd's."""
+    from sampo import core as c
+    _FOCUS["p"] = p
+    _FOCUS["root"] = c.state_dir() if p is not None else None
+    if profile is not None and not is_claude(profile):
+        return
+    if p is not None and claude_on(p):
+        return
+    from sampo import cli
+    raise cli.UsageError(f"{what} calls a Claude model, and claude_bench is off for this project. The user turns it "
+                         f"on with: {CLAUDE_GATE}")
+
+
+def here():
+    """T-5584: the project a Claude start in this process belongs to: the project the gated command named (focus, set
+    by claude_gate, used only while the state root is the one it was named under), else the cwd's (a worktree counts as
+    its project), else FOREMAN_PROJECT; None when there is none. The focus's scope and its one residual are at _FOCUS."""
+    from sampo import core as c
+    if _FOCUS["p"] is not None and _FOCUS["root"] == c.state_dir():
+        return _FOCUS["p"]
+    p = c.find_project(os.getcwd())
+    if not p and os.environ.get("FOREMAN_PROJECT"):
+        p = c.project_by_slug(os.environ["FOREMAN_PROJECT"])
+    return p
+
+
+def open_here():
+    """T-5584: True when the user turned claude_bench on for the project this process runs in."""
+    p = here()
+    return p is not None and claude_on(p)
+
+
+def gate_here(what, profile=None):
+    """T-5584: claude_gate for a Claude start in this process. Every builder of a `claude -p` argv calls it (the
+    AST scan in test_claude_gate holds them to that), so no start path skips the user's switch."""
+    claude_gate(here(), what, profile=profile)
+
+
 def for_purpose(profs, purpose):
     """T-3744: the profiles for one job, order kept. A profile that declares purposes serves only those jobs; the
     profiles that name the job come first and alone, else today's choice: the ones declaring none (or all, when

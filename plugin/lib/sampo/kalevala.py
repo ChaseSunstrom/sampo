@@ -20,6 +20,7 @@ import time
 
 from sampo import budget
 from sampo import core as c
+from sampo import models
 from sampo import moonscale
 from sampo import rune
 
@@ -381,6 +382,8 @@ def session_argv(name, st):
     model = SESSION_MODELS.get(st["stage"])
     if not model or st.get("kind") != "ok" or job_argv(name, st):
         return None
+    if not models.open_here():  # T-5584: no Claude session starts while claude_bench is off; the tower waits its step
+        return None
     return ["claude", "-p", session_prompt(name, st), "--model", model, "--output-format", "json",
             "--disallowedTools", NO_EDIT, "--max-budget-usd", f"{SESSION_USD[model]:g}"]
 
@@ -401,6 +404,9 @@ def _why_not(st):
         return f"its step is {st.get('kind')}: {c.fit(st.get('action') or '', 120)}"
     if st["stage"] == "build":
         return f"a build: its task waits in the queue ({st.get('command')})"
+    if st["stage"] in SESSION_MODELS and not models.open_here():  # T-5584
+        return (f"a {st['stage']} step is a Claude session, and claude_bench is off: "
+                f"the user turns it on with {models.CLAUDE_GATE}")
     return f"no job or session runs a {st['stage']} step"
 
 
@@ -466,6 +472,8 @@ def _stage(p, name):
 def _spawn(argv, cwd, env, timeout):
     """(exit code, stdout, stderr) of a child that leads its own session, so a cut at timeout kills its children too:
     a claude -p under genesis would otherwise keep spending after the deadline (T-3265). A cut raises TimeoutExpired."""
+    if argv[0] == "claude":  # T-5584: the backstop behind session_argv: no claude child starts with the switch off
+        models.gate_here("a kalevala session (claude -p)")
     proc = subprocess.Popen(argv, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                             start_new_session=True)
     try:

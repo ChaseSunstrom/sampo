@@ -6192,6 +6192,115 @@ def route(run):
     run.log(kind="route", worker=name)
 
 
+# T-5584: the built-in runners whose CLI is not Claude. Any other worker name is judged as Claude (claude_worker).
+NON_CLAUDE_WORKERS = frozenset(k for k in RUNNERS if k != "claude")
+SHELL_WRAPPERS = frozenset({"sh", "bash", "dash", "zsh", "ksh"})
+SHELL_SYNTAX = frozenset("$`\\;|&()<>*?[]~")  # T-5584: a string a shell runs with these can't be judged, so it is Claude
+CLAUDE_FOLDERS = frozenset({"claude", "claude-code"})  # a versioned install's folder, and npm's package folder
+
+
+def _claude_word(word):
+    """T-5584: True when a command word names the Claude CLI: its basename starts with claude in any case, or, found on
+    PATH or as a path, it resolves (symlinks followed) to a file whose name starts with claude, or to one under a
+    claude or claude-code folder (a versioned or npm install keeps its binary there)."""
+    if os.path.basename(word).lower().startswith("claude"):
+        return True
+    found = word if "/" in word else shutil.which(word)
+    if not found:
+        return False
+    real = os.path.realpath(found)
+    if os.path.basename(real).lower().startswith("claude"):
+        return True
+    return any(p.lower() in CLAUDE_FOLDERS for p in real.split(os.sep))
+
+
+def _claude_string(s, depth):
+    """T-5584: a string a shell or env -S splits and runs: its words are judged, and shell syntax in it makes it Claude."""
+    if any(c in SHELL_SYNTAX for c in s):
+        return True
+    return _claude_words(shlex.split(s), depth + 1)
+
+
+def _claude_words(words, depth=0):
+    """T-5584: True when a word names Claude, or a string a wrapper runs does: a `sh -c` string (after any options that
+    hold c), or a word with spaces (env -S splits it). A string that won't split raises ValueError, and claude_worker
+    reads that as Claude."""
+    if depth > 8:
+        raise ValueError("a worker command nests too deep to judge")
+    for i, w in enumerate(words):
+        if _claude_word(w):
+            return True
+        if any(c.isspace() for c in w) and _claude_string(w, depth):
+            return True
+        if os.path.basename(w).lower() in SHELL_WRAPPERS:
+            for j in range(i + 1, len(words) - 1):
+                if not words[j].startswith("-"):
+                    break
+                if "c" in words[j][1:] and _claude_string(words[j + 1], depth):
+                    return True
+    return False
+
+
+PIN_MAX = 256 * 1024 * 1024  # T-5812: a command file bigger than this is not pinned (hashed on every worker start)
+
+
+def worker_pin(spec, tpl):
+    """T-5812: {path, sha256} of the file a --worker spec runs as argv[0]: the realpath of the command word (found on the
+    caller's PATH when it has no slash, else relative to the cwd) and the sha256 of its bytes. None when there is nothing
+    to pin: the command won't split, argv[0] isn't a readable file, the file is over PIN_MAX, or the spec has whitespace
+    and no {prompt}, so the process runs the raw spec as argv[0] (worker_argv) and that is no command file."""
+    try:
+        words = shlex.split(tpl) if "{prompt}" in tpl else [spec]
+    except ValueError:
+        return None
+    if not words or not words[0] or ("{prompt}" not in tpl and any(ch.isspace() for ch in spec)):
+        return None
+    found = words[0] if "/" in words[0] else shutil.which(words[0])
+    if not found:
+        return None
+    real = os.path.realpath(found)
+    try:
+        if not os.path.isfile(real) or os.path.getsize(real) > PIN_MAX:
+            return None
+        h = hashlib.sha256()
+        with open(real, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+    except OSError:
+        return None
+    return {"path": real, "sha256": h.hexdigest()}
+
+
+def declared_state(spec, tpl, p=None):
+    """T-5812: where a user's declaration (sampo claude-bench worker NAME) stands for a --worker spec in project p (else the
+    project this process runs in): None when nobody declared it, True when argv[0] still resolves to the file and hash the
+    user pinned, False when it doesn't (the file changed, or another file now answers to the name)."""
+    pin = m.declared_non_claude(p if p is not None else m.here()).get(spec)
+    if pin is None:
+        return None
+    return worker_pin(spec, tpl) == pin
+
+
+def claude_worker(spec, tpl, p=None):
+    """T-5584 round 2: True when a --worker spec runs the Claude CLI, so claude_gate judges it. tpl is the command the spec
+    runs before the prompt goes in: its runner's work template, else the spec itself. The command's words are judged
+    whatever wrapper holds them (env, sh -c, a symlink, any case), so a known runner whose template runs claude is
+    Claude too. Fail closed: a name off the non-Claude list, or a command that won't split, is Claude.
+    T-5812: a declaration (sampo claude-bench worker NAME, typed by the user, in the project's meta: p, else the project
+    this process runs in) is trust in one pinned file, not in a name: it records the realpath of argv[0] and the sha256 of
+    that file, and the spec counts as non-Claude only while argv[0] still resolves to that path with that hash. An edited
+    file, or a PATH shim answering to the name, is Claude again until the user re-declares. Even then the command's words
+    are judged, so a declaration never hides a command that runs claude; the built-in names are judged as before."""
+    if spec not in NON_CLAUDE_WORKERS and declared_state(spec, tpl, p) is not True:
+        return True
+    try:
+        if "{prompt}" not in tpl and _claude_words([spec]):  # the process runs the raw spec as argv[0] (worker_argv)
+            return True
+        return _claude_words(shlex.split(tpl))
+    except ValueError:
+        return True
+
+
 def worker_argv(spec, prompt, which=True):
     """A --worker spec as argv: the user's own template ("{prompt}" in it), a runner's name, else [spec, prompt]."""
     r = all_runners().get(spec, {})
@@ -6201,6 +6310,17 @@ def worker_argv(spec, prompt, which=True):
         raise CodeError(f"--worker {spec!r} has {', '.join(risky)}, which turns off the CLI's own approvals, and fm code "
                         "would run it with nobody asking. If you mean it, make it a runner in code.toml "
                         "([runners.NAME] work = \"...\"), add the [ack] line fm code then prints, and give --worker NAME")
+    if claude_worker(spec, tpl):  # T-5584: every worker start passes here, so a Claude CLI waits on the user's switch
+        from sampo import cli
+        redo = f"the user declares it with: ! sampo claude-bench worker {shlex.quote(spec)}"
+        why = "" if spec in NON_CLAUDE_WORKERS else (
+            " (a declared worker whose command file changed since the user pinned it, so it is judged as Claude; if it is "
+            f"still not Claude, {redo.replace('declares', 're-declares')})" if declared_state(spec, tpl) is False else
+            f" (not a known runner, so it is judged as Claude; if it is not Claude, {redo})")
+        try:
+            m.gate_here(f"--worker {spec}{why}")
+        except cli.UsageError as e:
+            raise CodeError(str(e))
     try:
         argv = [w.replace("{prompt}", prompt) for w in shlex.split(tpl)] if "{prompt}" in tpl else [spec, prompt]
     except ValueError as e:

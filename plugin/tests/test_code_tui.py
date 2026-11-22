@@ -3395,7 +3395,15 @@ class Editors(unittest.TestCase):
     """T-1511: three editors inside the settings screen, each writing through fm settings' writer (the guard, the lock,
     the history fm settings undo walks back): b binds a pressed key to the selected key row's command, l moves panels
     between and within columns with keys, r tests a runner of the registry or code.toml where it is."""
-    setUp, write, text = SettingsScreen.setUp, SettingsScreen.write, SettingsScreen.text
+    write, text = SettingsScreen.write, SettingsScreen.text
+
+    def setUp(self):
+        SettingsScreen.setUp(self)
+        # T-5584: these tests test a fake runner's UI (no model call) and this home has no project to switch claude_bench on
+        # in; the worker gate's own tests are in test_claude_gate
+        gate = unittest.mock.patch("sampo.models.gate_here")
+        gate.start()
+        self.addCleanup(gate.stop)
 
     def app(self):
         return SettingsScreen.app(self)

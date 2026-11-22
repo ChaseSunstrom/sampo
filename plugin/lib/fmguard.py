@@ -72,6 +72,10 @@ USER_ONLY_FM = {
                      "lift it", "sampo pause off"),  # T-0591
     "approve-reads": ("on", "sampo approve-reads on lets Sampo answer Claude Code's permission dialogs for reads: the "
                             "user turns it on", "sampo approve-reads on"),  # T-0974
+    "claude-bench": (("on", "worker"), "sampo claude-bench on lets Sampo run benchmarks, evals and comparisons that call a "
+                                       "Claude model, and sampo claude-bench worker NAME says a custom --worker command is "
+                                       "not Claude, so the gate lets it run: the user does both",
+                     "sampo claude-bench on"),  # T-5584, T-5812
     "rule": ("rm", "sampo rule rm is the user's to run: their rule stops what they said to stop, so only they lift it",
              "sampo rule rm N"),  # T-0971; `add rm` is a rare miss
     "vetoes": ("rm", "sampo vetoes rm is the user's to run: their veto keeps an idea out of the plan, so only they lift it",

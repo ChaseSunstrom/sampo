@@ -131,6 +131,7 @@ class CodeCase(ForemanTestCase):
         super().setUp()
         if self.replayed:
             stub_corpus_replay(self.repo)
+        self.fm("claude-bench", "on")  # T-5584: these runs use fake CLIs on PATH, no model call; test_claude_gate tests the gate
         self.fake_home = os.path.join(self.tmp, "home")  # rm -rf ~ in a script can only ever reach this
         os.makedirs(self.fake_home)
         with open(os.path.join(self.fake_home, "keep"), "w") as f:
