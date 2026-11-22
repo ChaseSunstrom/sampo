@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- A user prompt like 'set the self filed tasks to unlimited' or 'N a day' now sets the discovered/followup/self trigger budgets from the prompt hook through a small matcher of the user's own words to one guarded verb (one use, 120 s expiry, a user_grant ledger row, quoted and pasted text excluded), and 'triggers set --budget unlimited' is accepted (T-5897).
 - The lane cargo folders' cap shrinks by the shortfall when the state disk's free space is under a 15 GB floor (SAMPO_CARGO_FREE_FLOOR_BYTES overrides), so a nearly full disk no longer sits under a cap that is a tenth of its size (T-5874).
 - test_roles.SeedReview no longer goes red on trunk when claude_bench is off, since its fixture project turns the switch on for its own run (T-5872).
 - The lane pilot's headless resolver loads the main checkout's plugin and runs its `sampo` from the main install, so Claude Code no longer refuses its lane's conflicted files as "a sensitive file" (T-5868).
