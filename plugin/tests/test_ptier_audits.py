@@ -57,6 +57,15 @@ class NoOff(unittest.TestCase):
         os.environ.pop("FOREMAN_PROCESS_TIER", None)
 
 
+class TierOn:
+    """T-5714: SampoTestCase runs every test with FOREMAN_PROCESS_TIER=off (today's S, M and L plan gate); the lanes and
+    hints here are about the score, so their setUp turns it back on (the subprocess fm calls inherit the env)."""
+
+    def setUp(self):
+        super().setUp()
+        os.environ.pop("FOREMAN_PROCESS_TIER", None)
+
+
 class GroupsPerTier(NoOff):
     def groups(self, tier, files, diff, linked=None, type_="FIX", ptier=None):
         return c.required_audits(brief(tier, type_, scope=files, ptier=ptier), files, diff, linked)
@@ -215,7 +224,7 @@ class Adversary(NoOff):
             self.assertEqual(ptier, "risky")
 
 
-class Accept(AcceptCase):
+class Accept(TierOn, AcceptCase):
     """train._accept_gaps judges the lane's own diff the way the close does."""
 
     def gaps(self, tid, rows=(), **kw):
@@ -354,7 +363,7 @@ class UnreadableDiff(NoOff):
         self.assertTrue(any(g.startswith("lesson missing") for g in gaps), gaps)  # a normal tier owes the lesson
 
 
-class UnreadableLane(AcceptCase):
+class UnreadableLane(TierOn, AcceptCase):
     def test_accept_reads_the_claim_when_the_lanes_diff_is_unreadable(self):
         tid = self.lane(1, "guide.md", when=OLD, tier="M")
         b = self.brief(tid)
@@ -388,7 +397,7 @@ class NotTrivialFromComments(NoOff):
         self.assertEqual(self.tier("M", DOCS, patch(DOCS, "+A line.")), "trivial")
 
 
-class LinkedTestsMustHaveRun(AcceptCase):
+class LinkedTestsMustHaveRun(TierOn, AcceptCase):
     """T-5715 review 1: a file counts as linked only when one of its linked tests ran green in this task's evidence."""
 
     LINKED = {"tests": {"test_mod.py": ["mod.py"]}}
@@ -445,7 +454,7 @@ class LinkedTestsMustHaveRun(AcceptCase):
         self.assertEqual(len(got), 1, got)
 
 
-class NextHint(ForemanTestCase):
+class NextHint(TierOn, ForemanTestCase):
     """T-5715 review 1: the stage and the next action follow the tier the close will use, not the unmeasured claim."""
 
     def ready(self, tier="M", touch=DOCS):
@@ -505,7 +514,7 @@ class NextHint(ForemanTestCase):
         self.assertEqual(c.audit_progress(brief("M"), None, "normal")["required"], 2)
 
 
-class StampOnlyOnARise(AcceptCase):
+class StampOnlyOnARise(TierOn, AcceptCase):
     def ptier_events(self):
         return c.ledger_tail(self.p, 500, kinds=("ptier",))
 
@@ -525,7 +534,7 @@ class StampOnlyOnARise(AcceptCase):
         self.assertEqual(len(self.ptier_events()), 1)
 
 
-class CommandGates(ForemanTestCase):
+class CommandGates(TierOn, ForemanTestCase):
     def test_sampo_gates_prints_the_process_tier(self):
         self.fm("init")
         self.fm("task", "new", "Change docs", "--type", "FEATURE", "--tier", "M", "--ac", "ok :: true", "--step", "s")

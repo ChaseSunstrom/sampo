@@ -3439,6 +3439,22 @@ def route(p, tier, tid=None, outs=None, racing=False):
 _route = route  # builder_brief has a local named route
 
 
+def light_model(ptier):
+    """T-5714: (model, effort) a builder takes for a trivial or small change by process tier, else None (the route's pick)."""
+    return ("haiku", "medium") if ptier in ("trivial", "small") else None
+
+
+def plan_model(b):
+    """T-5714: (model, effort, why) for the builder of brief b when its scope-only process tier is trivial or small, else
+    None. FOREMAN_PROCESS_TIER=off gives None: today's route. A light lane skips the route (builder_brief), so it
+    promotes nothing and counts as no probe."""
+    if os.environ.get("FOREMAN_PROCESS_TIER", "").strip().lower() == "off":
+        return None
+    pt = c.plan_ptier(b)[0]
+    pick = light_model(pt)
+    return (*pick, f"ptier {pt}") if pick else None
+
+
 def confirm_routes(p, res):
     """The end-of-run hook of `fm exam long` (fmlong.grade): a provisional promotion stands if this run's goals in its tier
     pass at least as often as the last foreman run before the promotion, else the dearer pick comes back. A run that can't
@@ -4853,15 +4869,21 @@ def builder_brief(p, b, args, resume_branch=None, after="", stacked=None):
         else:
             x.meta.pop("builder_proc", None)
         x.append_log(f"builder brief: {path}")
-    chosen, route, probe = _route(p, b.tier, tid=b.id, racing=bool(racing))
+    effort = "medium" if b.tier == "S" else "high"
+    light = plan_model(b)  # T-5714: a trivial or small change by its scope: haiku at medium effort, unless --model says
+    if light:  # a light lane skips the route: it promotes no model and fills no probe window
+        chosen, effort, route, probe = light[0], light[1], f"{light[2]}: {light[0]} at {light[1]} effort", False
+    else:
+        chosen, route, probe = _route(p, b.tier, tid=b.id, racing=bool(racing))
     if getattr(args, "model", None):
         chosen, route, probe = args.model, f"--model {args.model}", False
     if paused:  # T-5562: the hook rewrites a launch to haiku while the hold lasts; the printed call says so up front
         chosen, route, probe = budget.HELD_MODEL, f"{budget.HELD_MODEL} while usage is ahead of pace ({paused})", False
     cli.mutate(p, b.id, mark, "lane_builder", {"path": path, "chars": len(text)})  # T-2368: fm lane stats
-    # T-1796: every builder runs on Sonnet (Opus M lanes were 22% of a week's usage); the main thread reviews either
+    # T-1796: builders run on Sonnet (Opus M lanes were 22% of a week's usage); the main thread reviews either. T-5714:
+    # except a trivial or small change by its scope (docs, tests, a claimed S), which runs on haiku at medium effort.
     # T-0779: and its effort follows the tier: medium for small well-specified diffs, high for M
-    model = f', model: "{chosen}", effort: "{"medium" if b.tier == "S" else "high"}"'
+    model = f', model: "{chosen}", effort: "{effort}"'
     agent = f'{AGENT_HEAD}{model}, {agent_prompt(path)}'
     own = sum(len(b.section(s)) for s in ("Raw request", "Interpretation", "Approach (options → choice → why)",
                                           "Acceptance criteria", "Steps"))

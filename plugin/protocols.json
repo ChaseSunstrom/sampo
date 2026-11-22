@@ -1,6 +1,6 @@
 {
   "_": "T-0662: how much deliberation a task gets, by tier. panel: what runs before execution; dissent: objections are kept open in the brief until answered (fm task dissent).",
   "S": {"panel": "none", "why": "a small, obvious change: a panel costs more than it finds"},
-  "M": {"panel": "rival when the choice is under the race bar, claims one honest reading or has a one-way step", "why": "fm second rival ID: the plan gate asks for it (T-2341); no other M plan needs a panel"},
+  "M": {"panel": "rival when the choice is under the race bar (60%, 80% on a sensitive scope), claims one honest reading or has a one-way step", "why": "fm second rival ID: the plan gate asks for it (T-2341); no other M plan needs a panel"},
   "L": {"panel": "fm second plan", "before": "approval", "why": "cross-cutting or risky: another model reads the plan before it is approved"}
 }

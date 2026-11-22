@@ -6354,11 +6354,14 @@ def _started(b):
                 or b.meta.get("base_tree") or b.has_evidence() or any(s.done for s in b.steps()))
 
 
-def _content_gaps(b):
+def _content_gaps(b, pt=None):
     """T-2269, T-2335: the plan's content by tier: M/L name 2+ distinct readings (or the one ruled out), 3+ distinct options
-    each with an outcome or failure mode, one use-what-exists and one do-less option, and a choice; L adds risks."""
+    each with an outcome or failure mode, one use-what-exists and one do-less option, and a choice; L adds risks.
+    pt: the plan's process tier when the caller has read it (plan_gaps does, once)."""
     gaps = []
-    if at_least(b.tier, "M"):
+    pt = pt or plan_ptier(b)[0]
+    light = plan_light(b, pt)  # T-5714: a docs or tests scope plan takes S's gate: criteria and steps, no readings or options
+    if at_least(b.tier, "M") and not light:
         it = b.section("Interpretation")
         n = _distinct(_split_options(it, bullets=False))  # a bullet is a scope line, not a reading
         ruled = _RULED_RE.search(it)
@@ -6398,7 +6401,7 @@ def _content_gaps(b):
     if at_least(b.tier, "L"):
         if not b.section("Risks and rollback").strip():
             gaps.append(f"Risks and rollback (sampo task set {b.id} --section 'Risks and rollback': what fails, what undoes it)")
-    if not at_least(b.tier, "M"):  # T-2338: S is untouched: a "(low)" assumption still waits for research, a spike or a verify
+    if not at_least(b.tier, "M") or light:  # T-2338: S is untouched: a "(low)" assumption still waits for research, a spike or a verify
         low = [l for l in b.section(b.ASSUMPTIONS).splitlines()
                if "(low)" in l.lower() and not re.match(r"- \[(?:verified|false)\b", l) and not _SPIKE_RE.search(l)]
         if low:
@@ -6416,13 +6419,21 @@ def _content_gaps(b):
                         f"that can fail (sampo task assume {b.id} verify {n} --run CMD), or write what you found (sampo research "
                         f"NAME, then sampo task assume {b.id} verify {n} --from research/NAME), or close a spike (--from T-NNNN); "
                         "a cold reader must agree it holds")
-    return gaps + rival_gap(b)
+    return gaps + rival_gap(b, pt)
 
 
 HARD_RE = lazy(r"(?i)\b(deploy|release|publish|push|migrat(?:e|ion)|delete|drop|merge|send)(?:s|es|d|ed|ing)?\b")  # a step that's hard to undo
 # S briefs: only what can't be taken back (a push, a send or a lease chore is routine and never waits on a paid call)
 HARD_S_RE = lazy(r"(?i)\b(deploy|release|publish|migrat(?:e|ion)|delete|drop table)(?:s|es|d|ed|ing)?\b")
-RACE_BAR = 80  # T-2341: an M plan whose own choice is under this sure (the "(60%)" after Choice) gets a cold rival read
+RACE_BAR = 80  # T-2341: a risky M plan whose own choice is under this sure (the "(60%)" after Choice) gets a cold rival read
+RACE_BAR_NORMAL = 60  # T-5714: the bar for a normal-tier M plan (the scope-only process tier); trivial and small have none
+
+
+def race_bar(pt):
+    """T-5714: the percent a plan's choice must reach to skip the cold rival read: 80 for a risky plan, 60 for a normal
+    one. FOREMAN_PROCESS_TIER=off is today's gate: 80 for every M plan."""
+    off = os.environ.get("FOREMAN_PROCESS_TIER", "").strip().lower() == "off"
+    return RACE_BAR if off or pt == "risky" else RACE_BAR_NORMAL
 _ONE_READING_RE = lazy(r"(?<!no )(?<!not )\b(?:only|just|one|single|sole)\s+(?:honest\s+)?reading\b", re.I)  # "no other honest reading" is T-2335's ruled-out form
 _RIVAL_OPEN = lazy(r"- \[ \] rival (?:reading|approach): ")
 
@@ -6530,7 +6541,7 @@ _CODE_OBJ = lazy(r"\s+(?:the\s+)?(?:unused\s+|dead\s+|old\s+)?"  # a file name (
                  r"(?:`[^`]+`|\w*_\w*\b(?!\.)|\w+(?:\.\w+)*\.\w*_\w*\b(?!\.)|\w+(?:\.\w+)*\(\))")
 
 
-def rival_gap(b):
+def rival_gap(b, pt=None):
     """T-2341: ["a cold rival read…"] while the brief needs one it doesn't have, or has rival-only lines still open: an
     L plan, an M plan under the race bar or claiming one honest reading, any plan with a one-way step the request
     didn't name. The read is the rival_at meta key fm second rival writes (a section typed in by hand doesn't count).
@@ -6539,10 +6550,13 @@ def rival_gap(b):
         return []
     conf = stated_confidence(b.section("Approach (options → choice → why)"))  # T-2427: the one shared parser (last wins)
     hard = _one_way(b) or ("untracked data, T-2342" if b.meta.get("doors") or b.meta.get("door_acs") else "")  # fm focus marks local one-way steps
+    pt = pt or plan_ptier(b)[0]
+    m_plan = b.tier == "M" and not plan_light(b, pt)  # T-5714: a trivial or small plan has S's gate: no confidence bar
+    bar = race_bar(pt)
     why = ("an L plan" if at_least(b.tier, "L") else
            f"a one-way step ({hard})" if hard else
-           f"the choice is {conf}% sure, under {RACE_BAR}%" if b.tier == "M" and conf is not None and conf < RACE_BAR else
-           "the plan claims one reading" if b.tier == "M" and _ONE_READING_RE.search(b.section("Interpretation")) else "")
+           f"the choice is {conf}% sure, under {bar}%" if m_plan and conf is not None and conf < bar else
+           "the plan claims one reading" if m_plan and _ONE_READING_RE.search(b.section("Interpretation")) else "")
     if not why:
         return []
     if not b.meta.get("rival_at"):
@@ -6570,9 +6584,15 @@ _EMPTY_SHAPE = {
     "Interpretation": "Interpretation: 2+ readings (sampo task set {id} --section Interpretation --text 'Reading 1: … "
                       "Reading 2: …', or the one reading and the one you ruled out, with why)",
     "Approach": "Approach (options → choice → why): 3+ options, each with 'fails if: …' or 'likely outcome: …'; one "
-                "'N) use what exists: …'; one 'N) do less: …'; 'Choice N (NN%): why' (a choice under 80% also gets a cold "
-                "rival read; sampo task set {id} --section Approach)",
+                "'N) use what exists: …'; one 'N) do less: …'; 'Choice N (NN%): why' (a choice under {bar}% also gets a cold "
+                "rival read{sensitive}; sampo task set {id} --section Approach)",
 }
+
+
+def _empty_shape(name, b):
+    """T-5714: _EMPTY_SHAPE[name] for brief b, its rival bar read now: FOREMAN_PROCESS_TIER=off says 80% for every M plan."""
+    bar = race_bar("normal")
+    return _EMPTY_SHAPE[name].format(id=b.id, bar=bar, sensitive=", 80% on a sensitive scope" if bar < RACE_BAR else "")
 
 
 def plan_gaps(b, autonomy="standard"):
@@ -6584,16 +6604,18 @@ def plan_gaps(b, autonomy="standard"):
     # T-2335: a plan Foreman's own harness wrote (fm code's station plan, a hook's task from the raw request) has no
     # readings or options to gate: harness_plan says who wrote it, and the plan's own text is not checked
     own = bool(b.meta.get("harness_plan"))
-    if at_least(b.tier, "M") and not own:
+    pt = plan_ptier(b)[0]  # T-5714: read once; _content_gaps and rival_gap take it
+    m_plan = at_least(b.tier, "M") and not plan_light(b, pt)  # a trivial or small plan is gated as S: criteria, steps
+    if m_plan and not own:
         # T-4492: an empty section names the whole shape it needs, so the first refusal lists every missing piece
-        gaps += [_EMPTY_SHAPE[name].format(id=b.id) for name, sec in (("Interpretation", "Interpretation"),
+        gaps += [_empty_shape(name, b) for name, sec in (("Interpretation", "Interpretation"),
                                                                         ("Approach", "Approach (options → choice → why)"))
                  if not b.section(sec).strip()
                  # T-4221: a big task's Design section holds its approach (the plan gate above checks it): never asked twice
                  and not (name == "Approach" and is_big(b.tier) and b.section("Design").strip())]
     if not _started(b) and not own:  # a task already started (even if paused back to planned) isn't re-gated
-        gaps += _content_gaps(b)
-        if at_least(b.tier, "M") and b.meta.get("source") == "user" and not b.meta.get("batch") and _users_words(b):
+        gaps += _content_gaps(b, pt)
+        if m_plan and b.meta.get("source") == "user" and not b.meta.get("batch") and _users_words(b):
             # T-2914: meaning is planned, not labelled after (a batch host's members were each planned already)
             from sampo import recall
             cls = [f'"{fit(plain(cl), 70)}"' for cl in recall.unchecked_clauses(b)]
@@ -6603,7 +6625,7 @@ def plan_gaps(b, autonomy="standard"):
     acs = b.acceptance()
     if not acs:
         gaps.append("acceptance criterion")
-    elif at_least(b.tier, "M") and b.meta.get("harness_plan") != "hook":  # a hook's criteria are the request's own DONE-WHEN lines
+    elif m_plan and b.meta.get("harness_plan") != "hook":  # a hook's criteria are the request's own DONE-WHEN lines
         gaps += [f"verify command on criterion {a.n}" for a in acs if "verify with" not in a.text]
     if not b.steps():
         gaps.append("step")
@@ -9765,6 +9787,73 @@ def stamp_ptier(b, ptier, why=()):
     b.meta["ptier"] = ptier
     b.meta["ptier_why"] = "; ".join(" ".join(str(w).split()) for w in why)[:300]
     return True
+
+
+# T-5714: a plan's scope is docs when each entry is a prose file (md, markdown, rst, txt, adoc), or a path with no
+# extension (a folder or a glob like docs/*) under a docs folder. A build file is never prose, and nothing under a
+# hidden folder (docs/.vitepress) is: those run, or configure what runs.
+_DOC_EXT = lazy(r"(?i)\.(md|markdown|rst|txt|adoc)$")
+_BUILD_FILE = lazy(r"(?i)(^|/)(CMakeLists\.txt|(?:requirements|constraints)[^/]*\.txt|(?:Make|Docker|Rake|Gem|Just|Vagrant)file[^/]*)$")
+_DOCS_DIR = lazy(r"(?i)(^|/)docs?/")
+
+
+def _plan_scope(scope):
+    """T-5714: the scope entries of a brief as clean repo-relative paths (posixpath.normpath), or None when one cannot
+    be measured: absolute, "~", a backslash, an entry that climbs out of the repo (the normal form starts with ".."),
+    or a glob with a ".." in it (it expands to somewhere the normal form doesn't name). tests/../x is x."""
+    import posixpath
+    out = []
+    for raw in scope:
+        raw = raw.strip()
+        if not raw or raw[0] in "/~" or "\\" in raw or "\x00" in raw:
+            return None
+        f = posixpath.normpath(raw)
+        if f == "." or f == ".." or f.startswith("../") or (".." in raw.split("/") and re.search(r"[*?\[{]", raw)):
+            return None
+        out.append(f)
+    return out
+
+
+def _scope_is_docs_and_tests(files):
+    """True when every (normalized) scope path is a test file, a prose file or an extensionless docs path."""
+    for f in files:
+        if _TEST_DIR.search(f):
+            continue
+        if DOC.search(f):
+            if _DOC_EXT.search(f) and not _BUILD_FILE.search(f):
+                continue
+            return False
+        last = f.rsplit("/", 1)[-1]
+        if (_DOCS_DIR.search(f) and not os.path.splitext(last)[1] and not _BUILD_FILE.search(f)
+                and not any(part.startswith(".") for part in f.split("/"))):
+            continue
+        return False
+    return bool(files)
+
+
+def plan_ptier(b):
+    """T-5714: the process tier the plan gate reads, from the scope alone (no diff exists yet). ptier_of, and a claimed M
+    whose scope names only docs and tests reads as trivial: no code is touched, so it is no more than an S plan.
+    Each scope entry is normalized first (tests/../x.py is x.py, code); an entry that can't be measured (absolute, or
+    out of the repo by "..") leaves the claimed tier. A stored ptier is still a floor, FOREMAN_PROCESS_TIER=off gives
+    today's S, M and L, and a brief with no scope stays at its claimed level."""
+    scope = b.meta.get("scope") or []
+    scope = [scope] if isinstance(scope, str) else [str(f) for f in scope]
+    files = _plan_scope(scope)
+    base, why = ptier_of(b, files=files)  # files None: ptier_of reads the raw scope
+    if base != "normal" or files is None or os.environ.get("FOREMAN_PROCESS_TIER", "").strip().lower() == "off":
+        return base, why
+    if _scope_is_docs_and_tests(files):
+        stored = str(b.meta.get("ptier") or "").strip()
+        i = PTIERS.index(stored) if stored in PTIERS else 0
+        return PTIERS[i], ["scope is docs and tests only"] + ([f"stored ptier {stored}"] if i else [])
+    return base, why
+
+
+def plan_light(b, pt=None):
+    """T-5714: True for a claimed M plan the gate treats as an S plan: its scope-only process tier (pt, when the caller
+    has read it) is trivial or small. L and bigger are never light, and a claimed S is already S's gate."""
+    return canonical_tier(b.tier) == "M" and (pt or plan_ptier(b)[0]) in ("trivial", "small")
 
 
 _UI_MORE = {".sass", ".less", ".astro", ".jinja", ".jinja2", ".hbs", ".njk", ".ejs", ".twig", ".liquid"}  # not linted

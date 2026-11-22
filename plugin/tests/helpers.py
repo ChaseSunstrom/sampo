@@ -391,7 +391,8 @@ class SampoTestCase(unittest.TestCase):
                                                      "FOREMAN_ONEOFF", "CLAUDE_CODE_ENTRYPOINT", "FOREMAN_DRIVE_TASK",
                                                      "FOREMAN_GUARD_CASES", "FOREMAN_NO_LINK", "FOREMAN_NO_RIVAL",
                                                      "FOREMAN_UI_CACHE_S", "FOREMAN_DISK_FREE",
-                                                     "FOREMAN_NO_LEFTOVER_SCAN", "FOREMAN_NO_COVERED")}
+                                                     "FOREMAN_NO_LEFTOVER_SCAN", "FOREMAN_NO_COVERED",
+                                                     "FOREMAN_PROCESS_TIER")}
         if not again:
             self._env = env
         # T-4198: registered first, so it runs last: unittest runs tearDown, then the addCleanup functions last added
@@ -403,6 +404,9 @@ class SampoTestCase(unittest.TestCase):
         # free is roomy; a test of low space pins its own reading (test_disk_pressure)
         os.environ["FOREMAN_DISK_FREE"] = "500e9/1000e9"
         os.environ["FOREMAN_NO_RIVAL"] = "1"  # T-2341: no plan waits on a cold rival read (the Rival tests turn it on)
+        # T-5714: the plan gate, the rival bar and the builder model read the process tier; the older tests mean today's
+        # S, M and L gate, so they run with it off (test_ptier_plan_gate turns it on)
+        os.environ["FOREMAN_PROCESS_TIER"] = "off"
         # T-4288: no "Already covered?" note on task new and capture (test_nudges.Covered turns it on): its cache check
         # stats every file of the package, so 630 classes that only made a task depended on all 168 and re-ran on any edit
         os.environ["FOREMAN_NO_COVERED"] = "1"

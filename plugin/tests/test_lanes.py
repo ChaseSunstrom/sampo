@@ -773,6 +773,46 @@ class Lanes(ForemanTestCase):
             self.assertIn(f'effort: "{effort}"', agent)
             self.assertIn('model: "sonnet"', agent, "T-1796: every builder runs on Sonnet; Opus M lanes were 22% of usage")
 
+    def test_the_brief_names_haiku_for_a_trivial_or_small_scope_and_the_model_flag_wins(self):
+        # T-5714: the process tier (on here; the suite turns it off) picks haiku at medium effort for a docs scope or an S
+        on = {"FOREMAN_PROCESS_TIER": ""}
+        self.fm("lane", "max", "20")
+        plan = ["--interpretation", "Reading 1: a. Reading 2: b.", "--approach", "1) a; fails if: x 2) use what exists: b; "
+                "fails if: y 3) do less: c; fails if: z Choice 1 (80%): a"]
+        mk = lambda t, tier, scope, *more: first(self.fm("task", "new", t, "--type", "FEATURE", "--tier", tier,  # noqa: E731
+                                                         "--ac", "ok :: true", "--step", "s", "--scope", scope, *more,
+                                                         "--json").stdout)["id"]
+        small, code = mk("Small", "S", "plugin/lib/sampo/x.py"), mk("Code", "M", "plugin/lib/sampo/x.py", *plan)
+        docs = mk("Docs", "M", "docs/guide.md")
+        for tid, model, effort in ((small, "haiku", "medium"), (docs, "haiku", "medium")):
+            out = json.loads(self.fm("lane", "brief", tid, "--json", env=on).stdout)
+            self.assertIn(f'model: "{model}", effort: "{effort}"', out["agent"], tid)
+            self.assertIn("builder_model: haiku", open(c.find_brief(c.find_project(self.repo), tid).path).read())
+        out = self.fm("lane", "brief", small, "--model", "opus", env=on).stdout
+        self.assertIn('model: "opus"', out)
+        self.assertIn('model: "sonnet", effort: "high"', self.fm("lane", "brief", code, env=on).stdout, "normal: the route")
+        self.assertIn('model: "sonnet"', self.fm("lane", "brief", small, env={"FOREMAN_PROCESS_TIER": "off"}).stdout)
+
+    def test_a_light_lane_never_asks_the_route_so_it_writes_no_promotion_and_fills_no_probe_window(self):
+        # T-5714: route() can promote a model or label a probe; a haiku lane by its process tier is neither
+        from sampo import lanes as slanes
+        self.fm("lane", "max", "20")
+        p = c.find_project(self.repo)
+        mk = lambda t, tier, scope: first(self.fm("task", "new", t, "--type", "FEATURE", "--tier", tier,  # noqa: E731
+                                                  "--ac", "ok :: true", "--step", "s", "--scope", scope, "--json").stdout)["id"]
+        small, docs = mk("Small", "S", "plugin/lib/sampo/x.py"), mk("Docs", "M", "docs/guide.md")
+        with mock.patch.dict(os.environ, {"FOREMAN_PROCESS_TIER": ""}), \
+                mock.patch.object(slanes, "_route", return_value=("sonnet", "the route", True)) as route:
+            for tid in (small, docs):
+                slanes.builder_brief(p, c.find_brief(p, tid), argparse.Namespace(model=None, json=False))
+                self.assertNotIn("route_probe", c.find_brief(p, tid).meta, tid)
+                self.assertEqual(c.find_brief(p, tid).meta["builder_model"], "haiku", tid)
+            route.assert_not_called()
+            os.environ["FOREMAN_PROCESS_TIER"] = "off"  # off: today's route, asked once and its probe label kept
+            slanes.builder_brief(p, c.find_brief(p, small), argparse.Namespace(model=None, json=False))
+            route.assert_called_once()
+            self.assertEqual(c.find_brief(p, small).meta.get("route_probe"), "1")
+
     def test_a_research_brief_tells_the_builder_to_file_its_note_in_state(self):  # T-3953: T-3933's note was lost
         mk = lambda t, ty: first(self.fm("task", "new", t, "--type", ty, "--tier", "S", "--ac", "ok :: true",  # noqa: E731
                                          "--step", "s", "--json").stdout)["id"]

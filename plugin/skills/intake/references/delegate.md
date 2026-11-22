@@ -8,8 +8,8 @@ Models (T-0373): the main thread (Opus or Fable) plans, judges, merges and write
 |---|---|---|
 | find where something is, read a long log/changelog and summarize it | `sampo:fm-scout`, or general-purpose with `model: "haiku"` | Haiku |
 | recon, research, audits, debugging hypotheses | `sampo:fm-recon` / `fm-reviewer` / `fm-debugger` | Sonnet (their frontmatter) |
-| an S task in a builder lane | `sampo:fm-builder` (`sampo lane brief` prints `model: "sonnet"`) | Sonnet |
-| an M task in a builder lane, an L plan's critique | `sampo:fm-builder`, `sampo second plan` | the main model |
+| a trivial or small task in a builder lane: a claimed S, or an M whose scope is only docs and tests (T-5714) | `sampo:fm-builder` (`sampo lane brief` prints `model: "haiku", effort: "medium"`; `FOREMAN_PROCESS_TIER=off` or `--model` restores the route's pick) | Haiku |
+| any other S or M task in a builder lane (`sampo lane brief` prints `model: "sonnet"`), an L plan's critique | `sampo:fm-builder`, `sampo second plan` | Sonnet for the builder, the main model for the critique |
 | a review's findings fixed in a lane's worktree | `sampo:fm-fixer` (`isolation: "worktree"`; the prompt names the lane and the findings) | Sonnet |
 | a merge or rebase conflict in a lane's worktree | `sampo:fm-resolver` (`isolation: "worktree"`; the prompt names the lane and the conflicted files) | Haiku (pass `model: "sonnet"` when the conflict is big) |
 | brainstorm lenses, research children, oracle, bench | `sampo ideas` / `sampo research ask` / … (`--model`) | Sonnet by default |
