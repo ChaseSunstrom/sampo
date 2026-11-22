@@ -3640,24 +3640,45 @@ class _Closer:
     `work(ids)` is the land's close and never raises. A close whose commit waits for a running train (`holding`)
     goes to `later`, back on the queue when the train ends (hold(False))."""
 
-    def __init__(self):
+    def __init__(self, par=1):
         self.cv = threading.Condition()
         self.work = None
         self.q, self.later, self.thread = [], [], None
         self.holding = self.stopped = False
         self.only = None  # trim(keep): the ids that may still close (None: any)
         self.fast = set()  # T-5873: ids whose close passed its criteria and waits only for its commit (after_train)
+        # T-5912: the leftovers (merged and open before the land) close beside the train's own lanes, up to `par` at once:
+        # the worker thread takes any batch, the extra ones (par - 1 at most) only a leftover's, and none starts until one
+        # leftover has finished (its close recorded the gate pass on trunk's code that the others' closes then reuse)
+        self.par, self.extra, self.left, self.left_ran = max(1, par), 0, set(), 0
 
     def _wake(self):  # under cv
-        if self.thread is None and self.q and not self.stopped:
+        if self.stopped:
+            return
+        if self.thread is None and self.q:
             self.thread = threading.Thread(target=self._run, name="sampo-land-closes", daemon=True)
             self.thread.start()
+        more = sum(1 for ids in self.q if self.left.issuperset(ids))
+        while self.left_ran and self.extra < self.par - 1 and more > 0:  # a thread that finds none left ends at once
+            self.extra += 1
+            more -= 1
+            threading.Thread(target=self._run, args=(True,), name="sampo-land-leftover-closes", daemon=True).start()
 
-    def put(self, ids, front=False):
-        """ids close next (front: before what is queued, a train's own lanes before the leftovers) or last."""
+    def set_par(self, par):
+        """The most closes at once, asked again (the host's load changes in an hour): extra threads start at once when
+        a leftover has already passed."""
+        with self.cv:
+            self.par = max(1, par)
+            self._wake()
+
+    def put(self, ids, front=False, left=False):
+        """ids close next (front: before what is queued, a train's own lanes before the leftovers) or last. `left`: a
+        leftover's close (T-5912), which may run beside another."""
         ids = [t for t in ids if self.only is None or t in self.only]
         if ids:
             with self.cv:
+                if left:
+                    self.left.update(ids)
                 self.q.insert(0, ids) if front else self.q.append(ids)
                 self._wake()
 
@@ -3682,29 +3703,37 @@ class _Closer:
                 self.q.append(list(ids))
                 self._wake()
 
-    def _run(self):
+    def _run(self, extra=False):
         while True:
             with self.cv:
-                if self.stopped or not self.q:
-                    self.thread = None
+                at = next((i for i, ids in enumerate(self.q) if not extra or self.left.issuperset(ids)), None)
+                if self.stopped or at is None:
+                    if extra:
+                        self.extra -= 1
+                    else:
+                        self.thread = None
                     self.cv.notify_all()
                     return
-                ids = self.q.pop(0)
+                ids = self.q.pop(at)
                 self.fast.difference_update(ids)  # before the work: its own commit wait puts them back (after_train)
+            passed = False
             try:
-                self.work(ids)
+                passed = bool(self.work(ids))
             except Exception as e:  # noqa: BLE001 — the work reports its own; one batch never ends the worker
                 print(f"sampo lane land: a close batch failed: {type(e).__name__}: {c.fit(str(e), 200)}", file=sys.stderr, flush=True)
             with self.cv:
+                if passed and self.left.issuperset(ids):
+                    self.left_ran += 1
+                    self._wake()  # a leftover's close passed (its gate pass is recorded): the others may run beside each other now
                 self.cv.notify_all()
 
     def idle(self):
         with self.cv:
-            return self.thread is None and not self.q and not self.later
+            return self.thread is None and not self.extra and not self.q and not self.later
 
     def wait(self, timeout):
         with self.cv:
-            if self.thread is not None:
+            if self.thread is not None or self.extra:
                 self.cv.wait(timeout)
 
     def trim(self, keep):
@@ -3746,14 +3775,27 @@ class _Closer:
 
     def join(self):
         with self.cv:
-            while self.thread is not None:
+            while self.thread is not None or self.extra:
                 self.cv.wait(1.0)
+
+
+LEFTOVER_CLOSERS = 3  # T-5912: the most leftover closes that run at once (one per 4 cores the host has idle, at least one)
+
+
+def _close_par():
+    """T-5912: how many leftover closes may run at once: one per 4 cores that are idle now (the load average's one-minute
+    figure against the CPU count), 1 to LEFTOVER_CLOSERS. The host is shared (up to ~100 agents): a loaded one gets one."""
+    try:
+        room = (os.cpu_count() or 4) - os.getloadavg()[0]
+    except (OSError, AttributeError):
+        room = 4
+    return max(1, min(LEFTOVER_CLOSERS, int(room // 4)))
 
 
 def _land(p, main, batch):
     """T-4718: the trains defer their background verify; it starts after the ship (or, whatever happens, at the end)."""
     owed = [False]
-    closer = _Closer()
+    closer = _Closer(_close_par())
     try:
         return _land_trains(p, main, batch, owed, closer)
     finally:
@@ -3817,6 +3859,7 @@ def _land_trains(p, main, batch, owed, closer=None):
         return None
 
     queued = set()  # T-5368: the ids put on the closer (once each)
+    redwait, red_look, drained = {}, [0.0], [False]  # T-5912: {leftover: classes} skipped as red on trunk; next look; drained
     fixwait, freed = {}, set()  # T-5791: {task: the express FIX its close waits for}, and the (task, FIX) pairs released
 
     def ensure_pm():  # T-5791: a pending behind verify with no runner gets one; never costs the land anything
@@ -3840,6 +3883,9 @@ def _land_trains(p, main, batch, owed, closer=None):
         return False
 
     def close(ids):  # T-3796: each lane closes once its train lands it, not after the whole pile has trained
+        """True when a close passed its criteria (closed, or proven and waiting only for its commit: closer.fast): the
+        gate pass it recorded on trunk's code is one the other closes reuse (T-5912)."""
+        passed = False
         for tid in ids:  # T-5368: on the closer's thread, whose queue the trains' boundaries and the land's end feed
             if closer.stopped:  # a restart: what is not closed yet is merged and open, the next land finds it
                 break
@@ -3850,8 +3896,10 @@ def _land_trains(p, main, batch, owed, closer=None):
                                            commit_wait=lambda: 1.0 if closer.holding else None)
             except Exception as e:  # noqa: BLE001 — close_landed keeps each lane's own; this is all it could not
                 done, left_ = [], [(tid, f"{type(e).__name__}: {e}")]
+            passed = passed or bool(done) or tid in closer.fast
             closed.extend(done)
             hand.extend(left_)
+        return passed
     closer.work = close
 
     def wait_closes():
@@ -3859,15 +3907,41 @@ def _land_trains(p, main, batch, owed, closer=None):
         meanwhile is) trains at once, its gate running beside the closes. True when one came, False once the closes are done."""
         while not closer.idle():
             ensure_pm()  # T-5791: the closes may wait for hours: each poll asks (pm_ensure's own gap limits the spawns)
+            look_red()  # T-5912: a leftover skipped for a trunk red whose classes went green closes meanwhile
             closer.wait(CLOSE_POLL_S)
             if first_ids(p, peek=True):
                 return True
         return bool(first_ids(p, peek=True))
 
-    def to_close(ids, front=False):
-        todo = [t for t in ids if t not in queued and t not in fixwait]
+    def to_close(ids, front=False, leftover=False):
+        todo = [t for t in ids if t not in queued and t not in fixwait and t not in redwait]
         queued.update(todo)
-        closer.put(todo, front)
+        closer.put(todo, front, left=leftover)
+
+    def drain_left():
+        """T-5912: the leftovers go on the closer now: after the first train's merges (or at once when none trains), never
+        in front of it. One batch each: a stop's trim and a restart's drain act between batches. A leftover the closer
+        has already is not queued twice."""
+        drained[0] = True
+        closer.set_par(_close_par())  # the load at the drain, not at the land's start: a land lasts hours
+        for t in left:
+            to_close([t], leftover=True)
+
+    def look_red(force=False):
+        """T-5912: the leftovers skipped for classes red on trunk, looked at again (at most every KNOWN_RED_POLL_S unless
+        `force`): one whose classes are not all red on trunk now (fixed, or its inputs changed) closes after all; it is said."""
+        if not redwait or (not force and time.monotonic() < red_look[0]):
+            return False
+        red_look[0] = time.monotonic() + KNOWN_RED_POLL_S
+        still = _red_waiting(p, main, list(redwait))
+        out = [t for t in list(redwait) if t not in still]
+        for t in out:
+            redwait.pop(t)
+            print(f"sampo lane land: {t}: its failing classes are no longer red on trunk: the close is queued again",
+                  file=sys.stderr, flush=True)
+        if drained[0]:  # before the leftovers' own drain, drain_left queues them with the rest
+            to_close(out, leftover=True)
+        return bool(out)
 
     def release_waiting():
         """T-5791: the closes whose express FIX has landed (or closed) go on the closer again; True when any did."""
@@ -4015,11 +4089,16 @@ def _land_trains(p, main, batch, owed, closer=None):
         return False
     left = landed + gone  # merged and open (a train by hand, a land cut short): closed after each train's own (T-3884)
     fixwait.update(_fix_waiting(p, main, left))  # T-5791: an earlier land's closes that wait for their FIX stay out of the closes
-    # T-5873: every merged-and-open leftover goes on the closer before the first train (not a few per train boundary: a
+    # T-5873: every merged-and-open leftover goes on the closer in the land's first round (not a few per train boundary: a
     # land that restarts after its first train never reached the rest); a close refused before answers from its memo, fast.
-    # One batch each: a stop's trim and a restart's drain act between batches, so one batch of sixty would run to its end
-    for t in left:
-        to_close([t])
+    # T-5912: not before the first train (2026-11-22: twenty closes that could not pass ran for an hour in front of it): a
+    # leftover whose last close failed only on classes red on trunk waits for them (skipped, said once, looked at again at
+    # each train); the others go on the closer once the first train's merges are done (drain_left), up to _close_par at once
+    redwait.update(_red_waiting(p, main, [t for t in left if t not in fixwait]))
+    for t, named in redwait.items():
+        print(f"sampo lane land: {t}: close skipped: its last refusal names only classes red on trunk "
+              f"({c.joinmore(sorted(named), 6)}): it closes again when they go green", file=sys.stderr, flush=True)
+    red_look[0] = time.monotonic() + KNOWN_RED_POLL_S
     waiting = set(lanes.awaiting_merge(p, briefs)) - set(landed)
     sort(x for x in briefs if x.id in waiting)
     seen = set(waiting) | set(landed)
@@ -4083,7 +4162,7 @@ def _land_trains(p, main, batch, owed, closer=None):
         if ready and trains:  # T-4767: a lane waits out the trains before it: its check is read again at this one's start
             ready = recheck(ready)
         if not ready:
-            to_close([t for t in left if t not in queued])  # T-5368: the leftovers close now, a lane named meanwhile trains
+            drain_left()  # T-5368: the leftovers close now (T-5912: no train is left to wait for), a lane named meanwhile trains
             if wait_closes() or release_waiting():  # T-5791: a close that waited meanwhile may have its FIX landed already
                 continue
             if wait_checks():  # T-5561: a stale lane's check the land started: it trains when that check is green
@@ -4151,7 +4230,11 @@ def _land_trains(p, main, batch, owed, closer=None):
         parked += got["left_out"]
         times.append(_train_times(p, land_id, trains, got, by, time.monotonic() - t_train))
         to_close(got["merged"], front=True)  # T-5368: on the closer's thread: the next train starts at once
-        # T-5873: no leftover slice here: the start of the land queued every one (the FIX-waiting ones are not: release_waiting)
+        # T-5873: no leftover slice per train: all of them go on at once; T-5912: after the first train's merges, so that
+        # train never waits behind them (the FIX-waiting and red-waiting ones are not: release_waiting, look_red)
+        if not drained[0]:
+            drain_left()
+        look_red()
         if got["merged"]:
             try:  # a note to the sessions never costs the land
                 announce_skills(main, head0, c._git(main, "rev-parse", "HEAD", timeout=10).strip())
@@ -4182,14 +4265,15 @@ def _land_trains(p, main, batch, owed, closer=None):
             print(f"sampo lane land: {len(rest)} landed lane(s) left merged and open for the next land: "
                   f"{', '.join(rest)}", file=sys.stderr, flush=True)
     elif restart:  # T-5873: the proven closes (only their commit owed) finish, bounded; the rest closes under the new code
-        # (the next land queues every merged-and-open lane at its start): stop() alone dropped them all, one close per land
+        # (the next land queues every merged-and-open lane after its first train): stop() alone dropped them all, one close per land
         n0 = len(closed)
         dropped = closer.drain(RESTART_CLOSE_S)
         closer.join()
         print(f"sampo lane land: closed {len(closed) - n0} while draining ({len(dropped)} left for the next land)",
               file=sys.stderr, flush=True)
     else:
-        to_close([t for t in left if t not in queued])  # one tried at a boundary was said there
+        drain_left()  # (a land that ended before any train: the leftovers close now)
+        look_red(force=True)  # one last look: a class gone green since the land began closes its leftover too
     closer.join()  # T-5368: the land's last ship and its summary come after every close
     for tid, why in parked:  # T-5852: marked as each was parked (note_park); this pass writes only what that did not
         mark_park(tid, why)
@@ -4201,6 +4285,8 @@ def _land_trains(p, main, batch, owed, closer=None):
     shipped = last if last and not last[1].startswith("nothing to ship") else shipped or last
     grant, said = shipped or (None, "")
     hand.extend((t, f"waits for {f} (an express trunk-red FIX) to land, then closes again") for t, f in fixwait.items())  # T-5791
+    hand.extend((t, f"skipped: its last refusal names only classes red on trunk ({c.joinmore(sorted(n), 6)}): it closes "
+                    "again when they go green (sampo lane land --merged)") for t, n in redwait.items())  # T-5912
     hand = list(dict(hand).items())  # a leftover retried after its brief changed: its newest answer
     return {"landed": landed, "merged_earlier": earlier, "closed": [t for t, _ in closed], "hand": hand, "settled": settled, "parked": parked, "trains": trains,
             "stopped": stopped, "restart": restart, "ship": said, "ship_grant": grant, "lines": closed,
@@ -4505,6 +4591,9 @@ def _code_id():
 REFUSAL_BACKOFF_S = 600  # T-5823: the wait after a refusal's first appearance when only Sampo's code changed; doubles per repeat
 
 
+_REFUSED = re.compile(r"^- (\S+) land: close refused: (.*) @ (\w+) (\w*)(?: (\w+))? ?$")  # the Log line _close writes
+
+
 def _refused_before(b, tip):
     """The reason the last land's close was refused when the brief and the lane tip are as they were then and Sampo's
     code is too, else None. T-5823: every train changes the code, so a code-only change (same reason, brief, tip) holds
@@ -4515,7 +4604,7 @@ def _refused_before(b, tip):
     for line in reversed(b.section("Log").splitlines()):
         if QUEUED_AGAIN in line:  # T-5791: the FIX the close waited for landed: the refusal before it no longer holds
             break
-        if not (m := re.search(r"^- (\S+) land: close refused: (.*) @ (\w+) (\w*)(?: (\w+))? ?$", line)):
+        if not (m := _REFUSED.search(line)):
             continue
         if last is None:
             last = m
@@ -4592,6 +4681,118 @@ def _fix_released(p, main, tid, landed=()):
             x.append_log(f"{QUEUED_AGAIN}: {fid} landed")
     cli.mutate(p, tid, free, "close_queued_again", {"fix": fid})
     return True
+
+
+KNOWN_RED_MAX = 40  # T-5912: the most classes one question to run.py's known-red reader names
+KNOWN_RED_POLL_S = 30.0  # T-5912: the gap between two looks of a land at its skipped leftovers' classes
+
+
+_TEST_CLASS = re.compile(r"([A-Za-z_]\w*\.[A-Z]\w*)(?:\.\w+)?")  # a failing test's class: test_x.Class[.test_name]
+
+
+def _name_at(s, i):
+    """T-5912: (the class of the failing name at s[i], the index after it and its `(test: first line)` note), or None
+    when no class is there or the note's parenthesis never closes (a cut line)."""
+    m = _TEST_CLASS.match(s, i)
+    if not m:
+        return None
+    j = m.end()
+    if not s.startswith(" (", j):
+        return m.group(1), j
+    depth = 0
+    for k in range(j + 1, len(s)):
+        depth += (s[k] == "(") - (s[k] == ")")
+        if not depth:
+            return m.group(1), k + 1
+    return None
+
+
+def _failed_named(why):
+    """T-5912: the classes a refusal names as failing from its structured parts only, or set() when it names a failure
+    that is no test's (or is not sure to name them all): `<gate> on N affected test module(s), failing A (test: first), B`
+    (the gate's own reason: a run.py command), `N of M failed: A, B · <cmd> → …` (finish's evidence line) and run.py's
+    `failed class: A`. A class mentioned anywhere else (a build or lint failure's text) counts for nothing, and a failed
+    command that is not tests/run.py (`<cmd> → ✗ exit`) makes the whole refusal a verdict, never a known red."""
+    for m in re.finditer(r" → ✗ exit", why):
+        if "run.py" not in re.split(r"; | · ", why[:m.start()])[-1]:
+            return set()
+    names = set()
+    for m in re.finditer(r"(?: on \d+ affected test module\(s\))?, failing ", why):
+        if "tests/run.py" not in why[:m.start()].rsplit("; ", 1)[-1]:
+            return set()
+        i = m.end()
+        while True:
+            if (got := _name_at(why, i)) is None:  # "K left out", or a note cut short: not every class is known
+                return set()
+            names.add(got[0])
+            i = got[1]
+            if not why.startswith(", ", i):
+                break
+            i += 2
+    for m in re.finditer(r"\d+ of \d+ failed: (.*?) · ", why):
+        for part in m.group(1).split(", "):
+            if not (x := _TEST_CLASS.fullmatch(part)):
+                return set()
+            names.add(x.group(1))
+    for part in re.findall(r"failed class: (\S+)", why):
+        if not (x := _TEST_CLASS.fullmatch(part)):
+            return set()
+        names.add(x.group(1))
+    return names
+
+
+def _refusal_classes(b, tip):
+    """T-5912: the classes (test_x.Class) the newest close refusal of this task names as failing (_failed_named), when it
+    still stands: the brief and the lane tip are as they were then and no released FIX (QUEUED_AGAIN) came after. set()
+    for no such refusal, one that names no failing class, names a failure that is no test's, or one the Log line cut
+    short (its tail may name a class that is not red)."""
+    for line in reversed(b.section("Log").splitlines()):
+        if QUEUED_AGAIN in line:
+            return set()
+        if m := _REFUSED.search(line):
+            why = m.group(2)
+            if m.group(3, 4) != (_brief_hash(b), tip) or why.endswith("…"):
+                return set()
+            return _failed_named(why)
+    return set()
+
+
+def _known_red(main, classes):
+    """T-5912: {class: age in s} of the `classes` that tests/run.py's own records show red on trunk's tree as it is now
+    (run.py --known-red: the inputs the class read digest as they did in the red record, within the record window). {} when
+    run.py can't say (it is not there, it failed, it printed nothing readable): nothing is then known red."""
+    run_py = os.path.join(main, "plugin", "tests", "run.py")
+    names = sorted(classes)[:KNOWN_RED_MAX]
+    if not names or not os.path.isfile(run_py):
+        return {}
+    try:
+        r = subprocess.run([sys.executable, run_py, *[x for k in names for x in ("--known-red", k)]], cwd=main,
+                           capture_output=True, text=True, timeout=90, stdin=subprocess.DEVNULL)
+        got = json.loads(r.stdout) if r.returncode == 0 else {}
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return {}
+    return {k: v for k, v in got.items() if k in names} if isinstance(got, dict) else {}
+
+
+def _red_waiting(p, main, ids):
+    """T-5912: {task id: its classes} among `ids` (merged and open leftovers) whose last close was refused for failing
+    classes only, every one of which tests/run.py records as red on trunk now: such a close would fail again, so it waits
+    until they go green (the land looks again at each train and at its end; the next land starts from the Log again)."""
+    from sampo import cli
+    want = {}
+    for t in ids:
+        try:
+            b = cli.need_brief(p, t)
+            path = b.meta.get("lane") or ""
+            sha = _git(path, "rev-parse", "--short", "HEAD").stdout.strip() if os.path.isdir(path) else ""
+            if b.status not in c.CLOSED and sha and (named := _refusal_classes(b, sha)) and len(named) <= KNOWN_RED_MAX:
+                want[t] = named
+        except Exception:  # noqa: BLE001 — a brief that can't be read is simply closed as before
+            continue
+    if not want:
+        return {}
+    red = _known_red(main, set().union(*want.values()))
+    return {t: named for t, named in want.items() if named <= set(red)}
 
 
 SETTLE_LOCK_S = 30  # T-5535: the wait for the brief's lock before a close settles its gaps (a timeout leaves them to finish)

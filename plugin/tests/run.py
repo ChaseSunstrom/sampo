@@ -1155,6 +1155,23 @@ def held_by_kind(recs, day):
     return out, unrecorded
 
 
+def show_known_red(a):
+    """--known-red CLASS...: {class: age in s} as JSON of the named classes whose newest run record, inside the window, is
+    red on the inputs this tree gives (known_red's own rule). Runs nothing, takes no slot; `{}` and exit 3 outside git."""
+    got = tree()
+    if not got:
+        print("{}")
+        sys.stderr.write("run.py: not in a git repository: no run records\n")
+        return 3
+    try:
+        print(json.dumps(known_red(got[2], set(a.known_red), values(*got[:2]), known_red_window()), sort_keys=True))
+    except Exception as e:  # a record that can't be read is no word on the class
+        print("{}")
+        sys.stderr.write(f"run.py: the run records were not read: {repr(e)[:200]}\n")
+        return 1
+    return 0
+
+
 def show_held(a):
     """--held [--day YYYY-MM-DD]: the slot-seconds each kind of run took that UTC day (default today), from this repo's
     run records (the newest KEEP_RUNS are kept, so an older day may be partly gone). Runs nothing, takes no slot."""
@@ -3263,6 +3280,9 @@ def parse(argv=None):
     ap.add_argument("--held", action="store_true", help="print the slot-seconds each kind of run (priority gate, post-merge "
                     "verify, other) took on a UTC day, from this repo's run records, and run nothing (T-4570)")
     ap.add_argument("--day", metavar="YYYY-MM-DD", help="with --held: the UTC day (default today)")
+    ap.add_argument("--known-red", action="append", metavar="CLASS", help="print, as JSON, {class: age in s} of the named "
+                    "classes (test_x.Class, repeatable) the run records show red on this tree's inputs now, and run "
+                    "nothing (T-5912: the land skips a leftover whose close failed only on these)")
     ap.add_argument("--estimate", action="store_true", help="print, as JSON, the recorded seconds of the named modules' "
                                                             "classes and the CPU slots (T-4892); runs nothing")
     ap.add_argument("names", nargs="*", help="test module names (T-0808: fm check affected's {names}); with -k, only "
@@ -3312,6 +3332,8 @@ def main():
         return show_last(a)
     if a.held:  # T-4570: a reader too
         return show_held(a)
+    if a.known_red:  # T-5912: a reader too: the land asks which of its skipped leftovers' classes are still red on trunk
+        return show_known_red(a)
     if a.estimate:  # T-4892: a reader: what the named selection is known to cost, for the check that sizes its deadline
         print(json.dumps(estimate(a.names, load_times(), slot_count())))
         return 0

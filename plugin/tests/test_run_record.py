@@ -674,6 +674,30 @@ class KnownRed(Fixture):
         self.assertNotIn("known red", err)
         self.assertNotIn("flaky", err)
 
+    def known(self, *classes, **kw):
+        """T-5912: `run.py --known-red CLASS...` (the reader the land asks): (exit code, its JSON, stderr)."""
+        r = subprocess.run([sys.executable, os.path.join(self.tests, "run.py"), *[x for k in classes for x in ("--known-red", k)]],
+                           capture_output=True, text=True, cwd=self.repo, env={**self.env, **kw}, timeout=120)
+        return r.returncode, json.loads(r.stdout), r.stderr
+
+    def test_the_known_red_reader_names_only_the_classes_red_on_these_inputs_and_runs_nothing(self):
+        asked = ("test_zlate.Late", "test_a_big.Big", "test_nothing.Here")
+        self.assertEqual(self.known(*asked)[:2], (0, {}), "no record yet: nothing is known red")
+        self.run_all()
+        code, got, err = self.known(*asked)
+        self.assertEqual((code, sorted(got)), (0, ["test_zlate.Late"]), err)
+        self.assertGreaterEqual(got["test_zlate.Late"], 0)
+        self.assertEqual(self.known(*asked, SAMPO_KNOWN_RED_MIN="0")[:2], (0, {}), "the switch turns it off")
+        self.write("data.txt", "two\n")  # an input of the class changed: its record says nothing of the new inputs
+        git(self.repo, "commit", "-qam", "data changed")
+        self.assertEqual(self.known(*asked)[:2], (0, {}))
+
+    def test_the_known_red_reader_forgets_a_class_that_went_green_on_the_same_inputs(self):
+        self.run_all()
+        open(self.green, "w").close()
+        self.assertEqual(self.run_all()[0], 0)
+        self.assertEqual(self.known("test_zlate.Late")[:2], (0, {}), "red once, then green: flaky, not known red")
+
 
 if __name__ == "__main__":
     unittest.main()

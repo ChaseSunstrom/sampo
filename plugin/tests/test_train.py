@@ -4,20 +4,25 @@ was 0 bytes (T-4147, T-4139, T-4189), and a check cut off at its deadline (60 of
 read. Now the check's lines are written to that stdout as they arrive, the result is still read from the same text, and
 a hold for a cut-off check names the log."""
 # map-links: plugin/lib/sampo/train.py
+import contextlib
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
 
+import test_lane_land
 from test_accept_check import AcceptCase, stub
 from test_express_lane import ExpressBase
 
+from sampo import core as c
 from sampo import train
 
 LIB = os.path.dirname(os.path.dirname(os.path.abspath(train.__file__)))
@@ -550,3 +555,288 @@ class ExpressTrainsTogether(ExpressBase):
         r = self.land("--batch", "3")
         self.assertIn(f"{ids[1]} is express (performance, security or urgent): it trains next, first in the train, ahead of the ordinary lanes",
                       r.stderr)
+
+
+class LeftoverBase(test_lane_land.LandCase):
+    """T-5912: 2026-11-22 from 11:33 a land spent its time on about twenty leftover closes that could not pass (each failed
+    on the same trunk-red classes) before its first train. Leftovers now wait for the first train's merges, run up to
+    `_close_par` at once, and one whose last refusal names only classes red on trunk is skipped until they go green."""
+    RED = "test_x.RedOne"
+    GATE = "python3 plugin/tests/run.py test_x"
+
+    def red_why(self, *names):
+        """A gate's refusal as _why_red writes it (the form a close's Log line carries)."""
+        return f"{self.GATE} on 3 affected test module(s), failing {', '.join(names or (self.RED,))}; blamed: nothing"
+
+    def setUp(self):
+        super().setUp()
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(self.repo)
+        self.p = c.find_project(self.repo)
+
+    def refuse(self, tid, why):
+        """The Log line a refused close writes (train._close's own format), for the brief and lane tip as they are now."""
+        b = c.find_brief(self.p, tid)
+        sha = train._git(b.meta["lane"], "rev-parse", "--short", "HEAD").stdout.strip()
+        b.append_log(f"land: close refused: {why} @ {train._brief_hash(b)} {sha} {train._code_id()}")
+        c.save_brief(self.p, b)
+
+    def new_lane(self, n=9):
+        tid = self.lane(n, f"new{n}.txt", when=test_lane_land.OLD)
+        self.audited(tid)
+        self.returned(tid, f"Lane {n}")
+        return tid
+
+    def run_land(self, known=None, par=1, close=None):
+        """A land in this process; `known(main, classes)` replaces the known-red question, `close` the close itself.
+        Returns (result, stderr text, events: ('train', ids) / ('trained', ids) / ('close', id) in the order they came)."""
+        events, err = [], io.StringIO()
+        real_close, real_train = train._close, train.train
+
+        def closing(p, main, tid, *a, **k):
+            events.append(("close", tid))
+            return close(p, main, tid, *a, **k) if close else real_close(p, main, tid, *a, **k)
+
+        def trained(p, main, ids, *a, **k):
+            events.append(("train", list(ids)))
+            try:
+                return real_train(p, main, ids, *a, **k)
+            finally:
+                events.append(("trained", list(ids)))
+        with self.in_project(), contextlib.redirect_stderr(err), mock.patch.object(train, "_close", closing), \
+                mock.patch.object(train, "train", trained), mock.patch.object(train, "_close_par", par if callable(par) else (lambda: par)), \
+                mock.patch.object(train, "KNOWN_RED_POLL_S", 0.0), \
+                mock.patch.object(train, "_known_red", known or (lambda main, classes: {})):
+            got = train.land(self.p, self.repo, 1)
+        return got, err.getvalue(), events
+
+
+class LeftoverKnownRed(LeftoverBase):
+    def red_now(self, main, classes):
+        return {k: 7.0 for k in classes if k == self.RED}
+
+    def test_a_leftover_refused_only_on_known_red_classes_is_skipped_with_one_line(self):
+        a, b = self.leftovers(2)
+        self.refuse(a, self.red_why())
+        self.new_lane()
+        got, err, events = self.run_land(self.red_now)
+        closed = [t for k, t in events if k == "close"]
+        self.assertNotIn(a, closed, err)
+        self.assertIn(b, closed, "a leftover with no such refusal closes as before")
+        self.assertEqual(len(re.findall(rf"(?m)^sampo lane land: {a}: close skipped: .*{self.RED}", err)), 1, err)
+        hand = dict(got["hand"])
+        self.assertIn("red on trunk", hand[a], hand)
+        self.assertEqual(c.find_brief(self.p, a).status, "active", "left merged and open: no verdict on it")
+
+    def test_the_skipped_leftover_is_requeued_when_the_classes_go_green(self):
+        a, b = self.leftovers(2)
+        self.refuse(a, self.red_why())
+        self.new_lane()
+        asked = []
+
+        def red_then_green(main, classes):
+            asked.append(set(classes))
+            return self.red_now(main, classes) if len(asked) == 1 else {}
+        got, err, events = self.run_land(red_then_green)
+        closed = [t for k, t in events if k == "close"]
+        self.assertIn(a, closed, err)
+        self.assertIn(f"sampo lane land: {a}: its failing classes are no longer red on trunk: the close is queued again", err)
+        self.assertNotIn(a, [t for t, why in got["hand"] if "red on trunk" in why], got["hand"])
+        self.assertEqual(asked[0], {self.RED}, "only the skipped lane's classes are asked about")
+
+    def test_a_refusal_naming_a_class_that_is_not_red_is_closed_as_before(self):
+        a, b = self.leftovers(2)
+        self.refuse(a, self.red_why(self.RED, "test_y.Other"))
+        self.new_lane()
+        got, err, events = self.run_land(self.red_now)
+        self.assertIn(a, [t for k, t in events if k == "close"], err)
+        self.assertNotIn("close skipped", err)
+
+    def test_a_refusal_the_brief_or_tip_has_outlived_is_not_trusted(self):
+        a, = self.leftovers(1)
+        self.refuse(a, self.red_why())
+        b = c.find_brief(self.p, a)
+        sha = train._git(b.meta["lane"], "rev-parse", "--short", "HEAD").stdout.strip()
+        self.assertEqual(train._refusal_classes(b, sha), {self.RED})
+        self.assertEqual(train._refusal_classes(b, "0" * 7), set(), "the lane moved")
+        b = c.find_brief(self.p, a)
+        b.sections = [(h, t if h.strip() == "Log" else t + "\nmore words\n") for h, t in b.sections]
+        c.save_brief(self.p, b)
+        self.assertEqual(train._refusal_classes(c.find_brief(self.p, a), sha), set(), "the brief changed")
+        self.refuse(a, self.red_why() + " tail…")
+        self.assertEqual(train._refusal_classes(c.find_brief(self.p, a), sha), set(), "a line cut short may hide a class")
+        self.refuse(a, "the audit asks for changes")
+        self.assertEqual(train._refusal_classes(c.find_brief(self.p, a), sha), set(), "no failing class named")
+        self.refuse(a, self.red_why())
+        b = c.find_brief(self.p, a)
+        b.append_log(f"{train.QUEUED_AGAIN}: T-1 landed")
+        c.save_brief(self.p, b)
+        self.assertEqual(train._refusal_classes(c.find_brief(self.p, a), sha), set(), "a released FIX ends the refusal")
+
+    def test_the_classes_come_only_from_the_structured_failed_test_parts(self):
+        R, G = self.RED, self.GATE
+        both = {R, "test_y.Other"}
+        for why in (  # the gate's reason (a test note with a comma and a nested parenthesis), finish's evidence line, run.py's lines
+                f"{G} on 3 affected test module(s), failing {R} (test_a: AssertionError: x (y), z), test_y.Other; "
+                f"blamed: it changed test_x.py tail",
+                f"✗ exit 1 · 2 of 2 failed: {R}, test_y.Other · {G} → ✗ exit 1 · Ran 4 tests",
+                f"criterion 1: {G} → ✗ exit 1 · failed class: {R} failed class: test_y.Other"):
+            self.assertEqual(train._failed_named(why), both, why)
+        for why in (
+                f"make lint → ✗ exit 2 · test_x.RedOne is not formatted",  # a lint failure that mentions a red class
+                f"make build failed: cannot import test_x.RedOne",  # a build failure's text
+                f"make build on 3 affected test module(s), failing {R}",  # a gate that is no run.py
+                f"✗ exit 1 · 2 of 2 failed: {R} · {G} → ✗ exit 1 · failed class: {R}; make lint → ✗ exit 2 · {R} is long",
+                f"{G} on 3 affected test module(s), failing {R}, 3 left out",  # not every class is known
+                f"{G} on 3 affected test module(s), failing {R} (test_a: cut",  # a note that never closes
+                f"2 of 2 failed: {R}, 3 left out · {G} → ✗ exit 1",
+                f"the audit asks for changes; {R} is red"):
+            self.assertEqual(train._failed_named(why), set(), why)
+
+    def test_a_refusal_that_failed_a_build_or_lint_command_is_closed_though_it_names_a_red_class(self):
+        a, b = self.leftovers(2)
+        self.refuse(a, f"✗ exit 1 · 2 of 2 failed: {self.RED} · {self.GATE} → ✗ exit 1 · failed class: {self.RED}; "
+                       f"make lint → ✗ exit 2 · {self.RED} is long")
+        self.new_lane()
+        got, err, events = self.run_land(self.red_now)
+        self.assertIn(a, [t for k, t in events if k == "close"], err)
+        self.assertNotIn("close skipped", err)
+
+    def test_run_py_s_answer_is_read_and_a_run_py_that_cannot_answer_knows_nothing_red(self):
+        main = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, main, True)
+        self.assertEqual(train._known_red(main, {self.RED}), {}, "no run.py there")
+        os.makedirs(os.path.join(main, "plugin", "tests"))
+        run_py = os.path.join(main, "plugin", "tests", "run.py")
+        for src, want in (
+                ("import json, sys\nargs = sys.argv[1:]\nassert args[0] == '--known-red'\n"
+                 "print(json.dumps({k: 3.5 for k in args[1::2]} | {'test_z.Extra': 1}))\n", {self.RED: 3.5}),
+                ("import sys\nsys.exit(3)\n", {}), ("print('not json')\n", {}), ("print('[1]')\n", {})):
+            with open(run_py, "w") as f:
+                f.write(src)
+            self.assertEqual(train._known_red(main, {self.RED}), want, src)
+
+
+class LeftoverOrder(LeftoverBase):
+    def test_the_leftovers_close_after_the_first_train_not_in_front_of_it(self):
+        left = self.leftovers(3)
+        new = self.new_lane()
+        got, err, events = self.run_land()
+        kinds = [k for k, _ in events]
+        self.assertEqual(events[0], ("train", [new]), events)
+        done = kinds.index("trained")
+        closes = [i for i, k in enumerate(kinds) if k == "close"]
+        self.assertTrue(closes and min(closes) > done, f"no close begins before the first train has merged: {events}")
+        self.assertEqual(sorted(t for k, t in events if k == "close"), sorted(left + [new]), events)
+        self.assertEqual(events[done + 1], ("close", new), "the train's own lane closes first")
+
+    def test_with_nothing_to_train_the_leftovers_close_at_once(self):
+        left = self.leftovers(2)
+        got, err, events = self.run_land()
+        self.assertEqual(sorted(t for k, t in events if k == "close"), sorted(left), events)
+        self.assertNotIn("train", [k for k, _ in events])
+
+    def land_concurrency(self, par, n=4):
+        self.leftovers(n)
+        lock, now, most = threading.Lock(), [0], [0]
+
+        def slow(p, main, tid, *a, **k):
+            with lock:
+                now[0] += 1
+                most[0] = max(most[0], now[0])
+            time.sleep(0.4)
+            with lock:
+                now[0] -= 1
+            return "", f"closed {tid}"
+        self.run_land(par=par, close=slow)
+        return most[0]
+
+    def test_leftover_closes_run_in_parallel_up_to_the_budget(self):
+        self.assertEqual(self.land_concurrency(3), 3)
+
+    def test_one_close_at_a_time_when_the_host_has_no_room(self):
+        self.assertEqual(self.land_concurrency(1), 1)
+
+    def test_the_close_budget_is_asked_again_when_the_leftovers_are_drained(self):
+        self.leftovers(2)
+        asked = []
+        self.run_land(par=lambda: asked.append(1) or 1)
+        self.assertGreaterEqual(len(asked), 2, "once for the closer, once at the drain: the host's load changes in an hour")
+
+    def test_the_budget_follows_the_hosts_idle_cores_and_is_never_below_one_nor_above_the_cap(self):
+        for cpus, load, want in ((16, 0.5, 3), (16, 9.0, 1), (16, 15.9, 1), (4, 0.0, 1), (64, 0.0, train.LEFTOVER_CLOSERS)):
+            with mock.patch("os.cpu_count", return_value=cpus), mock.patch("os.getloadavg", return_value=(load, 0, 0)):
+                self.assertEqual(train._close_par(), want, (cpus, load))
+        with mock.patch("os.getloadavg", side_effect=OSError):
+            self.assertGreaterEqual(train._close_par(), 1)
+
+
+class CloserParallel(unittest.TestCase):
+    """T-5912: the closer's extra threads take only leftovers' batches, and only after one leftover has finished."""
+
+    def test_the_extra_threads_wait_for_the_first_leftover_and_take_no_train_lane(self):
+        go, began, lock = threading.Event(), [], threading.Lock()
+
+        def work(ids):
+            with lock:
+                began.append(ids[0])
+            go.wait(10)
+            return True  # the close passed: its gate pass is on record for the others to reuse
+        closer = train._Closer(3)
+        closer.work = work
+        closer.put(["T-1"], left=True)
+        closer.put(["T-2"], left=True)
+        closer.put(["T-3"], left=True)
+        closer.put(["T-9"])  # a lane the train merged: the worker thread's, never an extra one's
+        time.sleep(0.3)
+        self.assertEqual(began, ["T-1"], "none beside the first leftover until it has finished")
+        go.set()
+        closer.join()
+        self.assertEqual(sorted(began), ["T-1", "T-2", "T-3", "T-9"], began)
+        self.assertTrue(closer.idle())
+
+    def test_a_refused_leftover_starts_no_extra_thread_only_a_passing_close_does(self):
+        # T-5912 round 2: a refused close records no gate pass, so letting the others begin beside it ran the full gate up to 3 times
+        lock, now, most, order = threading.Lock(), [0], [0], []
+
+        def work(ids):
+            with lock:
+                now[0] += 1
+                most[0] = max(most[0], now[0])
+                order.append(ids[0])
+            time.sleep(0.1)
+            with lock:
+                now[0] -= 1
+            return ids[0] == "T-3"  # T-1 and T-2 are refused, T-3 passes
+        closer = train._Closer(3)
+        closer.work = work
+        for t in ("T-1", "T-2", "T-3", "T-4", "T-5"):
+            closer.put([t], left=True)
+        closer.join()
+        self.assertEqual(order[:3], ["T-1", "T-2", "T-3"], "one at a time while every close is refused")
+        self.assertEqual(sorted(order), ["T-1", "T-2", "T-3", "T-4", "T-5"], order)
+        self.assertEqual(most[0], 2, "beside each other only after T-3 passed (T-4 and T-5), never before")
+
+    def test_the_budget_is_set_again_at_a_drain_and_wakes_the_extras(self):
+        closer = train._Closer(1)
+        closer.set_par(3)
+        self.assertEqual(closer.par, 3)
+        closer.set_par(0)
+        self.assertEqual(closer.par, 1, "never below one")
+
+    def test_a_closer_of_one_never_runs_two_at_once(self):
+        lock, now, most = threading.Lock(), [0], [0]
+
+        def work(ids):
+            with lock:
+                now[0] += 1
+                most[0] = max(most[0], now[0])
+            time.sleep(0.05)
+            with lock:
+                now[0] -= 1
+        closer = train._Closer(1)
+        closer.work = work
+        for t in ("T-1", "T-2", "T-3"):
+            closer.put([t], left=True)
+        closer.join()
+        self.assertEqual(most[0], 1)
