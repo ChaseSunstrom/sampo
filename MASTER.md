@@ -180,6 +180,8 @@ One line per module, so two changes to different modules never touch the same li
 - `fmguard` [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmhome` (T-1665: `sampo home export [--out FILE]` / `sampo home import FILE`… [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmmovemod` (T-3274: `sampo move OLD NEW`), renames a module and rewrites every reference… [→ files-lib-1](docs/map/files-lib-1.md)
+- `fmseams` (T-3290: `sampo seams FILE`), the cleanest split clusters of a big module… [→ files-lib-1](docs/map/files-lib-1.md)
+- `fmlouhi_scratch` (T-3290: `_scratch` and `_gen_grow` moved out of louhi.py, which re-exports them) [→ files-lib-1](docs/map/files-lib-1.md)
 - `fmhomemove` (T-2746: `sampo migrate [--undo] [--dry-run] [--json]`) renames… [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmhooks` (incl [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmhooksmoke` (T-5040: `run(plugin=None)` returns `(ok, why)` after feeding a tree's own hooks/hook SessionStart… [→ files-lib-2](docs/map/files-lib-2.md)

@@ -30,6 +30,7 @@ import urllib.parse
 
 from sampo import budget as sbudget
 from sampo import core as c
+from sampo.louhi_scratch import _gen_grow, _scratch  # noqa: F401  (T-3290: moved to louhi_scratch; the names stay here)
 
 KINDS = ("bug", "vuln", "untested", "slow", "docs", "flaky", "dep", "vague", "ambiguous", "missing-tool", "none", "clean", "rank",
          "goal", "resume", "exists", "parts", "trigger",  # T-2216: #2, #9 and #11's own kinds
@@ -1146,30 +1147,6 @@ def _bench_embed(profile, pairs, timeout, deadline=None):
         hit10 += rank < 10
     return {"recall_at_1": round(hit1 / n, 3) if n else None, "recall_at_10": round(hit10 / n, 3) if n else None,
             "p50_ms": _pct(ms, 0.5), "p95_ms": _pct(ms, 0.95), "n": n, "errors": errors, "timeout": timeout}
-
-
-def _scratch(p):
-    """A project whose files live in a fresh temp folder (the real project's meta copied, so a sensitive project stays
-    sensitive); the generation arm grows its moons there, never into the project's own store."""
-    d = tempfile.mkdtemp(prefix="fm-bench-")
-    shutil.copy(os.path.join(p.dir, "meta.json"), d)
-    return c.Project(p.slug, p.root, d)
-
-
-def _gen_grow(p, prof, k):
-    """K moons grown by one profile with reasoning off into a scratch store, then the write-time admit's verdicts;
-    {added, kept, seconds, fallback} (fallback: calls another model than the profile answered)."""
-    from sampo import moonscale
-    sp, was = _scratch(p), os.environ.get("MOONS_LOCAL")
-    os.environ["MOONS_LOCAL"] = prof["name"]
-    t0 = time.monotonic()
-    try:
-        r = moonscale.grow(sp, target=k, think=False)
-    finally:
-        os.environ.pop("MOONS_LOCAL", None) if was is None else os.environ.update(MOONS_LOCAL=was)
-    mine = {prof["name"], prof["name"] + "+nothink"}
-    return {"added": r["added"], "kept": r["kept"], "seconds": time.monotonic() - t0, "scratch": sp,
-            "fallback": sum(n for m, n in r["models"].items() if m not in mine)}
 
 
 def _gen_funnel(p, sp, sample):

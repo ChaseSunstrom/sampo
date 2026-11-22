@@ -10393,6 +10393,11 @@ def _build_parser(only=None):
     s.add_argument("path", nargs="?", help="the checkout to rank (default: the project root)")
     s.add_argument("--top", type=int, default=10, help="rows to print (default 10)")
     s.add_argument("--capture", type=int, default=0, metavar="K", help="file the top K not yet filed as refactor tasks")
+    s = add("seams", lazy("sampo.seams", "cmd_seams"), tier=("Project and settings", 782), help="the cleanest split clusters of a big "
+                                                        "Python module (hubs and mutable state left out), ranked by recent edits (T-3290)")
+    s.add_argument("file", help="the module to read, inside the checkout")
+    s.add_argument("--top", type=int, default=10, help="clusters to print (default 10)")
+    s.add_argument("--hub", type=int, default=8, help="a definition linked to this many others is a hub, left out (default 8)")
     s = add("canary", lazy("sampo.eco", "cmd_canary"), tier=("Project and settings", 920), help="Claude Code's version against the last seen; on a change the "
                                                          "hook fixtures, a hook smoke and sampo replay run, a failure is a brief")
     s.add_argument("--if-changed", action="store_true", help="only when the version changed (each session start)")
