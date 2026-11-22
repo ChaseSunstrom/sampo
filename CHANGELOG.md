@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- The merge train's base probe and each lane's probe stamp their tests/run.py run with an id and name every failing test with its first exception line from that run's record in the base-red reason, the lane's blame and its flaky note, so nobody reruns to learn them (T-5047).
 - A paused machine now stops `sampo lane train` and `sampo lane land` at once with a line saying the pause stops the gates and to resume first, instead of running the merges and calling the base red (T-5044).
 - sampo doctor warns when demo.mp4 or live.mp4 is older than the cast it is rendered from or runs over 2 seconds off its length, naming the command that remakes it (T-5039).
 - The live snapshot's Board now carries a `bigs` part: each big task's done/total, wave, spend and children (12 trees, 40 children each), read from the same tree `sampo big status --all` shows (T-5027).
