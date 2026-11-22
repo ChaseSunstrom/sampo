@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- A lane's own criterion commands and the tests it adds or changes count as red at the train gate, the close, the leftover sweep and the behind verify, and the live train's behind run always runs the modules a landed lane's criteria name, so a red there no longer reaches trunk under a base-red, baseline or inherited excuse (T-5982).
 - A merge train keeps both sides when two lanes only added lines at one spot of a plugin/tests file (a hunk that changed a base line, a name both added, or a non-test file still parks) (T-5824).
 - sampo ship auto on|off|status turns on a standing ship: with no task holding a publish grant the land still ships trunk to the remote's main after every train that merged, on a grant no push spends, and a task's own grant still wins (T-5938).
 - sampo targets now lists push lag, lead context per turn, compactions per session-day, Sampo's disk growth and steers per day, and reads tokens per change from the per-lane cost reader; the scans run detached from the self-check, and a push-lag breach files one task (T-5973).
