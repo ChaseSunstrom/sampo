@@ -6062,8 +6062,8 @@ def stop_survivors():
                 ours = ideas._starttime(name) == start
             except FileNotFoundError:
                 ours = ideas._strays(int(name), start)
-            if ours:
-                if killsafe.killpg(int(name), signal.SIGKILL):
+            if ours:  # T-6184: a runner another fm code started, named by its start-time record: killpg_other
+                if killsafe.killpg_other(int(name), signal.SIGKILL):
                     out.append(int(name))
         except (OSError, ValueError, IndexError):  # gone, garbled or not ours to kill: the entry goes
             pass

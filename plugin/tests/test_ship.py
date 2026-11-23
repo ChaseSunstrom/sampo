@@ -1112,7 +1112,7 @@ class ShipDirectCommits(ForemanTestCase):
 
     def ship(self, keep_cache=False):
         """(refusal text or '', how many times the guard was replayed): release.ship in this process, the gate's judge faked
-        the way test_lanes.SelfChangeGate fakes it (the base tree is replayed first, the commit's tree second)."""
+        the way test_lanes.SelfChangeGate fakes it (the base tree is replayed as the base, the commit's tree as the branch)."""
         import argparse
         import contextlib
         import io
@@ -1122,9 +1122,12 @@ class ShipDirectCommits(ForemanTestCase):
         seen = []
 
         def verdicts(tree, cmds):
+            # T-6184: the role decides the verdict, not the call order: the hold judges commits in a thread pool, so a
+            # count of calls swapped a commit's base and branch. _tree writes the base under .../base/plugin, the commit's
+            # tree under .../branch/plugin.
             seen.append(tree)
-            return ["allow" if cmd == "ls" or (len(seen) % 2 == 0 and cmd.startswith("rm")) else "destructive"
-                    for cmd, _ in cmds]
+            base = os.path.basename(os.path.dirname(os.path.normpath(tree))) == "base"
+            return ["allow" if cmd == "ls" or (not base and cmd.startswith("rm")) else "destructive" for cmd, _ in cmds]
         for name in () if keep_cache else ("selfgate-base.json", "selfgate-base-push.json"):
             if os.path.exists(os.path.join(self.p.dir, name)):
                 os.remove(os.path.join(self.p.dir, name))
@@ -1199,7 +1202,8 @@ class ShipDirectCommits(ForemanTestCase):
 
     def test_direct_guard_weakening_two_held_commits_one_yes_the_rerun_passes_both(self):
         """T-4805 review: approved() honoured only the last refused sha, so a yes covered B, the rerun re-judged A, logged a
-        new refusal and un-approved B: it never converged."""
+        new refusal and un-approved B: it never converged. T-6048: the range's timing is its own gate task (the yes names
+        the commit's refusal, not the range's), so the rerun replays that one timing of the chain's tip and no commit's judgement."""
         a = self.commit({"plugin/lib/fmguard.py": "x = 2\n"}, "loosen the guard once")
         b = self.commit({"plugin/lib/fmguard.py": "x = 3\n"}, "and twice")
         why, _ = self.ship()
@@ -1207,7 +1211,8 @@ class ShipDirectCommits(ForemanTestCase):
         self.assertIn(b[:8], why)
         self.yes()
         why, judged = self.ship()
-        self.assertEqual((why, judged), ("", 0), "both are covered by the one yes: nothing is replayed")
+        self.assertEqual(why, "", "both are covered by the one yes: the rerun passes both")
+        self.assertEqual(judged, 2, "only the range's timing of the tip is replayed (two trees), not a judgement per commit")
         self.assertIn("and twice", self.main_log())
 
     def test_a_yes_for_one_commit_does_not_cover_one_refused_after_it(self):

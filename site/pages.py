@@ -1083,6 +1083,8 @@ PAGES = [
           "stronger model after three fail; <code>--planner</code> has a stronger model write the plan and the close "
           "notes while <code>--model</code> does every step, and takes a planner CLI too (<code>--planner claude</code>, "
           "<code>codex</code> or <code>gemini</code>, run in its read-only mode: the big model plans once, a local one does the work); <code>--max-steps</code> and <code>--max-usd</code> cap the turns and the dollars, and <code>--deadline</code> the wall clock: the model sees the time left each turn, and the run stops itself, resumable; "
+          "<code>--lane</code> in a lane's worktree commits the work with its close lines as trailers and stops: the review "
+          "and the land close the task, never a task finish; "
           "<code>--reason state</code> carries a compact thought state between turns and thinks only on low confidence, "
           "a failed check or a loop (<code>off</code>, <code>native</code>, <code>budget</code>, <code>bias</code> and "
           "<code>schema</code> are the other arms the exam compares); "

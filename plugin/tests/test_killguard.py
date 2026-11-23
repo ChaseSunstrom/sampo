@@ -313,7 +313,8 @@ class TheShape(unittest.TestCase):
     def test_the_helper_is_the_only_file_that_calls_them(self):
         with open(os.path.join(LIB, "sampo", "killsafe.py"), encoding="utf-8") as f:
             sites = kill_sites(f.read())
-        self.assertEqual(len(sites), 3, sites)  # killpg, kill (T-6095: the started check) and kill_other (a recorded pid)
+        self.assertEqual(len(sites), 4, sites)  # killpg, kill (T-6095: the started check), kill_other (a recorded pid) and
+        # killpg_other (T-6184: a runner's group, named by its checked start-time record, as session.stop and smith name it)
 
     def test_the_scan_sees_each_form(self):
         cases = {

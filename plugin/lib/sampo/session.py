@@ -478,12 +478,14 @@ def stop(sid):
     pid = meta.get("pid")
     if _alive(pid, sid):
         try:
-            killsafe.killpg(pid, signal.SIGTERM)  # the runner leads its own group: the agent and its tools go with it
+            # the runner leads its own group: the agent and its tools go with it. T-6184: the runner is another process
+            # (fm pause --now, or a serve unit's), so it is a kill_other: _alive checked its cmdline names this session
+            killsafe.killpg_other(pid, signal.SIGTERM)
             end = time.time() + 3
             while time.time() < end and _group(pid):
                 time.sleep(0.05)
             if _group(pid):
-                killsafe.killpg(pid, signal.SIGKILL)
+                killsafe.killpg_other(pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
     meta = _set(sid, status="stopped", pid=None)

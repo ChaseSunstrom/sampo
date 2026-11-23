@@ -72,6 +72,11 @@ def _ours(pid):
     return len(fields) > 1 and fields[1] == str(os.getpid()).encode()
 
 
+def ours(pid):
+    """True for a plain int above 1 that this process started (killpg and kill would signal it); no signal is sent."""
+    return safe(pid) and _ours(pid)
+
+
 def killpg(pid, sig):
     """os.killpg(pid, sig) for a plain int pid above 1 that this process started; False, nothing sent, for any other.
     Raises what os.killpg raises."""
@@ -96,4 +101,13 @@ def kill_other(pid, sig):
     if not safe(pid):
         return False
     os.kill(pid, sig)
+    return True
+
+
+def killpg_other(pid, sig):
+    """os.killpg(pid, sig): kill_other for a process group (T-6184: a session's runner leads its own group, and `fm pause
+    --now` runs in another process, so the group is no child of this one). Same plain-int rule, same checked record."""
+    if not safe(pid):
+        return False
+    os.killpg(pid, sig)
     return True

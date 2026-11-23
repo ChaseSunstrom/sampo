@@ -15,7 +15,7 @@ import sys
 import time
 
 from sampo import core as c
-from sampo import killsafe
+from sampo.core import killsafe  # T-2023: imported on first kill (killsafe itself imports subprocess)
 from sampo.core import subprocess  # T-2023: imported on first use
 from sampo.core import contextlib, shutil  # T-3577: these too
 

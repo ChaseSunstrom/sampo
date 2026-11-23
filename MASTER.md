@@ -114,7 +114,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmanergy` (T-2563, gen-2 moonshot: anergy for permission prompts [→ files-lib-1](docs/map/files-lib-1.md)
 - `fmobjections` (T-3276: `sampo audit ahead ID` ranks ledger `finding` events (rejected and this task's left out… [→ files-lib-1](docs/map/files-lib-1.md)
 - `fmauditrun` (T-1186: `sampo audit run ID`, the audit lenses as headless… [→ files-lib-1](docs/map/files-lib-1.md)
-- `fmlanepilot` (T-5706: `sampo lane pilot ID | --all [--dry]`, a returned lane reviewed and accepted headless; T-6089: the local model reviews each lens first, the adversary lens is always Claude's and a sensitive lane is read by Claude on every lens; Claude reads any other lens only on a HIGH or CRITICAL finding, no verdict, no answer, or a class routed back; a lane picked by a salted hash (1 in 5) or of a class with under 10 samples is read by Claude on every lens to check the local reviewer: `sampo cost --local-parity`… [→ files-lib-1](docs/map/files-lib-1.md)
+- `fmlanepilot` (T-5706: `sampo lane pilot`, a returned lane reviewed headless; T-6089: a local model reviews first) [→ files-lib-1](docs/map/files-lib-1.md)
 - `fmaway` (T-1155: `sampo away`, the summary on return after a long gap) [→ files-lib-1](docs/map/files-lib-1.md)
 - `fmbacktest` (T-1058: `sampo backtest`, where a changed rule, known fix or card… [→ files-lib-1](docs/map/files-lib-1.md)
 - `fmbench`… [→ files-lib-1](docs/map/files-lib-1.md)
@@ -334,7 +334,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmwhich` (T-1699: `sampo which TASK`, the skills, playbooks and commands that… [→ files-lib-8](docs/map/files-lib-8.md)
 - `fmwired` (T-5016: `sampo wired`, the public functions no verb or hook reaches, as file:line rows, from a static… [→ files-lib-8](docs/map/files-lib-8.md)
 - `fmworkflowlint` (T-2564, `sampo/workflowlint.py`): a local actionlint with no install and no network… [→ files-lib-5](docs/map/files-lib-5.md)
-- `fmworkset` (T-6062: `sampo/workset.py`, the builder's explore/edit split: `sampo lane brief` has a cheap explorer write a working-set note (files, symbols with line ranges, tests) that opens the builder brief… [→ files-lib-8](docs/map/files-lib-8.md)
+- `fmworkset` (T-6062: `sampo/workset.py`, the builder's explore/edit split) [→ files-lib-8](docs/map/files-lib-8.md)
 - `fmworks` (T-3106: `sampo works check FILE...`: each SVG sanitised, rendered headless in light… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmworksgrow` (T-3110: `sampo works grow --grid works --target N`: a type x subject x style x technique grid… [→ files-lib-4](docs/map/files-lib-4.md)
 

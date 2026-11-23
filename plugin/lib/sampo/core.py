@@ -15,8 +15,6 @@ import sys
 import time
 from collections import Counter, defaultdict
 
-from sampo import killsafe  # T-5900: the one os.kill/os.killpg guard (os only: cheap on every hook call)
-
 LOADED_NS = time.time_ns()  # T-4045: when this process loaded Sampo's code; a source newer than it may not be what runs.
 # Kept for one purpose only: recall.py's bytecode-cache check (a .pyc older than its source is not reused). The question
 # "has the code on disk moved since this process loaded it?" is code_changed (T-6169), which re-execs a loop on a yes.
@@ -73,10 +71,13 @@ class _Later:
     def __getattr__(self, attr):
         if attr.startswith("__") or attr == "_name":
             raise AttributeError(attr)
-        return getattr(__import__(self._name), attr)
+        return getattr(__import__(self._name, fromlist=["_"]), attr)  # fromlist: a dotted name returns its own module
 
 
 subprocess = _Later("subprocess")
+# T-5900: the one os.kill/os.killpg guard. T-2023: killsafe imports subprocess (to record each Popen, T-6095), so it
+# waits for its first kill: a hook that signals nothing never loads subprocess.
+killsafe = _Later("sampo.killsafe")
 # T-3577: off every hook's path too (tempfile brings shutil, random and the compression modules: ~5 ms a hook)
 contextlib, hashlib, heapq, shutil, string, tempfile = map(_Later, (
     "contextlib", "hashlib", "heapq", "shutil", "string", "tempfile"))
@@ -2006,9 +2007,12 @@ def _proc_children():
     return kids
 
 
-def _signal(pid, sig, group=False):
-    """os.kill (or killpg) that says whether it reached anything, never raising."""
+def _signal(pid, sig, group=False, other=False):
+    """os.kill (or killpg) that says whether it reached anything, never raising. other: the pid is a descendant found
+    by walking /proc from a pid this process started (kill_tree), so it is no child of this one (T-6184)."""
     try:
+        if other:
+            return (killsafe.killpg_other if group else killsafe.kill_other)(pid, sig)
         return (killsafe.killpg if group else killsafe.kill)(pid, sig)
     except OSError:
         return False
@@ -2025,6 +2029,8 @@ def kill_tree(pid, sig=9):
     pid, found = int(pid), []
     if pid <= 1 or pid == os.getpid():  # never init's tree (every process) and never the caller's own
         return 0
+    if not killsafe.ours(pid):  # T-6184: a tree is walked from a pid this process started, never from another's
+        return 0
     for _ in range(8):  # each pass stops what the last one's processes had started meanwhile
         kids, todo, tree = _proc_children(), [pid], []
         while todo:
@@ -2035,15 +2041,15 @@ def kill_tree(pid, sig=9):
         if not new:
             break
         for x in new:
-            _signal(x, signal.SIGSTOP)
+            _signal(x, signal.SIGSTOP, other=x != pid)
         found += new
     if len(found) <= 1:  # no /proc, or nothing below it: its group, as kill_group does
         _signal(pid, sig, group=True)
     n = 0
     for x in found or [pid]:
-        n += _signal(x, sig)
+        n += _signal(x, sig, other=x != pid)
         if sig != signal.SIGKILL:  # a stopped process acts on any other signal only once it runs again
-            _signal(x, signal.SIGCONT)
+            _signal(x, signal.SIGCONT, other=x != pid)
     return n
 
 
@@ -7406,7 +7412,7 @@ def read_dedupe_on():
     Read is then answered whole, in the hooks and in the headless loop alike. On when unset or anything else. The lead's
     own reads are deliberately under it too: its repeat of a Read is as much the same text again as a subagent's."""
     return os.environ.get("FOREMAN_READ_DEDUPE", "").strip().lower() not in ("off", "0", "false", "no")
-_HUNK_AT = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+_HUNK_AT = lazy(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")  # T-6064: compiled on first use (hooks import this module)
 
 
 def read_hunks(old, new, first=1, cap=READ_HUNK_CAP):

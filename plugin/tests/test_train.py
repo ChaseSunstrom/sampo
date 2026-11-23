@@ -2303,6 +2303,9 @@ class ExcuseSitesKnownRed(unittest.TestCase):
         ("cli.py", "_cmd_check"): "sampo check (the main thread's tree), not a lane gate; it only calls _baseline",
         ("cli.py", "_baseline"): "captures a baseline FIX from an unchanged tree sampo check ran; no lane's tests are judged",
         ("cli.py", "_known_flaky"): "reads the flaky list for _baseline's capture; no lane's tests are judged",
+        ("cli.py", "task_prove"): "T-6108 (a rule the culprit states): a test-only diff's own changed tests prove a FIX "
+                                  "from the start tree, where they must fail by name; they are proved, never excused",
+        ("cli.py", "record"): "task_prove's nested writer: labels the evidence line of the baseline proof above; decides nothing",
     }
 
     @classmethod

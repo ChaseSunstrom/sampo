@@ -411,8 +411,9 @@ def _chain(root, todo):
     if len(top) != 1 or top[0] not in shas:
         return None
     tip = top[0]
-    for s in shas:
-        if s != tip and c._git(root, "merge-base", "--is-ancestor", s, tip, timeout=60, proc=True).returncode:
+    for s in shas:  # the exit code read as it is: 0 the commit is in the tip's history; 1, and any other code, is no chain
+        inside = c._git(root, "merge-base", "--is-ancestor", s, tip, timeout=60, proc=True).returncode == 0
+        if s != tip and not inside:
             return None
     base = _git(root, "merge-base", "--octopus", *dict.fromkeys(parent for _, parent, _ in todo), ok=True).split()
     if len(base) != 1:

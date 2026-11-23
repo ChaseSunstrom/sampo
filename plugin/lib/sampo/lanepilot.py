@@ -386,10 +386,11 @@ def scopes_for(main, b, lenses, tip, whole, sensitive):
         if prior and isinstance(oks, list) else set()
     if not clean or prior == tip or sensitive or not whole:
         return scopes
-    try:
-        if train._git(main, "merge-base", "--is-ancestor", prior, tip, timeout=SENSITIVE_TIMEOUT, proc=True).returncode:
-            return scopes
+    try:  # the exit code read as it is: 0 the old tip is an ancestor; 1, and any other code (git's fault), the whole diff
+        ancestor = train._git(main, "merge-base", "--is-ancestor", prior, tip, timeout=SENSITIVE_TIMEOUT, proc=True).returncode == 0
     except Exception:
+        return scopes
+    if not ancestor:
         return scopes
     names, delta = lane_diff(main, tip, since=prior)
     if names and delta:
@@ -1028,7 +1029,9 @@ def _fix_problem(main, b, tip):
     new = _tip(main, b)
     if not new or new == tip:
         return "the fix session made no commit"
-    if _g(main, "merge-base", "--is-ancestor", tip, new, proc=True).returncode != 0:
+    # the exit code read as it is: 0 the reviewed tip is an ancestor; 1, and any other code (git's fault), is not descent
+    descends = _g(main, "merge-base", "--is-ancestor", tip, new, proc=True).returncode == 0
+    if not descends:
         return "the fix session's tip does not descend from the reviewed tip"
     dirty = _g(lane, "status", "--porcelain", proc=True)
     if dirty.returncode != 0 or dirty.stdout.strip():
