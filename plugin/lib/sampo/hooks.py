@@ -7504,7 +7504,7 @@ def wait_timer(raw):
             with open(pidfile) as f:
                 old = int(f.read().strip())
             if old != os.getpid() and _is_timer(old):
-                killsafe.kill(old, signal.SIGTERM)
+                killsafe.kill_other(old, signal.SIGTERM)  # T-6095: a timer an earlier Stop started, named by its pidfile and _is_timer
         except (OSError, ValueError):
             pass
         c.write_atomic(pidfile, str(os.getpid()), durable=False)

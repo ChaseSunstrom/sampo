@@ -145,14 +145,21 @@ class TheLibHelper(unittest.TestCase):
                 g.assert_not_called()
                 k.assert_not_called()
 
-    def test_a_plain_int_above_one_is_signalled_and_reported(self):
-        with mock.patch("os.killpg") as g, mock.patch("os.kill") as k:
-            self.assertIs(killsafe.killpg(4242, signal.SIGTERM), True)
-            self.assertIs(killsafe.kill(4243, signal.SIGKILL), True)
-        g.assert_called_once_with(4242, signal.SIGTERM)
-        k.assert_called_once_with(4243, signal.SIGKILL)
+    def test_a_started_plain_int_is_signalled_and_reported(self):
+        """T-6095: a plain int is signalled only when this process started it; the mocks keep the signals off a real pid."""
+        child = _sleeper()
+        killsafe.started(child)
+        try:
+            with mock.patch("os.killpg") as g, mock.patch("os.kill") as k:
+                self.assertIs(killsafe.killpg(child.pid, signal.SIGTERM), True)
+                self.assertIs(killsafe.kill(child.pid, signal.SIGKILL), True)
+            g.assert_called_once_with(child.pid, signal.SIGTERM)
+            k.assert_called_once_with(child.pid, signal.SIGKILL)
+        finally:
+            child.kill()
+            child.wait()
 
-    def test_a_real_child_dies_and_a_missing_process_raises_for_the_caller(self):
+    def test_a_real_child_dies_and_a_pid_that_was_not_started_is_refused(self):
         child = _sleeper()
         try:
             self.assertIs(killsafe.killpg(child.pid, signal.SIGKILL), True)
@@ -161,8 +168,9 @@ class TheLibHelper(unittest.TestCase):
             if child.poll() is None:
                 child.kill()
                 child.wait()
-        with self.assertRaises(OSError):  # past pid_max: no such process, ESRCH reaches the site's own except
-            killsafe.kill(2 ** 22 + 7, signal.SIGKILL)
+        with mock.patch("os.kill") as k:  # T-6095: past pid_max, and not ours: refused, not an ESRCH from the kernel
+            self.assertIs(killsafe.kill(2 ** 22 + 7, signal.SIGKILL), False)
+        k.assert_not_called()
 
     def test_call_sites_with_a_stubbed_popen_signal_nothing(self):
         """The 2026-11-22 shape on the sites that take a Popen: core.kill_group and pilotsig._kill_group."""
@@ -305,7 +313,7 @@ class TheShape(unittest.TestCase):
     def test_the_helper_is_the_only_file_that_calls_them(self):
         with open(os.path.join(LIB, "sampo", "killsafe.py"), encoding="utf-8") as f:
             sites = kill_sites(f.read())
-        self.assertEqual(len(sites), 2, sites)
+        self.assertEqual(len(sites), 3, sites)  # killpg, kill (T-6095: the started check) and kill_other (a recorded pid)
 
     def test_the_scan_sees_each_form(self):
         cases = {

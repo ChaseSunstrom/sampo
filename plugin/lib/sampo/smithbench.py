@@ -92,7 +92,7 @@ def kill_marked(tmp):
                 continue
             with open(f"/proc/{d}/environ", "rb") as f:
                 if want in f.read().split(b"\0"):
-                    killsafe.kill(int(d), signal.SIGKILL)
+                    killsafe.kill_other(int(d), signal.SIGKILL)  # T-6095: an earlier run's process, named by its environment marker
         except OSError:
             pass
 

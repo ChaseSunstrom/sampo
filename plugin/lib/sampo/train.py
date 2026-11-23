@@ -6084,7 +6084,7 @@ def stop_check(b):
     if not _check_alive(m) or str(m.get("check_pid")) == str(os.getpid()):  # never this process
         return False
     with contextlib.suppress(OSError, ValueError):
-        return killsafe.kill(int(m["check_pid"]), signal.SIGTERM)
+        return killsafe.kill_other(int(m["check_pid"]), signal.SIGTERM)  # T-6095: started by an earlier sampo run; _check_alive checked its start time
     return False
 
 

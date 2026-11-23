@@ -941,7 +941,7 @@ class FindHotspots(ForemanTestCase):
     def test_a_forged_signature_runs_no_gpg_program(self):
         root = self.mk()
         mark, prog = os.path.join(self.tmp, "gpg-ran"), os.path.join(self.tmp, "gpg.sh")
-        write(self.tmp, {"gpg.sh": f"#!/bin/sh\ntouch {mark}\n"})
+        write(self.tmp, {"gpg.sh": f"#!/bin/sh\ncat > /dev/null\ntouch {mark}\n"})  # T-6095: drains git's pipe, or git sees EPIPE
         os.chmod(prog, 0o755)
         tree = subprocess.run(["git", "-C", root, "rev-parse", "HEAD^{tree}"], capture_output=True, text=True).stdout.strip()
         head = subprocess.run(["git", "-C", root, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()

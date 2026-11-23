@@ -248,6 +248,7 @@ def _verb(p, tid):
         try:
             proc = subprocess.Popen(argv, cwd=_cwd(p), stdin=subprocess.DEVNULL, stdout=out, stderr=err,
                                     start_new_session=True, env=_env(tid))
+            killsafe.started(proc)  # T-6095: its group is killed after the leader is reaped, so the registry keeps it reachable
         except OSError as e:
             return _exception(f"pilot could not run: {e}")
         try:
@@ -884,6 +885,7 @@ def _run_headless(p, tid, lane, agent, argv, scratch, left):
         try:
             proc = subprocess.Popen(argv, cwd=scratch, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
                                     start_new_session=True, env=_claude_env(lane, agent))
+            killsafe.started(proc)  # T-6095: the group is killed after the leader is reaped, so the registry keeps it reachable
         except OSError as e:
             _note_claude(p, tid, None)
             print(f"pilot resolve: claude could not start: {e}")
