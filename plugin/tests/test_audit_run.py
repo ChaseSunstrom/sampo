@@ -1,6 +1,7 @@
 """fm audit run (T-1186): the audit lenses as headless claude -p reviewers over fm audit prep's brief."""
 import json
 import os
+import re
 import time
 
 from test_hooks import HookCase
@@ -159,11 +160,32 @@ class AuditRun(HookCase):
                 v, found = auditrun.parse("edge", f"## edge: ok\n{line}\n")
                 self.assertEqual((v, found), ("ok", []), f"{line!r} is a count, so it is no finding")
 
-    def test_exactly_one_verdict_header_per_lens(self):  # T-5706 item 2
+    def test_several_verdict_headers_give_the_most_severe_verdict(self):  # T-6028 (was T-5706 item 2: two headers, no verdict)
         from sampo import auditrun
-        self.assertEqual(auditrun.parse("edge", "## edge: ok\n## edge: changes needed\n"), (None, []))
-        self.assertEqual(auditrun.parse("edge", "## edge: ok\n\n## edge: ok\n"), (None, []))
+        self.assertEqual(auditrun.parse("edge", "## edge: ok\n## edge: changes needed\n- LOW a.py:1 x\n")[0], "changes needed",
+                         "ok then changes needed: any changes needed wins")
+        self.assertEqual(auditrun.parse("edge", "## edge: changes needed\n- LOW a.py:1 x\n## edge: ok\n")[0], "changes needed")
+        v, found = auditrun.parse("edge", "## edge: changes needed\n- HIGH a.py:3 boom\n\n## Not checked\n- b.py\n"
+                                        "## edge: changes needed\n")
+        self.assertEqual(v, "changes needed", "changes needed twice")
+        self.assertEqual([(s, a) for s, a, _ in found], [("HIGH", "a.py:3")], "its findings come with it")
+        self.assertEqual(auditrun.parse("edge", "## edge: ok\n\n## edge: ok\n"), ("ok", []), "all ok is ok")
         self.assertEqual(auditrun.parse("edge", "## edge: ok\n")[0], "ok")
+        self.assertEqual(auditrun.parse("edge", "## intent: ok\n")[0], None, "another lens's header is no answer")
+
+    def test_the_prompt_asks_for_the_verdict_header_in_one_place(self):  # T-6028: CLOSING said 'must end with' the header
+        from sampo import auditrun
+        self.run_audit()
+        for call in self.calls():
+            lens, text = call["lens"], call["stdin"]
+            with self.subTest(lens=lens):
+                self.assertEqual(len(re.findall(r"##\s*<lens>\s*:\s*ok", text)), 1,
+                                 "the format line asks for the header once")
+                self.assertNotRegex(text[text.index("Review only the lens:"):], rf"##\s*`?{lens}`?\s*:",
+                                    "the lens line and CLOSING name no second header of their own")
+                self.assertNotRegex(auditrun.CLOSING, r"(?i)\bend with\b|\bmust end\b|\bfinal\b|\blast\b")
+                self.assertIn("once", auditrun.CLOSING)
+                self.assertIn(lens, auditrun.CLOSING.format(lens=lens))
 
     def test_the_echoed_template_header_is_no_verdict(self):  # T-5706 round 3 item 3
         from sampo import auditrun
@@ -341,7 +363,8 @@ class AuditRun(HookCase):
             a = call["args"]
             self.assertEqual([x for x in a if x.startswith(audits)], [], "audits/ is never an --add-dir")
             self.assertEqual(a.count("--add-dir"), 1)
-            self.assertTrue(prompt.rstrip().endswith("or `## " + call["lens"] + ": changes needed`."), "the closing line stays last")
+            from sampo import auditrun
+            self.assertTrue(prompt.endswith(auditrun.CLOSING.format(lens=call["lens"])), "the closing line stays last")
             self.assertLess(prompt.index("=== end of"), prompt.index("Review only the lens:"), "the named files come before the lens line")
 
     def test_a_file_the_brief_names_is_inlined_to_a_bound_and_only_from_this_tasks_audits_folder(self):  # T-6005 review item 2
