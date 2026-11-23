@@ -17,6 +17,7 @@ LOCAL_SAMPLE), or any lane of a class with fewer than PARITY_WINDOW samples, is 
 each local verdict is checked against it (the local_parity events, `sampo cost --local-parity`)."""
 import contextlib
 import fnmatch
+import errno
 import hashlib
 import io
 import json
@@ -1115,90 +1116,237 @@ def _fix_problem(main, b, tip):
     return ""
 
 
-def _rel(lane, path):
-    """`path` under the lane with '/' separators: the form `git ls-files -z` prints."""
-    return os.path.relpath(path, lane).replace(os.sep, "/")
+_DIR_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
 
 
-def _clear_cache(lane, path, tracked, seen):
-    """T-6194: one real __pycache__ folder: the files inside that git does not track are unlinked, then the folder when
-    it is empty (a tracked file stays, and so does its folder). A folder inside it is not Python's layout: that refuses.
-    Nothing is opened or read; a symlink inside is unlinked itself, never followed. `seen` is the entries the walk has
-    counted so far: the entries here count against the same SCAN_LIMIT. Returns (why or '', the new count)."""
-    entries = []
-    with os.scandir(path) as it:
-        for e in it:
-            seen += 1
-            if seen > SCAN_LIMIT:
-                return "the lane holds more entries than the pilot checks: its bytecode could not be cleared", seen
-            entries.append(e)
-    sub = [e.name for e in entries if e.is_dir(follow_symlinks=False)]
-    if sub:
-        return c.plain(c.redact(f"the lane's bytecode folder {_rel(lane, path)} holds a folder ({sub[0]}): not cleared")), seen
-    if any(e.name == ".git" for e in entries):  # T-6194: a nested repo's .git is never bytecode, whatever its kind: refuse first
-        return c.plain(c.redact(f"the lane's bytecode folder {_rel(lane, path)} holds a git entry (.git): not cleared")), seen
-    for e in entries:
-        if _rel(lane, e.path) not in tracked:
-            os.unlink(e.path)
-    if not os.listdir(path):
-        os.rmdir(path)
+def _join(rel, name):
+    """A lane-relative path with '/' separators (the form `git ls-files -z` prints): `rel` is '' at the lane root."""
+    return f"{rel}/{name}" if rel else name
+
+
+def _open_root(lane):
+    """T-6227: the lane root as a directory fd, opened O_NOFOLLOW: a link at the lane path raises (nothing is walked)."""
+    return os.open(lane, _DIR_FLAGS)
+
+
+def _open_sub(parent, name):
+    """T-6227: a folder `name` under the directory fd `parent`, opened O_NOFOLLOW: a name that is a link now (swapped in
+    since its check) fails the open, and nothing outside the lane is reached: the path is never re-resolved from the lane."""
+    return os.open(name, _DIR_FLAGS, dir_fd=parent)
+
+
+def _listing(fd):
+    """T-6227: (name, is_dir, is_link) for each entry of the folder fd, read through the fd. A link is never a folder here."""
+    with os.scandir(fd) as it:
+        return [(e.name, e.is_dir(follow_symlinks=False), e.is_symlink()) for e in it]
+
+
+_DEPTH_CAP = 256  # T-6227: folders nested deeper than this (below the lane root) refuse the clear, naming the cap
+
+
+class _TooDeep(OSError):
+    """T-6227: a folder nested past _DEPTH_CAP: the clear refuses with this message, before anything under it is deleted."""
+
+
+def _too_deep(rel):
+    return _TooDeep(c.plain(c.redact(f"the lane holds a folder nested more than {_DEPTH_CAP} deep ({rel}): not cleared")))
+
+
+def _enter(parent, name, rel):
+    """T-6227: open the folder `name` under the directory fd `parent` (O_NOFOLLOW) and list it as a level:
+    [fd, rel, entries, next index, opened here]. The fd is closed here when the listing fails: nothing leaks."""
+    fd = _open_sub(parent, name)
+    try:
+        return [fd, rel, _listing(fd), 0, True]
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _walk(fd, rel, prune):
+    """T-6227: a top-down walk of the folders under the directory fd `fd` (at lane-relative `rel`, '' for the root), by fd and
+    with an explicit stack, so no recursion. Yields (rel, fd, entries) for each folder, `entries` as _listing gives them. A
+    folder is entered only by an O_NOFOLLOW open from its parent's fd; a name in `prune` is never entered. A folder's fd is
+    closed when the walk leaves it, so at most _DEPTH_CAP fds are open; a folder past the cap raises _TooDeep before it is
+    opened. The caller's fd is never closed here."""
+    stack = [[fd, rel, _listing(fd), 0, False]]
+    try:
+        yield rel, fd, stack[0][2]
+        while stack:
+            level = stack[-1]
+            lfd, lrel, entries, i, _ = level
+            while i < len(entries) and not (entries[i][1] and entries[i][0] not in prune):
+                i += 1
+            if i == len(entries):
+                stack.pop()
+                if level[4]:
+                    os.close(lfd)
+                continue
+            level[3] = i + 1
+            if len(stack) >= _DEPTH_CAP:
+                raise _too_deep(lrel)
+            child = _enter(lfd, entries[i][0], _join(lrel, entries[i][0]))
+            stack.append(child)
+            yield child[1], child[0], child[2]
+    finally:
+        for level in stack:
+            if level[4]:
+                os.close(level[0])
+
+
+def _no_terminals(pids):
+    """T-6227: lanes.proc_facts with the terminal bit cleared, so lanes.holders counts a process with a terminal too: a dev
+    server in tmux may be using a scratch repo. The other facts are proc_facts' as they are; None (no process table) stays."""
+    got = lanes.proc_facts(pids)
+    if got is None:
+        return None
+    return {pid: (False, same, comm) for pid, (_tty, same, comm) in got.items()}
+
+
+def _lane_busy(lane):
+    """T-6227: a process whose working folder is the lane or under it, terminal or not, refuses the scratch-repo delete: it
+    is only named (its pid), never ended, and nothing is deleted. The finder is lanes.holders, the one `lane rm` uses, with
+    _no_terminals as its facts: this process and its ancestors are skipped, and a pid gone since is not counted. A machine
+    whose process table cannot be read names nothing (as lanes.holders does). Returns '' or why."""
+    held = lanes.holders(lanes.under(lane), facts=_no_terminals)
+    if held:
+        return f"a process is still running in the lane (pid {held[0][0]}): the lane is not cleared"
+    return ""
+
+
+def _clear_cache(parent, name, rel, tracked, seen):
+    """T-6194: one real __pycache__ folder, `name` under the directory fd `parent`: the files inside that git does not track
+    are unlinked, then the folder when it is empty (a tracked file stays, and so does its folder). A folder inside it is not
+    Python's layout: that refuses. T-6227: every step is fd-relative from `parent`, and the folder is opened O_NOFOLLOW, so a
+    link swapped in for it fails the open and nothing outside the lane is touched. No process check: Python rebuilds the
+    bytecode. A symlink inside is unlinked itself, never followed. `seen` counts against SCAN_LIMIT. Returns
+    (why or '', the new count)."""
+    fd = _open_sub(parent, name)
+    empty = False
+    try:
+        entries = _listing(fd)
+        seen += len(entries)
+        if seen > SCAN_LIMIT:
+            return "the lane holds more entries than the pilot checks: its bytecode could not be cleared", seen
+        sub = [n for n, isdir, _ in entries if isdir]
+        if sub:
+            return c.plain(c.redact(f"the lane's bytecode folder {rel} holds a folder ({sub[0]}): not cleared")), seen
+        if any(n == ".git" for n, _, _ in entries):  # T-6194: a nested repo's .git is never bytecode, whatever its kind: refuse first
+            return c.plain(c.redact(f"the lane's bytecode folder {rel} holds a git entry (.git): not cleared")), seen
+        todo = [n for n, _, _ in entries if _join(rel, n) not in tracked]
+        for n in todo:
+            os.unlink(n, dir_fd=fd)
+        empty = not _listing(fd)
+    finally:
+        os.close(fd)
+    if empty:
+        os.rmdir(name, dir_fd=parent)
     return "", seen
 
 
 def _clear_pycache(lane):
     """T-6194: Python's bytecode caches under the lane are disposable, and a planted one is loaded in place of its source
     by a later import, so they are deleted, never read. Every `__pycache__` folder is cleared (_clear_cache), and one
-    that is a symlink is unlinked itself and never followed: os.walk does not descend a symlinked folder, and a cache is
-    pruned from the walk as it is cleared. `.git` is pruned too. The walk is bounded like _scan's (SCAN_LIMIT entries) and
+    that is a symlink is unlinked itself and never followed: _walk never enters a symlinked folder (O_NOFOLLOW), and a cache
+    is pruned from the walk as it is cleared. `.git` is pruned too. The walk is bounded like _scan's (SCAN_LIMIT entries) and
     an unreadable folder fails closed: the round is refused, not run on a lane it could not clean. Returns '' or why.
+    T-6227: no process check: a running process never blocks a bytecode clear, and every delete is fd-relative.
     `git ls-files` reads the index only: it runs no clean filter and no driver."""
     if not lane:  # T-6194: an empty lane path would walk the working folder: refused, nothing is cleared
         return "the lane has no path: its bytecode is not cleared"
     r = _g(lane, "ls-files", "-z", timeout=SENSITIVE_TIMEOUT, proc=True)
     if r.returncode != 0:
         return "the lane's tracked files could not be listed to clear its bytecode"
-    tracked, errs, seen = {x for x in r.stdout.split("\0") if x}, [], 0
+    tracked, seen = {x for x in r.stdout.split("\0") if x}, 0
     try:
-        for top, dirs, files in os.walk(lane, followlinks=False, onerror=errs.append):
-            seen += len(dirs) + len(files) + 1
-            if seen > SCAN_LIMIT:
-                return "the lane holds more entries than the pilot checks: its bytecode could not be cleared"
-            dirs[:] = [x for x in dirs if x != ".git"]
-            for name in [x for x in dirs + files if x == PYCACHE]:
-                path = os.path.join(top, name)
-                if name in dirs:
-                    dirs.remove(name)
-                if os.path.isdir(path) and not os.path.islink(path):
-                    why, seen = _clear_cache(lane, path, tracked, seen)
-                    if why:
-                        return why
-                elif os.path.islink(path) and _rel(lane, path) not in tracked:
-                    os.unlink(path)  # a symlink, even a dangling one: the link itself goes, its target is never touched
-                elif _rel(lane, path) not in tracked:
-                    # T-6194: a plain file named __pycache__ is not Python's cache: refused like any other git-ignored file
-                    return c.plain(c.redact(f"the lane's {_rel(lane, path)} is a file, not a bytecode folder: not cleared"))
+        root = _open_root(lane)
     except OSError as e:
         return f"the lane's bytecode could not be cleared ({type(e).__name__})"
-    if errs:
-        return "the lane's bytecode could not be cleared (a folder of the lane could not be read)"
+    try:
+        # T-6227: fd-relative from the lane root (O_NOFOLLOW). A dry pass first: a folder past the depth cap refuses before
+        # anything is deleted
+        with contextlib.closing(_walk(root, "", (".git", PYCACHE))) as walk:
+            for _rel, _fd, entries in walk:
+                seen += len(entries) + 1
+                if seen > SCAN_LIMIT:
+                    return "the lane holds more entries than the pilot checks: its bytecode could not be cleared"
+        seen = 0
+        with contextlib.closing(_walk(root, "", (".git", PYCACHE))) as walk:
+            for rel, fd, entries in walk:
+                seen += len(entries) + 1
+                if seen > SCAN_LIMIT:
+                    return "the lane holds more entries than the pilot checks: its bytecode could not be cleared"
+                for name, isdir, islink in entries:
+                    if name != PYCACHE:
+                        continue
+                    prel = _join(rel, name)
+                    if isdir:
+                        why, seen = _clear_cache(fd, name, prel, tracked, seen)
+                        if why:
+                            return why
+                    elif islink and prel not in tracked:
+                        os.unlink(name, dir_fd=fd)  # a symlink, even a dangling one: the link itself goes, its target is never touched
+                    elif prel not in tracked:
+                        # T-6194: a plain file named __pycache__ is not Python's cache: refused like any other git-ignored file
+                        return c.plain(c.redact(f"the lane's {prel} is a file, not a bytecode folder: not cleared"))
+    except _TooDeep as e:
+        return str(e)
+    except OSError as e:
+        return f"the lane's bytecode could not be cleared ({type(e).__name__})"
+    finally:
+        os.close(root)
     return ""
 
 
-def _unlink_tree(path):
-    """T-6194: a real folder removed with everything in it, bottom-up. Files and links are unlinked; a link to a folder is
-    unlinked as a link (os.walk does not descend one); nothing is opened or read. An unreadable folder raises."""
-    def fail(e):
-        raise e
-    for d, subs, files in os.walk(path, topdown=False, followlinks=False, onerror=fail):
-        for name in files:
-            os.unlink(os.path.join(d, name))
-        for name in subs:
-            p = os.path.join(d, name)
-            if os.path.islink(p):
-                os.unlink(p)
-            else:
-                os.rmdir(p)
-    os.rmdir(path)
+def _unlink_tree(parent, name):
+    """T-6194: a real folder `name` under the directory fd `parent` removed with everything in it, bottom-up. Files and links
+    are unlinked as themselves; a folder is entered only by an O_NOFOLLOW open from its parent's fd (T-6227), so a link
+    swapped in fails the open and is never followed. Nothing is read. T-6227: iterative, with an explicit stack and the
+    same depth cap as _walk: a folder past it raises _TooDeep. An unreadable folder raises."""
+    stack = [(_enter(parent, name, name), parent, name)]  # (level, the fd its name lives in, its name)
+    try:
+        while stack:
+            level, pfd, pname = stack[-1]
+            fd, rel, entries, i, _ = level
+            if i == len(entries):  # every entry is gone: the folder closes, then it is removed from its parent
+                stack.pop()
+                os.close(fd)
+                os.rmdir(pname, dir_fd=pfd)
+                continue
+            level[3] = i + 1
+            ename, isdir, _ = entries[i]
+            if not isdir:
+                os.unlink(ename, dir_fd=fd)
+                continue
+            if len(stack) >= _DEPTH_CAP:
+                raise _too_deep(_join(rel, ename))
+            stack.append((_enter(fd, ename, _join(rel, ename)), fd, ename))
+    finally:
+        for level, _, _ in stack:  # the folders still open (an error, or none left): each fd closed once
+            os.close(level[0])
+
+
+def _remove_at(lane_fd, rel):
+    """T-6227: remove the entry at lane-relative `rel`: a folder whole, a file or a link as itself. Every step is fd-relative
+    from the lane root's fd, each folder opened O_NOFOLLOW. A path already gone (a target inside a cleared target) is not
+    an error. Raises OSError for anything else."""
+    opened = []
+    try:
+        fd, parts = lane_fd, rel.split("/")
+        try:
+            for part in parts[:-1]:
+                fd = _open_sub(fd, part)
+                opened.append(fd)
+            st = os.stat(parts[-1], dir_fd=fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return
+        if stat.S_ISDIR(st.st_mode):
+            _unlink_tree(fd, parts[-1])
+        else:
+            os.unlink(parts[-1], dir_fd=fd)
+    finally:
+        for f in opened:
+            os.close(f)
 
 
 def _clear_scratch_repos(lane):
@@ -1206,41 +1354,59 @@ def _clear_scratch_repos(lane):
     so it is deleted unread, the way __pycache__ is. The folder that holds its `.git` (a folder, a file or a link) goes
     whole; a `.git` straight in .fm-scratch goes alone. A repo outside .fm-scratch is not touched here: _scan still reports
     it and the pilot refuses. A tracked file under a target keeps it. The walk is bounded like _scan's (SCAN_LIMIT entries)
-    and an unreadable folder fails closed. Nothing is opened; a link is never followed. Returns '' or why."""
+    and an unreadable folder fails closed. Every step is fd-relative and O_NOFOLLOW: a link is never followed. T-6227: before
+    a delete, any process with its working folder in the lane refuses, terminal or not, and the refusal names its pid
+    (_lane_busy). Returns '' or why."""
     if not lane:  # T-6194: .fm-scratch under an empty lane path is the working folder's: refused, nothing is deleted
         return "the lane has no path: its scratch folder is not cleared"
-    root = os.path.join(lane, SCRATCH_DIR)
-    if os.path.islink(root) or not os.path.isdir(root):
-        return ""  # no scratch folder, or a link: nothing is followed here, and _scan refuses a link out of the lane
-    r = _g(lane, "ls-files", "-z", timeout=SENSITIVE_TIMEOUT, proc=True)
-    if r.returncode != 0:
-        return "the lane's tracked files could not be listed to clear its scratch folder"
-    tracked, errs, seen, found = {x for x in r.stdout.split("\0") if x}, [], 0, []
     try:
-        for top, dirs, files in os.walk(root, followlinks=False, onerror=errs.append):
-            seen += len(dirs) + len(files) + 1
-            if seen > SCAN_LIMIT:
-                return "the lane holds more entries than the pilot checks: its scratch folder could not be cleared"
-            found += [os.path.join(top, x) for x in dirs + files if x == ".git"]
+        root = _open_root(lane)
     except OSError as e:
         return f"the lane's scratch folder could not be cleared ({type(e).__name__})"
-    if errs:
-        return "the lane's scratch folder could not be cleared (a folder of the lane could not be read)"
-    targets = sorted({g if os.path.dirname(g) == root else os.path.dirname(g) for g in found})
-    for t in targets:
-        rel = _rel(lane, t)
-        if any(x == rel or x.startswith(rel + "/") for x in tracked):
-            return c.plain(c.redact(f"the lane's scratch folder {rel} holds a tracked file: not cleared"))
     try:
+        try:
+            scratch = _open_sub(root, SCRATCH_DIR)  # T-6227: fd-relative, O_NOFOLLOW: a link here fails the open
+        except FileNotFoundError:
+            return ""  # no scratch folder: nothing to clear
+        except OSError as e:
+            if e.errno in (errno.ELOOP, errno.ENOTDIR):
+                return ""  # a link, or not a folder: nothing is followed here, and _scan refuses a link out of the lane
+            return f"the lane's {SCRATCH_DIR} folder could not be cleared ({type(e).__name__})"
+        try:
+            r = _g(lane, "ls-files", "-z", timeout=SENSITIVE_TIMEOUT, proc=True)
+            if r.returncode != 0:
+                return "the lane's tracked files could not be listed to clear its scratch folder"
+            tracked, seen, targets = {x for x in r.stdout.split("\0") if x}, 0, set()
+            try:
+                with contextlib.closing(_walk(scratch, SCRATCH_DIR, ())) as walk:
+                    for rel, fd, entries in walk:
+                        seen += len(entries) + 1
+                        if seen > SCAN_LIMIT:
+                            return "the lane holds more entries than the pilot checks: its scratch folder could not be cleared"
+                        if any(n == ".git" for n, _, _ in entries):
+                            # the folder that holds the .git goes whole; a .git straight in .fm-scratch goes alone
+                            targets.add(_join(rel, ".git") if rel == SCRATCH_DIR else rel)
+            except _TooDeep as e:
+                return str(e)
+            except OSError as e:
+                return f"the lane's scratch folder could not be cleared ({type(e).__name__})"
+        finally:
+            os.close(scratch)
+        targets = sorted(targets)
         for t in targets:
-            if not os.path.lexists(t):
-                continue  # inside a target cleared already
-            if os.path.isdir(t) and not os.path.islink(t):
-                _unlink_tree(t)
-            else:
-                os.unlink(t)
-    except OSError as e:
-        return f"the lane's scratch repo could not be cleared ({type(e).__name__})"
+            if any(x == t or x.startswith(t + "/") for x in tracked):
+                return c.plain(c.redact(f"the lane's scratch folder {t} holds a tracked file: not cleared"))
+        if targets:  # T-6227: the process check runs only when something is to be deleted
+            busy = _lane_busy(lane)
+            if busy:
+                return busy
+        try:
+            for t in targets:  # sorted: an enclosing target goes first, its inner ones are then already gone (_remove_at)
+                _remove_at(root, t)
+        except OSError as e:
+            return f"the lane's scratch repo could not be cleared ({type(e).__name__})"
+    finally:
+        os.close(root)
     return ""
 
 

@@ -7,6 +7,7 @@ import contextlib
 import io
 import json
 import os
+import pty
 import re
 import shutil
 import subprocess
@@ -1912,6 +1913,218 @@ class JunkGuards(unittest.TestCase):
                     self.assertTrue(os.path.lexists(git), "the .git entry is never deleted")
                     self.assertTrue(os.path.isfile(bytecode), "nothing under the refused folder is deleted")
                     shutil.rmtree(folder)  # a real folder in every case: the next kind starts clean
+
+
+class ClearTOCTOU(unittest.TestCase):
+    """T-6227: the clear pass deletes through directory fds opened O_NOFOLLOW from the lane root, so a folder swapped for a
+    symlink between its check and its delete deletes nothing outside the lane; and a process still living in the lane
+    refuses the clear, which deletes nothing and ends nothing."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="toctou-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.lane = os.path.join(self.tmp, "lane")
+        os.makedirs(self.lane)
+        subprocess.run(["git", "init", "-q", self.lane], check=True, capture_output=True)
+        self.outside = os.path.join(self.tmp, "outside")
+        os.makedirs(self.outside)
+        for name in ("mod.cpython-312.pyc", "other.cpython-312.pyc"):
+            with open(os.path.join(self.outside, name), "wb") as f:
+                f.write(b"outside")
+
+    def test_a_folder_swapped_for_a_link_between_the_listing_and_its_open_deletes_nothing_outside(self):
+        """The walk listed __pycache__ as a folder; the swap lands before its open. The open is O_NOFOLLOW from the lane's fd,
+        so the link fails it. Without O_NOFOLLOW the open follows the link and the outside files would go."""
+        pyc = os.path.join(self.lane, "__pycache__")
+        os.makedirs(pyc)
+        for name in ("mod.cpython-312.pyc", "other.cpython-312.pyc"):
+            with open(os.path.join(pyc, name), "wb") as f:
+                f.write(b"lane")
+        real_open, swapped = os.open, []
+
+        def swap_then_open(path, *a, **kw):
+            if path == "__pycache__" and "dir_fd" in kw and not swapped:
+                swapped.append(path)
+                os.rename(pyc, pyc + ".aside")
+                os.symlink(self.outside, pyc)
+            return real_open(path, *a, **kw)
+
+        with mock.patch("os.open", side_effect=swap_then_open):
+            why = lanepilot._clear_pycache(self.lane)
+        self.assertTrue(swapped, "the swap ran between the listing and the open")
+        self.assertIn("could not be cleared", why, "the open refuses the link: the round is refused")
+        for name in ("mod.cpython-312.pyc", "other.cpython-312.pyc"):
+            self.assertTrue(os.path.isfile(os.path.join(self.outside, name)), f"{name} outside the lane is never deleted")
+
+    def test_a_chain_deeper_than_the_cap_refuses_naming_the_cap_and_deletes_nothing(self):
+        """A 1100-deep folder chain: the walk refuses past the cap (no RecursionError), before the bytecode beside it goes."""
+        pyc = os.path.join(self.lane, "__pycache__")
+        os.makedirs(pyc)
+        with open(os.path.join(pyc, "mod.cpython-312.pyc"), "wb") as f:
+            f.write(b"lane")
+        deep = self.lane
+        for _ in range(1100):
+            deep = os.path.join(deep, "d")
+            os.mkdir(deep)
+        why = lanepilot._clear_pycache(self.lane)
+        self.assertIn(f"nested more than {lanepilot._DEPTH_CAP} deep", why)
+        self.assertTrue(os.path.isfile(os.path.join(pyc, "mod.cpython-312.pyc")), "nothing is cleared before the refusal")
+
+    def test_a_scratch_chain_deeper_than_the_cap_refuses_before_any_repo_goes(self):
+        clone = os.path.join(self.lane, ".fm-scratch", "clone", ".git")
+        os.makedirs(clone)
+        deep = os.path.join(self.lane, ".fm-scratch", "deep")
+        os.makedirs(deep)
+        for _ in range(1100):
+            deep = os.path.join(deep, "d")
+            os.mkdir(deep)
+        why = lanepilot._clear_scratch_repos(self.lane)
+        self.assertIn(f"nested more than {lanepilot._DEPTH_CAP} deep", why)
+        self.assertTrue(os.path.isdir(clone), "the repo is kept: the refusal comes before any delete")
+
+    def test_a_chain_under_the_cap_is_unlinked_bottom_up_without_recursion(self):
+        top = os.path.join(self.lane, "chain")
+        deep = top
+        for _ in range(200):
+            os.mkdir(deep)
+            with open(os.path.join(deep, "f"), "wb") as f:
+                f.write(b"x")
+            deep = os.path.join(deep, "d")
+        os.mkdir(deep)
+        fd = os.open(self.lane, os.O_RDONLY | os.O_DIRECTORY)
+        self.addCleanup(os.close, fd)
+        lanepilot._unlink_tree(fd, "chain")
+        self.assertFalse(os.path.lexists(top), "every level is removed")
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root reads an unreadable folder")
+    def test_an_unreadable_scratch_folder_refuses_naming_it(self):
+        scratch = os.path.join(self.lane, ".fm-scratch")
+        os.makedirs(os.path.join(scratch, "clone", ".git"))
+        os.chmod(scratch, 0)
+        self.addCleanup(os.chmod, scratch, 0o755)
+        why = lanepilot._clear_scratch_repos(self.lane)
+        self.assertIn(".fm-scratch", why)
+        self.assertIn("could not be cleared", why)
+        os.chmod(scratch, 0o755)
+        self.assertTrue(os.path.isdir(os.path.join(scratch, "clone", ".git")), "nothing under it is deleted")
+
+    def _live_holder(self):
+        """A builder's background job: its working folder is the lane, no terminal (a new session, no std streams), so the
+        finder counts it as a leftover and not a person's. It is ended by the cleanup, never by the clear."""
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], cwd=self.lane, start_new_session=True,
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(proc.wait)
+        self.addCleanup(proc.kill)
+        return proc
+
+    def _terminal_holder(self):
+        """A process in the lane that has a controlling terminal (a pty), as a person's or a dev server in tmux would: it
+        opens the slave end itself, in its own session, so the kernel makes it the controlling terminal."""
+        master, slave = pty.openpty()
+        self.addCleanup(os.close, master)
+        self.addCleanup(os.close, slave)
+        code = f"import os, time; os.open({os.ttyname(slave)!r}, os.O_RDWR); time.sleep(60)"
+        proc = subprocess.Popen([sys.executable, "-c", code], cwd=self.lane, start_new_session=True,
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(proc.wait)
+        self.addCleanup(proc.kill)
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            facts = lanes.proc_facts([proc.pid]) or {}
+            if facts.get(proc.pid, (False,))[0]:
+                return proc
+            time.sleep(0.05)
+        self.fail("the child never took the pty as its controlling terminal")
+
+    def test_a_terminal_process_in_the_lane_does_not_block_a_pycache_clear(self):
+        """A pycache clear runs with no process check at all: Python rebuilds bytecode, and the deletes are fd-relative."""
+        pyc = os.path.join(self.lane, "__pycache__")
+        os.makedirs(pyc)
+        with open(os.path.join(pyc, "mod.cpython-312.pyc"), "wb") as f:
+            f.write(b"lane")
+        proc = self._terminal_holder()
+        why = lanepilot._clear_junk(self.lane)
+        self.assertEqual(why, "", "a pycache clear is not refused by a process")
+        self.assertFalse(os.path.lexists(pyc), "the bytecode is cleared")
+        self.assertIsNone(proc.poll(), "the clear ends nothing: the process still runs")
+
+    def test_a_terminal_process_in_the_lane_refuses_a_scratch_repo_clear_naming_its_pid(self):
+        """A scratch-repo delete refuses while any process has its cwd in the lane, terminal or not: a dev server in tmux
+        may be using that repo. The refusal names the pid and nothing is deleted or ended."""
+        clone = os.path.join(self.lane, ".fm-scratch", "clone", ".git")
+        os.makedirs(clone)
+        proc = self._terminal_holder()
+        why = lanepilot._clear_junk(self.lane)
+        self.assertIn(f"pid {proc.pid}", why)
+        self.assertIn("process is still running in the lane", why)
+        self.assertTrue(os.path.isdir(clone), "the probe repo is kept")
+        self.assertIsNone(proc.poll(), "the clear ends nothing: the process still runs")
+
+    def test_a_live_process_refuses_a_clear_of_only_a_scratch_repo(self):
+        """The scratch gate alone: no __pycache__, so only the scratch clear's process check can refuse."""
+        clone = os.path.join(self.lane, ".fm-scratch", "clone", ".git")
+        os.makedirs(clone)
+        with open(os.path.join(clone, "config"), "w") as f:
+            f.write("[core]\n")
+        proc = self._live_holder()
+        why = lanepilot._clear_junk(self.lane)
+        self.assertIn(f"pid {proc.pid}", why)
+        self.assertIn("process is still running in the lane", why)
+        self.assertTrue(os.path.isdir(clone), "the probe repo is kept")
+        self.assertIsNone(proc.poll(), "the clear ends nothing: the process still runs")
+
+    def test_unlink_tree_swapped_folder_between_listing_and_enter_deletes_nothing_outside(self):
+        """The delete step itself: _unlink_tree listed the repo's .git as a folder; the swap lands before its O_NOFOLLOW
+        open, which fails on the link. A path-string delete would follow it and remove the outside files."""
+        scratch = os.path.join(self.lane, ".fm-scratch")
+        git = os.path.join(scratch, "clone", ".git")
+        os.makedirs(git)
+        with open(os.path.join(git, "config"), "w") as f:
+            f.write("[core]\n")
+        for name in ("mod.cpython-312.pyc", "other.cpython-312.pyc"):
+            self.assertTrue(os.path.isfile(os.path.join(self.outside, name)))
+        real_open, swapped = os.open, []
+
+        def swap_then_open(path, *a, **kw):
+            if path == ".git" and "dir_fd" in kw and not swapped:
+                swapped.append(path)
+                os.rename(git, git + ".aside")
+                os.symlink(self.outside, git)
+            return real_open(path, *a, **kw)
+
+        fd = real_open(scratch, os.O_RDONLY | os.O_DIRECTORY)
+        self.addCleanup(os.close, fd)
+        with mock.patch("os.open", side_effect=swap_then_open):
+            with self.assertRaises(OSError):
+                lanepilot._unlink_tree(fd, "clone")
+        self.assertTrue(swapped, "the swap ran between the listing and the open")
+        for name in ("mod.cpython-312.pyc", "other.cpython-312.pyc"):
+            self.assertTrue(os.path.isfile(os.path.join(self.outside, name)), f"{name} outside the lane is never deleted")
+
+    def test_a_scratch_folder_swapped_for_a_link_before_its_open_deletes_nothing_outside(self):
+        """The scratch folder is opened from the lane's fd, O_NOFOLLOW: a link swapped in for it before that open fails it.
+        A path-based open would follow the link and reach the outside repo."""
+        scratch = os.path.join(self.lane, ".fm-scratch")
+        os.makedirs(os.path.join(scratch, "clone", ".git"))
+        outside_repo = os.path.join(self.outside, "repo", ".git")
+        os.makedirs(outside_repo)
+        with open(os.path.join(outside_repo, "config"), "w") as f:
+            f.write("[core]\n")
+        real_open, swapped = os.open, []
+
+        def swap_then_open(path, *a, **kw):
+            # the first open of .fm-scratch, by name or by path: the swap lands just before it
+            if os.path.basename(str(path)) == ".fm-scratch" and not swapped:
+                swapped.append(path)
+                os.rename(scratch, scratch + ".aside")
+                os.symlink(self.outside, scratch)
+            return real_open(path, *a, **kw)
+
+        with mock.patch("os.open", side_effect=swap_then_open):
+            why = lanepilot._clear_scratch_repos(self.lane)
+        self.assertTrue(swapped, "the swap ran before the scratch open")
+        self.assertEqual(why, "", "the link refuses the open: nothing is followed, so nothing is reported as cleared or failed")
+        self.assertTrue(os.path.isfile(os.path.join(outside_repo, "config")), "the outside repo is never deleted")
 
 
 class ScratchRepoNotPlanted(FixSessionCase):
