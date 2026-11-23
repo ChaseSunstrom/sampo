@@ -69,6 +69,93 @@ def _effort(label):
     return "" if effort_off() else PILOT_EFFORT.get(label, "medium")
 
 
+def review_effort_gate(rows):
+    """T-6165: the review classes the escape gate lifts. rows are the landed reviews in landing order, each
+    {"class", "lowered", "escaped"} (lowered: launched at low effort; escaped: a follow-up on its lane, or a trunk red
+    blamed on it). The builders' gate (lanes.effort_gate) reads them with a review that did not escape as the passed one."""
+    return lanes.effort_gate([{"class": r["class"], "lowered": r["lowered"], "passed": not r["escaped"]} for r in rows])
+
+
+def review_effort(label, base, reverted):
+    """T-6165: the --effort a reviewer of class `label` runs at: its base one level up once its class is reverted; '' when
+    effort_off() (no --effort at all, lifted or not)."""
+    if not base or effort_off():
+        return ""
+    return lanes.lift_effort(base) if label in reverted else base
+
+
+REVIEW_ESCAPE_KINDS = ("lane_landed", "pilot_review", "lane_train_red", "lane_red_after_merge", "capture")
+
+
+def _ledger_key(p):
+    """T-6165: the ledger files' names, mtimes and sizes: what the escape rows are cached by."""
+    key = []
+    for f in c.ledger_files(p):
+        try:
+            st = os.stat(f)
+        except OSError:
+            continue
+        key.append([os.path.basename(f), st.st_mtime_ns, st.st_size])
+    return key
+
+
+def review_escape_rows(p):
+    """T-6165: one row {class, effort, lowered, escaped} per landed lane with a pilot review, in landing order. A lane
+    escaped when, after it landed, a red after its merge (its revert), a trunk-red blame on it (lane_train_red), or a
+    discovered task citing its id (a capture with from = its id) named it. One pass over the ledger, no model and no
+    subprocess; the rows are cached in the project folder by the ledger files' mtimes and sizes."""
+    path, key = os.path.join(p.dir, "review_escape.json"), _ledger_key(p)
+    try:
+        with open(path, encoding="utf-8") as f:
+            cached = json.load(f)
+        if cached.get("key") == key:
+            return cached["rows"]
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    landed, reviews, escaped = {}, {}, set()  # landed: task -> landing ts order; reviews: task -> its last pilot review
+    for e in c.ledger_events(p, list(REVIEW_ESCAPE_KINDS)):  # oldest first: an escape counts only after its landing
+        kind, t, d = e.get("event"), e.get("task"), e.get("data") or {}
+        if kind == "lane_landed":
+            for x in d.get("tasks") or str(t or "").split(","):
+                if x:
+                    landed.setdefault(x, True)
+        elif kind == "pilot_review" and t:
+            reviews[t] = {"class": str(d.get("class") or ""), "effort": str(d.get("effort") or "")}
+        elif kind in ("lane_train_red", "lane_red_after_merge") and t in landed:
+            escaped.add(t)
+        elif kind == "capture" and d.get("source") == "discovered":
+            for x in re.findall(r"T-\d+", str(d.get("from") or "")):
+                if x in landed:
+                    escaped.add(x)
+    rows = [{"class": reviews[t]["class"], "effort": reviews[t]["effort"], "lowered": reviews[t]["effort"] == "low",
+             "escaped": t in escaped} for t in landed if t in reviews]
+    try:
+        c.write_atomic(path, json.dumps({"key": key, "rows": rows}, sort_keys=True))
+    except OSError:
+        pass  # a cache that can't be written costs one more build, never a wrong row
+    return rows
+
+
+def review_gate(p):
+    """T-6165: the review classes lifted by the escape gate: the persisted set (meta's review_gate) plus any class the
+    current rows revert (sticky). A newly lifted class is logged once (log_review_gate) and the sets are persisted."""
+    st = c.read_meta(p).get("review_gate") or {}
+    before = set(st.get("lifted") or [])
+    lifted = before | review_effort_gate(review_escape_rows(p))
+    logged = log_review_gate(p, lifted, st.get("logged") or [])
+    if lifted != before or logged != set(st.get("logged") or []):
+        c.update_meta(p, review_gate={"lifted": sorted(lifted), "logged": sorted(logged)})
+    return lifted
+
+
+def log_review_gate(p, reverted, logged):
+    """T-6165: one review_effort_gate event per class newly reverted (not already in `logged`); returns logged plus those."""
+    new = set(reverted) - set(logged)
+    for cls in sorted(new):
+        c.log_event(p, "review_effort_gate", data={"class": cls})
+    return set(logged) | new
+
+
 def lenses_for(b, sensitive, p=None, names=None, raw=b""):
     """(lenses, model) a lane's review runs with: plan_for's first two (T-6044)."""
     return plan_for(b, sensitive, p, names, raw)[:2]
@@ -1234,6 +1321,10 @@ def pilot(p, tid, main):
         sensitive = _sensitive(main, before[0])
         names, whole = lane_diff(main, before[0])
         lenses, model, effort = plan_for(b, sensitive, p, names, whole)  # the fix may have made the diff sensitive
+        try:  # T-6165: the escape gate lifts a reviewer class one effort level; the rows it reads are the pilot_review events
+            effort = review_effort(lane_class(b), effort, review_gate(p))
+        except (c.CorruptState, OSError):
+            pass  # an unreadable gate lifts nothing: the depth's own effort runs, as before the gate
         res.update(lenses=lenses, model=model)
         # T-6089: the local model reads each lens first; a sampled lane, or a lane of a cold class, is read by Claude on every
         # lens, to check the local reviewer against it. The adversary lens and a sensitive lane are never local (local_lenses)
@@ -1245,6 +1336,7 @@ def pilot(p, tid, main):
         # T-6044: the first read may take only the fix for a lens that was clean at the last stamped tip; after a fix
         # round of this pilot every lens reads the whole diff (the accept needs each one at the new tip, T-5707)
         scopes = {x: ("", whole) for x in claude} if fixes else scopes_for(main, b, claude, before[0], whole, sensitive)
+        c.log_event(p, "pilot_review", task=b.id, data={"class": lane_class(b), "effort": effort})  # T-6165: the escape rows' class and effort
         verdicts, findings, why, unparsed = review_cached(p, b, main, before, claude, model, scopes, note, effort)  # not _busy: its lock comes after the reviewers
         for x, (verdict, found) in settled.items():  # T-6089: the local answer that stands, as review() words a Claude one
             verdicts[x] = verdict

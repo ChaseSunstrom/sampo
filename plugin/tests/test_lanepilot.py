@@ -1554,5 +1554,83 @@ class RepeatedException(PilotCase):
         self.assertEqual(self.andon_lines(), [])
 
 
+class ReviewEffortGate(unittest.TestCase):
+    """T-6165: a review class at lowered effort whose reviews later escape (a follow-up on the lane, or a trunk red blamed on
+    it) more often than that class's earlier reviews goes back up one level: the same gate as the builders' (lanes.effort_gate)."""
+
+    def rows(self, *groups):
+        """groups of (cls, lowered, n, escaped): n reviews of `cls` (lowered or not) of which `escaped` escaped."""
+        out = []
+        for cls, lowered, n, escaped in groups:
+            out += [{"class": cls, "lowered": lowered, "escaped": i < escaped} for i in range(n)]
+        return out
+
+    def test_a_low_effort_class_escaping_more_than_its_earlier_reviews_lifts_one_level(self):
+        rows = self.rows(("small", False, 20, 0), ("small", True, 20, 10))
+        reverted = lanepilot.review_effort_gate(rows)
+        self.assertEqual(reverted, {"small"})
+        self.assertEqual(lanepilot.review_effort("small", lanepilot.PILOT_EFFORT["small"], reverted), "medium")
+
+    def test_a_class_not_reverted_keeps_its_effort(self):
+        reverted = lanepilot.review_effort_gate(self.rows(("small", False, 20, 0), ("small", True, 19, 10)))
+        self.assertEqual(reverted, set(), "nineteen lowered reviews are under the gate")
+        self.assertEqual(lanepilot.review_effort("small", "low", reverted), "low")
+
+    def test_the_lift_is_logged_once(self):
+        logged = set()
+        with mock.patch.object(c, "log_event") as ev:
+            logged = lanepilot.log_review_gate(None, {"small"}, logged)
+            logged = lanepilot.log_review_gate(None, {"small"}, logged)
+        self.assertEqual(ev.call_count, 1, "the same revert is logged once")
+        self.assertEqual(ev.call_args.args[1], "review_effort_gate")
+        self.assertEqual(logged, {"small"})
+
+    def test_foreman_effort_off_lifts_nothing(self):
+        with mock.patch.dict(os.environ, {"FOREMAN_EFFORT": "off"}):
+            self.assertEqual(lanepilot.review_effort("small", "low", {"small"}), "")
+
+
+class ReviewEffortGateRun(PilotCase):
+    """T-6165: the escape rows come from the ledger (a landed lane with a pilot review, escaped by a later revert, trunk-red
+    blame or discovered task), the lift is persisted in meta, and the pilot's review argv carries the lifted effort."""
+
+    def seed(self, tasks, cls, effort, escaped):
+        p = c.find_project(self.repo)
+        for t, e in zip(tasks, escaped):
+            c.log_event(p, "lane_landed", task=t, data={"tasks": [t]})
+            c.log_event(p, "pilot_review", task=t, data={"class": cls, "effort": effort})
+            if e:
+                c.log_event(p, "lane_train_red", task=t, data={"cmd": "x", "failing": [], "blamed": "x"})
+
+    def test_rows_are_built_from_the_ledger_with_one_pass_and_cached(self):
+        p = c.find_project(self.repo)
+        self.seed(["T-9001", "T-9002"], "S/FEATURE", "low", [False, False])
+        c.log_event(p, "capture", task="T-9003", data={"source": "discovered", "type": "CLEAN", "from": "T-9001"})
+        with mock.patch.object(c, "ledger_events", wraps=c.ledger_events) as le:
+            rows = lanepilot.review_escape_rows(p)
+            again = lanepilot.review_escape_rows(p)
+        self.assertEqual(sorted((r["class"], r["effort"], r["escaped"]) for r in rows),
+                         [("S/FEATURE", "low", False), ("S/FEATURE", "low", True)], "T-9001 is cited by a discovered task")
+        self.assertEqual(again, rows)
+        self.assertEqual(le.call_count, 1, "the second build reads the cache, not the ledger")
+
+    def test_a_low_effort_class_over_the_bar_is_lifted_in_the_review_argv(self):
+        cls = lanepilot.lane_class(self.brief())
+        self.seed([f"T-8{i:03d}" for i in range(20)], cls, "medium", [False] * 20)
+        self.seed([f"T-7{i:03d}" for i in range(20)], cls, "low", [i < 10 for i in range(20)])
+        self.assertEqual(self.pilot()["outcome"], "accepted")
+        self.assertEqual({self.arg(x, "--effort") for x in self.calls()}, {"medium"})
+
+    def test_the_lift_is_logged_once_and_persists_in_meta(self):
+        p = c.find_project(self.repo)
+        cls = lanepilot.lane_class(self.brief())
+        self.seed([f"T-8{i:03d}" for i in range(20)], cls, "medium", [False] * 20)
+        self.seed([f"T-7{i:03d}" for i in range(20)], cls, "low", [i < 10 for i in range(20)])
+        self.assertEqual(lanepilot.review_gate(p), {cls})
+        self.assertEqual(lanepilot.review_gate(p), {cls})
+        self.assertEqual(len(c.ledger_events(p, ["review_effort_gate"])), 1, "logged once across runs")
+        self.assertEqual(c.read_meta(p)["review_gate"]["lifted"], [cls])
+
+
 if __name__ == "__main__":
     unittest.main()
