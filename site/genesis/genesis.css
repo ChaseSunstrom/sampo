@@ -230,7 +230,7 @@ button.chip{cursor:pointer;transition:color var(--dur-small),border-color var(--
 .upl{display:grid;grid-template-columns:5.5em minmax(90px,1fr) repeat(4,auto);gap:6px 18px;align-items:center;padding:10px 0;border-bottom:1px solid var(--line);font-size:14px;color:var(--ash)}
 .upl .g{font:500 12px/1.4 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
 .upl .trk{display:block;height:8px;border-radius:4px;background:var(--line);overflow:hidden}
-.upl .bar{display:block;height:100%;background:var(--accent);border-radius:4px;transform-origin:left;animation:uplgrow .9s cubic-bezier(.2,.7,.2,1) both}
+.upl .bar{display:block;height:100%;background:var(--accent);border-radius:4px;transform-origin:left;animation:uplgrow var(--dur-grow) var(--ease-grow) both}
 .upl .w{grid-column:span 2;color:var(--muted)}
 .upl.skip .bar{opacity:.4}
 @keyframes uplgrow{from{transform:scaleX(0)}}

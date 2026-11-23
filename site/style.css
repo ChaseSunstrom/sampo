@@ -41,6 +41,7 @@
   --step-4: 3.157rem; --step-5: 4.209rem; --step-6: 5.61rem;
   --dur-tap: 90ms; --dur-small: 150ms; --dur-enter: 220ms; --dur-exit: 150ms;
   --dur-move: 300ms; --dur-stage: 500ms; --dur-rune: 300ms; --dur-strike: 2200ms;
+  --dur-grow: 900ms;
   --ease-enter: cubic-bezier(0.05, 0.7, 0.1, 1); --ease-exit: cubic-bezier(0.3, 0, 0.8, 0.15);
   --ease-move: cubic-bezier(0.45, 0, 0.2, 1); --ease-strike: cubic-bezier(0.6, 0, 1, 0.6);
   --ease-spring: cubic-bezier(0.2, 0.9, 0.25, 1.05); --ease-spring-2: cubic-bezier(0.3, 1.4, 0.4, 1);
@@ -50,7 +51,7 @@
   --ease-forge-9: cubic-bezier(0.2, 0.8, 0.3, 1.0); --ease-forge-10: cubic-bezier(0.3, 0.0, 0.3, 1.0);
   --ease-forge-11: cubic-bezier(0.45, 0.0, 0.4, 1.0); --ease-forge-12: cubic-bezier(0.6, 0.0, 1.0, 0.6);
   --ease-forge-13: cubic-bezier(0.15, 0.7, 0.4, 1.0); --ease-forge-14: cubic-bezier(0.5, 0.0, 0.75, 0.5);
-  --autoplay-limit: 5000ms;
+  --ease-grow: cubic-bezier(0.2, 0.7, 0.2, 1); --autoplay-limit: 5000ms;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
