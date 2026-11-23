@@ -1,17 +1,17 @@
 {
- "generated": "2026-11-22",
+ "generated": "2026-11-23",
  "totals": {
-  "tasks_done": 1286,
-  "evidence": 8050,
-  "proofs": 713,
-  "commits": 930,
+  "tasks_done": 1538,
+  "evidence": 10757,
+  "proofs": 907,
+  "commits": 1177,
   "gate_runs": 500,
-  "subagents": 4445,
-  "lanes_merged": 955,
-  "findings": 2476,
-  "guard_blocks": 1288,
-  "captures": 2139,
-  "lessons_shown": 2429
+  "subagents": 5291,
+  "lanes_merged": 1234,
+  "findings": 6461,
+  "guard_blocks": 1461,
+  "captures": 2411,
+  "lessons_shown": 2749
  },
  "daily": [
   {
@@ -247,59 +247,70 @@
   },
   {
    "day": "2026-11-22",
-   "FEATURE": 42,
-   "FIX": 31,
-   "CLEAN": 2,
-   "PERFORMANCE": 10,
-   "SECURITY": 1,
+   "FEATURE": 95,
+   "FIX": 89,
+   "CLEAN": 3,
+   "PERFORMANCE": 63,
+   "SECURITY": 14,
    "RESEARCH": 1,
-   "lanes": 44,
-   "evidence": 491
+   "lanes": 250,
+   "evidence": 2178
+  },
+  {
+   "day": "2026-11-23",
+   "FEATURE": 15,
+   "FIX": 31,
+   "CLEAN": 1,
+   "PERFORMANCE": 19,
+   "SECURITY": 8,
+   "RESEARCH": 0,
+   "lanes": 73,
+   "evidence": 1020
   }
  ],
  "tiers": {
-  "S": 625,
-  "M": 627,
-  "L": 33
+  "S": 723,
+  "M": 780,
+  "L": 34
  },
  "types": {
-  "FEATURE": 381,
-  "FIX": 638,
-  "CLEAN": 62,
-  "PERFORMANCE": 137,
-  "SECURITY": 43,
+  "FEATURE": 449,
+  "FIX": 727,
+  "CLEAN": 64,
+  "PERFORMANCE": 209,
+  "SECURITY": 64,
   "RESEARCH": 25
  },
  "guard": {
-  "brief": 614,
-  "core": 301,
-  "system": 178,
-  "state-direct": 64,
-  "rm-outside": 49,
-  "credentials": 29,
-  "pipe-shell": 16,
-  "self-authorize": 13
+  "brief": 675,
+  "core": 343,
+  "system": 207,
+  "state-direct": 79,
+  "rm-outside": 51,
+  "credentials": 33,
+  "confine": 28,
+  "pipe-shell": 16
  },
  "findings": {
   "lenses": {
-   "other": 988,
-   "self": 431,
-   "edge": 318,
-   "adversary": 311,
-   "intent": 160,
-   "maintainer": 137
+   "other": 3031,
+   "adversary": 682,
+   "edge": 653,
+   "intent": 583,
+   "self": 583,
+   "maintainer": 542
   },
   "severity": {
-   "LOW": 869,
-   "MEDIUM": 507,
-   "HIGH": 112
+   "LOW": 1137,
+   "MEDIUM": 655,
+   "HIGH": 144
   }
  },
  "subagents": {
-  "sampo:fm-builder": 1464,
+  "sampo:fm-builder": 2131,
   "fm-builder": 1112,
-  "general-purpose": 904,
-  "sampo:fm-reviewer": 432,
+  "general-purpose": 918,
+  "sampo:fm-reviewer": 589,
   "workflow-subagent": 244,
   "fm-reviewer": 208
  },
@@ -308,10 +319,10 @@
   "median": 442.5
  },
  "tools": {
-  "misses": 18,
+  "misses": 30,
   "resolved": 0,
   "proved": 0,
-  "searches": 436,
+  "searches": 507,
   "queued": 3,
   "refused": 0
  },
@@ -434,11 +445,11 @@
   "tests": 12867
  },
  "calibration": {
-  "scored": 37,
-  "pending": 909,
+  "scored": 34,
+  "pending": 1130,
   "brier": {
-   "stated": 0.25067567567567567,
-   "base": 0.32914166666666667
+   "stated": 0.21132352941176472,
+   "base": 0.2777181818181818
   },
   "bars": {
    "research": 70,
@@ -454,7 +465,7 @@
     {
      "lo": 60,
      "hi": 79,
-     "n": 2,
+     "n": 1,
      "held": 0,
      "pct": 0,
      "stated": 75,
@@ -463,11 +474,11 @@
     {
      "lo": 80,
      "hi": 94,
-     "n": 10,
+     "n": 8,
      "held": 0,
      "pct": 0,
-     "stated": 84,
-     "gap": 84
+     "stated": 83,
+     "gap": 83
     }
    ],
    "ship": [
@@ -512,15 +523,15 @@
     {
      "lo": 60,
      "hi": 79,
-     "n": 96,
-     "held": 90,
+     "n": 98,
+     "held": 92,
      "pct": 94
     },
     {
      "lo": 80,
      "hi": 94,
-     "n": 491,
-     "held": 457,
+     "n": 528,
+     "held": 490,
      "pct": 93
     },
     {
@@ -534,19 +545,17 @@
   }
  },
  "proof": {
-  "n": 832,
+  "n": 867,
   "counts": {
-   "typed": 86,
-   "meaning-user": 86,
+   "typed": 87,
+   "meaning-user": 98,
    "research-uncited": 26,
    "meaning-notes": 415,
-   "docs": 150,
-   "red": 77,
-   "perf-typed": 157,
-   "infra": 10,
-   "ui-unshot": 3,
-   "tui-unshot": 6,
-   "data": 3,
+   "red": 83,
+   "perf-typed": 227,
+   "docs": 117,
+   "ui-unshot": 1,
+   "tui-unshot": 2,
    "perf-noise": 1
   },
   "history": [
@@ -637,6 +646,10 @@
    {
     "day": "2026-11-22",
     "n": 832
+   },
+   {
+    "day": "2026-11-23",
+    "n": 867
    }
   ]
  },
@@ -644,25 +657,25 @@
   "triggers": [
    {
     "trigger": "discovered",
-    "fired": 1358,
-    "precision": 0.882,
+    "fired": 1532,
+    "precision": 0.886,
     "route": "inbox"
    },
    {
     "trigger": "followup",
-    "fired": 219,
-    "precision": 0.615,
+    "fired": 240,
+    "precision": 0.554,
     "route": "inbox"
    },
    {
     "trigger": "self",
-    "fired": 207,
-    "precision": 0.78,
+    "fired": 212,
+    "precision": 0.781,
     "route": "inbox"
    },
    {
     "trigger": "steer",
-    "fired": 151,
+    "fired": 163,
     "precision": 0.45,
     "route": "inbox"
    },
@@ -693,7 +706,7 @@
    {
     "trigger": "baseline",
     "fired": 34,
-    "precision": 0.636,
+    "precision": 0.625,
     "route": "inbox"
    },
    {
@@ -704,14 +717,20 @@
    },
    {
     "trigger": "foresight-date",
-    "fired": 16,
+    "fired": 18,
     "precision": 0.0,
     "route": "inbox"
    },
    {
     "trigger": "sentinel reverify",
-    "fired": 13,
+    "fired": 17,
     "precision": 1.0,
+    "route": "inbox"
+   },
+   {
+    "trigger": "steer-recur",
+    "fired": 13,
+    "precision": null,
     "route": "inbox"
    },
    {
@@ -727,19 +746,19 @@
     "route": "inbox"
    },
    {
+    "trigger": "foresight-cochange",
+    "fired": 8,
+    "precision": 0.2,
+    "route": "inbox"
+   },
+   {
     "trigger": "friction",
     "fired": 8,
     "precision": 0.0,
     "route": "inbox"
    },
    {
-    "trigger": "foresight-cochange",
-    "fired": 7,
-    "precision": 0.2,
-    "route": "inbox"
-   },
-   {
-    "trigger": "steer-recur",
+    "trigger": "failure classes",
     "fired": 6,
     "precision": null,
     "route": "inbox"
@@ -748,6 +767,12 @@
     "trigger": "ahead",
     "fired": 5,
     "precision": null,
+    "route": "inbox"
+   },
+   {
+    "trigger": "recurring-failure",
+    "fired": 5,
+    "precision": 0.0,
     "route": "inbox"
    },
    {
@@ -763,13 +788,19 @@
     "route": "inbox"
    },
    {
-    "trigger": "recurring-failure",
+    "trigger": "trunk-red",
     "fired": 4,
-    "precision": 0.0,
+    "precision": null,
     "route": "inbox"
    },
    {
     "trigger": "predicted",
+    "fired": 3,
+    "precision": null,
+    "route": "inbox"
+   },
+   {
+    "trigger": "sentinel bisect",
     "fired": 3,
     "precision": null,
     "route": "inbox"
@@ -793,7 +824,19 @@
     "route": "inbox"
    },
    {
-    "trigger": "sentinel bisect",
+    "trigger": "capability-miss",
+    "fired": 1,
+    "precision": null,
+    "route": "inbox"
+   },
+   {
+    "trigger": "promise",
+    "fired": 1,
+    "precision": null,
+    "route": "inbox"
+   },
+   {
+    "trigger": "repeat",
     "fired": 1,
     "precision": null,
     "route": "inbox"
@@ -802,15 +845,15 @@
   "installs": 0,
   "recoveries": 0,
   "trials": {
-   "unmeasured": 4,
-   "due": 16
+   "unmeasured": 3,
+   "due": 17
   },
   "predictions": [
    {
     "kind": "next-request",
-    "n": 312,
-    "hit": 0.426,
-    "base_hit": 0.375,
+    "n": 361,
+    "hit": 0.424,
+    "base_hit": 0.38,
     "lead": [
      true,
      0.004520592745393515,
@@ -818,10 +861,10 @@
      9
     ],
     "muted": false,
-    "shown_n": 228,
-    "shown_hit": 0.434,
-    "overlap": 0.065,
-    "base_overlap": 0.061
+    "shown_n": 253,
+    "shown_hit": 0.423,
+    "overlap": 0.056,
+    "base_overlap": 0.052
    }
   ],
   "lean": [
@@ -878,6 +921,202 @@
   }
  },
  "decisions": [
+  {
+   "date": "2026-11-23",
+   "text": "read T-6208: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-23",
+   "text": "Order after the 2026-11-25 reset: cost, perf (T-6201 Haiku/local parity included), T-6200 kith post-mortem, T-6197 generality, rest; kith stays stopped until T-6200 and its fixes land",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-23",
+   "text": "read T-6199: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-23",
+   "text": "read T-6198: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-23",
+   "text": "Until the weekly reset (2026-11-25 07:00 UTC), brief only lanes that cut cost or unblock the pipeline (T-6194, T-5960, T-6184, T-6159/T-6158 class); the rest wait",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-23",
+   "text": "lane brief checks the plan gate before running criteria at HEAD",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-23",
+   "text": "T-6160's train gate runs merged-tree dependents by a ranked time budget (patches a changed symbol > names one > reads a changed data/web file > names the changed path > import-only) up to 90 s estimat",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-23",
+   "text": "read T-6167: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-23",
+   "text": "Snapshot before a one-way step: test-first: WorkingSetRunner red on trunk (rm with a test path, python -c, /bin/sh, VAR=x prefix, unknown runner dropped; run.py, pytest, cargo test kept)",
+   "later": null,
+   "confidence": 90,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-23",
+   "text": "read T-6099: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-23",
+   "text": "read T-6087: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-23",
+   "text": "read T-6059: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-23",
+   "text": "Re-architecture brainstorm slate (T-6036): build T-6042 verdict-loss alarms, T-6043 typed reviewer replies, T-6044 lens map + verdict cache, T-6045 one-child review behind a 20-lane recall kill test, ",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-22",
+   "text": "Ship Sampo's read-only MCP server (cards, do) in the plugin manifest (T-5885) instead of leaving registration as a manual step",
+   "later": null,
+   "confidence": null,
+   "kind": "outward"
+  },
+  {
+   "date": "2026-11-22",
+   "text": "Re-queue the 16 lanes the 10:05 shape cull parked for test_fast_equiv.Passthrough (a flaky class, not their fault) once the running 7-lane train lands; T-5879/T-5880 fix the flake and the cull's blame",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-22",
+   "text": "Hold T-5501 (agent rename) unaccepted until the land queue drains, then land it alone and restart sessions",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-22",
+   "text": "Brief urgent tasks with T-5774's lane code while trunk's sampo lane brief crashes on _defs",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-22",
+   "text": "Night run: marked T-5588, T-5534, T-5561, T-5562 urgent so their builders run while the 47-lane land drains",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-22",
+   "text": "T-5584 andon: a custom non-Claude --worker name stays refused while claude-bench is off (fail closed), and the bench child stays gated even with the switch on",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-22",
+   "text": "T-5715 andon: a claimed S/M diff scored risky keeps its own audit groups plus the adversary lens on the sensitive files; only a claimed L+ owes the full L groups",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-22",
+   "text": "T-5715 andon: a claimed S/M change scored risky keeps its claimed audit groups plus the adversary lens on the sensitive files (today's flow), not the full L groups",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-22",
+   "text": "Parked T-5736 at a one-way, ambiguous step: Add the cpu_per_lane measure in measure.py from the run cache, close records, train ledger and /proc/stat, with tests written red first on fixture records",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-22",
+   "text": "Session restart deferred to a natural lull; the night wave launched first",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-22",
+   "text": "read T-5773: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-22",
+   "text": "read T-5763: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-22",
+   "text": "read T-5727: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-22",
+   "text": "read T-5705: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-22",
+   "text": "read T-5688: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
   {
    "date": "2026-11-22",
    "text": "No Claude-model benchmark or exam runs (Sonnet, Opus, Fable, plain Claude Code or Sampo-in-Claude-Code) until the user calls Sampo genuinely insane; local jarvis models only; Claude cost measured offl",
@@ -2081,202 +2320,6 @@
   {
    "date": "2026-11-08",
    "text": "read T-3873: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-08",
-   "text": "read T-3868: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-08",
-   "text": "read T-3866: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-08",
-   "text": "read T-3865: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-08",
-   "text": "read T-3864: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-08",
-   "text": "read T-3863: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-08",
-   "text": "read T-3862: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-08",
-   "text": "read T-3850: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-08",
-   "text": "read T-3848: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-08",
-   "text": "Recommendation: research/direction.md is Sampo's direction (one line, sections 0-8, tensions and measures tables), carried to every agent by the profile because the Ward keeps sampo mandate set the us",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-08",
-   "text": "T-3843: Kalevala's sessions run in the night's rounds and on demand (sampo kalevala step), not in the hourly tick, which stays model-free by its own contract (T-2356); if the direction's 'towers climb",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-08",
-   "text": "read T-3840: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-08",
-   "text": "read T-3838: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-08",
-   "text": "T-3699: keep the Board's 5-minute idle read (db79cedb9) and revert the key-press-only read (6ca186e20): an idle board frozen until a key press shows stale lanes and trains, which the user's live-data ",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-08",
-   "text": "Slate from 500 ideas / 40 grounded clusters (research note brainstorm-2026-11-07-ai-pipelines; checklist page https://claude.ai/artifact/6ng8Pe7f2dTezeL8NuLpqc): build T-3777 ceiling register (the met",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-08",
-   "text": "T-3765 slate: 5 new tasks, 19 clusters folded into T-3761/T-3755/T-3770/T-3757, 13 later, 1 skipped; perf work first since drive is on for it",
-   "later": null,
-   "confidence": 80,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-07",
-   "text": "read T-3769: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-07",
-   "text": "read T-3764: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-07",
-   "text": "LFM3-1.7B waits for the user's next Ollama update; Sampo doesn't install or upgrade runtimes (T-3760 tracks it)",
-   "later": null,
-   "confidence": 90,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-07",
-   "text": "read T-3756: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-07",
-   "text": "read T-3754: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-07",
-   "text": "read T-3749: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-07",
-   "text": "read T-3745: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-07",
-   "text": "read T-3741: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-07",
-   "text": "read T-3738: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-07",
-   "text": "read T-3735: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-07",
-   "text": "read T-3710: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-07",
-   "text": "read T-3708: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-07",
-   "text": "read T-3675: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
    "later": null,
    "confidence": null,
    "kind": "costly"
