@@ -3687,7 +3687,7 @@ def mkstemp(d, prefix, suffix):
     raise FileExistsError(17, "No usable temporary file name found")  # errno.EEXIST
 
 
-def write_atomic(path, text, durable=True):
+def write_atomic(path, text, durable=True, mode=0o644):
     """Write `text` to `path` through a temp file and a rename, so no reader sees a torn file. durable=False (T-5000)
     skips the fsync: for a cache the hooks rebuild (breaker, seen-marks, leads), where a power cut costs one
     recomputation; state that must survive one (tasks, gates, asks) keeps the default."""
@@ -3696,7 +3696,7 @@ def write_atomic(path, text, durable=True):
     try:
         mode = os.stat(path).st_mode & 0o777
     except OSError:
-        mode = 0o644
+        pass  # a new file gets `mode` (T-6064: a store of file text asks for 0600)
     # T-0291 review: a fresh, exclusive temp file (mkstemp: O_EXCL, unguessable) — a guessable name could be a planted
     # symlink that sends the write elsewhere
     # T-3336: the name is cut (40 characters, at most 160 bytes) so a name near the 255-byte limit still has room
@@ -7213,6 +7213,43 @@ def plain_lines(text):
 def fit(text, width):
     """One line cut to width with an ellipsis."""
     return text if len(text) <= width else text[:max(1, width - 1)] + "…"
+
+
+READ_UNCHANGED = "unchanged since your read #"  # T-6064: what a repeat Read's note says; sampo cost counts the notes by these
+READ_CHANGED = "changed since your read #"
+READ_HUNK_CAP = 2000  # characters of changed hunks answered in place of a whole read
+
+
+def read_dedupe_on():
+    """T-6064: False when FOREMAN_READ_DEDUPE (or SAMPO_READ_DEDUPE: mirror_env moves it) is off, 0, false or no: a repeat
+    Read is then answered whole, in the hooks and in the headless loop alike. On when unset or anything else. The lead's
+    own reads are deliberately under it too: its repeat of a Read is as much the same text again as a subagent's."""
+    return os.environ.get("FOREMAN_READ_DEDUPE", "").strip().lower() not in ("off", "0", "false", "no")
+_HUNK_AT = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+
+
+def read_hunks(old, new, first=1, cap=READ_HUNK_CAP):
+    """T-6064: what changed between two texts of the same range of a file, as unified hunks (one line of context) with the
+    file's own line numbers (first: the number of the range's first line). None when nothing changed, or when the hunks
+    would be over cap characters or over a third of the new text: then the whole read is the cheaper answer. Both the
+    Read hook and the headless tool loop (smith.seen_read) answer a changed file with this."""
+    import difflib
+    a, b = (old or "").splitlines(), (new or "").splitlines()
+    if a == b:
+        return None
+    out, size = [], 0
+    for line in list(difflib.unified_diff(a, b, "", "", n=1, lineterm=""))[2:]:
+        m = _HUNK_AT.match(line)
+        if m:
+            sh = first - 1
+            line = f"@@ -{int(m.group(1)) + sh},{m.group(2) or 1} +{int(m.group(3)) + sh},{m.group(4) or 1} @@"
+        else:
+            line = line[:200]
+        out.append(line)
+        size += len(line) + 1
+        if size > cap or size > len(new or "") // 3:
+            return None
+    return "\n".join(out)
 
 
 def stage(b, autonomy="standard", since=None, ptier=None):

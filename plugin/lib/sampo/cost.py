@@ -677,6 +677,115 @@ def _outputs(folder, args, cli):
     return cli.out(args, got, text)
 
 
+def _result_text(content):
+    """The text of a tool result, for a marker test: a string, or a list's text blocks."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(str(x.get("text") or "") for x in content if isinstance(x, dict))
+    return ""
+
+
+def repeat_reads(folder, since, entries=None, top=10):
+    """T-6064: the Read results that gave the model what it already held. Per transcript file, in order, a Read of the same
+    file, offset and limit as an earlier one since the last compact_boundary, whose result is the same characters, is a
+    repeat: its size is repeat bytes (the whole repeat is the waste; no change was made). A result carrying the Read hook's
+    unchanged or changed note is a note served: bytes avoided are the size of the result it stood in for (the earlier
+    read of that range) less the note's own. Main thread against subagents; per session the biggest few, by a short id
+    (never a path). The cutoff limits only the totals: older lines still fill the live state. One line at a time; memory
+    is a hash and a size per distinct (file, range) of one transcript."""
+    tally = _RepeatReads(since, top)
+    for path, e in _entries(folder, since, context=True) if entries is None else entries:
+        tally.feed(path, e)
+    return tally.result()
+
+
+class _RepeatReads:
+    """T-6064: repeat_reads one entry at a time, so `sampo cost` feeds it the rows its own single pass already reads (T-3521:
+    one walk of the transcripts) instead of walking them again. Fed only the cutoff's lines, a repeat of a read from before
+    it is missed (the --repeat-reads walk keeps those lines as context)."""
+
+    def __init__(self, since, top=10):
+        zero = lambda: {"reads": 0, "repeats": 0, "repeat_bytes": 0, "notes": 0, "avoided_bytes": 0}  # noqa: E731
+        self.since, self.top, self.zero = since, top, zero
+        self.side, self.sessions = {"main": zero(), "sub": zero()}, collections.defaultdict(zero)
+        self.cur, self.kinds_of, self.held = None, {}, {}
+
+    def feed(self, path, e):
+        if path != self.cur:
+            self.cur, self.kinds_of, self.held = path, {}, {}
+        kinds_of, held, side, sessions = self.kinds_of, self.held, self.side, self.sessions
+        if e.get("type") == "system" and e.get("subtype") == "compact_boundary":
+            held.clear()  # what the model read before is no longer in front of it
+            return
+        m = e.get("message")
+        if not isinstance(m, dict) or not isinstance(m.get("content"), list):
+            return
+        in_window = str(e.get("timestamp") or "")[:19] >= self.since
+        who = "sub" if f"{os.sep}subagents{os.sep}" in path else "main"
+        sid = os.path.basename(os.path.dirname(os.path.dirname(path))) if who == "sub" else os.path.basename(path)[:-6]
+        sid = sid[:8]  # <session>.jsonl, or <session>/subagents/agent-N.jsonl
+        for x in m["content"]:
+            if not isinstance(x, dict):
+                continue
+            if e.get("type") == "assistant" and x.get("type") == "tool_use" and x.get("name") == "Read" \
+                    and isinstance(x.get("id"), str) and isinstance(x.get("input"), dict):
+                i = x["input"]
+                kinds_of[x["id"]] = hashlib.blake2b(f"{i.get('file_path')}\0{i.get('offset')}\0{i.get('limit')}".encode(
+                    "utf-8", "replace"), digest_size=8).digest()
+            elif x.get("type") == "tool_result" and kinds_of.get(x.get("tool_use_id")) is not None:
+                key, n, text = kinds_of[x["tool_use_id"]], _size(x.get("content")), _result_text(x.get("content"))
+                head = text[:300]
+                sums = (side[who], sessions[sid])
+                if c.READ_UNCHANGED in head or c.READ_CHANGED in head:
+                    before = held.get(key)
+                    if in_window:
+                        for s in sums:
+                            s["notes"] += 1
+                            s["avoided_bytes"] += max(0, before[1] - n) if before else 0
+                    continue
+                digest = hashlib.blake2b(text.encode("utf-8", "replace"), digest_size=8).digest()
+                if in_window:
+                    for s in sums:
+                        s["reads"] += 1
+                        if held.get(key, (None,))[0] == digest:
+                            s["repeats"] += 1
+                            s["repeat_bytes"] += n
+                held[key] = (digest, n)
+
+    def result(self):
+        rows = sorted(({"session": k, **v} for k, v in self.sessions.items() if v["repeats"] or v["notes"]),
+                      key=lambda r: -(r["repeat_bytes"] + r["avoided_bytes"]))[:self.top]
+        return {"main": self.side["main"], "sub": self.side["sub"], "sessions": rows,
+                "repeat_bytes": self.side["main"]["repeat_bytes"] + self.side["sub"]["repeat_bytes"],
+                "avoided_bytes": self.side["main"]["avoided_bytes"] + self.side["sub"]["avoided_bytes"]}
+
+
+def repeat_line(got):
+    """The one line `sampo cost` carries for _RepeatReads' result: empty when no Read was seen."""
+    reads = got["main"]["reads"] + got["sub"]["reads"]
+    if not reads:
+        return ""
+    return (f"\nRepeat reads: {got['main']['repeats'] + got['sub']['repeats']:,} of {reads:,} reads gave the model what it held "
+            f"({_human(got['repeat_bytes'])} characters; lead {got['main']['repeats']:,}, subagents {got['sub']['repeats']:,}); "
+            f"{got['main']['notes'] + got['sub']['notes']:,} answered with a note, {_human(got['avoided_bytes'])} characters "
+            f"avoided (sampo cost --repeat-reads)")
+
+
+def _repeat_reads(folder, args, cli):
+    got = {"days": args.days, **repeat_reads(folder, _since(args.days))}
+    side = lambda k: (f"{got[k]['reads']:,} reads, {got[k]['repeats']:,} repeats of {_human(got[k]['repeat_bytes'])} "  # noqa: E731
+                      f"characters; {got[k]['notes']:,} notes served, {_human(got[k]['avoided_bytes'])} characters avoided")
+    text = (f"Repeated reads, last {args.days:g} day(s) (a Read of a file range the session already read, same characters, "
+            f"no compaction between):\n  main: {side('main')}\n  sub:  {side('sub')}\n"
+            f"  still repeated: {_human(got['repeat_bytes'])} characters; avoided by notes: {_human(got['avoided_bytes'])}")
+    if got["sessions"]:
+        text += "\nPer session, biggest first (repeats, characters repeated, notes, characters avoided):\n" + "\n".join(
+            f"  {r['session']}: {r['repeats']:,} repeats, {_human(r['repeat_bytes'])}, {r['notes']:,} notes, "
+            f"{_human(r['avoided_bytes'])}" for r in got["sessions"])
+    return cli.out(args, got, text)
+
+
 BURN_CONTEXT = 150_000  # T-1800: a session averaging more context than this per reply compacts too late
 
 
@@ -1954,19 +2063,29 @@ def cmd_cost(args):
         raise cli.UsageError(f"no Claude Code transcripts for this project at {folder}")
     if getattr(args, "outputs", False):
         return _outputs(folder, args, cli)
+    if getattr(args, "repeat_reads", False):  # T-6064
+        return _repeat_reads(folder, args, cli)
     share = collections.Counter()
     if getattr(args, "sessions", False):  # a subagent's own context isn't its parent's per-turn figure
         return _sessions(scan(folder, _since(args.days), sidechains=False, kinds=True)[0], args, cli)
     since, spent = _since(args.days), [0.0, collections.Counter(), collections.Counter()]
+    repeats = _RepeatReads(since)  # T-6064: fed by the same pass (no second walk of the transcripts)
 
     def each_file():  # T-3521: one read of the transcripts for tokens and time (3.1 GB a week was parsed twice, 48-75 s
         # under load), one file's entries held at a time (timing alone held the week's, and the GC walked them all)
+        nonlocal repeats
         for _, rows in itertools.groupby(_entries(folder, since), key=lambda r: r[0]):
             rows = list(rows)
             model, tool, shell = timing(folder, since, rows)
             spent[0] += model
             spent[1].update(tool)
             spent[2].update(shell)
+            if repeats is not None:
+                try:
+                    for row in rows:
+                        repeats.feed(*row)
+                except Exception:  # a line in a shape this reader doesn't know: the figure is left out, the rest is not
+                    repeats = None
             yield from rows
     ctx = {}  # T-4704: what entered the context per ISO week, gathered in the same pass
     msgs, tools = scan(folder, since, share, entries=each_file(), ctx=ctx)
@@ -2007,7 +2126,10 @@ def cmd_cost(args):
             "time": {"active_s": round(active), "model_s": round(model_s),
                      "tools_s": {k: round(v) for k, v in tool_s.most_common()},
                      "shell_s": {k: round(v) for k, v in shell_s.most_common()}}}
-    pct = lambda v: f"{100 * v / (active or 1):.0f}%"
+    if repeats is not None:  # T-6064
+        got = repeats.result()
+        data["repeat_reads"] = {k: got[k] for k in ("main", "sub", "repeat_bytes", "avoided_bytes")}
+    pct =lambda v: f"{100 * v / (active or 1):.0f}%"
     when = (f"\nTime, active ({c.fit(_dur(active), 12)}; waiting on you and gaps over {IDLE_S // 60} min left out): "
             f"model {pct(model_s)} · " + " · ".join(
                 f"{k} {pct(v)}" + (" (" + ", ".join(f"{p} {pct(s)}" for p, s in shell_s.most_common(4)) + ")"
@@ -2023,6 +2145,7 @@ def cmd_cost(args):
                 f"{t} {100 * v / tool_total:.0f}%" for t, v in tools.most_common(6))
             + "\nSessions: " + " · ".join(f"{s[:8]} {_human(v)}" for s, v in by_session.most_common(5))
             + _share_line(share)
+            + (repeat_line(data["repeat_reads"]) if "repeat_reads" in data else "")
             + (f"\nContext at the first reply of a session (median): {_human(base)} tokens, re-read every turn"
                if base else "") + when + context_text(weeks))
     cli.out(args, data, text)

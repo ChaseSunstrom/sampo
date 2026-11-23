@@ -83,6 +83,7 @@ OPERATOR_SWITCHES.add("LANE_PILOT")  # T-5708: =off stops the detached lane pilo
 OPERATOR_SWITCHES.add("PILOT_MAIN")  # T-5706: the lane pilot's pinned main checkout; a headless run's, never a test's: a test sets its own
 OPERATOR_SWITCHES.add("NO_REEXEC")  # T-5735: stops a long-running loop's re-exec onto new code; a test of the re-exec sets its own
 OPERATOR_SWITCHES.add("PROCESS_TIER")  # T-5713: =off gives today's S, M and L tiers; a test that needs it sets it itself
+OPERATOR_SWITCHES.add("READ_DEDUPE")  # T-6064: =off answers every repeat Read whole; a test of the dedupe sets its own
 OPERATOR_SWITCHES.add("CARD_ORIGIN")  # T-5613: a bench arm names its calls "bench"; never a test's origin, a test sets its own
 OPERATOR_SWITCHES.add("TRAIN_PROBES")  # T-3770: a runner's probe switch is never a test's
 OPERATOR_SWITCHES.add("REVIEW_DEPTH")  # T-5841: =full gives every review all five lenses; a test that needs it sets it itself

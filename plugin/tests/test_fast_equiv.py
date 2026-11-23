@@ -247,6 +247,8 @@ class Base(SampoTestCase):
                             for r in rows]
                 elif f.endswith(".last"):  # hooks.log.last: "<epoch seconds> <digest>"; the two runs may straddle a second
                     data = re.sub(rb"^\d+ ", b"{t} ", data)
+                elif f == ".lock":  # core.lock's holder line, "<pid> <epoch> <who>": two runs, two pids and moments
+                    data = re.sub(rb"^\d+ [\d.]+ ", b"{pid} {t} ", data)
                 else:  # a log line's time
                     data = re.sub(rb"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", b"{ts}", data)
                 out[os.path.relpath(path, home)] = data
@@ -286,6 +288,22 @@ class Base(SampoTestCase):
 
 
 class Reads(Base):
+    def test_a_session_with_a_read_store_goes_to_python(self):
+        """T-6064: _read_dedupe may answer a repeat Read once PostToolUse recorded one for this session and agent (its
+        store file exists): sampo-fast leaves every Read of that session and agent, ranged or not, to Python."""
+        wide = os.path.join(self.repo, "wide.txt")
+        with open(wide, "w") as f:
+            f.write(("x" * 100 + "\n") * 100)
+        read = lambda **ti: {"payload": {"tool_name": "Read", "tool_input": ti}}
+        self.cases([("no store yet", read(file_path=wide), True),
+                    ("no store yet, a range", read(file_path=wide, offset=2, limit=5), True)])
+        with open(os.path.join(self.home, "state", "sessions", "sess-1.readseen-main.json"), "w") as f:
+            json.dump({"n": 0, "r": {}}, f)
+        self.cases([("a store", read(file_path=wide), False),
+                    ("a store, a range", read(file_path=wide, offset=2, limit=5), False),
+                    ("a store of another agent", {"payload": {"tool_name": "Read", "agent_id": "ab12",
+                                                              "tool_input": {"file_path": wide}}}, True)])
+
     def test_read_cases(self):
         small = os.path.join(self.repo, "small.txt")
         with open(small, "w") as f:

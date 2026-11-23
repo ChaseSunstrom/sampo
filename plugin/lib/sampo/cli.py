@@ -10894,6 +10894,8 @@ def _build_parser(only=None):
     s.add_argument("--outputs", action="store_true", help="context by how often later calls re-read it: share of cache "
                    "reads by tool output and Bash command word, and by other parts; main thread and subagents "
                    "(T-4825, T-4830)")
+    s.add_argument("--repeat-reads", action="store_true", help="Read results that repeated a range the session already "
+                   "held: characters repeated, notes the Read hook served instead, per session (T-6064)")
     s = add("burden", lazy("sampo.cost", "cmd_burden"), tier=("Reports", 1000), help="Sampo's own cost on real sessions per version: bookkeeping "
                                                           "turns, refusals, injected context (T-0712)")
     s.add_argument("--days", type=float, default=14)

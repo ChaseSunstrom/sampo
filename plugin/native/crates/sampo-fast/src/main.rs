@@ -74,7 +74,7 @@ const MS_EPOCH: f64 = 1e11; // T-4669: budget.MS_EPOCH
 const MIRRORS: [(&str, &str); 31] = [
     ("hooks.run", "e9a5910273f5"),
     ("hooks._run", "f17c9b9f44d8"),
-    ("hooks._pre_tool_use", "fc44bade7843"),
+    ("hooks._pre_tool_use", "cd37211cb532"),
     ("hooks._credential_like", "08fce2b10d8f"),
     ("hooks._credential_read", "6ed174ed2226"),
     ("hooks._outline_first", "c2ddf4904e58"),
@@ -191,7 +191,7 @@ fn allow(hook: &Path, rest: &[OsString], raw: &[u8], t0: Instant) -> bool {
         return false;
     };
     let ok = match tool.as_str() {
-        "Read" => read_ok(&pl),
+        "Read" => read_ok(&pl, &state),
         "Agent" | "Task" => agent_ok(&pl, &state),
         t if SCHEDULERS.contains(&t) => None,
         t if OUTWARD.contains(&t) => outward_ok(&pl, t, &state),
@@ -262,7 +262,10 @@ fn fresh(hook: &Path) -> bool {
 
 /// hooks._pre_tool_use's Read branch: _credential_read finds nothing and _outline_first and _big_read_rewrite (T-5597)
 /// would not answer; where either could answer, it defers to Python.
-fn read_ok(pl: &Obj) -> Option<()> {
+///
+/// T-6064: and _read_dedupe, which only has something to say once PostToolUse recorded a Read for this session and agent
+/// (the store sessions/<sid>.readseen-<who>.json): while that file exists the Read is Python's, whatever its range.
+fn read_ok(pl: &Obj, state: &Path) -> Option<()> {
     let empty = Obj::new();
     let ti = match pl.get("tool_input") {
         None | Some(Value::Null) => &empty,
@@ -284,18 +287,25 @@ fn read_ok(pl: &Obj) -> Option<()> {
             return None;
         }
     }
-    if ["offset", "limit", "pages"]
-        .iter()
-        .any(|k| !matches!(ti.get(*k), None | Some(Value::Null)))
-    {
-        return Some(());
-    }
     let sid = text_or(pl.get("session_id"), "")?;
     let who = text_or(pl.get("agent_id"), "main")?;
     match (word(sid), word(who)) {
         (Some(false), _) | (_, Some(false)) => return Some(()),
         (Some(true), Some(true)) => {}
         _ => return None,
+    }
+    if state
+        .join("sessions")
+        .join(format!("{sid}.readseen-{who}.json"))
+        .exists()
+    {
+        return None; // T-6064: a repeat of an earlier Read may be answered with a note
+    }
+    if ["offset", "limit", "pages"]
+        .iter()
+        .any(|k| !matches!(ti.get(*k), None | Some(Value::Null)))
+    {
+        return Some(());
     }
     let Ok(m) = fs::metadata(path) else {
         return Some(());

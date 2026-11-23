@@ -1045,6 +1045,102 @@ class CpuOrigin(HookCase):
         self.assertIn("o=[]", out, "no origin given, none set: the runner calls it a builder's")
 
 
+class RepeatReads(HookCase):
+    """T-6064: sampo cost --repeat-reads: the characters of Read results that gave the model a range it already held (same
+    file, offset, limit and result, no compaction between), the notes the Read hook served in their place and what they
+    avoided, main thread against subagents, per session by a short id; aggregates only."""
+
+    def test_repeats_notes_compaction_subagents_and_the_cutoff(self):
+        from sampo import core as c, cost
+        self.fm("init")
+        cfg = os.path.join(self.tmp, "cfg")
+        folder = os.path.join(cfg, "projects", "".join(ch if ch.isalnum() else "-" for ch in self.repo))
+        os.makedirs(os.path.join(folder, "session1", "subagents"))
+        now = datetime.datetime.now(datetime.timezone.utc)
+        at = lambda days=0, s=0: (now - datetime.timedelta(days=days) + datetime.timedelta(seconds=s)).strftime(  # noqa: E731
+            "%Y-%m-%dT%H:%M:%S.000Z")
+        read = lambda i, s, days=0, **inp: {"type": "assistant", "timestamp": at(days, s), "message": {  # noqa: E731
+            "id": "m" + i, "content": [{"type": "tool_use", "id": i, "name": "Read", "input": inp}]}}
+        back = lambda i, text, s, days=0: {"type": "user", "timestamp": at(days, s), "message": {"content": [  # noqa: E731
+            {"type": "tool_result", "tool_use_id": i, "content": text}]}}
+        body, other = "a" * 998, "b" * 998  # json.dumps adds two quotes: 1000 and 1000
+        note = f"Sampo: f.py lines 1-9 {c.READ_UNCHANGED}1; that result is still above."
+        main = [read("r1", 0, file_path="/p/f.py"), back("r1", body, 0),
+                read("r2", 1, file_path="/p/f.py"), back("r2", body, 1),  # a repeat: 1000
+                read("r3", 2, file_path="/p/f.py"), back("r3", note, 2),  # a note: avoids 1000 less the note
+                read("r4", 3, file_path="/p/f.py", offset=5, limit=9), back("r4", body, 3),  # another range: not a repeat
+                read("r5", 4, file_path="/p/f.py"), back("r5", other, 4),  # the file changed: not a repeat
+                {"type": "system", "subtype": "compact_boundary", "timestamp": at(0, 5)},
+                read("r6", 6, file_path="/p/f.py"), back("r6", other, 6),  # after a compaction: not a repeat
+                read("r7", 7, file_path="/p/f.py"), back("r7", other, 7),  # repeat again: 1000
+                read("o1", 0, days=30, file_path="/p/g.py"), back("o1", body, 0, days=30),
+                read("o2", 1, days=30, file_path="/p/g.py"), back("o2", body, 1, days=30),  # before the window
+                read("r8", 8, file_path="/p/g.py"), back("r8", body, 8)]  # the window's first of g.py, held before it: repeat
+        sub = [read("s1", 0, file_path="/p/f.py"), back("s1", body, 0), read("s2", 1, file_path="/p/f.py"),
+               back("s2", body, 1)]  # the subagent's own context: its read is its first, then a repeat
+        for name, rows in (("session1.jsonl", main), (os.path.join("session1", "subagents", "agent-1.jsonl"), sub)):
+            with open(os.path.join(folder, name), "w") as f:
+                f.write("\n".join(json.dumps(x) for x in rows) + "\n")
+        env = {"CLAUDE_CONFIG_DIR": cfg}
+        got = self.fm_json("cost", "--repeat-reads", env=env)
+        self.assertEqual({k: got["main"][k] for k in ("reads", "repeats", "repeat_bytes", "notes")},
+                         {"reads": 7, "repeats": 3, "repeat_bytes": 3000, "notes": 1})
+        self.assertEqual(got["main"]["avoided_bytes"], 1000 - cost._size(note))
+        self.assertEqual({k: got["sub"][k] for k in ("reads", "repeats", "repeat_bytes", "notes")},
+                         {"reads": 2, "repeats": 1, "repeat_bytes": 1000, "notes": 0})
+        self.assertEqual((got["repeat_bytes"], got["avoided_bytes"]), (4000, got["main"]["avoided_bytes"]))
+        self.assertEqual([r["session"] for r in got["sessions"]], ["session1"])
+        self.assertEqual(got["sessions"][0]["repeats"], 4, "the lead's and its subagent's, one session")
+        text = self.fm("cost", "--repeat-reads", env=env).stdout
+        self.assertIn("4k characters", text)
+        self.assertIn("session1", text)
+        for private in ("/p/f.py", "aaaa", "Sampo: f.py"):
+            self.assertNotIn(private, text + json.dumps(got), "aggregates only: no path or text")
+
+    def test_plain_cost_carries_one_repeat_reads_line_from_its_one_pass(self):
+        import argparse
+        import contextlib
+        import io
+        from unittest import mock
+        from sampo import core as c, cost
+        self.fm("init")
+        cfg = os.path.join(self.tmp, "cfg")
+        folder = os.path.join(cfg, "projects", "".join(ch if ch.isalnum() else "-" for ch in self.repo))
+        os.makedirs(folder)
+        t = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=5)
+        at = lambda s: (t + datetime.timedelta(seconds=s)).strftime("%Y-%m-%dT%H:%M:%S.000Z")  # noqa: E731
+        use =lambda i, s: {"type": "assistant", "timestamp": at(s), "sessionId": "s1", "message": {  # noqa: E731
+            "id": "m" + i, "usage": {"input_tokens": 10, "output_tokens": 5}, "content": [
+                {"type": "tool_use", "id": i, "name": "Read", "input": {"file_path": "/p/f.py"}}]}}
+        back = lambda i, text, s: {"type": "user", "timestamp": at(s), "message": {"content": [  # noqa: E731
+            {"type": "tool_result", "tool_use_id": i, "content": text}]}}
+        note = f"Sampo: f.py lines 1-9 {c.READ_UNCHANGED}1; that result is still above."
+        rows = [use("a", 0), back("a", "a" * 998, 1), use("b", 2), back("b", "a" * 998, 3), use("c", 4), back("c", note, 5)]
+        with open(os.path.join(folder, "s1.jsonl"), "w") as f:
+            f.write("\n".join(json.dumps(x) for x in rows) + "\n")
+        reads, real = [], cost._entries
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": cfg}), \
+                mock.patch.object(cost, "_entries", lambda *a, **k: reads.append(a) or real(*a, **k)), \
+                contextlib.redirect_stdout(out):
+            cost.cmd_cost(argparse.Namespace(project=self.project().slug, days=7, json=False))
+        self.assertEqual(len(reads), 1, "the line comes from the pass cost already makes, not a second walk")
+        line = [x for x in out.getvalue().splitlines() if x.startswith("Repeat reads:")]
+        self.assertEqual(len(line), 1, out.getvalue())
+        self.assertIn("1 of 2 reads", line[0])
+        self.assertIn("1 answered with a note", line[0])
+        self.assertIn("sampo cost --repeat-reads", line[0])
+        got = self.fm_json("cost", env={"CLAUDE_CONFIG_DIR": cfg})["repeat_reads"]
+        self.assertEqual((got["main"]["repeats"], got["main"]["notes"], got["repeat_bytes"]), (1, 1, 1000))
+
+    def test_a_folder_with_no_reads_says_zero_not_an_error(self):
+        self.fm("init")
+        cfg = os.path.join(self.tmp, "cfg")
+        os.makedirs(os.path.join(cfg, "projects", "".join(ch if ch.isalnum() else "-" for ch in self.repo)))
+        got = self.fm_json("cost", "--repeat-reads", env={"CLAUDE_CONFIG_DIR": cfg})
+        self.assertEqual((got["repeat_bytes"], got["avoided_bytes"], got["sessions"]), (0, 0, []))
+
+
 if __name__ == "__main__":
     import unittest
     unittest.main()

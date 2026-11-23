@@ -4202,6 +4202,11 @@ def _pre_tool_use(raw):
             except Exception:
                 log_error("PreToolUse", _tb())
                 d = None
+            if not d:  # T-6064: after every check that could stop or rewrite it, so only a read that goes ahead is kept
+                try:
+                    d = _read_dedupe(pl)
+                except Exception:
+                    log_error("PreToolUse", _tb())
             if d:
                 print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
                                                          "permissionDecisionReason": d}}))
@@ -5642,6 +5647,180 @@ def _outline_first(pl):
             f"their line) or pass allow_large: true for the whole file.\n" + c.plain_lines("\n".join(lines)) + more)
 
 
+READ_SEEN = "readseen-"  # T-6064: a session's per-agent Read store, sessions/<sid>.readseen-<who>.json
+READ_MIN_BYTES, READ_FILE_MAX, READ_KEEP, READ_TEXTS, READ_DEFAULT_LINES = 800, 2_000_000, 40_000, 12, 2000
+_READ_NOT_TEXT = (".pdf", ".ipynb", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico", ".zip", ".gz", ".so")
+
+
+def _read_seen_path(sid, who):
+    if not (re.fullmatch(r"[\w-]{1,100}", sid) and re.fullmatch(r"[\w-]{1,100}", who)):
+        return None
+    return os.path.join(c.state_dir(), "sessions", f"{sid}.{READ_SEEN}{who}.json")
+
+
+def _read_pack(text):
+    import base64
+    import zlib
+    return base64.b64encode(zlib.compress(text.encode("utf-8"))).decode("ascii")
+
+
+def _read_unpack(packed):
+    import base64
+    import zlib
+    try:
+        return zlib.decompressobj().decompress(base64.b64decode(packed), 4 * READ_KEEP).decode("utf-8")
+    except Exception:  # a damaged store is no old text: the read goes whole
+        return None
+
+
+def _read_seen_reset(pl):
+    """T-6064: a compaction empties what this agent was shown: its Read store goes (the next Read is whole). The lead's
+    SessionStart sweep takes every store of the session; a subagent's own PreCompact takes its own. Starting fresh at a
+    compaction is the intended reading (not "no note in a session that ever compacted"): the earlier results are in the
+    summary at most, so the model is shown the text again once, and a repeat after that is a note again."""
+    path = _read_seen_path(str(pl.get("session_id") or ""), str(pl.get("agent_id") or "main"))  # as _read_dedupe names it
+    if path:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+def _read_secretish(full):
+    """A file whose text the store never keeps (only its hash): a credential (the guard's folders and files) or a name that
+    says secret, key, token, password or an env file."""
+    return _credential_like(full) or bool(re.search(
+        r"(?i)(^\.env|secret|credential|passw|token|id_rsa|id_ed25519|\.(pem|key|p12|pfx|kdbx)$)", os.path.basename(full)))
+
+
+def _read_range(pl):
+    """The range a Read call asks for, as a dict (store, key, off, seg, digest, full, size, lines) or None: not a plain
+    text file of a size a note would save on, a range that is no range, a bad id, or an unreadable file."""
+    ti = pl.get("tool_input") or {}
+    path, sid, who = ti.get("file_path"), str(pl.get("session_id") or ""), str(pl.get("agent_id") or "main")
+    store = _read_seen_path(sid, who)
+    off, lim = ti.get("offset"), ti.get("limit")
+    if not isinstance(path, str) or not store or ti.get("pages") is not None or path.lower().endswith(_READ_NOT_TEXT) \
+            or any(v is not None and (not isinstance(v, int) or isinstance(v, bool) or v < 1) for v in (off, lim)):
+        return None
+    off, lim = off or 1, lim or READ_DEFAULT_LINES
+    full = os.path.join(_cwd(pl), os.path.expanduser(path))
+    try:
+        if not os.path.isfile(full) or os.path.getsize(full) > READ_FILE_MAX:
+            return None
+        with open(full, "rb") as f:
+            data = f.read(READ_FILE_MAX + 1)
+    except OSError:
+        return None
+    if b"\x00" in data[:8192]:
+        return None
+    seg = "\n".join(data.decode("utf-8", "replace").splitlines()[off - 1:off - 1 + lim])
+    if len(seg.encode("utf-8")) < READ_MIN_BYTES:  # a note would cost about what the text does
+        return None
+    return {"store": store, "key": f"{os.path.realpath(full)}:{off}:{lim}", "off": off, "seg": seg, "full": full,
+            "size": len(data), "lines": data.count(b"\n"), "digest": c.sha1(seg.encode("utf-8", "replace")).hexdigest()}
+
+
+def _read_load(store):
+    try:
+        with open(store, encoding="utf-8") as f:
+            seen = json.load(f)
+        return seen if isinstance(seen, dict) and isinstance(seen.get("r"), dict) else {"n": 0, "r": {}}
+    except (OSError, ValueError):
+        return {"n": 0, "r": {}}
+
+
+def _read_save(store, seen):
+    """The store, 0600 in a 0700 folder (it holds file text): the newest READ_TEXTS ranges keep their text, at most 200
+    ranges in all. False when it could not be written."""
+    rows = sorted(seen["r"].items(), key=lambda kv: -int(kv[1].get("at") or 0))
+    seen["r"] = {k: (v if i < READ_TEXTS else {x: y for x, y in v.items() if x != "t"}) for i, (k, v) in enumerate(rows[:200])}
+    folder = os.path.dirname(store)
+    try:
+        os.makedirs(folder, mode=0o700, exist_ok=True)
+        st = os.stat(folder)
+        if st.st_mode & 0o077 and st.st_uid == os.getuid():
+            os.chmod(folder, 0o700)
+        c.write_atomic(store, json.dumps(seen), durable=False, mode=0o600)
+    except OSError:
+        return False
+    return True
+
+
+def _read_dedupe(pl):
+    """T-6064: a repeat Read of a range this session and agent already read, unchanged, is answered with a short note
+    (a denial, as _outline_first's is) instead of the same text again; a changed file with small changes, with the changed
+    hunks (core.read_hunks). Never twice in a row: the ask right after a note passes (a model whose earlier result was
+    cleared is never stuck), and a compaction empties the store (_read_seen_reset), so what was shown is shown again.
+    This only checks: it writes the flag of a note it gave (a denied Read has no PostToolUse); the read itself is
+    recorded by _read_record once it ran. The lead's reads are under it too (FOREMAN_READ_DEDUPE=off turns it off).
+    The store, per session and agent: the hash of each range read, the read's number, and (for a file of at most
+    READ_KEEP characters, the newest READ_TEXTS ranges) its text zlib-packed, to diff against. A busy store lock, a damaged
+    store or a failed write is no note. None: go ahead."""
+    if not c.read_dedupe_on():
+        return None
+    r = _read_range(pl)
+    if not r:
+        return None
+    seg, digest, off, store = r["seg"], r["digest"], r["off"], r["store"]
+    if not os.path.isfile(store):  # nothing was recorded for this agent yet: no note, and no lock file made (sampo-fast
+        return None  # decides such a Read itself, and must leave the same state)
+    try:
+        with c.lock(os.path.dirname(store), timeout=LOCK_QUICK):
+            seen = _read_load(store)
+            e, note = seen["r"].get(r["key"]), None
+            if isinstance(e, dict) and not e.get("noted"):
+                name = os.path.basename(r["full"])
+                if e.get("h") == digest:
+                    note = (f"Sampo: {name} lines {off}-{off + seg.count(chr(10))} {c.READ_UNCHANGED}{e.get('at')}; that "
+                            "result is still above. Use it, or ask again to read it anyway.")
+                elif isinstance(e.get("t"), str):
+                    old = _read_unpack(e["t"])
+                    hunks = c.read_hunks(old, seg, off) if old is not None else None
+                    if hunks:
+                        note = (f"Sampo: {name} {c.READ_CHANGED}{e.get('at')}; the changed hunks (the file's line "
+                                f"numbers), ask again to read it whole:\n{hunks}")
+            if not note:
+                return None
+            e.update(h=digest, at=int(seen.get("n") or 0) + 1, noted=True)
+            seen["n"] = e["at"]
+            if "t" in e and len(seg) <= READ_KEEP:
+                e["t"] = _read_pack(seg)
+            return note if _read_save(store, seen) else None
+    except c.LockTimeout:
+        return None
+
+
+def _read_record(pl):
+    """T-6064: PostToolUse of a Read that succeeded: the range is kept as read (its hash, number and, for a file of at most
+    READ_KEEP characters that is no credential or secret, its text), so a repeat of it can be noted. A read that failed or
+    was refused has no PostToolUse and so is never kept. In bypass mode a whole Read that _big_read_rewrite clips to the
+    first READ_SHOWN lines is not kept, as the hook may see the original input and not the rewritten one: the note
+    would call a file read that was only begun. A busy lock loses the record: the repeat goes whole."""
+    if not c.read_dedupe_on():
+        return
+    r = _read_range(pl)
+    if not r:
+        return
+    ti = pl.get("tool_input") or {}
+    if pl.get("permission_mode") == "bypassPermissions" and ti.get("allow_large") is not True and not any(
+            ti.get(k) is not None for k in ("offset", "limit", "pages")) and (
+            (r["size"] > SUB_READ_BYTES and r["lines"] > READ_SHOWN) if pl.get("agent_id") else r["lines"] >= OUTLINE_LINES):
+        return
+    seg, store = r["seg"], r["store"]
+    try:
+        with c.lock(os.path.dirname(store), timeout=LOCK_QUICK):
+            seen = _read_load(store)
+            seen["n"] = int(seen.get("n") or 0) + 1
+            rec = {"h": r["digest"], "at": seen["n"], "noted": False}
+            if len(seg) <= READ_KEEP and not _read_secretish(r["full"]):
+                rec["t"] = _read_pack(seg)
+            seen["r"][r["key"]] = rec
+            _read_save(store, seen)
+    except c.LockTimeout:
+        pass
+
+
 def _big_read_rewrite(pl):
     """T-5597: in bypass mode a whole Read that _outline_first would refuse (the lead's first, of OUTLINE_LINES or more
     lines with definitions to outline) and a subagent's whole Read of a file over 8 KB and READ_SHOWN lines (every time)
@@ -6163,6 +6342,11 @@ def _post_tool_use(pl, ok=True):
     if not ok:
         rec["error"] = str(pl.get("error") or "").split("\n")[0][:120]
     _event(rec)
+    if tool == "Read" and rec["ok"] and isinstance(ti, dict):  # T-6064: a Read that ran is what the model was shown
+        try:
+            _read_record(pl)
+        except Exception:
+            log_error("PostToolUse", _tb())
     if p and pl.get("session_id") and os.path.isdir(os.path.join(p.dir, "risk")):  # no block ever noted here: one stat
         # T-3752/T-4742: a rewrite that ran settles the block it answers, once every deny path let it pass. The import is
         # light (risk loads difflib, hashlib and subprocess where it uses them) and forgive's first act is one stat of
@@ -6827,6 +7011,7 @@ def pre_model_switch(pl):
 
 def pre_compact(pl):
     _mark_subcompact(pl)  # T-5685: first, so a main session's clear is never skipped by a failure further down
+    _read_seen_reset(pl)  # T-6064: what this agent was shown is gone from its context
     try:
         from sampo import modelup
         modelup.on_compact(pl)

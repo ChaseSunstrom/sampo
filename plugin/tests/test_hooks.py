@@ -7639,6 +7639,296 @@ class ReviewerBind(ForemanTestCase):
         self.assertEqual(self.lenses(), [])
 
 
+class ReadDedupe(HookCase):
+    """T-6064: within one session and agent, a Read of a range whose text has not changed since the last one gets a short
+    note instead of the text; a changed file gets its small changed hunks, else the whole read; the ask right after a note
+    goes through; a compaction, another agent and another session start from a full read. The headless tool loop
+    (smith.seen_read) answers a changed file with the same hunks."""
+
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        self.path = os.path.join(self.repo, "notes.txt")
+        self.put(self.path, [f"line {i}: alpha beta gamma delta epsilon zeta eta theta" for i in range(1, 61)])
+
+    def put(self, path, lines):
+        with open(path, "w") as f:
+            f.write("\n".join(lines) + "\n")
+
+    def read(self, path=None, sid="s1", agent=None, ran=True, env=None, **ti):
+        """The Pre hook's denial (a note, hunks, a refusal) or None; a read that went ahead then runs (ran) through the
+        PostToolUse hook, as Claude Code does for one that succeeded: the store records the read there, not before."""
+        pl = {"tool_name": "Read", "tool_input": {"file_path": path or self.path, **ti}, "session_id": sid}
+        if agent:
+            pl["agent_id"], pl["agent_type"] = agent, "sampo:fm-builder"
+        o = (parse(self.hook("PreToolUse", pl, env=env)) or {}).get("hookSpecificOutput") or {}
+        if o.get("permissionDecision") == "deny":
+            return o.get("permissionDecisionReason")
+        if ran:
+            self.hook("PostToolUse", dict(pl, tool_response={"type": "text"}), env=env)
+        return None
+
+    def store(self, sid="s1", who="main"):
+        from sampo import hooks
+        with open(hooks._read_seen_path(sid, who)) as f:
+            return json.load(f)
+
+    def lines(self):
+        with open(self.path) as f:
+            return f.read().splitlines()
+
+    def test_an_unchanged_repeat_gets_the_note_and_the_second_ask_goes_through(self):
+        self.assertIsNone(self.read(), "the first read is whole")
+        note = self.read()
+        self.assertIn(c.READ_UNCHANGED + "1", note)
+        self.assertIn("notes.txt lines 1-60", note)
+        self.assertLess(len(note), 300)
+        self.assertNotIn("alpha beta", note)
+        self.assertIsNone(self.read(), "asked again right after the note: read it anyway")
+        self.assertIn(c.READ_UNCHANGED, self.read() or "", "and a later repeat is a note again")
+
+    def test_a_changed_file_gets_its_changed_hunks_with_the_files_own_line_numbers(self):
+        self.read()
+        rows = self.lines()
+        rows[41] = "line 42: CHANGED text here"
+        self.put(self.path, rows)
+        note = self.read()
+        self.assertIn(c.READ_CHANGED + "1", note)
+        self.assertIn("@@ -41,3 +41,3 @@", note)
+        self.assertIn("+line 42: CHANGED text here", note)
+        self.assertIn("-line 42: alpha beta", note)
+        self.assertNotIn("line 10:", note, "only the hunk and a line of context")
+        self.assertIsNone(self.read(), "the ask after hunks is the whole file")
+        self.assertIn(c.READ_UNCHANGED, self.read() or "", "and that whole read is what an unchanged repeat is checked against")
+
+    def test_a_rewritten_file_is_read_whole(self):
+        self.read()
+        self.put(self.path, [f"other {i}: something else entirely, nothing like before at all, no" for i in range(1, 61)])
+        self.assertIsNone(self.read(), "the hunks would be most of the file: the read is the cheaper answer")
+
+    def test_a_range_is_its_own_key_and_a_small_range_is_never_noted(self):
+        self.read()
+        self.assertIsNone(self.read(offset=1, limit=40), "another range of the file: a first read")
+        self.assertIn("lines 1-40", self.read(offset=1, limit=40) or "")
+        self.assertIsNone(self.read(offset=5, limit=3), "under the size where a note saves anything")
+        self.assertIsNone(self.read(offset=5, limit=3))
+
+    def test_a_file_not_text_or_missing_is_left_alone(self):
+        for name, data in (("pic.bin", b"\x00" * 2000), ("gone.txt", None)):
+            path = os.path.join(self.repo, name)
+            if data:
+                with open(path, "wb") as f:
+                    f.write(data)
+            self.assertIsNone(self.read(path))
+            self.assertIsNone(self.read(path))
+
+    def test_another_agent_and_another_session_get_a_full_read(self):
+        self.assertIsNone(self.read(agent="a1"))
+        self.assertIsNone(self.read(), "the lead has not read it: a subagent's read is not the lead's")
+        self.assertIsNone(self.read(agent="a2"))
+        self.assertIsNone(self.read(sid="s2"))
+        self.assertIn(c.READ_UNCHANGED, self.read(agent="a1") or "")
+        self.assertIn(c.READ_UNCHANGED, self.read() or "")
+
+    def test_a_compaction_clears_the_session_and_a_subagents_own_does_its_own(self):
+        self.read()
+        self.read(agent="a1")
+        self.hook("PreCompact", {"trigger": "auto", "agent_id": "a1", "agent_type": "sampo:fm-builder", "session_id": "s1"})
+        self.assertIsNone(self.read(agent="a1"), "its context was compacted: a full read")
+        self.assertIn(c.READ_UNCHANGED, self.read() or "", "the lead's context was not")
+        self.hook("SessionStart", {"source": "compact", "session_id": "s1"})
+        self.assertIsNone(self.read(), "the lead's compaction")
+        self.assertIsNone(self.read(agent="a1"), "the session's start sweeps every agent's store of it")
+
+    def test_a_note_is_not_kept_for_a_read_the_outline_first_rule_refused(self):
+        big = os.path.join(self.repo, "big.py")
+        self.put(big, [f"def function_{i}():\n    return {i}\n" for i in range(400)])
+        self.assertIn("big.py", self.read(big) or "", "the first whole read of a big file is refused with its outline")
+        self.assertIsNone(self.read(big), "the ask again goes ahead: nothing was shown before it, so no note")
+        self.assertIn(c.READ_UNCHANGED, self.read(big) or "", "and now it is held")
+
+    def test_the_store_holds_no_more_than_a_few_files_text_and_survives_garbage(self):
+        from sampo import hooks
+        for i in range(30):
+            p = os.path.join(self.repo, f"f{i}.txt")
+            self.put(p, [f"file {i} line {j}: alpha beta gamma delta epsilon zeta eta theta" for j in range(30)])
+            self.read(p)
+        store = hooks._read_seen_path("s1", "main")
+        with open(store) as f:
+            rows = json.load(f)["r"]
+        self.assertEqual(sum("t" in v for v in rows.values()), hooks.READ_TEXTS)
+        self.assertLess(os.path.getsize(store), 120_000)
+        with open(store, "w") as f:
+            f.write("{not json")
+        self.assertIsNone(self.read(), "a damaged store is an empty one")
+
+    def test_the_headless_loop_answers_a_changed_file_with_the_same_hunks_then_the_whole(self):
+        from sampo import smith
+        run = smith.Run(type("A", (), {})(), self.repo, self.tmp)
+        run.emit = lambda *a, **k: None
+        run.cur = "step:1"
+        run.msgs["step:1"] = []
+
+        def ask():
+            out = run.seen_read("notes.txt", 1, 200)
+            run.msgs["step:1"].append({"role": "tool", "content": out})
+            run.pin(out)
+            return out
+        first = ask()
+        self.assertIn("line 42: alpha", first)
+        rows = self.lines()
+        rows[41] = "line 42: CHANGED text here"
+        self.put(self.path, rows)
+        note = ask()
+        self.assertIn(c.READ_CHANGED, note)
+        self.assertIn("@@ -41,3 +41,3 @@", note)
+        self.assertIn("+line 42: CHANGED text here", note)
+        self.assertNotIn("line 10:", note)
+        whole = ask()
+        self.assertIn("line 10:", whole, "the ask after the hunks is the whole file")
+        self.assertIn("line 42: CHANGED", whole)
+        self.assertIn("you have this", ask(), "and that is held: the loop's own unchanged note")
+
+    def headless(self):
+        from sampo import smith
+        run = smith.Run(type("A", (), {})(), self.repo, self.tmp)
+        run.emit = lambda *a, **k: None
+        run.cur = "step:1"
+        run.msgs["step:1"] = []
+
+        def ask(start=1, lines=200):
+            out = run.seen_read("notes.txt", start, lines)
+            run.msgs["step:1"].append({"role": "tool", "content": out})
+            run.pin(out)
+            return out
+        return run, ask
+
+    def change(self, row, text):
+        rows = self.lines()
+        rows[row] = text
+        self.put(self.path, rows)
+
+    def test_headless_an_unchanged_repeat_is_the_loops_note_not_hunks(self):
+        run, ask = self.headless()
+        self.assertIn("line 42: alpha", ask())
+        again = ask()
+        self.assertIn("you have this", again)
+        self.assertNotIn(c.READ_CHANGED, again)
+        self.assertEqual(run.count["notes"], 1)
+
+    def test_headless_a_file_changed_twice_gets_hunks_each_time_and_the_whole_after_each(self):
+        run, ask = self.headless()
+        ask()
+        for n, row in enumerate((41, 20), 1):
+            self.change(row, f"line {row + 1}: CHANGED {n}")
+            hunks = ask()
+            self.assertIn(c.READ_CHANGED, hunks, f"change {n}")
+            self.assertIn(f"+line {row + 1}: CHANGED {n}", hunks)
+            self.assertNotIn("line 50:", hunks)
+            whole = ask()
+            self.assertNotIn(c.READ_CHANGED, whole, "the second ask is the whole")
+            self.assertIn("line 50:", whole)
+        self.assertEqual(run.count["notes"], 2)
+
+    def test_headless_another_range_is_read_whole_and_a_new_step_starts_from_a_full_read(self):
+        run, ask = self.headless()
+        ask(1, 200)
+        self.change(41, "line 42: CHANGED text here")
+        self.assertIn(c.READ_CHANGED, ask(1, 200))
+        self.assertNotIn(c.READ_CHANGED, ask(1, 30), "a range not read before: no old text to diff")
+        self.change(10, "line 11: CHANGED again here")
+        run.shown, run.pending, run.cut = {"reads": {}, "searches": []}, None, set()  # a new step: its context is new
+        again = ask(1, 200)
+        self.assertNotIn(c.READ_CHANGED, again)
+        self.assertIn("line 50:", again)
+
+    def test_headless_the_off_switch_reads_a_changed_file_whole(self):
+        run, ask = self.headless()
+        ask()
+        self.change(41, "line 42: CHANGED text here")
+        with mock.patch.dict(os.environ, {"FOREMAN_READ_DEDUPE": "off"}):
+            out = ask()
+        self.assertNotIn(c.READ_CHANGED, out)
+        self.assertIn("line 50:", out)
+
+    def test_a_read_that_never_ran_is_not_kept(self):
+        self.assertIsNone(self.read(ran=False), "the Read failed: no PostToolUse follows")
+        self.assertIsNone(self.read(ran=False), "so nothing was shown, and the repeat is a first read")
+        self.assertIsNone(self.read())
+        self.assertIn(c.READ_UNCHANGED + "1", self.read() or "")
+
+    def test_the_store_is_private_to_the_user(self):
+        import stat
+        from sampo import hooks
+        store = hooks._read_seen_path("s1", "main")
+        os.makedirs(os.path.dirname(store), exist_ok=True)
+        os.chmod(os.path.dirname(store), 0o755)
+        self.read()
+        self.assertEqual(stat.S_IMODE(os.stat(store).st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(os.stat(os.path.dirname(store)).st_mode), 0o700)
+
+    def test_a_credential_or_secret_files_text_is_never_stored_only_its_hash(self):
+        body = [f"secret {i}: alpha beta gamma delta epsilon zeta eta theta iota kappa" for i in range(30)]
+        for rel in (".ssh/id_rsa", ".env", "keys/server.pem", "secrets.txt", "plain.txt"):
+            path = os.path.join(self.repo, rel)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            self.put(path, body)
+            self.hook("PostToolUse", {"tool_name": "Read", "tool_input": {"file_path": path}, "session_id": "s1",
+                                      "tool_response": {"type": "text"}})
+        rows = self.store()["r"]
+        self.assertEqual(len(rows), 5)
+        held = {os.path.basename(k.rsplit(":", 2)[0]): "t" in v for k, v in rows.items()}
+        self.assertEqual(held, {"id_rsa": False, ".env": False, "server.pem": False, "secrets.txt": False, "plain.txt": True})
+        self.assertTrue(all(v["h"] for v in rows.values()), "the hash is kept: an unchanged repeat is still a note")
+
+    def test_the_off_switch_answers_every_repeat_whole_and_keeps_nothing(self):
+        from sampo import hooks
+        for env in ({"FOREMAN_READ_DEDUPE": "off"}, {"SAMPO_READ_DEDUPE": "0"}):
+            for _ in range(3):
+                self.assertIsNone(self.read(env=env))
+            self.assertFalse(os.path.exists(hooks._read_seen_path("s1", "main")), env)
+        self.assertIsNone(self.read())
+        self.assertIn(c.READ_UNCHANGED, self.read() or "", "unset: on")
+
+    def test_the_store_is_updated_under_a_lock_and_a_busy_lock_lets_the_read_go(self):
+        from sampo import hooks
+        pl = {"tool_name": "Read", "tool_input": {"file_path": self.path}, "session_id": "s1", "cwd": self.repo}
+        folder = os.path.dirname(hooks._read_seen_path("s1", "main"))
+        with mock.patch.object(c, "lock", wraps=c.lock) as lk:
+            hooks._read_record(pl)
+            hooks._read_dedupe(pl)
+        self.assertEqual({call.args[0] for call in lk.call_args_list}, {folder})
+        self.assertEqual(lk.call_count, 2)
+        with mock.patch.object(c, "lock", side_effect=c.LockTimeout("busy")):
+            self.assertIsNone(hooks._read_dedupe(pl))
+            hooks._read_record(pl)  # neither raises: a busy store is no store
+
+    def test_a_bypass_whole_read_the_rewrite_clips_is_not_recorded_as_a_whole_read(self):
+        from sampo import hooks
+        big = os.path.join(self.repo, "big.py")
+        self.put(big, [f"def function_{i}():\n    return {i}\n" for i in range(400)])
+        post = lambda mode, **ti: self.hook("PostToolUse", {  # noqa: E731
+            "tool_name": "Read", "tool_input": {"file_path": big, **ti}, "session_id": "s1", "agent_id": "a1",
+            "agent_type": "sampo:fm-builder", "permission_mode": mode, "tool_response": {"type": "text"}})
+        post("bypassPermissions")
+        self.assertFalse(os.path.exists(hooks._read_seen_path("s1", "a1")), "the answer was its first 250 lines only")
+        post("bypassPermissions", limit=250)
+        self.assertEqual(len(self.store(who="a1")["r"]), 1, "the rewritten input names its range: that is what was read")
+        post("default")
+        self.assertEqual(len(self.store(who="a1")["r"]), 2, "not in bypass: the whole read was whole")
+
+    def test_a_note_writes_only_its_flag_and_a_fresh_read_records_after_it(self):
+        self.read()
+        before = self.store()
+        self.assertIn(c.READ_UNCHANGED, self.read() or "")
+        after = self.store()
+        (k, v), = after["r"].items()
+        self.assertTrue(v["noted"])
+        self.assertEqual(before["r"][k]["h"], v["h"])
+        self.assertIsNone(self.read())
+        self.assertFalse(self.store()["r"][k]["noted"], "the read that went ahead is recorded afresh")
+
+
 class StepEvidenceInProgress(HookCase):
     """T-6057: a done-claim on a step whose work still runs in the background (a lane, an agent, a background run that
     started since the step began) is not asked for evidence: the ask comes once that work ended or its start passed the

@@ -3051,7 +3051,7 @@ class Run:
             self.read_at[full] = self.count["reads"]
         old = self.shown["reads"].get(full, [])
         for e in old:
-            if digest and e["digest"] == digest and e["start"] <= start and start + lines - 1 <= e["end"]:
+            if digest and e["digest"] == digest and e["start"] <= start and start + lines - 1 <= e["end"] and not e.get("hunks"):
                 self.count["rereads"] += 1
                 if self.holds(e):
                     self.count["notes"] += 1
@@ -3061,7 +3061,24 @@ class Run:
         out = self.read(rel, start, lines)
         if digest and not out.startswith(("refused", "error")):
             self.pending = _shown(digest, start, out)
+            self.pending.update(text=out, lines=lines)
+            noted, key = self.shown.setdefault("noted", set()), (full, start, lines)
+            hunks = None
+            if key in noted:  # T-6064: the ask right after a hunks answer is read whole, as the Read hook's is
+                noted.discard(key)
+            elif core.read_dedupe_on():  # the same range of a file that changed since, its earlier text still in front of the model
+                for e in old:
+                    if e["digest"] != digest and e.get("lines") == lines and e["start"] == start and self.holds(e):
+                        strip = lambda t: re.sub(r"(?m)^ *\d+  ", "", t)  # noqa: E731
+                        hunks = core.read_hunks(strip(e["text"]), strip(out), start)
+                        break
             self.shown["reads"][full] = [e for e in old if e["digest"] == digest] + [self.pending]
+            if hunks:
+                self.pending["hunks"] = True  # the model holds only these hunks of it: no "you have this" for the whole
+                self.count["notes"] += 1
+                noted.add(key)
+                return (f"{rel} {core.READ_CHANGED}{self.count['reads']}: the changed hunks of lines {start}-"
+                        f"{start + lines - 1} (the file's line numbers; read again for all of it):\n{hunks}")
         return out
 
     def seen_search(self, pattern, glob):

@@ -415,7 +415,13 @@
 ],
 3
 ],
-"sampo/hooks.py::_search_like.rooted": [
+"sampo/hooks.py::_root_hit": [
+[
+"expanduser"
+],
+1
+],
+"sampo/hooks.py::_read_range": [
 [
 "expanduser"
 ],
