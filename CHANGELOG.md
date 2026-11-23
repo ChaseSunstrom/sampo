@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- The self-change gate's guard replay runs in chunks of 250 commands, four processes at once, so a loaded machine can't time it out and refuse a ship (T-6154).
 - A task whose dependency's merge is already on the integration branch is briefed, not refused as waiting on that dependency (T-6105).
 - The live Board's cost-vs-native panel draws the points alone, with no dashed 10x line and no 'undefined' label, when a native target is missing (T-6156).
 - Builders and reviewers launch at effort by step (low for an S or light lane, medium otherwise, one level up per failed review round), FOREMAN_EFFORT=off restores the old mapping, and sampo cost --by-effort shows the result (T-6124).
