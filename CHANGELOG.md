@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- The lead's whole reads of source files over 300 lines (400 for a subagent) are denied with the outline and the active task's symbol ranges, a compaction resumes from sampo next, and install sets autoCompactWindow when Claude Code knows the key (T-6125).
 - The depth-map tests in test_audit_run expect haiku at full depth and on a protected path, as T-6101 set (T-6163).
 - The LocalBuilder group-kill tests stub the started-pid registry for their child, so the trunk baseline is green again with the T-6095 guard unchanged (T-6157).
 - The seven test classes red on trunk pass again: their stubs, pins and expectations now follow the commits that moved them (T-6129).
