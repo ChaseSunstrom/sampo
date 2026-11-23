@@ -9264,6 +9264,10 @@ def cmd_audit(args):
             if fork and fork == (c._git(p.root, "rev-parse", "--verify", "-q", branch + "^{commit}", fail="") or "").strip():
                 fork = ""  # T-5972: HEAD is the lane (a builder's own review): the fork is the tip, an empty diff; the task's start is the base
             base, tree, upto = fork or base, branch, f"branch {branch}"
+            since = getattr(args, "delta_base", "") or ""  # T-6044: the pilot's fix round: a lens that said ok reads old tip..new tip
+            if since and re.fullmatch(r"[0-9a-f]{40}", since) and c._git(
+                    p.root, "rev-parse", "--verify", "-q", "--end-of-options", f"{since}^{{commit}}", fail=None):
+                base, upto = since, f"branch {branch}, the fix since {since[:9]}"
     pairs = [(base, tree)]
     # T-1296: edits not yet committed in this checkout belong to the task as well, but only while it is this
     # checkout's own task (T-1579: a lane task's review shouldn't carry whatever the main checkout is working on)

@@ -78,21 +78,22 @@ class SmallLane(PilotCase):
     def test_a_clean_s_lane_is_accepted_with_no_lead_turn_on_haiku(self):
         r = self.pilot()
         self.assertEqual(r["outcome"], "accepted", r)
-        self.assertEqual(r["lenses"], ["self"])
+        self.assertEqual(r["lenses"], ["intent", "adversary"])  # T-6044: the depth map's light tier, not the self lens
         self.assertEqual(r["model"], "haiku")
         calls = self.calls()
-        self.assertEqual([x["lens"] for x in calls], ["self"], "one reviewer per lens")
-        self.assertEqual(self.arg(calls[0], "--model"), "haiku")
-        self.assertEqual(self.audits(), ["self"], "the clean lens is recorded against the lane")
-        self.assertTrue(self.accepted(), "sampo lane accept ran and accepted the lane")
+        self.assertEqual(sorted(x["lens"] for x in calls), ["adversary", "intent"], "one reviewer per lens")
+        self.assertEqual({self.arg(x, "--model") for x in calls}, {"haiku"})
+        self.assertEqual(self.audits(), ["adversary", "intent"], "the clean lenses are recorded against the lane")
+        self.assertTrue(self.accepted(), "sampo lane accept ran and accepted the lane (the S gate takes self as given)")
 
 
 class SelfLensFormat(PilotCase):
-    def test_the_self_lens_is_briefed_on_the_verdict_format_too(self):  # T-5706 item 5
+    def test_every_lens_is_briefed_on_the_verdict_format(self):  # T-5706 item 5, T-6044: intent and adversary replace self
         self.pilot()
         calls = self.calls()
-        self.assertEqual([x["lens"] for x in calls], ["self"])
-        self.assertIn(auditrun.typed_format(), calls[0]["stdin"], "prep builds no self section, so the format rides the prompt")
+        self.assertEqual(sorted(x["lens"] for x in calls), ["adversary", "intent"])
+        for x in calls:
+            self.assertIn(auditrun.typed_format(), x["stdin"], "the format rides every headless prompt")
 
 
 class Replay(PilotCase):
@@ -206,30 +207,361 @@ class SensitiveScan(PilotCase):
 class SensitiveSmallLane(PilotCase):
     name = "auth.py"
 
-    def test_a_sensitive_s_lane_adds_the_adversary_and_runs_on_sonnet(self):
+    def test_a_sensitive_s_lane_runs_all_five_on_sonnet(self):  # T-6044: auth.py is a protected path and a sensitive one
         r = self.pilot()
         self.assertEqual(r["outcome"], "accepted", r)
-        self.assertEqual(r["lenses"], ["self", "adversary"])
+        self.assertEqual(r["lenses"], list(c.DEFAULT_LENSES))
         self.assertEqual(r["model"], "sonnet")
         calls = self.calls()
-        self.assertEqual(sorted(x["lens"] for x in calls), ["adversary", "self"])
+        self.assertEqual(sorted(x["lens"] for x in calls), sorted(c.DEFAULT_LENSES))
         self.assertEqual({self.arg(x, "--model") for x in calls}, {"sonnet"})
         self.assertTrue(self.accepted())
 
 
 class MediumLane(PilotCase):
     tier = "M"
+    name = "mod.py"  # code with no linked test: the depth map's normal tier
 
-    def test_a_clean_m_lane_gets_every_default_lens_on_sonnet_and_is_accepted(self):
+    def test_a_clean_m_lane_gets_the_normal_depth_on_sonnet_and_is_accepted(self):  # T-6044: intent, adversary, edge
         r = self.pilot()
         self.assertEqual(r["outcome"], "accepted", r)
-        self.assertEqual(sorted(r["lenses"]), sorted(c.DEFAULT_LENSES))
+        self.assertEqual(r["lenses"], ["intent", "adversary", "edge"])
         self.assertEqual(r["model"], "sonnet")
         calls = self.calls()
-        self.assertEqual(sorted(x["lens"] for x in calls), sorted(c.DEFAULT_LENSES))
+        self.assertEqual(sorted(x["lens"] for x in calls), ["adversary", "edge", "intent"])
         self.assertEqual({self.arg(x, "--model") for x in calls}, {"sonnet"})
-        self.assertEqual(self.audits(), sorted(c.DEFAULT_LENSES))
+        self.assertEqual(self.audits(), ["adversary", "edge", "intent"])
         self.assertTrue(self.accepted())
+
+
+class LensDepth(PilotCase):
+    """T-6044: the pilot's lenses and model come from lanes.review_depth (the depth map and its floors), not a fixed list."""
+
+    def chosen(self, tid):
+        p = c.find_project(self.repo)
+        b = c.find_brief(p, tid)
+        tip = train._lane_tip(self.repo, b)
+        names, raw = lanepilot.lane_diff(self.repo, tip)
+        return lanepilot.lenses_for(b, lanepilot._sensitive(self.repo, tip), p, names, raw)
+
+    def type_of(self, tid, kind):
+        p = c.find_project(self.repo)
+        x = c.find_brief(p, tid)
+        x.meta["type"] = kind
+        c.save_brief(p, x)
+
+    def test_a_small_lane_with_no_protected_or_sensitive_path_runs_intent_and_adversary_on_haiku(self):
+        self.assertEqual(self.chosen(self.tid), (["intent", "adversary"], "haiku"))
+        self.assertEqual(self.chosen(self.lane(2, "notes.md", tier="S")), (["intent", "adversary"], "haiku"), "a docs-only lane")
+
+    def test_a_protected_path_runs_all_five_on_sonnet(self):
+        tid = self.lane(2, "sub/land.py")
+        self.assertEqual(self.chosen(tid), (list(c.DEFAULT_LENSES), "sonnet"))
+
+    def test_a_security_task_runs_all_five_on_sonnet(self):
+        tid = self.lane(2, "plain.py")
+        self.type_of(tid, "SECURITY")
+        self.assertEqual(self.chosen(tid), (list(c.DEFAULT_LENSES), "sonnet"))
+
+    def test_a_sensitive_diff_always_includes_the_adversary_on_sonnet(self):
+        p = c.find_project(self.repo)
+        b = self.brief()
+        lenses, model = lanepilot.lenses_for(b, True, p, ["notes.md"], b"")  # a light diff the scan still calls sensitive
+        self.assertIn("adversary", lenses)
+        self.assertEqual(model, "sonnet")
+        lenses, model = self.chosen(self.lane(2, "calc.py", text="result = eval(user_text)\n"))
+        self.assertIn("adversary", lenses)
+        self.assertEqual(model, "sonnet")
+
+    def test_a_diff_the_pilot_could_not_read_gets_every_lens_on_sonnet(self):  # fail closed
+        lenses, model = lanepilot.lenses_for(self.brief(), False, c.find_project(self.repo), None, b"")
+        self.assertEqual((lenses, model), (list(c.DEFAULT_LENSES), "sonnet"))
+
+    def test_review_depth_full_gives_all_five(self):
+        with mock.patch.dict(os.environ, {"SAMPO_REVIEW_DEPTH": "full"}):
+            self.assertEqual(self.chosen(self.tid), (list(c.DEFAULT_LENSES), "sonnet"))
+
+    def test_the_lenses_are_the_depth_maps_own(self):
+        p = c.find_project(self.repo)
+        b = self.brief()
+        names, raw = lanepilot.lane_diff(self.repo, train._lane_tip(self.repo, b))
+        want = lanes.review_depth(b, names, raw.decode(), p=p)
+        self.assertEqual(self.chosen(self.tid), (want["lenses"], want["model"]))
+
+    def test_every_group_the_close_gate_asks_is_covered(self):  # core.required_audits stays the gate's map
+        from sampo import cli
+        for tier, name in (("S", "a.py"), ("M", "mod.py"), ("M", "notes.md"), ("S", "sub/land.py")):
+            with self.subTest(tier=tier, name=name):
+                tid = self.lane(len(name) + 10 * len(tier) + 2, name, tier=tier)
+                p = c.find_project(self.repo)
+                b = c.find_brief(p, tid)
+                names, raw = lanepilot.lane_diff(self.repo, train._lane_tip(self.repo, b))
+                lenses, _ = self.chosen(tid)
+                linked = cli._tests_linked(p, b, names)
+                for group in c.required_audits(b, names, raw.decode(), linked):
+                    self.assertTrue(group == {"self"} or group & set(lenses), f"the gate asks {group}, the pilot ran {lenses}")
+
+    def test_the_dry_plan_and_the_run_name_the_same_lenses_and_model(self):
+        p = c.find_project(self.repo)
+        plan = lanepilot.plan(p, self.brief(), self.repo)
+        self.assertEqual((plan["lenses"], plan["model"]), (["intent", "adversary"], "haiku"))
+        r = self.pilot()
+        self.assertEqual((r["lenses"], r["model"]), (plan["lenses"], plan["model"]))
+
+
+class VerdictCache(PilotCase):
+    """T-6044: a parsed verdict is kept by (diff bytes, lens, model, prompt version, brief); the same review again launches
+    no child. Nothing unparsed, failed or timed out is kept, and the store is bounded."""
+
+    def setUp(self):
+        super().setUp()
+        self.p = c.find_project(self.repo)
+
+    def review(self, lenses=("intent", "adversary"), model="haiku", raw=None, b=None):
+        b0 = self.brief()
+        before = lanepilot._state(self.repo, b0)
+        names, whole = lanepilot.lane_diff(self.repo, before[0])
+        scopes = {x: ("", whole if raw is None else raw) for x in lenses}
+        return lanepilot.review_cached(self.p, b or b0, self.repo, before, list(lenses), model, scopes)
+
+    def launches(self):
+        return len(self.calls())
+
+    def test_the_same_review_again_launches_no_child(self):
+        first = self.review()
+        self.assertEqual(first[0], {"intent": "ok", "adversary": "ok"})
+        self.assertEqual(self.launches(), 2)
+        again = self.review()
+        self.assertEqual(again, first, "the cached answer is the first one")
+        self.assertEqual(self.launches(), 2, "no child was launched")
+
+    def test_a_cached_clean_lens_is_recorded_against_the_lane_again(self):
+        self.review()
+        x = self.brief()
+        x.set_section("Verification evidence", "")
+        c.save_brief(self.p, x)
+        self.assertEqual(self.audits(), [])
+        self.review()
+        self.assertEqual(self.launches(), 2)
+        self.assertEqual(self.audits(), ["adversary", "intent"], "accept counts the audits on the lane's tree")
+
+    def test_a_changed_diff_byte_misses(self):
+        self.review(raw=b"diff one\n")
+        self.review(raw=b"diff one\n")
+        self.assertEqual(self.launches(), 2)
+        self.review(raw=b"diff onf\n")
+        self.assertEqual(self.launches(), 4)
+
+    def test_a_changed_brief_misses(self):
+        self.review()
+        x = self.brief()
+        x.set_section("Raw request", x.section("Raw request") + "Also handle the empty case.\n")
+        c.save_brief(self.p, x)
+        self.review()
+        self.assertEqual(self.launches(), 4)
+        x = self.brief()
+        x.set_section("Verification evidence", "- ran a thing\n")  # evidence and ticks move all the time: not the brief
+        c.save_brief(self.p, x)
+        self.review()
+        self.assertEqual(self.launches(), 4)
+
+    def test_a_changed_prompt_version_misses(self):
+        self.review()
+        with mock.patch.object(auditrun, "CLOSING", auditrun.CLOSING + "Answer in one pass.\n"):
+            self.review()
+        self.assertEqual(self.launches(), 4)
+        schema = json.loads(json.dumps(auditrun.REPLY_SCHEMA))
+        schema["properties"]["lens"]["description"] += " (v2)"
+        with mock.patch.object(auditrun, "REPLY_SCHEMA", schema):
+            self.review()
+        self.assertEqual(self.launches(), 6)
+
+    def test_a_changed_model_misses(self):
+        self.review(model="haiku")
+        self.review(model="sonnet")
+        self.assertEqual(self.launches(), 4)
+        self.review(model="sonnet")
+        self.assertEqual(self.launches(), 4)
+
+    def test_an_unparsed_lens_is_never_kept(self):
+        os.environ["STUB_NO_HEADER"] = "intent"
+        self.addCleanup(os.environ.pop, "STUB_NO_HEADER", None)
+        verdicts, _, why, unparsed = self.review()
+        self.assertEqual(unparsed, ["intent"])
+        self.assertEqual(verdicts, {"adversary": "ok"})
+        self.review()
+        self.assertEqual(len([x for x in self.calls() if x["lens"] == "intent"]), 4,
+                         "the unparsed lens is asked again (a reply and its repair, twice); the parsed one is not")
+        self.assertEqual(len([x for x in self.calls() if x["lens"] == "adversary"]), 1)
+
+    def test_a_failed_lens_is_never_kept(self):
+        os.environ["STUB_FAIL_LENS"] = "adversary"
+        self.addCleanup(os.environ.pop, "STUB_FAIL_LENS", None)
+        self.review()
+        self.review()
+        self.assertEqual(len([x for x in self.calls() if x["lens"] == "adversary"]), 2)
+        self.assertEqual(len([x for x in self.calls() if x["lens"] == "intent"]), 1)
+
+    def test_a_timed_out_lens_is_never_kept(self):
+        runs = []
+
+        def fake(p, args):
+            runs.append(list(args.lens))
+            print(json.dumps({"verdicts": {}, "findings": {}, "typed": {}, "unparsed": [],
+                              "failed": {x: "timed out after 600 s" for x in args.lens}}))
+            raise cli.UsageError("fm audit run: no verdict for " + ", ".join(args.lens))
+        with mock.patch.object(auditrun, "run", fake):
+            for _ in range(2):
+                verdicts, _, why, _ = self.review(("intent",))
+                self.assertEqual(verdicts, {})
+                self.assertIn("no verdict", why)
+        self.assertEqual(runs, [["intent"], ["intent"]], "asked both times")
+        self.assertEqual(lanepilot.cache_size(self.p), 0)
+
+    def test_a_changes_needed_verdict_is_kept_with_its_findings(self):
+        os.environ["STUB_BAD_LENS"] = "adversary"
+        self.addCleanup(os.environ.pop, "STUB_BAD_LENS", None)
+        first = self.review()
+        self.assertEqual(first[0], {"intent": "ok", "adversary": "changes needed"})
+        again = self.review()
+        self.assertEqual(self.launches(), 2)
+        self.assertEqual(again[0], first[0])
+        self.assertEqual(again[1], first[1], "the findings replay with the verdict")
+        self.assertTrue(any("HIGH" in f for f in again[1]), again[1])
+
+    def test_the_store_is_bounded(self):
+        with mock.patch.object(lanepilot, "CACHE_MAX", 3):
+            for n in range(6):
+                self.review(("intent",), raw=f"diff {n}\n".encode())
+            self.assertEqual(lanepilot.cache_size(self.p), 3)
+            self.review(("intent",), raw=b"diff 5\n")
+            self.assertEqual(self.launches(), 6, "the newest entries stay")
+            self.review(("intent",), raw=b"diff 0\n")
+            self.assertEqual(self.launches(), 7, "the oldest went")
+
+    def test_an_entry_that_is_not_a_verdict_is_a_miss(self):
+        self.review(("intent",))
+        path = lanepilot.cache_path(self.p)
+        with open(path) as f:
+            store = json.load(f)
+        for e in store["entries"].values():
+            e["verdict"] = "looks fine to me"
+        with open(path, "w") as f:
+            json.dump(store, f)
+        self.review(("intent",))
+        self.assertEqual(self.launches(), 2, "a tampered entry is not served")
+
+    def test_a_pilot_rerun_on_the_same_tip_costs_no_launch(self):
+        os.environ["STUB_BAD_LENS"] = "adversary"
+        self.addCleanup(os.environ.pop, "STUB_BAD_LENS", None)
+        self.assertEqual(self.pilot()["outcome"], "changes")
+        n = self.launches()
+        self.assertEqual(n, 2)
+        x = self.brief()
+        x.meta.pop("pilot_tip")  # the gate's own stamp, cleared: the same tip, the same diff, the same brief
+        c.save_brief(self.p, x)
+        again = self.pilot()
+        self.assertEqual(again["outcome"], "changes", again)
+        self.assertEqual(self.launches(), n, "the second pilot of an unchanged lane launched nothing")
+        self.assertTrue(any("HIGH" in f for f in again["findings"]), again["findings"])
+
+
+class FixRoundLenses(PilotCase):
+    """T-6044: after a fix round a lens that asked for changes reads the whole new diff; a lens that said ok reads only the
+    fix (old tip..new tip). Each lens's scope is a pilot_lens event."""
+    tier = "M"
+    name = "mod.py"
+
+    def setUp(self):
+        super().setUp()
+        self.p = c.find_project(self.repo)
+        self.branch = self.brief().meta["lane_branch"]
+        self.fork = self.git("merge-base", "HEAD", self.branch)
+
+    def commit(self, text, amend=False):
+        lane = self.brief().meta["lane"]
+        with open(os.path.join(lane, self.name), "w") as f:
+            f.write(text)
+        subprocess.run(["git", "-C", lane, "add", "--", self.name], check=True)
+        env = dict(os.environ, GIT_AUTHOR_DATE=OLD, GIT_COMMITTER_DATE=OLD)
+        subprocess.run(["git", "-C", lane, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "fix",
+                        *(["--amend"] if amend else [])], check=True, env=env)
+        self.record_clean_run(self.tid)
+
+    def tip(self):
+        return train._lane_tip(self.repo, self.brief())
+
+    def round_one(self, bad="edge"):
+        os.environ["STUB_BAD_LENS"] = bad
+        self.addCleanup(os.environ.pop, "STUB_BAD_LENS", None)
+        r = self.pilot()
+        self.assertEqual(r["outcome"], "changes", r)
+        self.assertEqual(r["lenses"], ["intent", "adversary", "edge"])
+        os.environ.pop("STUB_BAD_LENS")
+        return self.tip()
+
+    def scopes(self):
+        out = {}
+        for e in c.ledger_events(self.p, ("pilot_lens",)):
+            d = e["data"]
+            out[d["tip"], d["lens"]] = d
+        return out
+
+    def header(self, lens, n=1):
+        """the `git diff A → …` line of the last call for this lens, A cut to 12"""
+        call = [x for x in self.calls() if x["lens"] == lens][-n]
+        return re.search(r"git diff (\w+) →", call["stdin"]).group(1)
+
+    def test_the_lens_that_asked_for_changes_reads_the_whole_diff_and_the_clean_ones_only_the_fix(self):
+        old = self.round_one()
+        self.assertEqual(self.p and self.brief().meta.get("pilot_tip"), old)
+        self.assertEqual(self.header("edge"), self.fork[:12], "round one reads the whole diff")
+        self.commit("x = 2\n")
+        new = self.tip()
+        self.assertNotEqual(new, old)
+        n = len(self.calls())
+        r = self.pilot()
+        self.assertEqual(r["outcome"], "accepted", r)
+        round_two = self.calls()[n:]
+        self.assertEqual(sorted(x["lens"] for x in round_two), ["adversary", "edge", "intent"], "every lens still answers")
+        self.assertEqual(self.header("edge"), self.fork[:12], "the lens that asked for changes re-reads the whole new diff")
+        self.assertEqual(self.header("intent"), old[:12], "a lens that said ok reads old tip..new tip")
+        self.assertEqual(self.header("adversary"), old[:12])
+        rec = self.scopes()
+        self.assertEqual(rec[new[:12], "edge"]["scope"], "whole")
+        self.assertEqual(rec[new[:12], "intent"]["scope"], "delta")
+        self.assertEqual(rec[new[:12], "intent"]["since"], old[:12])
+        self.assertEqual(rec[new[:12], "adversary"]["scope"], "delta")
+        self.assertEqual({rec[new[:12], x]["verdict"] for x in ("intent", "adversary", "edge")}, {"ok"})
+        self.assertEqual(rec[old[:12], "edge"]["scope"], "whole", "round one is on the log too")
+        self.assertEqual(self.audits(), ["adversary", "edge", "intent"], "each lens is counted on the new tree")
+
+    def test_a_rewritten_history_reads_the_whole_diff(self):  # the old tip is no ancestor: nothing to take a delta from
+        old = self.round_one()
+        self.commit("x = 3\n", amend=True)
+        new = self.tip()
+        self.assertNotEqual(new, old)
+        self.pilot()
+        for lens in ("intent", "adversary", "edge"):
+            self.assertEqual(self.header(lens), self.fork[:12], lens)
+        self.assertEqual({v["scope"] for k, v in self.scopes().items() if k[0] == new[:12]}, {"whole"})
+
+    def test_a_sensitive_fix_reads_the_whole_diff(self):  # fail toward more review
+        self.round_one()
+        self.commit("result = eval(user_text)\n")
+        self.pilot()
+        for lens in ("intent", "adversary", "edge"):
+            self.assertEqual(self.header(lens), self.fork[:12], lens)
+
+    def test_an_unchanged_fix_is_not_a_delta(self):  # an empty commit: no fix to read
+        old = self.round_one()
+        subprocess.run(["git", "-C", self.brief().meta["lane"], "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q",
+                        "--allow-empty", "-m", "nothing"], check=True,
+                       env=dict(os.environ, GIT_AUTHOR_DATE=OLD, GIT_COMMITTER_DATE=OLD))
+        new = self.tip()
+        self.assertNotEqual(new, old)
+        self.pilot()
+        self.assertEqual({v["scope"] for k, v in self.scopes().items() if k[0] == new[:12]}, {"whole"})
 
 
 class ChangesNeeded(PilotCase):
@@ -240,8 +572,7 @@ class ChangesNeeded(PilotCase):
         self.addCleanup(os.environ.pop, "STUB_BAD_LENS", None)
         r = self.pilot()
         self.assertEqual(r["outcome"], "changes", r)
-        self.assertEqual(self.audits(), sorted(x for x in c.DEFAULT_LENSES if x != "edge"),
-                         "only the clean lenses are recorded")
+        self.assertEqual(self.audits(), ["adversary", "intent"], "only the clean lenses are recorded")
         self.assertTrue(any("edge" in f and "HIGH" in f for f in r["findings"]), r["findings"])
         self.assertFalse(self.accepted())
         self.assertNotIn("reviewed_tip", self.brief().meta, "no accept ran on it")
@@ -285,7 +616,7 @@ class Unparsed(PilotCase):
         self.addCleanup(patch.stop)
 
     def test_text_with_no_verdict_is_an_exception_naming_the_lenses_and_never_changes(self):
-        self.stub(STUB_NO_HEADER="edge,self")
+        self.stub(STUB_NO_HEADER="edge")
         r = self.pilot()
         self.assertEqual(r["outcome"], "exception", r)
         self.assertTrue(r["reason"].startswith("reply unparsed: edge"), r["reason"])
@@ -299,7 +630,7 @@ class Unparsed(PilotCase):
         self.pilot()
         ev = c.ledger_events(c.find_project(self.repo), ("pilot_unparsed",))
         self.assertEqual(len(ev), 1, ev)
-        self.assertEqual(sorted(ev[0]["data"]["lenses"]), sorted(c.DEFAULT_LENSES))
+        self.assertEqual(sorted(ev[0]["data"]["lenses"]), ["adversary", "edge", "intent"], "the depth map's lenses for this lane")
         self.assertEqual(ev[0]["data"]["parsed"], 0)
 
     def test_a_reviewer_that_failed_keeps_its_own_reason_and_is_not_unparsed(self):
@@ -322,7 +653,7 @@ class Unparsed(PilotCase):
         self.assertEqual(c.ledger_events(c.find_project(self.repo), ("pilot_unparsed",)), [])
 
     def test_the_run_is_counted_even_when_the_tip_moved_during_review(self):
-        self.stub(STUB_NO_HEADER="edge,self")
+        self.stub(STUB_NO_HEADER="edge")
         lane = self.brief().meta["lane"]
         self.stub(STUB_RUN=json.dumps(["git", "-C", lane, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q",
                                        "--allow-empty", "-m", "mid"]))
@@ -520,11 +851,11 @@ class PilotAnswer(PilotCase):
         self.assertTrue(self.accepted())
 
     def test_a_changes_needed_lane_is_read_with_its_why(self):
-        os.environ["STUB_BAD_LENS"] = "self"
+        os.environ["STUB_BAD_LENS"] = "intent"
         self.addCleanup(os.environ.pop, "STUB_BAD_LENS", None)
         got = pilotsig._answer(self.verb_out(self.tid), self.tid)
         self.assertEqual(got["outcome"], "changes", got)
-        self.assertIn("changes needed: self", got["why"])
+        self.assertIn("changes needed: intent", got["why"])
 
     def test_an_exception_is_read_with_its_reason_and_the_exit_stays_nonzero(self):
         self.expire_contract()
@@ -556,11 +887,11 @@ class PilotAnswer(PilotCase):
         self.assertEqual(pilotsig._answer(line, self.tid)["outcome"], "changes")
 
     def test_a_reviewer_with_no_verdict_names_its_reason_in_the_exception(self):
-        os.environ["STUB_FAIL_LENS"] = "self"
+        os.environ["STUB_FAIL_LENS"] = "intent"
         self.addCleanup(os.environ.pop, "STUB_FAIL_LENS", None)
         r = self.pilot()
         self.assertEqual(r["outcome"], "exception", r)
-        self.assertIn("no verdict for self", r["reason"])
+        self.assertIn("no verdict for intent", r["reason"])
         self.assertIn("exit 3", r["reason"], "the reviewer's own failure reason reaches the log line")
         got = pilotsig._answer(self.verb_out(self.tid), self.tid)
         self.assertIn("exit 3", got["why"])
@@ -572,7 +903,7 @@ class PilotAnswer(PilotCase):
         with mock.patch.object(ideas, "run_children", return_value=[(reply, None)]):
             r = self.pilot()
         self.assertEqual(r["outcome"], "exception", r)
-        self.assertIn("no verdict for self", r["reason"])
+        self.assertIn("no verdict for intent", r["reason"])
         self.assertIn("Destructive sinks", r["reason"], "what the reviewer ended on")
         self.assertNotIn("A" * 40, r["reason"], "a key in the reply is redacted")
         self.assertLess(len(r["reason"]), 400, "bounded: the tail of the reply, not the reply")
@@ -595,7 +926,7 @@ class PilotAnswer(PilotCase):
         self.assertIn(c.DEFANGED.strip(), why, "instruction-like text carries the marker")
         for bad in ("\x1b", "\x07", "\u202e"):
             self.assertNotIn(bad, why)
-        self.assertIn("no verdict for self", why)
+        self.assertIn("no verdict for intent", why)
         got = pilotsig._answer(json.dumps({"tid": self.tid, "outcome": "exception", "why": reply}), self.tid)
         self.assertIn(c.DEFANGED.strip(), got["why"], "the trigger's reading of an answer defangs it too")
         self.assertNotIn("\x1b", got["why"])
