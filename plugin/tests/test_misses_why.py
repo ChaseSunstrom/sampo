@@ -473,12 +473,16 @@ class Why(ForemanTestCase):
         self._old_brief("FEATURE: stopped and stalled lanes recover by cause without being told")
         self._event("miss", ASK_TS, {"cls": "unbuilt", "text": ASKS[1][0]})
         calls = self._model({"pick": None})
-        seq = [{"pick": None}, {"pick": 1, "link2": 'the row says lanes "recover by cause" after a stop', "root": "missing feedback loop",
-                                "link3": 'nothing read "without being told" against the ask'}]
+        why = {"pick": 1, "link2": 'the row says lanes "recover by cause" after a stop', "root": "missing feedback loop",
+               "link3": 'nothing read "without being told" against the ask'}
 
-        def complete(prof, messages, **kw):
+        def complete(prof, messages, **kw):  # the second look's rows: the lane verb's help holds "recover" too, so pick the brief's row by its text
             calls.append(messages[0]["content"])
-            return {"text": json.dumps(seq[min(len(calls) - 1, 1)])}
+            if len(calls) == 1:
+                return {"text": json.dumps({"pick": None})}
+            rows = [ln for ln in messages[-1]["content"].splitlines() if ln[:1].isdigit()]
+            row = next(ln for ln in rows if "without being told" in ln)
+            return {"text": json.dumps(dict(why, pick=int(row.split(".")[0])))}
         models.complete = complete
         r = self.sa.why(self.p, judge=True)["records"][0]
         self.assertEqual((r["path"], r["cause"], r["catcher"]), ("judged", "known", "verb:next"))

@@ -109,6 +109,7 @@ class Lesions(Base):
         os.makedirs(sessions, exist_ok=True)
         with open(os.path.join(sessions, "s.json"), "w") as f:
             json.dump({"rate_limits": {"seven_day": {"used_percentage": 10}}}, f)
+        self.fm("claude-bench", "on")  # T-5584: a lesion runs a Claude model, so the user's switch comes first
         from sampo import night
         jobs = [(n, a) for n, a, _ in night.jobs(self.p) if n.startswith("model lesion")]
         self.assertTrue(jobs)

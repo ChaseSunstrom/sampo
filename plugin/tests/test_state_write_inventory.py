@@ -139,6 +139,9 @@ REVIEWED = {
     **_review("write", "expands the checkout a user names (`sampo update --repo PATH`, a ~ as the shell would) or the one this "
               "sampo runs from, and writes that install's own files; it is not state. Every test names a temp checkout "
               "(test_update's --repo and its temp roots)", "sampo/update.py::run"),
+    **_review("read", "reads the lane's git config, the attributes files of its git dirs and the core.attributesFile path, "
+              "expanded the way git expands it (a ~ too), to refuse a driver before a git call; read-only, runs nothing "
+              "(T-5707, a2d4511b6)", "sampo/lanepilot.py::_driver_problem"),
 }
 
 

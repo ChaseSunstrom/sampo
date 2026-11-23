@@ -535,7 +535,8 @@ def can(question, n=3):
     for name, d in docs.items():
         shared = [w for w in want if w in d]
         if shared and 2 * len(shared) >= len(want):
-            named = any(_stem(x) in want for x in name.replace("-", " ").split())  # the question names the command
+            # T-6129: each name word the question says counts, so "lane merge" beats "lane" for "merge a lane"
+            named = len({_stem(x) for x in name.replace("-", " ").split()} & set(want))  # the question names the command
             hits.append((sum(math.log(len(docs) / df[w]) for w in shared) + 2 * named, name))
     hits.sort(key=lambda h: (h[0], -len(h[1])), reverse=True)  # a tie goes to the command, not its action ("mcp new")
     return [(name, c.plain(" ".join(helps[name].split()))) for _, name in hits[:n]]

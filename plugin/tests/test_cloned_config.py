@@ -26,7 +26,9 @@ class ClonedConfig(HookCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         ctx = self.ctx_of(proc)
         shown = (json.loads(proc.stdout or "{}").get("systemMessage") or "")
-        note = ctx[ctx.index(HEAD):] if HEAD in ctx else ""
+        # T-3923 (a24ffcc2a) appends the routines line after the repo note on purpose, after a blank line: the note is
+        # what runs to that blank line, and its cap (1500) is the one this class checks
+        note = ctx[ctx.index(HEAD):].split("\n\n")[0] if HEAD in ctx else ""
         self.assertEqual(bool(note), HEAD in shown, "the user sees the note too, not only the model")
         return note
 

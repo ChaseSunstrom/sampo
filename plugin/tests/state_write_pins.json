@@ -481,6 +481,12 @@
 ],
 1
 ],
+"sampo/lanepilot.py::_driver_problem": [
+[
+"expanduser"
+],
+1
+],
 "sampo/lanes.py::is_credential": [
 [
 "expanduser"

@@ -100,7 +100,9 @@ class FinishGaps(HookCase):
             self.assertIn(f"--section '{name}' --text", r.stderr + r.stdout)
         r = self.fm("task", "set", tid, "colour=x", check=False)
         self.assertNotIn("brief section", r.stderr + r.stdout)
-        self.assertIn("task set", self.fm("which", "interpretation").stdout)
+        # T-5728 (a1ebec1b7) added a "task plan" row that names the Interpretation too: it ties the playbook rows and
+        # sorts ahead of "task set" by name, so it takes the commands shelf's third slot; the fill-it hint is still shown
+        self.assertIn("task plan", self.fm("which", "interpretation").stdout)
 
     def test_a_red_step_names_its_failed_run_and_the_command_while_a_bare_one_keeps_the_old_message(self):
         # T-1272: 'no verify command or evidence' was wrong for a step that had a (failed) run

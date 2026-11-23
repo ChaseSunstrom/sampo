@@ -1922,7 +1922,7 @@ def native_series(p, days=NATIVE_DAYS, priced=None):
         day = str(v.get("landed_at", {}).get(t) or "")[:10]
         if day:
             by_day[day].append(_lane_usd(roles))
-    today = datetime.datetime.now(datetime.timezone.utc).date()
+    today = c.clock().date()  # T-6129: the injectable clock (FOREMAN_NOW pins it), as the other windowed readers
     rows = []
     for back in range(days - 1, -1, -1):
         day = (today - datetime.timedelta(days=back)).isoformat()
