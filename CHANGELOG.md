@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- The gap chart, the lane brief's unpiped evidence line and the lanes exam drill's review hold are green on trunk again (T-6145).
 - sampo lane recover and the stop hints read a live Claude builder whose agent returned, with its lane quiet since, as stopped, so it recovers at once (T-6104).
 - The self-change gate's guard replay runs in chunks of 250 commands, four processes at once, so a loaded machine can't time it out and refuse a ship (T-6154).
 - A task whose dependency's merge is already on the integration branch is briefed, not refused as waiting on that dependency (T-6105).
