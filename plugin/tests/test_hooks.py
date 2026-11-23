@@ -7747,8 +7747,11 @@ class ReadDedupe(HookCase):
         big = os.path.join(self.repo, "big.py")
         self.put(big, [f"def function_{i}():\n    return {i}\n" for i in range(400)])
         self.assertIn("big.py", self.read(big) or "", "the first whole read of a big file is refused with its outline")
-        self.assertIsNone(self.read(big), "the ask again goes ahead: nothing was shown before it, so no note")
-        self.assertIn(c.READ_UNCHANGED, self.read(big) or "", "and now it is held")
+        again = self.read(big) or ""
+        self.assertIn("whole-read cap", again, "asked again, a whole read is refused again (T-6125): nothing was shown")
+        self.assertNotIn(c.READ_UNCHANGED, again, "so no note for a refused read")
+        self.assertIsNone(self.read(big, allow_large=True), "the whole file read with allow_large goes ahead")
+        self.assertIn(c.READ_UNCHANGED, self.read(big, allow_large=True) or "", "and that read is what a repeat is held against")
 
     def test_the_store_holds_no_more_than_a_few_files_text_and_survives_garbage(self):
         from sampo import hooks
