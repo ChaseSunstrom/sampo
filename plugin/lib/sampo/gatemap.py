@@ -7,6 +7,7 @@ import collections
 import json
 import os
 import re
+import time
 
 from sampo import core as c
 from sampo import selfgate
@@ -89,11 +90,8 @@ def learn(p, gates=None):
             if sha not in files_of and len(files_of) < SHAS:
                 files_of[sha] = _files_of(p, sha)
             files = files_of.get(sha, [])
-            seen = set()
-            for row in d.get("rows") or []:
-                gate = row_gate(str(row))
-                if gate and wanted(gate) and gate not in seen:
-                    seen.add(gate)
+            for gate in _refusals(e):  # the one reading of a refusal event's gates, once per gate
+                if gate and wanted(gate):
                     add(gate, [("file", f) for f in files] or [("rule", "files unknown")])
         elif ev == "enforce" and d.get("kind") == "merge_refused":
             add("merge refused", [("rule", c.fit(re.sub(r"\d+", "N", c.plain(str(d.get("reason") or "?"))), 60))])
@@ -185,6 +183,140 @@ def predict(files, p=None, records=None):
             if h:
                 row(gate, h / (h + 1), f"{h} past refusal{'s' if h > 1 else ''} on a changed file")
     return sorted(rows, key=lambda r: (-r["confidence"], r["gate"]))
+
+
+REFUSAL_EVENTS = ("gate_refused", "plan_gate_refused", "enforce", "self_change_refused", "first_brief_close_failed",
+                  "finding")  # T-6049: what carries a refusal or a review finding
+# a plan edit or a file edit on the task, by the names the verbs log (cli.task_plan/task_step/task_ac/task_set, second's
+# dissent, split, the edit hooks): a list from memory missed ac_edit, ac_add, step_add and task_set, and read a fixed gate
+# as one that moved nothing
+CHANGE_EVENTS = ("task_plan", "task_set", "ac_add", "ac_edit", "ac_remove", "step_add", "step_reword", "step_remove",
+                 "step_edit", "dissent", "task_split", "touched")
+WINDOW = 50000  # ledger lines read, newest: a gate table is a recent view and the ledger only grows (as cost's tails are)
+MAX_DAYS = 36500
+PASS_EVENTS = ("lane_landed", "task_done")  # the task passed: a change after it answers no refusal
+RED_EVENTS = ("lane_revert_conflict",)  # and an enforce merge_refused whose reason starts "red after merge"
+THRESHOLD = 0.2  # a gate whose refusals were followed by a change or a red less often than this is a removal candidate
+FLOOR = 5  # refusals a gate needs before it can be one: under it the sample says nothing
+UNMEASURED = "(no gate id)"
+
+
+def _refusals(e):
+    """[gate id or None] for each refusal one ledger event stands for (None: it carries no id), one per gate: an event
+    naming a gate twice refused it once. A review finding is a refusal of its lens; a red after merge is no refusal (it
+    is the outcome). `learn` reads its self-change refusals through this too."""
+    return list(dict.fromkeys(_event_gates(e)))
+
+
+def _event_gates(e):
+    d, ev = e.get("data") or {}, e.get("event")
+    if not isinstance(d, dict):
+        return []
+    if ev == "gate_refused":
+        return [c.plain(str(d["gate"]))[:60] if isinstance(d.get("gate"), str) and d["gate"].strip() else None]
+    if ev == "plan_gate_refused":
+        kinds = d.get("kinds") if isinstance(d.get("kinds"), list) else []
+        return [f"plan:{k}" if k in c.GAP_KINDS else None for k in kinds]
+    if ev == "self_change_refused":
+        return [row_gate(str(r)) for r in d.get("rows") or []] or [None]
+    if ev == "enforce":
+        return [] if d.get("kind") != "merge_refused" or str(d.get("reason") or "").startswith("red after merge") \
+            else ["merge refused"]
+    if ev == "first_brief_close_failed":
+        return ["close failed"]
+    if ev == "finding":
+        if d.get("verdict") != "reported":  # confirmed/rejected judge a finding already counted; no verdict asks for nothing
+            return []
+        who = d.get("lens") if d.get("kind") != "tripwire" else "tripwire"
+        return [f"review:{c.plain(str(who))[:30]}"] if isinstance(who, str) and who.strip() else [None]
+    return []
+
+
+def _is_red(e):
+    d = e.get("data") or {}
+    return e.get("event") in RED_EVENTS or (e.get("event") == "enforce" and isinstance(d, dict)
+                                            and d.get("kind") == "merge_refused"
+                                            and str(d.get("reason") or "").startswith("red after merge"))
+
+
+def evidence(p, since="", threshold=THRESHOLD, floor=FLOOR):
+    """T-6049: {gates: [{gate, refusals, changed, red, rate, candidate, unjoined}], unmeasured: {refusals}} from the
+    ledger, most refused first. Each refusal (a plan gate, close gate, merge or self-change refusal, or a review
+    finding) is joined, by its task, to the events after it in ledger order: changed is a plan or file edit on the task
+    before the task passed (every refusal logged before that edit shares it: a batch of findings, or a refusal repeated
+    with no edit between, is one episode, so the window is the task's, not the event's); red is a merge of the task that
+    went red later. rate is the share of refusals followed by a change or a red (a refusal that had both counts once:
+    counted twice it could hide a gate that moves nothing behind one that moved a refusal twice); a gate with at least
+    `floor` refusals and a rate under `threshold` is a removal candidate. A refusal with no task cannot be joined
+    (unjoined: counted, never a change).
+    Reads the last WINDOW ledger lines, at or after `since` (a ts): never the whole ledger.
+    Read-only: it writes nothing, and it advises (proof decides)."""
+    events = [e for e in c.ledger_tail(p, WINDOW, kinds=REFUSAL_EVENTS + CHANGE_EVENTS + PASS_EVENTS + RED_EVENTS)
+              if str(e.get("ts") or "") >= since]
+    changes, passes, reds, found = {}, {}, {}, []
+    for i, e in enumerate(events):
+        ev, tasks = e.get("event"), [t for t in str(e.get("task") or "").split(",") if t]
+        if ev in CHANGE_EVENTS:
+            for t in tasks:
+                changes.setdefault(t, []).append(i)
+        if ev in PASS_EVENTS:
+            for t in tasks:
+                passes.setdefault(t, []).append(i)
+        if _is_red(e):
+            for t in tasks:
+                reds.setdefault(t, []).append(i)
+        for gate in _refusals(e):
+            found.append((i, gate, tasks[0] if tasks else None))
+    rows, unmeasured = {}, 0
+    for i, gate, t in found:
+        if gate is None:
+            unmeasured += 1
+            continue
+        r = rows.setdefault(gate, {"gate": gate, "refusals": 0, "changed": 0, "red": 0, "moved": 0, "unjoined": 0})
+        r["refusals"] += 1
+        if t is None:
+            r["unjoined"] += 1
+            continue
+        end = next((j for j in passes.get(t, []) if j > i), len(events))  # the task's window, not the event's
+        ch = any(i < j < end for j in changes.get(t, []))
+        rd = any(j > i for j in reds.get(t, []))
+        r["changed"] += ch
+        r["red"] += rd
+        r["moved"] += ch or rd
+    out = []
+    for r in sorted(rows.values(), key=lambda r: (-r["refusals"], r["gate"])):
+        r["rate"] = round(r.pop("moved") / r["refusals"], 3)
+        r["candidate"] = r["refusals"] >= floor and r["rate"] < threshold
+        out.append(r)
+    return {"gates": out, "unmeasured": {"refusals": unmeasured}, "threshold": threshold, "floor": floor}
+
+
+def cmd_evidence(args):
+    """sampo gates --evidence: the cry-wolf table, one row per gate."""
+    from sampo import cli
+    p = cli.resolve(args)
+    threshold = THRESHOLD if getattr(args, "threshold", None) is None else args.threshold
+    if not 0 < threshold <= 1:  # nan and inf fail this too
+        raise cli.UsageError("sampo gates --evidence: --threshold is a share above 0 and at most 1 (the default is 0.2)")
+    days, since = getattr(args, "days", None), ""
+    if days is not None:
+        if not 1 <= days <= MAX_DAYS:
+            raise cli.UsageError(f"sampo gates --evidence: --days is a count of days, 1 to {MAX_DAYS}")
+        since = c.iso(time.time() - days * 86400)
+    got = evidence(p, since=since, threshold=threshold)
+    rows = got["gates"]
+    lines = [f"gate evidence{f' (last {days} days)' if days else ''}: {sum(r['refusals'] for r in rows)} refusals over {len(rows)} gates "
+             f"(removal candidate: at least {got['floor']} refusals and under {round(got['threshold'] * 100)}% followed "
+             "by a change or a red)"]
+    if rows:
+        lines.append(f"  {'gate':<28} {'refused':>7} {'changed':>7} {'red':>4} {'moved':>6}")
+    lines += [f"  {c.fit(c.plain(r['gate']), 28):<28} {r['refusals']:>7} {r['changed']:>7} {r['red']:>4} "
+              f"{round(r['rate'] * 100):>5}%" + ("  removal candidate" if r["candidate"] else "") for r in rows]
+    if not rows:
+        lines.append("  no gate refusal in the ledger carries a gate id yet")
+    if got["unmeasured"]["refusals"]:
+        lines.append(f"  {UNMEASURED:<28} {got['unmeasured']['refusals']:>7}  unmeasured: a refusal with no gate id")
+    return cli.out(args, got, "\n".join(lines))
 
 
 def _worktree_files(p):

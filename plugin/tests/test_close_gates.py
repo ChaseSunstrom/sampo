@@ -1,5 +1,6 @@
 """T-1117: Foreman keeps the suite green itself. A close runs the tests linked to what it changed and refuses a new
 failure; a red full-gate run becomes one urgent baseline task; full runs start in the background after closes."""
+import inspect
 import json
 import os
 import re
@@ -7,6 +8,7 @@ import shutil
 import subprocess
 import time
 import unittest
+from unittest import mock
 
 from helpers import ForemanTestCase, valid_m_plan
 
@@ -675,6 +677,232 @@ class FinishListsAll(ForemanTestCase):
     def write_repo(self, rel, text):
         with open(os.path.join(self.repo, rel), "w") as f:
             f.write(text)
+
+
+class GateEvidence(ForemanTestCase):
+    """T-6049: sampo gates --evidence joins every gate refusal and review finding in the ledger to what followed (the task
+    changed, its merge went red) and prints per gate: refusals, refusals followed by a change, later reds, and a removal
+    candidate mark under a threshold. A refusal with no gate id is listed as unmeasured. Read-only."""
+
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        self.p = c.find_project(self.repo)
+
+    def log(self, event, task=None, **data):
+        c.log_event(self.p, event, task=task, data=data)
+
+    def plan_refused(self, task, kind):
+        self.log("plan_gate_refused", task, kinds=[kind], where="lane")
+
+    def landed(self, task):
+        self.log("lane_landed", task, base="a" * 9, tip="b" * 9, tasks=[task])
+
+    def build(self):
+        # a gate that cries wolf: six refusals, the task edited nothing after any of them (T-1 edited BEFORE its refusal)
+        self.log("touched", "T-1", file="x.py", tool="Edit")
+        for n in range(1, 7):
+            self.plan_refused(f"T-{n}", "criteria")
+            self.landed(f"T-{n}")
+        # a useful gate: six refusals, each followed by an edit; one of the merges went red afterwards
+        for n in range(11, 17):
+            self.log("gate_refused", f"T-{n}", gate="close:docs", where="land")
+            self.log("touched", f"T-{n}", file="docs.md", tool="Edit")
+            self.landed(f"T-{n}")
+        self.log("enforce", "T-11", kind="merge_refused", reason="red after merge: test_x.X", sha="c" * 9)
+        # a gate that moved 1 of 5 refusals: 20%, not under the default threshold, under a looser one
+        for n in range(51, 56):
+            self.plan_refused(f"T-{n}", "approach")
+        self.log("touched", "T-51", file="y.py", tool="Edit")
+        # too few refusals to judge: never a removal candidate
+        for n in (21, 22):
+            self.plan_refused(f"T-{n}", "steps")
+            self.landed(f"T-{n}")
+        # review findings are gates too: lens tests, each followed by an edit
+        for n in range(31, 36):
+            self.log("finding", f"T-{n}", lens="tests", verdict="reported", text="a gap")
+            self.log("step_edit", f"T-{n}", step=1)
+        # two refusals with no gate id, and a self-change row no gate owns: unmeasured
+        self.log("gate_refused", "T-41", gate="", where="land")
+        self.log("gate_refused", "T-42", where="land")
+        self.log("self_change_refused", rows=["a row of a gate nobody named"], sha="d" * 9)
+
+    def report(self, *extra):
+        self.build()
+        got = self.fm_json("gates", "--evidence", *extra)
+        return {r["gate"]: r for r in got["gates"]}, got
+
+    def test_a_gate_that_never_changes_an_outcome_is_a_removal_candidate_and_a_useful_one_is_not(self):
+        rows, got = self.report()
+        wolf = rows["plan:criteria"]
+        self.assertEqual((wolf["refusals"], wolf["changed"], wolf["red"], wolf["candidate"]), (6, 0, 0, True), wolf)
+        useful = rows["close:docs"]
+        self.assertEqual((useful["refusals"], useful["changed"], useful["red"], useful["candidate"]), (6, 6, 1, False), useful)
+        self.assertNotIn("enforce", {r["gate"] for r in got["gates"]})  # a red after merge is a red, not a refusal
+        self.assertNotIn("merge refused", rows)
+
+    def test_a_small_sample_is_never_a_removal_candidate(self):
+        rows, _ = self.report()
+        self.assertEqual((rows["plan:steps"]["refusals"], rows["plan:steps"]["candidate"]), (2, False))
+
+    def test_a_finding_counts_as_a_refusal_of_its_lens_and_an_edit_after_it_is_a_change(self):
+        rows, _ = self.report()
+        self.assertEqual((rows["review:tests"]["refusals"], rows["review:tests"]["changed"]), (5, 5))
+        self.assertFalse(rows["review:tests"]["candidate"])
+
+    def test_refusals_with_no_gate_id_are_listed_as_unmeasured_not_as_a_gate(self):
+        rows, got = self.report()
+        self.assertEqual(got["unmeasured"]["refusals"], 3, got["unmeasured"])
+        self.assertNotIn("", rows)
+        text = self.fm("gates", "--evidence").stdout
+        self.assertIn("unmeasured", text)
+        self.assertIn("removal candidate", text)
+        self.assertIn("plan:criteria", text)
+
+    def test_the_threshold_decides_the_mark_and_the_report_writes_nothing(self):
+        self.build()
+        ledger = os.path.join(self.p.dir, "ledger.jsonl")
+        with open(ledger, "rb") as f:
+            before = f.read()
+        rows = {r["gate"]: r for r in self.fm_json("gates", "--evidence")["gates"]}
+        row = rows["plan:approach"]
+        self.assertEqual((row["refusals"], row["rate"], row["candidate"]), (5, 0.2, False))  # 1 of 5 moved: not under 20%
+        rows = {r["gate"]: r for r in self.fm_json("gates", "--evidence", "--threshold", "0.5")["gates"]}
+        self.assertTrue(rows["plan:approach"]["candidate"], rows["plan:approach"])
+        self.assertFalse(rows["close:docs"]["candidate"], rows["close:docs"])
+        with open(ledger, "rb") as f:
+            self.assertEqual(f.read(), before)
+
+    def test_a_threshold_that_is_not_a_share_is_refused_and_one_without_evidence_too(self):
+        self.build()
+        for bad in ("nan", "inf", "-inf", "0", "-0.1", "1.5"):
+            r = self.fm("gates", "--evidence", "--threshold", bad, check=False)
+            self.assertNotEqual(r.returncode, 0, bad)
+            self.assertIn("--threshold", r.stdout + r.stderr, bad)
+        r = self.fm("gates", "--threshold", "0.5", check=False)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("--evidence", r.stdout + r.stderr)
+        self.assertEqual(self.fm("gates", "--evidence", "--threshold", "1").returncode, 0)
+
+    def test_refusals_logged_together_share_the_edit_that_follows_them(self):
+        # T-6049: five findings of one lens in one batch, then one edit: all five were followed by a change (the window is
+        # the task's, not the event's, so a batch is not scored 'no change' for lack of an event between its members)
+        for _ in range(5):
+            self.log("finding", "T-1", lens="tests", verdict="reported", text="a gap")
+        self.log("step_edit", "T-1", step=1)
+        for _ in range(5):
+            self.log("gate_refused", "T-2", gate="close:docs", where="land")
+        self.log("touched", "T-2", file="docs.md", tool="Edit")
+        from sampo import gatemap
+        rows = {r["gate"]: r for r in gatemap.evidence(self.p)["gates"]}
+        for gate in ("review:tests", "close:docs"):
+            self.assertEqual((rows[gate]["refusals"], rows[gate]["changed"], rows[gate]["candidate"]), (5, 5, False), gate)
+
+    def test_a_repeat_refusal_with_no_edit_between_still_scores_no_change(self):
+        for n in range(5):
+            self.log("gate_refused", "T-1", gate="close:docs", where="land")
+            self.log("gate_refused", "T-1", gate="close:docs", where="land")
+        from sampo import gatemap
+        row = {r["gate"]: r for r in gatemap.evidence(self.p)["gates"]}["close:docs"]
+        self.assertEqual((row["refusals"], row["changed"], row["candidate"]), (10, 0, True))
+
+    def test_a_hand_finish_refusal_logs_each_gap_with_its_explicit_gate_id(self):
+        tid = self.fm_json("task", "new", "Change add", "--type", "FEATURE", "--tier", "S", "--ac", "works :: true",
+                           "--step", "s", "--scope", "calc.py")["id"]
+        self.fm("focus", tid)
+        r = self.fm("task", "finish", tid, "--lens", "tests: ran it", check=False, env={"FOREMAN_SENTINEL": "off"})
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        ev = [e for e in c.ledger_events(self.p, ("gate_refused",)) if e.get("task") == tid]
+        self.assertTrue(ev, r.stdout + r.stderr)
+        self.assertEqual({e["data"]["where"] for e in ev}, {"finish"})
+        self.assertTrue(all(e["data"]["gate"].startswith("close:") for e in ev), ev)
+        self.assertEqual(len({e["data"]["gate"] for e in ev}), len(ev), "one refusal per gate, not per gap")
+        self.assertIn("close:audit", {e["data"]["gate"] for e in ev}, r.stdout + r.stderr)
+        rows = {g["gate"]: g for g in self.fm_json("gates", "--evidence")["gates"]}
+        self.assertEqual(rows["close:audit"]["refusals"], 1)
+
+    def test_a_real_plan_edit_after_a_refusal_reads_as_a_change(self):
+        # T-6049 round 3: the events the plan verbs really log (ac_edit, ac_add, step_add, step_reword, task_set, dissent,
+        # ...) answer a refusal; a list written from memory missed them and marked a fixed gate a removal candidate
+        from sampo import gatemap
+        edits = {"ac_edit": ("task", "ac", "{}", "edit", "1", "better :: true"),
+                 "ac_add": ("task", "ac", "{}", "add", "another :: true"),
+                 "step_add": ("task", "step", "{}", "add", "one more step"),
+                 "step_reword": ("task", "step", "{}", "edit", "1", "reworded"),
+                 "task_set": ("task", "set", "{}", "title=Renamed"),
+                 "dissent": ("task", "dissent", "{}", "add", "an objection")}
+        for gate, cmd in edits.items():
+            tid = self.fm_json("task", "new", f"Edit {gate}", "--type", "FEATURE", "--tier", "S", "--ac", "works :: true",
+                               "--step", "s", "--scope", "calc.py")["id"]
+            self.log("gate_refused", tid, gate=f"close:{gate}", where="land")
+            r = self.fm(*[x.format(tid) for x in cmd], check=False)
+            self.assertEqual(r.returncode, 0, f"{cmd}: {r.stdout}{r.stderr}")
+            self.assertIn(gate, [e["event"] for e in c.ledger_events(self.p) if e.get("task") == tid], gate)
+        rows = {r["gate"]: r for r in gatemap.evidence(self.p)["gates"]}
+        for gate in edits:
+            self.assertEqual(rows[f"close:{gate}"]["changed"], 1, (gate, rows[f"close:{gate}"]))
+
+    def test_only_a_reported_finding_is_a_refusal_of_its_lens(self):
+        # a confirmed or rejected verdict judges a finding already reported (one more event for the same finding), and a
+        # finding with no verdict is no call for a change: counting them inflates the gate's refusals
+        from sampo import gatemap
+        for n, verdict in enumerate(("reported", "reported", "confirmed", "rejected", None, "ok")):
+            self.log("finding", f"T-{n}", lens="tests", **({"verdict": verdict} if verdict else {}), text="a gap")
+        self.log("finding", "T-9", kind="tripwire", flag="x", verdict="reported")
+        self.log("finding", "T-9", kind="tripwire", flag="x", verdict="rejected")
+        rows = {r["gate"]: r for r in gatemap.evidence(self.p)["gates"]}
+        self.assertEqual(rows["review:tests"]["refusals"], 2, rows["review:tests"])
+        self.assertEqual(rows["review:tripwire"]["refusals"], 1, rows["review:tripwire"])
+
+    def test_the_ledger_read_is_bounded_and_days_narrows_it(self):
+        from sampo import gatemap
+        for n in range(40):
+            self.log("gate_refused", f"T-{n}", gate="close:docs", where="land")
+        with mock.patch.object(gatemap, "WINDOW", 10):
+            row = {r["gate"]: r for r in gatemap.evidence(self.p)["gates"]}["close:docs"]
+        self.assertEqual(row["refusals"], 10, "the last WINDOW ledger events, not the whole ledger")
+        old = {"ts": "2020-01-01T00:00:00Z", "event": "gate_refused", "task": "T-1",
+               "data": {"gate": "close:audit", "where": "land"}}
+        with open(os.path.join(self.p.dir, "ledger.jsonl"), "a", encoding="utf-8") as f:
+            f.write(json.dumps(old) + "\n")
+        self.log("gate_refused", "T-2", gate="close:audit", where="land")
+        rows = {r["gate"]: r for r in self.fm_json("gates", "--evidence")["gates"]}
+        self.assertEqual(rows["close:audit"]["refusals"], 2)
+        rows = {r["gate"]: r for r in self.fm_json("gates", "--evidence", "--days", "30")["gates"]}
+        self.assertEqual(rows["close:audit"]["refusals"], 1, "--days leaves the event of 2020 out")
+        for bad in ("0", "-3", "x", "99999999"):
+            r = self.fm("gates", "--evidence", "--days", bad, check=False)
+            self.assertNotEqual(r.returncode, 0, bad)
+            self.assertIn("--days", r.stdout + r.stderr, bad)
+        r = self.fm("gates", "--days", "30", check=False)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("--evidence", r.stdout + r.stderr)
+
+    def test_a_land_close_refusal_the_finish_logged_exits_with_its_own_code_and_a_hand_finish_keeps_1(self):
+        from sampo import cli, train
+        tid = self.fm_json("task", "new", "Change add", "--type", "FEATURE", "--tier", "S", "--ac", "works :: true",
+                           "--step", "s", "--scope", "calc.py")["id"]
+        self.fm("focus", tid)
+        env = {"FOREMAN_SENTINEL": "off"}
+        hand = self.fm("task", "finish", tid, "--lens", "tests: ran it", check=False, env=env)
+        land = self.fm("task", "finish", tid, "--lens", "tests: ran it", "--defer-changelog", check=False, env=env)
+        self.assertEqual(hand.returncode, 1, hand.stdout + hand.stderr)
+        self.assertEqual(land.returncode, cli.LOGGED_RC, land.stdout + land.stderr)
+        self.assertIn("nothing ran", land.stderr)
+        src = inspect.getsource(train._close) + inspect.getsource(train._commit_close)
+        self.assertNotIn("nothing ran", src, "the land reads the finish's exit code, never its text")
+        self.assertIn("LOGGED_RC", src)
+
+    def test_a_refusal_names_its_gate_by_the_call_that_logs_it_never_by_its_text(self):
+        c.log_gate_refused(self.p, "close:lesson", task="T-2", where="land", why="no DOCS line; no CHANGELOG line")
+        c.log_gate_refused(self.p, "", task="T-3")
+        c.log_gate_refused(self.p, "close:audit\x1b[31m" + "x" * 99, task="T-4")
+        gates = [e["data"]["gate"] for e in c.ledger_events(self.p, ("gate_refused",))]
+        self.assertEqual(gates[0], "close:lesson")
+        self.assertEqual(gates[1], "")
+        self.assertLessEqual(len(gates[2]), 60)
+        self.assertNotIn("\x1b", gates[2])
+        self.assertFalse(hasattr(c, "close_gate_id"), "the text guess is gone")
 
 
 if __name__ == "__main__":

@@ -7125,6 +7125,17 @@ def log_plan_gate_refused(p, gaps, task=None, where="focus"):
         pass
 
 
+def log_gate_refused(p, gate, task=None, where="land", why=""):
+    """T-6049: one ledger event per gate refusal that carries the gate's id, which `sampo gates --evidence` joins to what
+    followed. The caller names the gate (an id it chose at the refusal site: never one read back out of the refusal's
+    text, which holds brief text). Never raises: a refusal must reach the caller as it was."""
+    try:
+        log_event(p, "gate_refused", task=task, data={"gate": fit(plain(str(gate or "")), 60), "where": str(where)[:20],
+                                                       "why": fit(plain(str(why or "")), 200)})
+    except Exception:  # a ledger that cannot be written changes nothing about the refusal
+        pass
+
+
 def plan_skeleton(b, gaps):
     """(entry, lines, others, rival): the PLANS.json entry for brief b as it is now, a <TODO: gap> in the field of each gap
     the file can hold, the "- " line of each of those, the gaps it cannot hold (short), and the rival gaps."""

@@ -31,6 +31,14 @@ class UsageError(Exception):
     """Bad input or unknown object. Exit code 1."""
 
 
+LOGGED_RC = 6  # T-6049: exit code of a land's finish (--defer-changelog) refused on missing lines it has logged per gate
+
+
+class LoggedRefusal(UsageError):
+    """A refusal whose gates the verb has already put in the ledger, one line each: a land that runs the verb reads this
+    exit code (LOGGED_RC) to know, and logs nothing more, never the refusal's text."""
+
+
 def session():
     return c.session_id()
 
@@ -1980,7 +1988,11 @@ def _task_finish(p, args):
     if gaps:  # T-0704, T-4147: every missing line in one refusal, before any gate or verify command starts
         if dry:
             return _dry_report(b, gaps, args)
-        raise UsageError(_gaps_text(b, _gap_rows(gaps)))
+        rows = _gap_rows(gaps)
+        for kind in dict.fromkeys(r["kind"] for r in rows):  # T-6049: one refusal per close gate, a hand finish's or a land's
+            c.log_gate_refused(p, f"close:{kind}", task=b.id, where="finish",
+                               why=" ".join(r["text"] for r in rows if r["kind"] == kind))
+        raise (LoggedRefusal if getattr(args, "defer_changelog", False) else UsageError)(_gaps_text(b, rows))  # a land's close reads the code
     if dry:
         return _dry_report(b, [], args)
     if args.run and args.run not in [cmd for _, _, cmd in todo]:  # T-0742: --run is the close's final check, always
@@ -5804,6 +5816,12 @@ def gates(type_, tier, ptier=None, why=""):
 
 
 def cmd_gates(args):
+    if getattr(args, "evidence", False):  # T-6049: the cry-wolf table from the ledger, read-only
+        from sampo import gatemap
+        return gatemap.cmd_evidence(args)
+    for flag in ("threshold", "days"):
+        if getattr(args, flag, None) is not None:
+            raise UsageError(f"sampo gates: --{flag} goes with --evidence")
     p = resolve(args)
     if args.type and re.fullmatch(r"T-\d+", args.type):  # T-1955: fm gates ID, as fm focus's "Done needs" line invites
         act, args.type = need_brief(p, args.type), None
@@ -10900,6 +10918,12 @@ def _build_parser(only=None):
     s = add("gates", cmd_gates, tier=("Every task", 100), help="what sampo task done will require for a type and tier, or a task id (default: the active task)")
     s.add_argument("type", nargs="?", type=str.upper, help=f"{', '.join(c.TYPES)}, or a task id")
     s.add_argument("tier", nargs="?", type=str.upper, choices=c.TIERS)
+    s.add_argument("--evidence", action="store_true", help="T-6049: per gate, the ledger's refusals, those followed by a change, "
+                   "later reds and a removal-candidate mark (read-only; a refusal with no gate id is unmeasured)")
+    s.add_argument("--threshold", type=float, default=None, help="with --evidence: the share (above 0, at most 1) of refusals "
+                   "followed by a change or a red under which a gate (5+ refusals) is a removal candidate (default 0.2)")
+    s.add_argument("--days", type=int, default=None, help="with --evidence: only the last N days of the ledger (default: "
+                   "its last 50000 lines)")
     s = add("pr", lazy("sampo.cost", "cmd_pr"), tier=("Finding your way", 500), help="a pull-request description from a task's brief, with its proof "
                                                   "(red→green, lens verdicts, assumptions, bench replays; printed only); "
                                                   "sampo pr threads ID: review comments to steps; sampo pr train: merge in order")
@@ -13148,7 +13172,7 @@ def main(argv=None):
         print(f"sampo: {e.args[0] if e.args else e}", file=sys.stderr)
         if getattr(e, "then", None):  # T-1334: the one command to run next, when the error knows it
             print(f"Next: {e.then}", file=sys.stderr)
-        return 1
+        return LOGGED_RC if isinstance(e, LoggedRefusal) else 1
     except (FileNotFoundError, IsADirectoryError, PermissionError) as e:
         if not any(a == e.filename or a.endswith(f"={e.filename}") for a in argv):  # T-1189: only a file named on
             # the command line (--file X or --file=X) is the caller's mistake; any other is a real error

@@ -5480,6 +5480,14 @@ def _wait(w):
     return w() if callable(w) else w
 
 
+def _gate_refused(p, tid, gate, why):
+    """T-6049: (why, ""), a close's refusal as _close returns it, after one ledger line naming the close gate it is: an
+    id chosen at the refusal site (what `sampo gates --evidence` joins to what the lane did next), never parsed from
+    the text. Never raises, never changes the answer. The finish's own refusals are logged by the finish (per gap)."""
+    c.log_gate_refused(p, gate, task=tid, where="land", why=why)
+    return why, ""
+
+
 def _close(p, main, tid, settled=None, commit_wait=None):
     """('', 'TITLE — the close's last line'), or (why it's left for a hand close, ''). The task closes from the main
     checkout with its lane still in place, which goes only once the close is done: a refused close keeps it for a fix.
@@ -5488,7 +5496,7 @@ def _close(p, main, tid, settled=None, commit_wait=None):
     from sampo import cli
     from sampo import lanes
     if why := held_by_active(p, main, ids=[]):  # T-4692: a focus that came meanwhile holds only by an uncommitted changelog
-        return f"{why.split(': finish')[0]}, so land closes nothing more", ""
+        return _gate_refused(p, tid, "close:held", f"{why.split(': finish')[0]}, so land closes nothing more")
     b = cli.need_brief(p, tid)
     path = b.meta.get("lane") or ""
     if b.status == "done" and _commit_pending(b):  # T-5368: its criteria passed in an earlier land; the commit waited
@@ -5511,25 +5519,26 @@ def _close(p, main, tid, settled=None, commit_wait=None):
     f = brief_fields or lanes.lane_trailers(path, b.meta.get("base") or "", tid)  # T-5496: no Close fields: trailers
     if not f.get("changelog"):
         if "close lines not stored" in b.section("Log"):  # T-4599: the stop hook saw lines the tail rule refused
-            return ("no close fields on its brief (its builder's report had close lines, not at its end: "
-                    "fill them with sampo task set ID --section 'Close fields')", "")
-        return ("no close fields on its brief (none came from a builder's report or its commits' trailers: "
-                "it held no CHANGELOG line, or none stopped here)"), ""
+            return _gate_refused(p, tid, "close:fields", "no close fields on its brief (its builder's report had close lines, "
+                                 "not at its end: fill them with sampo task set ID --section 'Close fields')")
+        return _gate_refused(p, tid, "close:fields", "no close fields on its brief (none came from a builder's report or "
+                             "its commits' trailers: it held no CHANGELOG line, or none stopped here)")
     line, why = lanes.close_line(f["changelog"], "changelog", tid)
     if why:
-        return why, ""
+        return _gate_refused(p, tid, "close:changelog", why)
     title = lanes.close_line(f.get("title"), "title", tid)[0] or lanes.close_line(b.title, "title", tid)[0]
     newest = {}
     for (lens, ts, _), text in zip(b.audits(), [x for x in b.evidence() if c._AUDIT_RE.match(x)]):
         newest[lens] = (ts, text)
     if not newest:
-        return "no audit recorded: review the merged diff and record it (sampo task audit), then finish it", ""
+        return _gate_refused(p, tid, "close:audit", "no audit recorded: review the merged diff and record it "
+                             "(sampo task audit), then finish it")
     fresh = {lens: text for lens, (ts, text) in newest.items() if (at := c.parse_ts(ts)) and at.timestamp() >= last}
     if not fresh:
-        return f"its audits predate the lane tip {sha}: review it again", ""
+        return _gate_refused(p, tid, "close:audit", f"its audits predate the lane tip {sha}: review it again")
     asks = sorted(lens for lens, text in fresh.items() if "→ changes needed" in text)
     if asks:
-        return f"its {', '.join(asks)} audit asks for changes", ""
+        return _gate_refused(p, tid, "close:audit", f"its {', '.join(asks)} audit asks for changes")
     seen = f"as recorded before the merge, after lane tip {sha}"
     if (was := _refused_before(b, sha)) is not None:  # T-3884: same brief, same tip: the answer can't have changed
         return was + " (unchanged since the land that refused it: no retry)", ""
@@ -5562,7 +5571,9 @@ def _close(p, main, tid, settled=None, commit_wait=None):
         nb = cli.need_brief(p, tid)  # after the refusal: it may have touched the brief, and the hash must match then
         nb.append_log(f"land: close refused: {c.fit(' '.join(why.split()), 400)} @ {_brief_hash(nb)} {sha} {_code_id()}")
         c.save_brief(p, nb)
-        return why, ""
+        if rc == cli.LOGGED_RC:  # the finish logged each missing line's gate itself: its exit code says so, not its text
+            return why, ""
+        return _gate_refused(p, tid, "close:run", why)  # a failed run, a failed linked test: the gaps were all met
     # proved and done, and the finish wrote the mark that its commit is owed with the done itself (T-5368: a crash
     # between the two left the task done and its CHANGELOG line never committed); a land that can't take the lock now
     # leaves the commit to the next
@@ -5597,9 +5608,10 @@ def _commit_close(p, tid, title, path, timeout=None, changelog=""):
             rc, out, err = _sampo(["task", "finish", tid, "--commit", title,
                                    *([f"--changelog={changelog}"] if changelog else [])])
     except c.LockTimeout:
-        return COMMIT_WAIT + ": the close's commit waits for it, and the next land retries it" + keep, ""
-    if rc:
-        return _why(err or out) + keep, ""
+        return _gate_refused(p, tid, "close:commit", COMMIT_WAIT + ": the close's commit waits for it, and the next land "
+                             "retries it" + keep)
+    if rc:  # this finish defers nothing, so it logs no gaps of its own: the refusal is the commit's
+        return _gate_refused(p, tid, "close:commit", _why(err or out) + keep)
     nb = cli.need_brief(p, tid)
     nb.append_mark(COMMITTED)
     c.save_brief(p, nb)

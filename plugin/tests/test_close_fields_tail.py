@@ -204,6 +204,13 @@ class LandSaysWhy(LandCase):
         self.assertNotIn("had no CHANGELOG line", msg)
         self.assertNotIn("not at its end", msg)
 
+    def test_a_land_that_leaves_a_close_for_its_fields_logs_the_gate_it_refused_at(self):
+        # T-6049: the close's refusal carries an explicit gate id the evidence report joins, whatever its text says
+        tid = self.lane(1, "a.txt", when=OLD)
+        self.message(tid)
+        ev = [e for e in c.ledger_events(c.find_project(self.repo), ("gate_refused",)) if e.get("task") == tid]
+        self.assertEqual([(e["data"]["gate"], e["data"]["where"]) for e in ev], [("close:fields", "land")], ev)
+
     def test_a_brief_whose_report_had_lines_the_rule_refused_says_so(self):
         tid = self.lane(1, "a.txt", when=OLD)
         self.hook("SubagentStop", {"agent_type": "general-purpose", "agent_id": "a1b2c3d4",
