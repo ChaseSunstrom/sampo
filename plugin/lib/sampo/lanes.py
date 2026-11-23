@@ -7233,11 +7233,15 @@ def _pm_partial(p, main, wt, since, heads=1, sha=None, r=None, sweep=None, tasks
         if sweep is not None:
             sweep.append(True)
         return None
+    dep = {"with_verify": True}  # T-6160: the import-only dependents too; the train's gate takes only those that write a changed name
     try:
-        cmd, tests, _ = cli.affected(c.Project(p.slug, wt, p.dir, p.lane), since=since, also=_pm_own_files(p, tasks))
+        cmd, tests, _ = cli.affected(c.Project(p.slug, wt, p.dir, p.lane), since=since, also=_pm_own_files(p, tasks),
+                                     dependent=dep)
     except Exception as e:  # noqa: BLE001 — a convenience: the full suite decides
         c.log_event(p, "postmerge_partial_failed", data={"error": f"{type(e).__name__}: {e}"[:200]})
         return None  # the full run, cached as usual (_pm_uncached_due); its green restarts the sweep counts
+    if dep.get("skipped"):  # past DEPENDENT_FILES the map is not read: the full run, as the train's gate does
+        return None
     return cmd or "", list(tests)
 
 

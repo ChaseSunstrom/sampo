@@ -8369,6 +8369,347 @@ def _class_ids(root, by_class, recorded):
     return out
 
 
+_DEPENDENTS = {}  # T-6160: (root, tree) -> (the tree's blob entries, {test module: (dotted references, patch targets, words, identifiers)}); read once per tree
+_DATA_FILE = re.compile(r"[\w./-]+\.(?:json|js|html|css|txt|csv|tsv|yaml|yml|toml|md|svg)")  # T-6160: a data or web file name
+_WORDS = re.compile(r"[\w/-]+(?:\.[\w/-]+)*")  # T-6160: the words of a text; a period after a word is no part of it
+_GENERIC = frozenset({"__init__", "__main__", "main", "index", "conftest", "setup", "README", "utils", "common", "lib"})  # T-6160: too common to name a dependent by
+DEPENDENT_FILES = 200  # T-6160: past this many changed files the map is not read and the train runs the whole suite
+GATE_BUDGET_S = 60.0  # T-6160: the estimated wall (seconds, run.py's recorded times over the gate's slots) the train's gate may spend on dependents
+_IDENT = re.compile(r"\w+")  # T-6160: the identifiers of a text: the names a test module writes
+FACTS_BYTES = 16 << 20  # T-6160: the saved blob facts, larger than this are not saved (the next train reads the blobs again)
+
+
+def _parse(text):
+    """T-6160: the ast of a Python source, None when it doesn't parse (or holds a null byte)."""
+    import ast
+    try:
+        return ast.parse(text)
+    except (SyntaxError, ValueError, RecursionError):  # a deeply nested source is no module, not a crash of the gate
+        return None
+
+
+def _dotted(node):
+    """T-6160: the dotted name of a Name or an attribute chain (mock.patch.object: "mock.patch.object"), else ""."""
+    import ast
+    parts = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    return ".".join([node.id, *reversed(parts)]) if isinstance(node, ast.Name) else ""
+
+
+def _reach(text):
+    """T-6160: (the dotted names a test module imports (`from a import b` reaches a and a.b), the string target of each
+    mock.patch, patch.object or patch.dict call (mock.patch('a.b.f') reaches a.b.f)). A patch target is the strongest
+    reach: the test writes the name it patches (the gate's rank 1)."""
+    import ast
+    tree, imports, patches = _parse(text), set(), set()
+    for node in ast.walk(tree) if tree else ():
+        if isinstance(node, ast.Import):
+            imports.update(a.name for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            imports.add(node.module)
+            imports.update(f"{node.module}.{a.name}" for a in node.names)
+        elif isinstance(node, ast.Call) and node.args and isinstance(node.args[0], ast.Constant) \
+                and isinstance(node.args[0].value, str) and "patch" in _dotted(node.func).split("."):
+            patches.add(node.args[0].value)
+    return imports, patches
+
+
+def _strings(text):
+    """T-6160: the string constants of a Python module's source (none when it doesn't parse)."""
+    import ast
+    tree = _parse(text)
+    return [n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str)] if tree else []
+
+
+def _prefixes(dotted):
+    """T-6160: a dotted name and each of its parents: a.b.c gives a, a.b and a.b.c."""
+    parts = dotted.split(".")
+    return {".".join(parts[:i]) for i in range(1, len(parts) + 1)}
+
+
+def _git_bytes(root, args, data=None):
+    """T-6160: git's stdout as bytes in `root` (b"" on any failure or a timeout), with the caller's GIT_* variables left out."""
+    import subprocess
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    try:
+        got = subprocess.run(["git", *args], cwd=root, input=data, capture_output=True, timeout=60, env=env)
+    except (OSError, subprocess.SubprocessError):
+        return b""
+    return got.stdout if got.returncode == 0 else b""
+
+
+def _entries(root, tree):
+    """T-6160: (path, blob id, size) of each blob of the tree, from `git ls-tree -r -l -z`: the tree's own names."""
+    out = []
+    for rec in _git_bytes(root, ["ls-tree", "-r", "-l", "-z", tree]).split(b"\0"):
+        meta, _, path = rec.partition(b"\t")
+        fields = meta.split()
+        if len(fields) == 4 and fields[1] == b"blob" and path:
+            out.append((path.decode("utf-8", "replace"), fields[2].decode("ascii"), int(fields[3])))
+    return out
+
+
+def _blobs(root, shas):
+    """T-6160: the text of each blob id (None when git has none), from one `git cat-file --batch` for all of them."""
+    if not shas:
+        return []
+    data = _git_bytes(root, ["cat-file", "--batch"], ("\n".join(shas) + "\n").encode("ascii"))
+    out, pos = [], 0
+    for _ in shas:
+        nl = data.find(b"\n", pos)
+        head = data[pos:nl].split() if nl >= 0 else []
+        if len(head) != 3 or not head[2].isdigit():  # "<id> missing": no body follows
+            out.append(None)
+            pos = nl + 1 if nl >= 0 else len(data)
+            continue
+        size = int(head[2])
+        out.append(data[nl + 1:nl + 1 + size].decode("utf-8", "replace"))
+        pos = nl + 2 + size
+    return out
+
+
+def _facts_path():
+    """T-6160: where the blob facts are saved: the state folder's depmap/facts-2.json (2: the facts' version, with the
+    mock.patch targets, "p"; a version-1 file is simply read again)."""
+    return os.path.join(c.state_dir(), "depmap", "facts-2.json")
+
+
+def _fact_key(rel, sha):
+    """T-6160: a blob's key in the saved facts: its id; a Python module's references differ from a text's, so its key is
+    apart from the same blob read as a text."""
+    return sha if rel.endswith(".py") else "-" + sha
+
+
+def _fact(rel, text):
+    """T-6160: a test blob's facts as JSON lists: the dotted names it imports ("r"), its words (_WORDS, "w"), its
+    identifiers (_IDENT, "i") and its mock.patch targets ("p", a Python module's)."""
+    imports, patches = _reach(text) if rel.endswith(".py") else (set(), set())
+    return {"r": sorted(imports), "w": sorted(set(_WORDS.findall(text))), "i": sorted(set(_IDENT.findall(text))),
+            "p": sorted(patches)}
+
+
+def _valid(v):
+    """T-6160: whether a saved fact has the shape _fact writes; anything else is read again."""
+    return isinstance(v, dict) and all(isinstance(v.get(k), list) and all(isinstance(x, str) for x in v[k]) for k in ("r", "w", "i", "p"))
+
+
+def _load_facts():
+    """T-6160: the saved facts by key, {} when there is no file, it is over FACTS_BYTES, or it is not one JSON object. A
+    cache that fails costs the blobs' read again; it never fails the gate."""
+    import json
+    try:
+        path = _facts_path()
+        if os.path.getsize(path) > FACTS_BYTES:
+            return {}
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:  # noqa: BLE001 — a missing, unreadable or corrupt cache is no facts
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_facts(facts):
+    """T-6160: the facts saved atomically (a temp file in the same folder, then os.replace), when they fit FACTS_BYTES.
+    A save that fails leaves the old file or none; the next train reads the blobs again."""
+    import json
+    import tempfile
+    tmp = None
+    try:
+        data = json.dumps(facts, separators=(",", ":"))
+        if len(data) > FACTS_BYTES:
+            return
+        path = _facts_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".facts-", suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(data)
+        os.replace(tmp, path)
+    except Exception:  # noqa: BLE001 — a cache that cannot be written costs the next train its read
+        if tmp and os.path.exists(tmp):
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
+def _index(root, tree):
+    """T-6160: (the tree's blob entries, each test module of it -> (its dotted references, its words, its identifiers)).
+    A test module is c.TESTISH and c.CODE: at most 4000 of at most 1 MB, 8 MB in all, read as the tree's blobs (never the
+    working files). Its facts are keyed by blob id, so the saved facts (_load_facts) serve every train: only a blob they
+    lack is read and parsed, and the facts of this tree's blobs are saved again when they changed. Cached per (root, tree)
+    for the process: a train's gates share one read, and the tree's hash names exactly the blobs read."""
+    if not tree:
+        return [], {}
+    if (root, tree) in _DEPENDENTS:
+        return _DEPENDENTS[(root, tree)]
+    entries = _entries(root, tree)
+    want, size = [], 0
+    for rel, sha, n in entries:
+        if len(want) >= 4000 or n > 1 << 20 or size + n > 8 << 20:
+            continue
+        if c.TESTISH.search(rel) and c.CODE.search(rel):
+            want.append((rel, sha, _fact_key(rel, sha)))
+            size += n
+    saved = _load_facts()
+    facts = {k: saved[k] for _, _, k in want if _valid(saved.get(k))}
+    missing = [(rel, sha, k) for rel, sha, k in want if k not in facts]
+    for (rel, _, k), text in zip(missing, _blobs(root, [sha for _, sha, _ in missing])):
+        if text is not None:
+            facts[k] = _fact(rel, text)
+    keep = {k: facts[k] for _, _, k in want if k in facts}
+    if missing or set(saved) != set(keep):  # the saved file holds this tree's facts and no more
+        _save_facts(keep)
+    rows = {rel: (set(facts[k]["r"]), set(facts[k]["p"]), set(facts[k]["w"]), set(facts[k]["i"])) for rel, _, k in want if k in facts}
+    if len(_DEPENDENTS) >= 4:
+        _DEPENDENTS.clear()
+    _DEPENDENTS[(root, tree)] = (entries, rows)
+    return entries, rows
+
+
+def _counts(paths, cands):
+    """T-6160: how many of `paths` end with each candidate (a path's last whole components)."""
+    n = {}
+    for path in paths:
+        parts = path.split("/")
+        for k in range(1, len(parts) + 1):
+            s = "/".join(parts[-k:])
+            if s in cands:
+                n[s] = n.get(s, 0) + 1
+    return n
+
+
+def dependents(root, files, tree, symbols=None, verify=None, budget=None):
+    """T-6160: (the test modules that depend on one of `files`, how many test modules the tree has); (None, 0) past
+    DEPENDENT_FILES files, the map not read. A test depends on a changed file when it imports the file's module by a
+    dotted name no other path of the tree has (`from a import b`, `import a.b`), when a mock.patch target of it names
+    such a dotted path ('a.b.f'), when it names the file's path or a tail of it that no other path has, as a whole word,
+    or, for a module, when it names a data or web file the module names. Generic names (__init__.py, main.rs, index.js)
+    and shared basenames name no dependent: a test that only mentions another train.py is none of this one's. The
+    tree's blobs are read, never the working files.
+    Each dependent has the strongest rank its evidence gives: 1 a mock.patch target names a changed symbol, 2 it writes a
+    changed symbol, 3 it names a changed data or web file, 4 it names the changed file's path, 5 an import only.
+    `symbols` (T-6160): {changed file: the names its diff changed, or None for the whole file}; a file missing from it, or
+    None, has no symbols, so its importers rank 5 and stay picked when no `budget` is given.
+    No `budget` (the post-merge run, the tests): a rank 1 to 4 dependent is picked and an import-only one goes to
+    `verify` (a set the caller passes), except that a file with no symbols keeps its importers picked.
+    `budget` (the train's gate, T-6160): {"width": the gate's slots, "limit": seconds}. Rank 1 is always picked; the rest
+    are picked in rank order, the shortest class first within a rank, each only when the estimated wall (the recorded
+    seconds of the picked, over `width`) with it still fits `limit`: a hard stop, so the estimate never passes the limit
+    except for rank 1. Every other dependent goes to `verify`, a module bigger than the whole limit among them;
+    budget["est"] gets the picked's estimated wall. A class with no record adds nothing to the estimate (run.py's
+    estimate)."""
+    if len(files) > DEPENDENT_FILES:
+        return None, 0
+    entries, rows = _index(root, tree)
+    if not entries:  # a tree git cannot list (or none): the map is unknown, so the whole suite runs, not no dependents
+        return None, 0
+    meta = {rel: (sha, n) for rel, sha, n in entries}
+    changed = [f for f in sorted(files) if not (f.endswith(".py") and c.TESTISH.search(f))]  # a changed test module is its own
+    py = [f for f in changed if f.endswith(".py") and f in meta and meta[f][1] <= 1 << 20]
+    texts = dict(zip(py, _blobs(root, [meta[f][0] for f in py])))  # the changed modules as the tree has them
+    plan, cands = {}, set()
+    for f in changed:
+        parts = f.split("/")
+        cands.update("/".join(parts[-k:]) for k in range(1, len(parts) + 1))
+        data = {s for s in _strings(texts.get(f) or "") if len(s) < 200 and _DATA_FILE.fullmatch(s)} if f.endswith(".py") else set()
+        cands.update(s.split("/")[-1] for s in data)
+        plan[f] = (parts, data)
+    counts = _counts([rel for rel, _, _ in entries], cands)
+    per = []  # (the dotted names, the path forms, the data forms, the changed names) of each changed file
+    for f in changed:
+        parts, data = plan[f]
+        mine = 1 if f in meta else 0  # the file is one of the tree's paths while it is still there
+        names, forms, dforms = set(), {f}, set()
+        if f.endswith(".py"):
+            pkg = parts[-1] == "__init__.py"
+            mod = parts[:-1] if pkg else parts[:-1] + [parts[-1][:-3]]
+            for k in range(1, len(mod) + 1):  # each dotted tail of the module, when only this file has its path
+                if mod[-1] not in _GENERIC and counts.get("/".join(parts[-(k + (1 if pkg else 0)):]), 0) - mine <= 0:
+                    names.add(".".join(mod[-k:]))
+        generic_file = parts[-1].split(".")[0] in _GENERIC
+        for k in range(1, len(parts)):  # the path's proper tails, when only this file has them
+            tail = "/".join(parts[-k:])
+            if not generic_file and counts.get(tail, 0) - mine <= 0:
+                forms.add(tail)
+        for s in data:
+            base = s.split("/")[-1]
+            if "/" in s:
+                dforms.add(s)
+            if counts.get(base, 0) <= 1 and base.split(".")[0] not in _GENERIC:
+                dforms.add(base)
+        per.append((names, forms, dforms, (symbols or {}).get(f)))
+    cands = {}  # rel -> (rank, keep): the strongest reason a test reaches a changed file; keep: picked without a budget
+    for rel, (refs, pats, words, idents) in (rows.items() if per else ()):
+        pre = set().union(*(_prefixes(r) for r in refs | pats)) if refs | pats else set()
+        reasons = []
+        for names, forms, dforms, syms in per:
+            if dforms & words:  # a data or web file the module names
+                reasons.append((3, False))
+            if forms & words:  # the changed file's path or a tail of it, as a whole word
+                reasons.append((4, False))
+            if names & pre:  # an import or a patch target of its module
+                if syms is None:
+                    reasons.append((5, True))
+                elif any(t.rsplit(".", 1)[-1] in syms and _prefixes(t) & names for t in pats):
+                    reasons.append((1, False))  # it mock.patches a changed symbol
+                elif syms & idents:
+                    reasons.append((2, False))  # it writes a changed symbol
+                else:
+                    reasons.append((5, False))  # an import only
+        if reasons:
+            cands[rel] = min(reasons, key=lambda r: (r[0], not r[1]))
+    total = sum(1 for rel in rows if rel.endswith(".py"))
+    if budget is None:
+        picked = {rel for rel, (rank, keep) in cands.items() if rank <= 4 or keep}
+        if verify is not None:
+            verify.update(rel for rel, (rank, keep) in cands.items() if rank == 5 and not keep)
+        return picked, total
+    width, limit = max(1, int(budget.get("width") or 1)), float(budget.get("limit", GATE_BUDGET_S))
+    run = _run_timing()
+    times = run.load_times()
+
+    # run.py's recorded seconds of each candidate module (its classes' records summed; none recorded: 0)
+    sec = {rel: run.estimate([os.path.splitext(os.path.basename(rel))[0]], times, 1)["seconds"] for rel in cands}
+    picked = {rel for rel, (rank, _) in cands.items() if rank == 1}  # the T-6095 shape: always in
+    spent = sum(sec[rel] for rel in picked)
+    for _, _, rel in sorted((rank, sec[rel], rel) for rel, (rank, _) in cands.items() if rank > 1):
+        if (spent + sec[rel]) / width <= limit:  # a hard stop: added only when the estimate with it still fits the limit
+            picked.add(rel)
+            spent += sec[rel]
+        elif verify is not None:  # past the limit with it (a module bigger than the whole budget too): the post-merge run
+            verify.add(rel)
+    budget["est"] = round(spent / width, 1)
+    return picked, total
+
+
+def gate_width(template):
+    """T-6160: the slots the gate's run.py gets: the -j its affected template names, else run.py's own default, its slot
+    count cut to the usable CPUs (`min(slot_count(), usable_cpus()) or usable_cpus()`, the rule of its -j)."""
+    m = re.search(r"(?:^|\s)-j\s*(\d+)\b", template or "")
+    if m:
+        return max(1, int(m.group(1)))
+    run = _run_timing()
+    usable = run.usable_cpus(run._cgroup_dir())
+    return max(1, min(run.slot_count(), usable) or usable)
+
+
+_RUN = {}  # T-6160: tests/run.py, loaded once: its timing record and slot rule are the gate's
+
+
+def _run_timing():
+    """T-6160: run.py's timing record and slot rule (estimate, load_times, slot_count, usable_cpus, _cgroup_dir), loaded from
+    tests/run.py beside the plugin, so the gate's estimate is the one run.py makes, not a copy of it."""
+    if "run" not in _RUN:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("sampo_run_timing", os.path.join(c.PLUGIN_ROOT, "tests", "run.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _RUN["run"] = mod
+    return _RUN["run"]
+
+
 def _test_importers(root, files):
     """T-4684: the test modules that really import one of `files` (changed .py files of a tests folder), directly or
     through another module that does, read from the imports of the .py files under each file's folder: a module's name
@@ -8556,7 +8897,7 @@ def _own_view(p, b, base, changed=None, landing=True, span=None):
 
 
 def affected(p, b=None, skipped=None, since=None, detail=None, only=None, hold=False, shape_green=False, lock=None,
-             among=None, why=None, also=None):
+             among=None, why=None, also=None, dependent=None):
     """(command, tests, changed files) for the tests linked (fm map) to files changed since the task started, with the
     project's template; command None when no test is linked. fm check --affected and the ambient runner (T-0705).
     `hold` (T-4286): the run always holds the repo-shape classes, whatever files changed. `shape_green` (T-4563): the
@@ -8567,7 +8908,9 @@ def affected(p, b=None, skipped=None, since=None, detail=None, only=None, hold=F
     ones named like those files first, at most LOCK_MODULES of them; it gets {"linked": how many there were}.
     `among` (T-4822): only these test files of the set (a close's residual: what no passing gate run covered).
     `also` (T-5982): test files that always run, whole, whatever the map and the run cache link (a lane's own criteria
-    on a gate with no criteria stage of its own: the live train's behind run); the files that exist in the tree."""
+    on a gate with no criteria stage of its own: the live train's behind run); the files that exist in the tree.
+    `dependent` (T-6160): a dict the train passes; with `only` (the merged batch's changed files) it adds the test modules
+    that depend on those files (cli.dependents), and gets {"modules": how many test modules the map read}."""
     from sampo import map as smap
     import shlex
     act = b or (None if since else c.active_brief(c.load_briefs(p), p.lane))  # T-1117 review: the closing task's base, active or not
@@ -8622,6 +8965,16 @@ def affected(p, b=None, skipped=None, since=None, detail=None, only=None, hold=F
         every = every[:LOCK_MODULES]
     else:
         tree = c.worktree_tree(p.root) if wide else None
+        deps, verify = set(), set()  # T-6160: the test modules that depend on a changed file (the train's gate asks, with `dependent`); verify: the ones only an import reaches
+        if dependent is not None and wide:
+            pys = sorted(f for f in wide if f.endswith(".py"))
+            syms = smap.changed_symbols(p.root, base, tree, pys) if pys and tree else {}  # T-6160: the names the diff changed
+            found, dependent["modules"] = dependents(p.root, sorted(wide), tree, symbols=syms, verify=verify,
+                                                     budget=dependent.get("budget"))  # T-6160: the gate's budget, when it has one
+            dependent["skipped"] = found is None  # past DEPENDENT_FILES the map is not read: the train runs the whole suite
+            deps = found or set()
+            dependent["picked"] = deps
+            dependent["verify"] = verify - deps
         picked = _hub_tests(p, m, base, sorted(wide), detail, tree)  # T-3306: a hub file's symbols, not the whole file
         # T-3603: the tests the run cache saw run a changed function (T-3670: one that drives a hook only by its JSON)
         parts = {} if why is not None else None  # T-4288: which changed part reached how many recorded classes
@@ -8633,7 +8986,9 @@ def affected(p, b=None, skipped=None, since=None, detail=None, only=None, hold=F
                                              "test importer": importers, "co-change": paired, "once broke": broke,
                                              "import budget": budget, "rule test": rules, "run cache": ran})
         owed = {t for t in also or () if os.path.isfile(os.path.join(p.root, t))}  # T-5982: named, so never narrowed to classes
-        others = linked | set().union(*picked.values()) | own | importers | paired | broke | budget | rules | owed
+        others = linked | set().union(*picked.values()) | own | importers | paired | broke | budget | rules | owed | deps
+        if dependent and dependent.get("with_verify"):  # T-6160: the post-merge run takes the import-only dependents too
+            others |= dependent.get("verify") or set()
         every = sorted(others | ran)
         # T-5588: a module only the run cache selected is named by the classes it saw reach the change, when the runner
         # takes class ids: run.py then runs those with the result cache on, not every class of the module

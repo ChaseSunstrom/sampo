@@ -16,7 +16,7 @@ from unittest import mock
 from helpers import ForemanTestCase
 
 from sampo import core as c
-from sampo import train
+from sampo import cli, train
 
 first = lambda text: json.JSONDecoder().raw_decode(text)[0]  # noqa: E731
 
@@ -2387,6 +2387,353 @@ class Covered(AffectedBase):
         self.assertEqual(len(notes), 1, notes)
         self.assertEqual(notes[0][0], "T-1")
         self.assertIn("left for the close to run: OSError: disk full", notes[0][1])
+
+
+class MergedAffected(AffectedBase):
+    """T-6160: a train's gate runs, on the merged tip, the test modules that depend on a module the batch changes: one
+    that mock.patches a path in it, one that imports it and one that names its data file. Past half the test modules
+    the gate is the full suite (as with no map); a red dependent parks the lane."""
+    MOD = 'DATA = "data_m.json"\n\n\ndef f():\n    return 1\n'
+    PATCHED = ("import unittest\nfrom unittest import mock\n\n\nclass Patched(unittest.TestCase):\n    def test_it(self):\n"
+               "        with mock.patch('mod_m.f'):\n            pass\n")
+    IMPORTED = ("import unittest\n\nimport mod_m\n\n\nclass Imported(unittest.TestCase):\n    def test_it(self):\n"
+                "        self.assertEqual(mod_m.f(), 1)\n")
+    NAMED = ("import json\nimport unittest\n\n\nclass Named(unittest.TestCase):\n    def test_it(self):\n"
+             "        self.assertEqual(json.load(open('data_m.json')), {'f': 1})\n")
+    CHANGED = 'DATA = "data_m.json"\n\n\ndef f():\n    value = 1\n    return value\n'  # f's body changes, its value does not: the tests that write f are the gate's
+
+    def setUp(self):
+        super().setUp()
+        files = {"mod_m.py": self.MOD, "data_m.json": '{"f": 1}\n', "test_patched.py": self.PATCHED,
+                 "test_imported.py": self.IMPORTED, "test_named.py": self.NAMED}
+        for rel, text in files.items():
+            with open(os.path.join(self.repo, rel), "w") as f:
+                f.write(text)
+        self.git("add", "-A")
+        self.git("commit", "-qm", "a module and the tests that depend on it")
+        # T-6160: the budget is seconds over the gate's slots: pin both, so a test sees the same estimate on any machine
+        self.times = os.path.join(self.tmp, "times.json")
+        self.set_times({})
+        self.pinned = {"FM_TEST_TIMES": self.times, "SAMPO_SLOTS": "1"}
+
+    def set_times(self, times):
+        with open(self.times, "w") as f:
+            json.dump(times, f)
+
+    def train(self, *ids, check=True, env=None):
+        return super().train(*ids, check=check, env=dict(self.pinned, **(env or {})))
+
+    def logged(self):
+        return [e["data"] for e in c.ledger_tail(c.find_project(self.repo), 300) if e.get("event") == "lane_train_dependents"]
+
+    def test_a_module_change_runs_the_patching_importing_and_data_naming_tests_on_the_merged_tip(self):
+        a = self.lane(1, "mod_m.py", self.CHANGED)
+        r = self.train(a)
+        args = self.gate_args()
+        self.assertEqual(len(args), 1, r.stdout)
+        names = set(args[0].split())
+        self.assertLessEqual({"test_patched", "test_imported", "test_named"}, names, r.stdout)
+        self.assertNotIn("test_other", names, "a test that reaches none of the module is not run")
+        logged = self.logged()
+        self.assertEqual([(d["picked"], d["modules"], d["full"]) for d in logged], [(3, 6, False)], r.stdout)  # T-6160
+        self.assertEqual(logged[0]["line"], "3 dependents in the gate (0.0 s est), 0 to verify", r.stdout)
+        self.assertGreaterEqual(logged[0]["wall"], 0)
+        self.assertTrue(self.meta(a)["lane_stop"].startswith("merged"), r.stdout)
+
+    def test_a_change_to_a_new_name_alone_sends_the_importers_to_the_verify_not_the_gate(self):
+        """mod_m.py gains g and keeps f: test_patched patches f and test_imported calls it, so neither names a changed name;
+        they are the post-merge verify's, and the gate runs only test_named, which names the data file (rank 3, so it
+        comes first). test_named has 30 s recorded on one slot and each importer 40 s: 30 + 40 is past the 60 s budget, so
+        the two importers (rank 5) go to the verify, logged with the estimate and the line the train log says."""
+        self.set_times({"test_named": 30.0, "test_patched": 40.0, "test_imported": 40.0})
+        a = self.lane(1, "mod_m.py", self.MOD + "\n\ndef g():\n    return 2\n")
+        r = self.train(a)
+        names = set(self.gate_args()[0].split())
+        self.assertIn("test_named", names, r.stdout)
+        self.assertFalse({"test_patched", "test_imported"} & names, r.stdout)  # the rule tests (test_doctor...) run as always
+        logged = self.logged()
+        self.assertEqual([(d["picked"], d["verify"], d["full"]) for d in logged], [(1, 2, False)], r.stdout)  # T-6160
+        self.assertEqual((logged[0]["est"], logged[0]["width"]), (30.0, 1), r.stdout)
+        self.assertEqual(logged[0]["line"], "1 dependents in the gate (30.0 s est), 2 to verify", r.stdout)
+        self.assertTrue(self.meta(a)["lane_stop"].startswith("merged"), r.stdout)
+
+    def test_a_red_patch_target_parks_the_lane(self):
+        """mod_m.py loses f: test_patched, which patches mod_m.f, is red on the merged tip; the lane is left out."""
+        b = self.lane(1, "mod_m.py", 'DATA = "data_m.json"\n\n\ndef g():\n    return 1\n')
+        o = self.lane(2, "other.txt")  # an unrelated lane lands beside it, so the train has a batch to park from
+        r = self.train(b, o)
+        self.assertIn(f"left out {b}: its merge turns the gates red", r.stdout)
+        self.assertTrue(self.meta(o)["lane_stop"].startswith("merged"), r.stdout)
+        with open(os.path.join(self.repo, "mod_m.py")) as f:
+            self.assertIn("def f", f.read(), "trunk keeps its module")
+
+    def test_a_red_data_file_the_module_names_parks_the_lane(self):
+        """The data file mod_m names changes: test_named, which names it, is red on the merged tip; the lane is left out."""
+        d = self.lane(1, "data_m.json", '{"f": 2}\n')
+        o = self.lane(2, "other.txt")
+        r = self.train(d, o)
+        self.assertIn(f"left out {d}: its merge turns the gates red", r.stdout)
+        self.assertTrue(self.meta(o)["lane_stop"].startswith("merged"), r.stdout)
+
+    def test_past_the_cap_the_train_runs_the_full_suite(self):
+        """Six test modules make a cap of three; three more importers make nine dependents' cap four, and six dependents
+        pass it, so the gate is the full suite (no names)."""
+        for n in (1, 2, 3):
+            with open(os.path.join(self.repo, f"test_more{n}.py"), "w") as f:
+                f.write(self.IMPORTED.replace("Imported", f"More{n}"))
+        self.git("add", "-A")
+        self.git("commit", "-qm", "three more importers of the module")
+        a = self.lane(1, "mod_m.py", self.CHANGED)
+        r = self.train(a)
+        self.assertEqual(self.gate_args(), [""], r.stdout)
+        self.assertTrue(self.meta(a)["lane_stop"].startswith("merged"), r.stdout)
+
+
+class MergedAffectedMap(ForemanTestCase):
+    """T-6160: cli.dependents names the test modules that depend on a changed file: an import (ast), a mock.patch target
+    (ast), a name of the file's path, or a data file the module names; read from the tree, cached per tree hash."""
+
+    def setUp(self):
+        super().setUp()
+        self.root = os.path.join(self.tmp, "map")
+        os.makedirs(self.root)
+        subprocess.run(["git", "init", "-q", self.root], check=True)
+
+    def write(self, rel, text):
+        path = os.path.join(self.root, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(text)
+
+    def commit(self):
+        for args in (["add", "-A"], ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q",
+                                     "--allow-empty", "-m", "t"]):
+            subprocess.run(["git", *args], cwd=self.root, check=True)
+
+    def head(self):
+        return subprocess.run(["git", "rev-parse", "HEAD^{tree}"], cwd=self.root, capture_output=True, text=True,
+                              check=True).stdout.strip()
+
+    def dependents(self, *changed):
+        self.commit()
+        return cli.dependents(self.root, list(changed), self.head())
+
+    def test_an_import_a_patch_target_a_named_path_or_a_named_data_file_is_a_dependent(self):
+        self.write("pkg/mod.py", 'DATA = "data_x.json"\n\n\ndef f():\n    return 1\n')
+        self.write("pkg/__init__.py", "")
+        self.write("test_import.py", "from pkg import mod\n")
+        self.write("test_patch.py", "from unittest import mock\nmock.patch('pkg.mod.f')\n")
+        self.write("test_names.py", "# the module is pkg/mod.py\n")
+        self.write("test_data.py", "open('data_x.json')\n")
+        self.write("test_plain.py", "import os\n")
+        self.write("test_prefix.py", "import pkg.modx\n")
+        self.write("test_word.py", "# xpkg/mod.py\n")
+        picked, total = self.dependents("pkg/mod.py")
+        self.assertEqual(picked, {"test_import.py", "test_patch.py", "test_names.py", "test_data.py"})
+        self.assertEqual(total, 7, "every test module of the tree is counted, for the cap")
+
+    def test_a_changed_web_file_is_a_dependent_of_the_test_that_names_it(self):
+        self.write("web/board.js", "1\n")
+        self.write("test_board.py", "read('board.js')\n")
+        self.write("test_other.py", "import os\n")
+        picked, _ = self.dependents("web/board.js")
+        self.assertEqual(picked, {"test_board.py"})
+
+    def test_a_train_py_change_does_not_pick_a_test_that_only_mentions_another_train_py(self):
+        self.write("plugin/lib/sampo/train.py", "X = 1\n")
+        self.write("other/train.py", "Y = 1\n")
+        self.write("test_other_only.py", "from other import train\n# other/train.py and train.py\nopen('other/train.py')\n")
+        self.write("test_sampo_import.py", "from sampo import train\n")
+        self.write("test_path.py", "# plugin/lib/sampo/train.py\n")
+        picked, _ = self.dependents("plugin/lib/sampo/train.py")
+        self.assertEqual(picked, {"test_sampo_import.py", "test_path.py"})
+
+    def test_a_generic_init_change_does_not_pick_a_test_that_mentions_only_init(self):
+        self.write("pkg/__init__.py", "")
+        self.write("other/__init__.py", "")
+        self.write("test_init_text.py", "# __init__.py and other/__init__.py\n")
+        self.write("test_pkg_import.py", "import pkg\n")
+        picked, _ = self.dependents("pkg/__init__.py")
+        self.assertEqual(picked, {"test_pkg_import.py"})
+
+    def test_the_map_reads_the_committed_blobs_not_the_working_files(self):
+        self.write("pkg/mod.py", "def f():\n    return 1\n")
+        self.write("test_blob.py", "from pkg import mod\n")
+        self.commit()
+        self.write("test_blob.py", "import os\n")  # dirty: the tree the train merged still says pkg.mod
+        picked, _ = cli.dependents(self.root, ["pkg/mod.py"], self.head())
+        self.assertEqual(picked, {"test_blob.py"})
+
+    def budget_tree(self, seconds):
+        """T-6160: pkg/mod.py's f changes; test_patch patches it (rank 1), test_write calls it (rank 2), test_import only
+        imports the module (rank 5); `seconds` are their recorded times, read through FM_TEST_TIMES."""
+        self.write("pkg/mod.py", "def f():\n    return 1\n")
+        self.write("test_patch.py", "from unittest import mock\nmock.patch('pkg.mod.f')\n")
+        self.write("test_write.py", "from pkg import mod\nmod.f()\n")
+        self.write("test_import.py", "from pkg import mod\n")
+        times = os.path.join(self.tmp, "times.json")
+        with open(times, "w") as f:
+            json.dump(seconds, f)
+        self.commit()
+        return times
+
+    def test_the_budget_keeps_the_rank_one_dependent_and_sends_the_rest_to_verify(self):
+        """T-6160: the budget is spent by test_write's 1 s after test_patch's 1000 s, which is in whatever it costs (the
+        T-6095 shape: a rank 1 patch of a changed symbol); the rest of the dependents go to verify."""
+        times = self.budget_tree({"test_patch": 1000.0, "test_write": 1.0, "test_import": 1.0})
+        verify, budget = set(), {"width": 1, "limit": cli.GATE_BUDGET_S}
+        with mock.patch.dict(os.environ, {"FM_TEST_TIMES": times}):
+            picked, _ = cli.dependents(self.root, ["pkg/mod.py"], self.head(), symbols={"pkg/mod.py": {"f"}}, verify=verify,
+                                       budget=budget)
+        self.assertEqual(picked, {"test_patch.py"})
+        self.assertEqual(verify, {"test_write.py", "test_import.py"})
+        self.assertEqual(budget["est"], 1000.0)
+
+    def test_a_budget_the_dependents_fit_in_takes_them_all(self):
+        times = self.budget_tree({"test_patch": 1.0, "test_write": 1.0})
+        verify, budget = set(), {"width": 2, "limit": cli.GATE_BUDGET_S}
+        with mock.patch.dict(os.environ, {"FM_TEST_TIMES": times}):
+            picked, _ = cli.dependents(self.root, ["pkg/mod.py"], self.head(), symbols={"pkg/mod.py": {"f"}}, verify=verify,
+                                       budget=budget)
+        self.assertEqual(picked, {"test_patch.py", "test_write.py", "test_import.py"})
+        self.assertEqual((verify, budget["est"]), (set(), 1.0), "the estimate is the recorded seconds over the slots: 2 s on 2")
+
+    def test_a_module_that_would_cross_the_budget_goes_to_verify_and_a_smaller_one_still_fits(self):
+        """T-6160: a hard stop. test_patch (rank 1, 1 s) is in; test_write (rank 2, 70 s) would take the estimate past the
+        60 s limit, so it goes to verify, and test_import (rank 5, 2 s) still fits (1 + 2 <= 60) and is picked."""
+        times = self.budget_tree({"test_patch": 1.0, "test_write": 70.0, "test_import": 2.0})
+        verify, budget = set(), {"width": 1, "limit": 60.0}
+        with mock.patch.dict(os.environ, {"FM_TEST_TIMES": times}):
+            picked, _ = cli.dependents(self.root, ["pkg/mod.py"], self.head(), symbols={"pkg/mod.py": {"f"}}, verify=verify,
+                                       budget=budget)
+        self.assertEqual(picked, {"test_patch.py", "test_import.py"})
+        self.assertEqual(verify, {"test_write.py"})
+        self.assertEqual(budget["est"], 3.0, "the estimate never passes the limit: 1 + 2 s")
+
+    def test_past_the_file_bound_the_map_is_not_read_and_the_train_runs_the_full_suite(self):
+        self.write("a.py", "x = 1\n")
+        self.write("b.py", "x = 2\n")
+        self.write("test_a.py", "import a\n")
+        self.commit()
+        with mock.patch.object(cli, "DEPENDENT_FILES", 1):
+            picked, _ = cli.dependents(self.root, ["a.py", "b.py"], self.head())
+        self.assertIsNone(picked)
+
+    def test_a_tree_git_cannot_list_is_the_full_suite_not_no_dependents(self):
+        self.write("a.py", "x = 1\n")
+        self.commit()
+        self.assertEqual(cli.dependents(self.root, ["a.py"], "0" * 40), (None, 0))
+
+    def split(self, symbols, *changed):
+        """(the gate's dependents, the verify-only ones) of `changed`, given the changed symbols per file."""
+        self.commit()
+        verify = set()
+        picked, _ = cli.dependents(self.root, list(changed), self.head(), symbols=symbols, verify=verify)
+        return picked, verify
+
+    def test_a_dependent_that_names_no_changed_symbol_is_for_the_verify_not_the_gate(self):
+        self.write("pkg/mod.py", "def f():\n    return 1\n\n\ndef g():\n    return 2\n")
+        self.write("test_names_f.py", "from pkg import mod\nmod.f()\n")
+        self.write("test_only_imports.py", "from pkg import mod\n")
+        self.write("test_names_g.py", "from pkg import mod\nmod.g()\n")  # g is not a changed symbol
+        picked, verify = self.split({"pkg/mod.py": {"f"}}, "pkg/mod.py")
+        self.assertEqual(picked, {"test_names_f.py"})
+        self.assertEqual(verify, {"test_only_imports.py", "test_names_g.py"})
+
+    def test_a_path_or_data_dependent_stays_in_the_gate_without_a_changed_symbol(self):
+        self.write("pkg/mod.py", 'DATA = "data_x.json"\n\n\ndef f():\n    return 1\n')
+        self.write("test_names_path.py", "# the module is pkg/mod.py\n")
+        self.write("test_data.py", "open('data_x.json')\n")
+        self.write("test_only_imports.py", "from pkg import mod\n")
+        picked, verify = self.split({"pkg/mod.py": {"f"}}, "pkg/mod.py")
+        self.assertEqual(picked, {"test_names_path.py", "test_data.py"})
+        self.assertEqual(verify, {"test_only_imports.py"})
+
+    def test_the_t6095_shape_a_test_patching_os_killpg_around_the_changed_killsafe_is_in_the_gate(self):
+        self.write("plugin/lib/sampo/proc.py", "import os\n\n\ndef killsafe(pid):\n    os.killpg(pid, 9)\n")
+        self.write("test_killsafe_shape.py",
+                   "from unittest import mock\nfrom sampo import proc\n\n\ndef test_kill():\n"
+                   "    with mock.patch('os.killpg'), mock.patch.object(proc, 'killsafe'):\n        proc.killsafe(7)\n")
+        self.write("test_only_imports.py", "from sampo import proc\n")
+        picked, verify = self.split({"plugin/lib/sampo/proc.py": {"killsafe"}}, "plugin/lib/sampo/proc.py")
+        self.assertEqual(picked, {"test_killsafe_shape.py"})
+        self.assertEqual(verify, {"test_only_imports.py"})
+
+    def test_a_changed_module_with_no_symbol_map_keeps_its_importers_in_the_gate(self):
+        self.write("pkg/mod.py", "def f():\n    return 1\n")
+        self.write("test_imports.py", "from pkg import mod\n")
+        self.assertEqual(self.split(None, "pkg/mod.py"), ({"test_imports.py"}, set()))
+        self.assertEqual(self.split({}, "pkg/mod.py"), ({"test_imports.py"}, set()))
+
+    def test_a_changed_module_that_changes_no_symbol_sends_its_importers_to_the_verify(self):
+        self.write("pkg/mod.py", "# a comment only\n")
+        self.write("test_imports.py", "from pkg import mod\n")
+        self.assertEqual(self.split({"pkg/mod.py": set()}, "pkg/mod.py"), (set(), {"test_imports.py"}))
+
+    def test_the_blob_facts_are_saved_and_a_later_read_parses_no_unchanged_test_module(self):
+        self.write("pkg/mod.py", "def f():\n    return 1\n")
+        self.write("test_names.py", "from pkg import mod\nmod.f()\n")
+        self.write("test_plain.py", "import os\n")
+        facts = os.path.join(self.tmp, "facts.json")
+        with mock.patch.object(cli, "_facts_path", return_value=facts):
+            first = self.split({"pkg/mod.py": {"f"}}, "pkg/mod.py")
+            self.assertTrue(os.path.isfile(facts), "the blob facts are saved for the next train")
+            cli._DEPENDENTS.clear()  # a new process: the in-memory map is gone, the disk facts stay
+            with mock.patch.object(cli, "_reach", side_effect=AssertionError("a cached blob is parsed again")):
+                again = self.split({"pkg/mod.py": {"f"}}, "pkg/mod.py")
+        self.assertEqual(first, ({"test_names.py"}, set()))
+        self.assertEqual(again, first)
+
+    def test_an_edited_test_module_is_read_again_under_its_new_blob(self):
+        self.write("pkg/mod.py", "def f():\n    return 1\n")
+        self.write("test_names.py", "from pkg import mod\nmod.f()\n")
+        self.assertEqual(self.split({"pkg/mod.py": {"f"}}, "pkg/mod.py"), ({"test_names.py"}, set()))
+        self.write("test_names.py", "import os\n")
+        self.assertEqual(self.split({"pkg/mod.py": {"f"}}, "pkg/mod.py"), (set(), set()))
+
+    def test_a_corrupt_facts_file_is_read_as_empty_and_the_map_is_still_right(self):
+        self.write("pkg/mod.py", "def f():\n    return 1\n")
+        self.write("test_names.py", "from pkg import mod\nmod.f()\n")
+        facts = os.path.join(self.tmp, "facts.json")
+        with open(facts, "w") as f:
+            f.write("{not json")
+        with mock.patch.object(cli, "_facts_path", return_value=facts):
+            self.assertEqual(self.split({"pkg/mod.py": {"f"}}, "pkg/mod.py"), ({"test_names.py"}, set()))
+
+
+class PostMergeVerify(ForemanTestCase):
+    """T-6160: the post-merge run asks cli.affected for the import-only dependents too (dependent["with_verify"]), with no
+    budget; a map past DEPENDENT_FILES is the full run, as the train's gate would have it."""
+
+    def partial(self, fills):
+        from sampo import lanes
+        os.makedirs(os.path.join(self.tmp, "plugin", "tests"), exist_ok=True)
+        with open(os.path.join(self.tmp, "plugin", "tests", "run.py"), "w") as f:
+            f.write("")  # the operator's own runner: _pm_partial selects only when it is there
+        p = types.SimpleNamespace(slug="s", dir=self.tmp, lane="T-1")
+        seen = []
+
+        def affected(project, since=None, also=None, dependent=None):
+            seen.append(dict(dependent))
+            dependent.update(fills)
+            return "cmd", ["test_a.py"], None
+
+        with mock.patch.dict(os.environ), mock.patch.object(cli, "affected", side_effect=affected), \
+                mock.patch.object(lanes, "_pm_sweep_due", return_value=False), mock.patch.object(lanes, "_pm_own_files",
+                                                                                              return_value=set()):
+            os.environ.pop("FM_POSTMERGE_CMD", None)
+            got = lanes._pm_partial(p, self.tmp, self.tmp, "base", tasks=())
+        return got, seen
+
+    def test_the_post_merge_run_asks_for_the_import_only_dependents_and_takes_no_budget(self):
+        got, seen = self.partial({})
+        self.assertEqual(got, ("cmd", ["test_a.py"]))
+        self.assertEqual(seen, [{"with_verify": True}], "no budget: the post-merge run takes every candidate it reaches")
+
+    def test_a_map_past_the_cap_is_the_full_run(self):
+        got, seen = self.partial({"skipped": True})
+        self.assertIsNone(got)
+        self.assertEqual(seen, [{"with_verify": True}])
 
 
 class GateNames(unittest.TestCase):

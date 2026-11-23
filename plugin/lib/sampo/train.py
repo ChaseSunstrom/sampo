@@ -137,16 +137,38 @@ def _affected_gate(p, wt, base, checks):
     """T-3544: (the full-suite gate, the affected template, the tests the merged batch reaches) or None to run every
     gate as configured. The full suite is the gate equal to the affected template's runner with no names (`python3
     plugin/tests/run.py`); the tests are cli.affected's since the base on the merged tree, as the probes pick them,
-    the rule tests among them. None: FOREMAN_FULL_GATE=1, no such gate, or nothing picked (the full suite decides)."""
+    the rule tests among them. None: FOREMAN_FULL_GATE=1, no such gate, or nothing picked (the full suite decides).
+    T-6160: the tests also take the test modules that depend on a module the batch changed (cli.dependents: an import, a
+    mock.patch target, a name of its path or of its data file) in rank order, while their estimated wall (run.py's
+    recorded seconds over the gate's slots) with each still fits cli.GATE_BUDGET_S (a hard stop); the rest of them run in
+    the post-merge verify.
+    Past half the test modules that is None, the full suite. The dependents picked, the modules read, the estimate
+    and the wall are logged per train (lane_train_dependents), with the line "<n> dependents in the gate (<s> s est),
+    <m> to verify"."""
+    import time
     from sampo import cli
     meta = c.read_meta(p)
     tpl = meta.get("affected") or ""
     full = cli.suite_gate(p.root, tpl, checks)  # T-3566: a close checks its linked tests against this part the same way
     if os.environ.get("FOREMAN_FULL_GATE") or not full:
         return None
+    dep = {}
+    started = time.monotonic()
     try:
-        _, tests, _ = cli.affected(c.Project(p.slug, wt, p.dir, p.lane), since=base)
-    except Exception:  # no affected command or no map: the full suite decides
+        width = cli.gate_width(tpl)  # T-6160: the slots the gate's run.py gets: the budget is wall seconds over them
+        dep["budget"] = {"width": width, "limit": cli.GATE_BUDGET_S}
+        _, tests, _ = cli.affected(c.Project(p.slug, wt, p.dir, p.lane), since=base, dependent=dep)
+    except Exception:  # no affected command, no map or no run.py timing: the full suite decides
+        return None
+    picked, modules = len(dep.get("picked") or ()), int(dep.get("modules") or 0)
+    skipped = bool(dep.get("skipped"))  # T-6160: past DEPENDENT_FILES changed files the map is not read at all
+    over = skipped or (bool(modules) and picked > modules // 2)  # T-6160: past half the test modules, the full suite runs
+    est, verify = (dep.get("budget") or {}).get("est", 0.0), len(dep.get("verify") or ())
+    line = f"{picked} dependents in the gate ({est} s est), {verify} to verify"
+    c.log_event(p, "lane_train_dependents", data={"picked": picked, "verify": verify, "modules": modules, "skipped": skipped,
+                                                  "full": over, "est": est, "width": width,
+                                                  "line": line, "wall": round(time.monotonic() - started, 2)})
+    if over:
         return None
     tests = [t for t in tests if not t.endswith(tuple(meta.get("affected_by") or ()))]  # another runner's: its own gate
     return (full, tpl, tests) if tests else None
