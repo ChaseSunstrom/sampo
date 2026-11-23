@@ -91,8 +91,9 @@ def _state(main, b):
 
 def review(p, tid, lenses, model):
     """fm audit run's reviewers on these lenses; auditrun records each clean one against the lane's tree. Returns
-    (verdicts {lens: ok | changes needed}, findings ["lens: SEVERITY file:line text"], why) where why names a refusal
-    or a reviewer that gave no verdict, '' when every lens answered."""
+    (verdicts {lens: ok | changes needed}, findings ["lens: SEVERITY file:line text"], why, unparsed) where why names a
+    refusal or a reviewer that gave no verdict, '' when every lens answered, and unparsed (T-6042) lists the lenses whose
+    reviewer answered with text that parses to no verdict (a failed or timed-out reviewer is in why, not here)."""
     from sampo import auditrun, cli
     args = cli.build_parser().parse_args(["audit", "run", tid])
     args.lens, args.model, args.pilot, args.json = list(lenses), model, True, True
@@ -107,8 +108,9 @@ def review(p, tid, lenses, model):
         data = json.loads(buf.getvalue() or "{}")
     except ValueError:
         data = {}
+        why = why or "audit run output unreadable"  # T-6042: its own reason: not an unparsed reply, not changes needed
     findings = [f"{lens}: {x}" for lens, xs in (data.get("findings") or {}).items() for x in xs]
-    return data.get("verdicts") or {}, findings, why
+    return data.get("verdicts") or {}, findings, why, list(data.get("unparsed") or [])  # auditrun's own classification
 
 
 def _accept(tid, main):
@@ -143,12 +145,17 @@ def pilot(p, tid, main):
     lenses, model = lenses_for(b, _sensitive(main, train._lane_tip(main, b)))
     res.update(lenses=lenses, model=model)
     before = _state(main, b)
-    verdicts, findings, why = review(p, b.id, lenses, model)
+    verdicts, findings, why, unparsed = review(p, b.id, lenses, model)
     res["findings"] = findings
+    if unparsed:  # T-6042: counted before any other exit (selfcheck.verdict_rate reads it), even when the tip moved
+        with c.lock(p.dir):
+            c.log_event(p, "pilot_unparsed", task=b.id, data={"lenses": unparsed, "parsed": len(verdicts)})
     now = _state(main, b)
     if now != before:  # T-5706: a commit or an edit that landed while the reviewers read is not what they reviewed
         return done("exception", f"tip moved during review (lane was at {before[0][:12] or 'no commit'}, now "
                                  f"{now[0][:12] or 'no commit'}); nothing accepted, rerun the pilot")
+    if unparsed:  # T-6042: an exception, never a changes round
+        return done("exception", f"reply unparsed: {', '.join(unparsed)}" + (f"; {why}" if why else ""))
     if why:
         return done("exception", why)
     stuck = [x for x in lenses if verdicts.get(x) != "ok"]

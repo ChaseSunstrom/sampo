@@ -24,6 +24,8 @@ if lens == os.environ.get("STUB_FAIL_LENS"):
     sys.exit(3)
 if lens == os.environ.get("STUB_BAD_LENS"):
     text = f"## {lens}: changes needed\n- HIGH a.py:3 the thing breaks on empty input\n- MEDIUM b.py:9 it is slow"
+elif lens in os.environ.get("STUB_NO_HEADER", "").split(","):  # T-6042: a reply with no '## <lens>: ok' header
+    text = "Looked it over, all fine, nothing to report."
 else:
     text = f"## {lens}: ok"
 if os.environ.get("STUB_JSON"):  # T-5842: claude -p --output-format json, with its usage

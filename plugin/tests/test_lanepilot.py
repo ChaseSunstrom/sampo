@@ -225,6 +225,66 @@ class ChangesNeeded(PilotCase):
         self.assertNotIn("changes needed", lanepilot.gate(c.find_project(self.repo), self.brief(), self.repo))
 
 
+class Unparsed(PilotCase):
+    """T-6042: a reviewer reply that parses to no verdict is an exception, counted, never 'changes needed'."""
+    tier = "M"
+
+    def stub(self, **env):
+        patch = mock.patch.dict(os.environ, env)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_text_with_no_verdict_is_an_exception_naming_the_lenses_and_never_changes(self):
+        self.stub(STUB_NO_HEADER="edge,self")
+        r = self.pilot()
+        self.assertEqual(r["outcome"], "exception", r)
+        self.assertTrue(r["reason"].startswith("reply unparsed: edge"), r["reason"])
+        self.assertNotIn("changes needed:", r["reason"], "not the changes line")
+        self.assertNotIn("pilot_tip", self.brief().meta, "no changes round was stamped")
+        self.assertEqual(c.ledger_events(c.find_project(self.repo), ("pilot_changes",)), [])
+        self.assertFalse(self.accepted())
+
+    def test_the_run_is_counted_in_the_ledger_with_its_unparsed_lenses_and_how_many_parsed(self):
+        self.stub(STUB_NO_HEADER=",".join(c.DEFAULT_LENSES))
+        self.pilot()
+        ev = c.ledger_events(c.find_project(self.repo), ("pilot_unparsed",))
+        self.assertEqual(len(ev), 1, ev)
+        self.assertEqual(sorted(ev[0]["data"]["lenses"]), sorted(c.DEFAULT_LENSES))
+        self.assertEqual(ev[0]["data"]["parsed"], 0)
+
+    def test_a_reviewer_that_failed_keeps_its_own_reason_and_is_not_unparsed(self):
+        self.stub(STUB_FAIL_LENS="edge")
+        r = self.pilot()
+        self.assertEqual(r["outcome"], "exception", r)
+        self.assertNotIn("reply unparsed", r["reason"])
+        self.assertIn("edge", r["reason"])
+        self.assertEqual(c.ledger_events(c.find_project(self.repo), ("pilot_unparsed",)), [])
+
+    def test_audit_output_that_is_not_json_is_its_own_reason_not_unparsed(self):
+        from sampo import auditrun
+
+        def noisy(p, args):
+            print("not json at all")
+        with mock.patch.object(auditrun, "run", noisy):
+            r = self.pilot()
+        self.assertEqual(r["outcome"], "exception", r)
+        self.assertEqual(r["reason"], "audit run output unreadable")
+        self.assertEqual(c.ledger_events(c.find_project(self.repo), ("pilot_unparsed",)), [])
+
+    def test_the_run_is_counted_even_when_the_tip_moved_during_review(self):
+        self.stub(STUB_NO_HEADER="edge,self")
+        lane = self.brief().meta["lane"]
+        self.stub(STUB_RUN=json.dumps(["git", "-C", lane, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q",
+                                       "--allow-empty", "-m", "mid"]))
+        r = self.pilot()
+        self.assertIn("tip moved", r["reason"])
+        self.assertEqual(len(c.ledger_events(c.find_project(self.repo), ("pilot_unparsed",))), 1)
+
+    def test_a_real_changes_needed_reply_is_still_changes(self):
+        self.stub(STUB_BAD_LENS="edge")
+        self.assertEqual(self.pilot()["outcome"], "changes")
+
+
 class ExceptionLines(PilotCase):
     tier = "M"
 
@@ -374,7 +434,7 @@ class DryAndAll(PilotCase):
         self.assertIs(inspect.signature(lanes.land_holds).parameters["timing"].default, True)
 
     def test_a_changes_round_stamps_pilot_tip_through_the_ledger(self):  # round 3 (b)
-        with mock.patch.object(lanepilot, "review", return_value=({"self": "changes needed"}, [], "")):
+        with mock.patch.object(lanepilot, "review", return_value=({"self": "changes needed"}, [], "", [])):
             r = lanepilot.pilot(c.find_project(self.repo), self.tid, self.repo)
         self.assertEqual(r["outcome"], "changes")
         self.assertTrue(self.brief().meta.get("pilot_tip"))
@@ -470,7 +530,9 @@ class PilotAnswer(PilotCase):
     def test_every_reviewer_prompt_ends_by_asking_for_the_section(self):
         self.pilot()
         for call in self.calls():
-            self.assertTrue(call["stdin"].rstrip().endswith(f"## {call['lens']}: changes needed`."), call["stdin"][-300:])
+            # T-6028 moved the closing ask to "once ... above its findings" (this assertion was stale on trunk)
+            self.assertTrue(call["stdin"].rstrip().endswith(f"Give the verdict header for the lens {call['lens']} once, "
+                            "in the form and place the format above gives it, above its findings."), call["stdin"][-300:])
 
     def test_a_reply_tail_that_reads_like_an_instruction_is_defanged_and_plain(self):
         """T-6011 review: the reply is untrusted text on its way to the error, the Log and the lead's line."""

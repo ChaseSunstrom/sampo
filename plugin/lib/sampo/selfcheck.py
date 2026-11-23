@@ -43,6 +43,17 @@ def _age(secs):
     return f"{h:.0f} h" if h >= 1 else f"{secs / 60:.0f} min"
 
 
+UNSHIPPED_TITLE = f"Landed commits sit unshipped for {SHIP_H}+ h: find why sampo ship has not run and ship"
+
+
+def _files_once(briefs, title):
+    """T-6042: the capture action for a check's stable title, or None while a task with that title is still open: landing
+    the filed task's own work adds an unshipped commit, which would keep the condition (and the filing) alive."""
+    if any(b.status in OPEN and b.title.lower() == c.plain(title).strip().lower() for b in briefs or ()):
+        return None
+    return _fm("capture", "--source", "discovered", title)
+
+
 def unshipped_read(p, now):
     """T-3845: (commits since the last sampo ship, the age in seconds of the oldest), (0, 0) when everything shipped;
     None when there is no ship ref or it isn't on this history. The read unshipped and sampo scorecard share."""
@@ -60,8 +71,10 @@ def unshipped(p, briefs, now):
     if not got or not got[0] or got[1] < SHIP_H * 3600:
         return None
     n, oldest = got
+    # T-6042: files a task through act (backoff, daily cap) as well as telling: the 2-day no-push only told the lead
     return Hit(f"{n} landed commit(s) unshipped, the oldest {_age(oldest)} → sampo ship", tell=True,
-               level=int(oldest // (6 * 3600)))  # T-4118: told; again each 6 h it grows (T-4121 ships it)
+               level=int(oldest // (6 * 3600)),  # T-4118: told; again each 6 h it grows (T-4121 ships it)
+               action=_files_once(briefs, UNSHIPPED_TITLE))
 
 
 def old_mirror(p, briefs, now):
@@ -290,6 +303,26 @@ def orphaned_lanes(p, briefs, now):
 
 
 CHECKS += (landing_rate, orphaned_lanes)
+
+VERDICT_WINDOW_S, VERDICT_N = 2 * 3600, 3  # T-6042: the window pilot runs are counted over; runs with no parsed verdict that file
+VERDICT_TITLE = "Pilot reviewer verdicts are lost: runs parsed no verdict (compare auditrun.parse with the reply format)"
+
+
+def verdict_rate(p, briefs, now):
+    """T-6042: pilot runs whose reviewers' replies parsed to no verdict at all (lanepilot's pilot_unparsed event, parsed
+    == 0) in the last VERDICT_WINDOW_S: VERDICT_N or more files a task. The whole of one day's pilot verdicts were lost
+    to a parser drift and only the lead noticed; a window where verdicts parsed, or fewer runs, says nothing."""
+    lost = [e for e in c.ledger_events(p, ("pilot_unparsed",), since=c.iso(now - VERDICT_WINDOW_S))
+            if not (e.get("data") or {}).get("parsed")]
+    if len(lost) < VERDICT_N:
+        return None
+    tasks = sorted({str(e.get("task")) for e in lost if e.get("task")})
+    return Hit(f"{len(lost)} pilot runs in the last {VERDICT_WINDOW_S // 3600} h parsed no reviewer verdict "
+               f"({c.joinmore(tasks, 3)}) → compare auditrun.parse with the reply format",
+               action=_files_once(briefs, VERDICT_TITLE))
+
+
+CHECKS += (verdict_rate,)  # its own line: another lane's check joins the tuple above without a conflict
 
 
 UNTRACKED_H, UNTRACKED_STATS = 1, 500  # untracked this long is left behind, not work in progress; files stat'ed

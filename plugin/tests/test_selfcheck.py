@@ -431,6 +431,107 @@ class SelfCheckBehaviour(ForemanTestCase):
         self.assertIsNone(selfcheck.wait_turns(self.p, [], time.time()))
 
 
+class VerdictRate(ForemanTestCase):
+    """T-6042: pilot runs whose reviewers' verdicts all came back unparsed, over a window, file a task."""
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        self.p = c.find_project(self.repo)
+        self.spawned = []
+
+    def unparsed(self, n, parsed=0, task="T-0001"):
+        for _ in range(n):
+            c.log_event(self.p, "pilot_unparsed", task=task, data={"lenses": ["edge"], "parsed": parsed})
+
+    def hit(self):
+        return selfcheck.verdict_rate(self.p, [], time.time())
+
+    def test_three_runs_with_no_parsed_verdict_file_a_task(self):
+        self.unparsed(3)
+        h = self.hit()
+        self.assertTrue(h and h.action and h.action[-4:-1] == ["capture", "--source", "discovered"], h)
+        self.assertIn("3", str(h))
+        self.assertIn("verdict", str(h))
+
+    def test_two_runs_or_runs_that_parsed_a_verdict_file_nothing(self):
+        self.unparsed(2)
+        self.assertIsNone(self.hit())
+        self.unparsed(5, parsed=1)
+        self.assertIsNone(self.hit(), "a run with a parsed verdict is not a lost verdict")
+
+    def test_runs_older_than_the_window_do_not_count(self):
+        self.unparsed(3)
+        self.assertIsNone(selfcheck.verdict_rate(self.p, [], time.time() + selfcheck.VERDICT_WINDOW_S + 600))
+
+    def test_it_files_through_acts_backoff_and_daily_cap(self):
+        self.unparsed(3)
+        t = time.time()
+        run = lambda now: selfcheck.act(self.p, briefs=[], now=now, checks=(selfcheck.verdict_rate,),  # noqa: E731
+                                        spawn=lambda p, argv: self.spawned.append(argv) or 4242, tell=lambda p, x: None)
+        run(t)
+        run(t + 60)
+        self.assertEqual(len(self.spawned), 1, "backs off")
+        self.assertIn("verdict_rate", [e["data"]["check"] for e in c.ledger_events(self.p, ("self_act",))])
+
+    def test_an_open_task_with_its_stable_title_stops_the_refiling(self):
+        self.unparsed(3)
+        h = selfcheck.verdict_rate(self.p, [], time.time())
+        self.assertEqual(h.action[-1], selfcheck.VERDICT_TITLE, "a stable title: no run count in it")
+        open_one = types.SimpleNamespace(title=selfcheck.VERDICT_TITLE, status="captured")
+        h = selfcheck.verdict_rate(self.p, [open_one], time.time())
+        self.assertTrue(h and not h.action, "still said, not filed again")
+        done = types.SimpleNamespace(title=selfcheck.VERDICT_TITLE, status="done")
+        self.assertTrue(selfcheck.verdict_rate(self.p, [done], time.time()).action, "a closed one files again")
+
+    def test_it_is_one_of_the_checks(self):
+        self.assertIn(selfcheck.verdict_rate, selfcheck.CHECKS)
+
+
+class UnshippedFiles(ForemanTestCase):
+    """T-6042: nothing shipped for SHIP_H hours files a task through act, instead of only telling the lead."""
+    git, land = SelfCheck.git, SelfCheck.land
+
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        self.p = c.find_project(self.repo)
+
+    def test_the_unshipped_hit_carries_a_capture_action(self):
+        self.land("a.txt", 30)
+        self.git("update-ref", "refs/foreman/shipped", "HEAD")
+        self.land("b.txt", 5)
+        h = selfcheck.unshipped(self.p, [], time.time())
+        self.assertTrue(h.action and h.action[-4:-1] == ["capture", "--source", "discovered"], h.action)
+        self.assertIn("unshipped", h.action[-1])
+
+    def test_it_files_once_then_backs_off(self):
+        self.land("a.txt", 30)
+        self.git("update-ref", "refs/foreman/shipped", "HEAD")
+        self.land("b.txt", 5)
+        spawned = []
+        t = time.time()
+        for now in (t, t + 60):
+            selfcheck.act(self.p, briefs=[], now=now, checks=(selfcheck.unshipped,),
+                          spawn=lambda p, argv: spawned.append(argv) or 4242, tell=lambda p, x: None)
+        self.assertEqual(len(spawned), 1)
+
+    def test_an_open_task_with_its_stable_title_stops_the_refiling(self):
+        self.land("a.txt", 30)
+        self.git("update-ref", "refs/foreman/shipped", "HEAD")
+        self.land("b.txt", 5)
+        open_one = types.SimpleNamespace(title=selfcheck.UNSHIPPED_TITLE, status="active")
+        h = selfcheck.unshipped(self.p, [open_one], time.time())
+        self.assertTrue(h and not h.action, "the filed task's own landed work keeps the finding alive: said, not refiled")
+        self.assertTrue(h.tell)
+        self.assertEqual(selfcheck.unshipped(self.p, [], time.time()).action[-1], selfcheck.UNSHIPPED_TITLE)
+
+    def test_fresh_or_shipped_work_files_nothing(self):
+        self.land("a.txt", 30)
+        self.git("update-ref", "refs/foreman/shipped", "HEAD")
+        self.land("b.txt", 0.5)
+        self.assertIsNone(selfcheck.unshipped(self.p, [], time.time()))
+
+
 class SelfAct(ForemanTestCase):
     """T-4118: a finding acts or tells; the steer audit (T-4115) found every check ended as a line nobody acted on."""
     def setUp(self):
