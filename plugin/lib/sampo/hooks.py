@@ -7735,6 +7735,26 @@ def _goal_gate(p, pl, g, sid, closed=()):
             + ". Finish or capture each, then sampo goal verdict.")
 
 
+def _step_work_running(p, act, sid):
+    """T-6057: whether work of this session (a lane's builder or other agent, a background run) started since the
+    active task's current step began (its last step_done or focus in the ledger, within BG_WAIT_S) and has not ended.
+    The same 2 h bound as drive's wait (_running): an older start is assumed finished. Fails closed to 'not running':
+    an unreadable record asks as it did before."""
+    if not isinstance(sid, str) or not sid or not _running(sid):
+        return False  # the cheap scan first: the ledger is read only when something runs
+    try:
+        dt = c.datetime
+        floor = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=BG_WAIT_S)
+        began = floor
+        for e in c.ledger_events(p, ("step_done", "focus"), since=floor.strftime("%Y-%m-%dT%H:%M:%SZ")):
+            t = c.parse_ts(e.get("ts"))
+            if e.get("task") == act.id and t and t > began:
+                began = t
+        return bool(_running(sid, since=began))
+    except Exception:
+        return False
+
+
 def _evidence_gate(p, act, pl, g, closed=()):
     if not act or pl.get("stop_hook_active"):
         return None
@@ -7749,6 +7769,8 @@ def _evidence_gate(p, act, pl, g, closed=()):
     key = f"{pl.get('session_id')}:{act.id}:{cur.n if cur else 'task'}"
     if not missing or key in g["evidence"]:
         return None
+    if cur and _step_work_running(p, act, pl.get("session_id")):
+        return None  # T-6057: the step's work still runs: asked once it ended (the key is not spent), never at its start
     g["evidence"].append(key)
     c.log_event(p, "stop_gate", task=act.id, data={"step": cur.n if cur else None}, session=pl.get("session_id"))
     return (f"Sampo: {act.id} {label} has no recorded verification evidence. Record it: "
@@ -7813,11 +7835,12 @@ def _live_close(p, tid):
     return False
 
 
-def _running(sid, agents=None, closes=None, cis=None):
+def _running(sid, agents=None, closes=None, cis=None, since=None):
     """Background agents and commands of this session still running: their completion notification wakes the
     session, so drive waits instead of pushing busywork. agents, a set, gets the ids that are subagents (a start or a
     SendMessage resume), which never turn into a service past LONG_JOB_S (T-2872). closes, a dict, gets each running
-    job's task ids its start recorded as closing (T-4644: the PostToolUse hook stores the ids, never the command)."""
+    job's task ids its start recorded as closing (T-4644: the PostToolUse hook stores the ids, never the command).
+    since, a datetime (T-6057): only the starts at or after it count (the work of a step that began then)."""
     state = {}
     shut = {}
     watch = set()
@@ -7828,6 +7851,8 @@ def _running(sid, agents=None, closes=None, cis=None):
             continue
         kind, key = e.get("kind"), e.get("agent_id") or e.get("id")
         if kind in ("subagent_start", "bg_start"):
+            if since is not None and (c.parse_ts(e.get("ts")) or since) < since:
+                continue
             state[key] = True
             if agents is not None and (kind == "subagent_start" or e.get("agent")):
                 agents.add(key)

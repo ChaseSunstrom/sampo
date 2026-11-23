@@ -7637,3 +7637,103 @@ class ReviewerBind(ForemanTestCase):
         self.stop(CHANGES_ONE, [self.prompt(self.tid)], agent_id="a1")
         self.stop(DELTA_APPROVE, [self.prompt(self.tid)], agent_id="a2")
         self.assertEqual(self.lenses(), [])
+
+
+class StepEvidenceInProgress(HookCase):
+    """T-6057: a done-claim on a step whose work still runs in the background (a lane, an agent, a background run that
+    started since the step began) is not asked for evidence: the ask comes once that work ended or its start passed the
+    2 h bound. Never for a job from before the step began, nor the whole task's ask at close."""
+
+    def ago(self, minutes):
+        t = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=minutes)
+        return t.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def put(self, kind, key, minutes=0, sid="sess-1"):
+        row = {"ts": self.ago(minutes), "kind": kind, "session_id": sid}
+        row["agent_id" if kind.startswith("subagent") else "id"] = key
+        with open(os.path.join(self.home, "state", "events.jsonl"), "a") as f:
+            f.write(json.dumps(row) + "\n")
+
+    def claim(self, sid="sess-1"):
+        return self.hook("Stop", {"stop_hook_active": False, "last_assistant_message": "All done, the fix is implemented.",
+                                  "session_id": sid})
+
+    def verdict(self):
+        return (parse(self.claim()) or {}).get("decision")
+
+    def ready(self):
+        self.fm("init")
+        tid = self.task()
+        self.fm("drive", "off")
+        return tid
+
+    def test_a_step_whose_background_run_still_runs_is_not_asked_and_is_once_it_ended(self):
+        tid = self.ready()
+        self.put("bg_start", "bjob1")
+        self.assertIsNone(self.verdict(), "a running job: no demand")
+        self.assertIsNone(self.verdict(), "and the ask was not spent")
+        self.put("bg_done", "bjob1")
+        p = self.claim()
+        self.assertEqual((parse(p) or {}).get("decision"), "block")
+        self.assertIn(f"{tid} step 1/2 has no recorded verification evidence", parse(p)["reason"])
+
+    def test_a_running_agent_or_lane_builder_exempts_the_step_too(self):
+        self.ready()
+        self.put("subagent_start", "abuilder1")
+        self.assertIsNone(self.verdict())
+        self.put("subagent_stop", "abuilder1")
+        self.assertEqual(self.verdict(), "block")
+
+    def test_a_start_past_the_two_hour_bound_is_asked(self):
+        self.ready()
+        self.put("bg_start", "bjob1", minutes=3 * 60)
+        self.assertEqual(self.verdict(), "block")
+
+    def test_a_job_from_before_the_step_began_and_another_sessions_job_do_not_exempt(self):
+        self.fm("init")
+        self.fm("drive", "off")
+        self.put("bg_start", "bold", minutes=30)  # running before the task was even focused
+        self.put("bg_start", "bother", sid="sess-9")
+        self.task()
+        self.assertEqual(self.verdict(), "block")
+
+    def step_done_start(self, secs):
+        """Step 1 done; a background start `secs` from that step_done's own second (the ledger and the events keep whole
+        seconds). Returns the task id; step 2 is current."""
+        from sampo import core as c
+        tid = self.ready()
+        self.fm("task", "evidence", tid, "--step", "1", "--run", "true")
+        self.fm("task", "step", tid, "done", "1")
+        done = [e for e in c.ledger_events(self.project(), ("step_done",)) if e.get("task") == tid][-1]
+        ts = (c.parse_ts(done["ts"]) + datetime.timedelta(seconds=secs)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        with open(os.path.join(self.home, "state", "events.jsonl"), "a") as f:
+            f.write(json.dumps({"ts": ts, "kind": "bg_start", "session_id": "sess-1", "id": "bjob1"}) + "\n")
+        return tid
+
+    def test_step_done_boundary_a_start_a_second_before_it_is_the_earlier_steps_and_asked(self):
+        tid = self.step_done_start(-1)
+        p = self.claim()
+        self.assertEqual((parse(p) or {}).get("decision"), "block")
+        self.assertIn(f"{tid} step 2/2 has no recorded verification evidence", parse(p)["reason"])
+
+    def test_step_done_boundary_a_start_in_the_same_second_counts_as_the_new_step(self):
+        self.step_done_start(0)  # decided: equal is not before (>= the step's start)
+        self.assertIsNone(self.verdict())
+
+    def test_step_done_boundary_a_start_after_it_exempts(self):
+        self.step_done_start(1)
+        self.assertIsNone(self.verdict())
+
+    def test_the_task_level_ask_at_close_is_not_exempted(self):
+        from sampo import hooks
+
+        class Act:  # no current step: the ask is the task's own, at close
+            id = "T-0001"
+            steps = lambda self: []
+            current_step = lambda self: None
+            has_evidence = lambda self, step=None: False
+        self.fm("init")
+        with mock.patch.object(hooks, "_step_work_running", side_effect=AssertionError("asked at close")):
+            reason = hooks._evidence_gate(self.project(), Act(), {"session_id": "sess-1",
+                                          "last_assistant_message": "All done, the fix is implemented."}, {"evidence": []})
+        self.assertIn("T-0001 task has no recorded verification evidence", reason)
