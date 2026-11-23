@@ -10945,6 +10945,7 @@ def _build_parser(only=None):
     s = add("cost", lazy("sampo.cost", "cmd_cost"), tier=("Reports", 990), help="tokens by task, session and tool, from the transcripts")
     s.add_argument("--days", type=float, default=7)
     s.add_argument("--by-model", action="store_true", help="tasks finished per model and type/tier, with their grades")
+    s.add_argument("--by-effort", action="store_true", help="per role and effort: launched and landed lanes, thinking share, first-pass rate and rounds (of the landed)")
     s.add_argument("--forecast", action="store_true", help="when the 5-hour and weekly usage windows fill at the "
                    "pace so far (T-0973)")
     s.add_argument("--task", metavar="ID", help="one task: spent, its cap and the forecast from similar tasks (T-1083)")

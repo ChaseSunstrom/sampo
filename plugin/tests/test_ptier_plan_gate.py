@@ -185,15 +185,15 @@ class RivalBar(Env):
 
 
 class BuilderModel(Env):
-    def test_trivial_and_small_pick_haiku_at_medium_effort(self):
+    def test_trivial_and_small_pick_haiku_at_low_effort(self):  # T-6124: the light scope launches at low effort
         for tier in ("trivial", "small"):
-            self.assertEqual(lanes.light_model(tier), ("haiku", "medium"), tier)
+            self.assertEqual(lanes.light_model(tier), ("haiku", "low"), tier)
         for tier in ("normal", "risky"):
             self.assertIsNone(lanes.light_model(tier), tier)
 
     def test_the_brief_for_a_docs_plan_names_haiku_and_off_restores_the_route(self):
-        self.assertEqual(lanes.plan_model(brief("M", DOCS)), ("haiku", "medium", "ptier trivial"))
-        self.assertEqual(lanes.plan_model(brief("S", CODE)), ("haiku", "medium", "ptier small"))
+        self.assertEqual(lanes.plan_model(brief("M", DOCS)), ("haiku", "low", "ptier trivial"))
+        self.assertEqual(lanes.plan_model(brief("S", CODE)), ("haiku", "low", "ptier small"))
         self.assertIsNone(lanes.plan_model(brief("M", CODE)))
         os.environ["FOREMAN_PROCESS_TIER"] = "off"
         self.assertIsNone(lanes.plan_model(brief("S", CODE)), "off: today's route, sonnet unless the history says otherwise")

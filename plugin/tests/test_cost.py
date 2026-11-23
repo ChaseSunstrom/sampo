@@ -804,6 +804,34 @@ class PerLane(HookCase):
         self.assertIn("0 lane(s) landed", proc.stdout)
 
 
+class ByEffort(PerLane):
+    """T-6124: `sampo cost --by-effort`: per role and effort, the lanes, the thinking share of the output tokens, the
+    first-pass rate and the review rounds, so a lowered effort can be read against its quality."""
+
+    def test_each_role_and_effort_row_counts_its_lanes_thinking_first_pass_and_rounds(self):
+        self.ev(0, "lane_effort", "T-0001", {"role": "builder", "effort": "low", "class": "small"})
+        self.ev(0, "lane_effort", "T-0002", {"role": "builder", "effort": "medium", "class": "normal"})
+        self.ev(0, "lane_effort", "T-0002", {"role": "reviewer", "effort": "high", "class": "normal"})
+        self.ev(0.5, "finding", "T-0002", {"verdict": "reported", "file": "a.py", "text": "HIGH x"})
+        text = self.fm("cost", "--by-effort", env={"CLAUDE_CONFIG_DIR": self.cfg}).stdout
+        for word in ("effort", "builder", "reviewer", "launched", "landed", "thinking", "first-pass", "rounds"):
+            self.assertIn(word, text)
+        rows = {(ln.split()[0], ln.split()[1]): ln.split() for ln in text.splitlines() if len(ln.split()) > 2}
+        self.assertEqual(rows[("builder", "low")][2], "1", text)
+        self.assertEqual(rows[("builder", "medium")][2], "1", text)
+        self.assertEqual(rows[("reviewer", "high")][2], "1", text)
+
+    def test_launched_and_landed_sit_side_by_side_and_a_launch_that_never_landed_is_not_landed(self):
+        self.ev(0, "lane_effort", "T-0001", {"role": "builder", "effort": "low", "class": "small"})
+        self.ev(0, "lane_effort", "T-0002", {"role": "builder", "effort": "low", "class": "small"})
+        self.ev(0.5, "lane_landed", "T-0001", {"tasks": ["T-0001"]})
+        text = self.fm("cost", "--by-effort", env={"CLAUDE_CONFIG_DIR": self.cfg}).stdout
+        rows = {(ln.split()[0], ln.split()[1]): ln.split() for ln in text.splitlines() if len(ln.split()) > 3}
+        self.assertEqual(rows[("builder", "low")][2:4], ["2", "1"], text)
+        self.assertIn("launched", text.splitlines()[1], text)
+        self.assertIn("landed", text.splitlines()[1], text)
+
+
 class VsNative(HookCase):
     """T-6060: `sampo cost --vs-native`: dollars per landed lane by role (each token kind at its model family's price, a
     local model at zero), the plain Claude Code reference with its source and n, the ratio and the 10x line."""

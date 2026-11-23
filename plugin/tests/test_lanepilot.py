@@ -97,6 +97,32 @@ class SmallLane(PilotCase):
         self.assertTrue(self.accepted(), "sampo lane accept ran and accepted the lane (the S gate takes self as given)")
 
 
+class EffortByStep(PilotCase):
+    """T-6124: the pilot's reviewers launch at their depth's effort (low trivial and small, medium normal, high risky, full
+    and sensitive); the fixer at medium, high after a failed fix round; FOREMAN_EFFORT=off passes no --effort at all."""
+
+    def test_a_small_lane_reviewers_run_at_low_effort(self):
+        self.assertEqual(self.pilot()["outcome"], "accepted")
+        self.assertTrue(self.calls())
+        self.assertEqual({self.arg(x, "--effort") for x in self.calls()}, {"low"})
+
+    def test_the_effort_table_maps_each_depth(self):
+        self.assertEqual(lanepilot.PILOT_EFFORT, {"trivial": "low", "small": "low", "normal": "medium",
+                                                  "risky": "high", "full": "high", "sensitive": "high"})
+
+    def test_the_fixer_runs_at_medium_then_high_after_a_failed_round(self):
+        self.assertEqual([lanepilot.fix_effort(n) for n in (1, 2, 3)], ["medium", "high", "high"])
+        argv = lanepilot.fix_argv(c.find_project(self.repo), self.brief(), [], 1, 1.0)
+        self.assertEqual(argv[argv.index("--effort") + 1], "medium")
+
+    def test_foreman_effort_off_passes_no_effort_flag(self):
+        with mock.patch.dict(os.environ, {"FOREMAN_EFFORT": "off"}):
+            self.pilot()
+        self.assertTrue(self.calls())
+        for x in self.calls():
+            self.assertNotIn("--effort", x["args"])
+
+
 class SelfLensFormat(PilotCase):
     def test_every_lens_is_briefed_on_the_verdict_format(self):  # T-5706 item 5, T-6044: intent and adversary replace self
         self.pilot()
@@ -327,15 +353,24 @@ class VerdictCache(PilotCase):
         super().setUp()
         self.p = c.find_project(self.repo)
 
-    def review(self, lenses=("intent", "adversary"), model="haiku", raw=None, b=None):
+    def review(self, lenses=("intent", "adversary"), model="haiku", raw=None, b=None, effort=""):
         b0 = self.brief()
         before = lanepilot._state(self.repo, b0)
         names, whole = lanepilot.lane_diff(self.repo, before[0])
         scopes = {x: ("", whole if raw is None else raw) for x in lenses}
-        return lanepilot.review_cached(self.p, b or b0, self.repo, before, list(lenses), model, scopes)
+        return lanepilot.review_cached(self.p, b or b0, self.repo, before, list(lenses), model, scopes, effort=effort)
 
     def launches(self):
         return len(self.calls())
+
+    def test_a_verdict_made_at_one_effort_is_not_replayed_at_another(self):
+        """T-6124: the effort is part of the key, so a FOREMAN_EFFORT toggle or a different depth re-reviews."""
+        self.review(effort="low")
+        self.assertEqual(self.launches(), 2)
+        self.review(effort="low")
+        self.assertEqual(self.launches(), 2, "the same effort replays the verdict")
+        self.review(effort="medium")
+        self.assertEqual(self.launches(), 4, "a new effort launches its reviewers again")
 
     def test_the_same_review_again_launches_no_child(self):
         first = self.review()
@@ -1247,7 +1282,7 @@ class LocalReviewFirst(LocalReviewCase):
         self.assertEqual(r["outcome"], "accepted", r)  # Claude's clean reviews decide, not the local HIGH
 
     def test_a_lane_with_no_adversary_lens_is_read_by_claude_alone(self):
-        with mock.patch.object(lanepilot, "lenses_for", return_value=(["intent"], "haiku")):
+        with mock.patch.object(lanepilot, "plan_for", return_value=(["intent"], "haiku", "low")):  # T-6124: plan_for's three
             r = self.pilot()
         self.assertEqual(self.stub.asked, [], "no lane is accepted on local verdicts alone: nothing is read locally")
         self.assertEqual(self.reviewed_by_claude(), ["intent"], r)

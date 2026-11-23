@@ -53,22 +53,42 @@ SALT_FILE = "local-parity.salt"  # T-6089: the secret salt of the sample pick, i
 # T-6101: the pilot's headless reviewers are outside the Haiku default (a `claude -p` child, not an Agent launch), so they
 # keep the models the depth map gave before it: haiku for a trivial or small lane, sonnet from normal up.
 PILOT_MODEL = {"trivial": "haiku", "small": "haiku", "normal": "sonnet", "risky": "sonnet"}
+# T-6124: a reviewer's --effort by its depth: low for a trivial or small lane, medium for a normal one, high for a risky, full
+# or sensitive one (sensitive: the adversary lens on a sensitive diff, whatever the tier)
+PILOT_EFFORT = {"trivial": "low", "small": "low", "normal": "medium", "risky": "high", "full": "high", "sensitive": "high"}
+
+
+def effort_off():
+    """T-6124: FOREMAN_EFFORT=off restores today's launches: the pilot's reviewers and fixer pass no --effort at all."""
+    return os.environ.get("FOREMAN_EFFORT", "").strip().lower() == "off"
+
+
+def _effort(label):
+    """The --effort a reviewer at depth `label` runs at (PILOT_EFFORT), '' when effort_off()."""
+    return "" if effort_off() else PILOT_EFFORT.get(label, "medium")
 
 
 def lenses_for(b, sensitive, p=None, names=None, raw=b""):
-    """(lenses, model) a lane's review runs with (T-6044): lanes.review_depth's, from the lane's files and diff (the depth
-    map and its floors: a protected path, a SECURITY task, SAMPO_REVIEW_DEPTH=full). A sensitive diff always carries the
-    adversary, on sonnet. names None (the diff could not be read) is every lens on sonnet: fail toward more review.
-    The model is PILOT_MODEL's for the tier (T-6101 keeps it off the Haiku default)."""
+    """(lenses, model) a lane's review runs with: plan_for's first two (T-6044)."""
+    return plan_for(b, sensitive, p, names, raw)[:2]
+
+
+def plan_for(b, sensitive, p=None, names=None, raw=b""):
+    """(lenses, model, effort) a lane's review runs with (T-6044): lanes.review_depth's, from the lane's files and diff (the
+    depth map and its floors: a protected path, a SECURITY task, SAMPO_REVIEW_DEPTH=full). A sensitive diff always carries
+    the adversary, on sonnet. names None (the diff could not be read) is every lens on sonnet at the top effort: fail toward
+    more review. The model is PILOT_MODEL's for the tier (T-6101 keeps it off the Haiku default); the effort is PILOT_EFFORT's
+    for the same depth (T-6124)."""
     from sampo import cli
     if names is None:
-        return list(c.DEFAULT_LENSES), "sonnet"
+        return list(c.DEFAULT_LENSES), "sonnet", _effort("full")
     d = lanes.review_depth(b, names, raw.decode("utf-8", "replace"), p=p, tests_linked=cli._tests_linked(p, b, names))
     lenses = list(d["lenses"])
     model = "sonnet" if d["full"] else PILOT_MODEL.get(d["ptier"], "sonnet")
+    label = "full" if d["full"] else d["ptier"]
     if sensitive:
-        lenses, model = [x for x in c.DEFAULT_LENSES if x in lenses or x == "adversary"], "sonnet"
-    return lenses, model
+        lenses, model, label = [x for x in c.DEFAULT_LENSES if x in lenses or x == "adversary"], "sonnet", "sensitive"
+    return lenses, model, _effort(label)
 
 
 def _git_bytes(main, *args):
@@ -159,14 +179,15 @@ def _brief_hash(b):
     return hashlib.sha256(json.dumps(doc, sort_keys=True).encode()).hexdigest()
 
 
-def cache_key(b, lens, model, raw):
+def cache_key(b, lens, model, raw, effort=""):
     """The verdict cache's key (T-6044): the diff's bytes the lens reads, the lens, the model, the prompt version and the
-    brief. '' (no key, so no caching) for a diff that was not read or a prompt that can't be versioned."""
+    brief, and the effort the reviewer ran at (T-6124; left out when none, so a no-effort review keeps its key). '' (no
+    key, so no caching) for a diff that was not read or a prompt that can't be versioned."""
     version = _prompt_version()
     if not raw or not version:
         return ""
     h = hashlib.sha256()
-    for part in (hashlib.sha256(raw).hexdigest(), lens, model, version, _brief_hash(b)):
+    for part in (hashlib.sha256(raw).hexdigest(), lens, model, version, _brief_hash(b), *([effort] if effort else [])):
         h.update(hashlib.sha256(part.encode()).digest())
     return h.hexdigest()
 
@@ -226,7 +247,7 @@ def _state(main, b):
     return train._lane_tip(main, b), (c.worktree_id(lane) if lane and os.path.isdir(lane) else "")
 
 
-def review(p, tid, lenses, model, since="", note=""):
+def review(p, tid, lenses, model, since="", note="", effort=""):
     """fm audit run's reviewers on these lenses (since: a commit, so they read only the fix after it, T-6044); auditrun
     records each clean one against the lane's tree. `note` (T-5707) is appended to each reviewer's prompt as data: a
     re-review's fix delta and prior findings. Returns
@@ -236,6 +257,7 @@ def review(p, tid, lenses, model, since="", note=""):
     from sampo import auditrun, cli
     args = cli.build_parser().parse_args(["audit", "run", tid])
     args.lens, args.model, args.pilot, args.json = list(lenses), model, True, True
+    args.effort = effort  # T-6124: the depth's --effort for each reviewer ('' passes none)
     args.project = p.slug  # the pilot's own project, not whatever the process cwd resolves to
     args.pilot_note = note  # a string, not args.note (the CLI's --note is a list): auditrun puts it in each reviewer's prompt
     if since:  # prep diffs since that commit; the focus line says why the diff is short
@@ -287,15 +309,15 @@ def scopes_for(main, b, lenses, tip, whole, sensitive):
     return scopes
 
 
-def review_cached(p, b, main, before, lenses, model, scopes, note=""):
+def review_cached(p, b, main, before, lenses, model, scopes, note="", effort=""):
     """review() through the verdict cache (T-6044): same return, and `note` goes to every review that runs (T-5707).
-    A lens whose key (diff bytes it reads, lens, model, prompt version, brief) is stored is answered from the store
+    A lens whose key (diff bytes it reads, lens, model, prompt version, brief, effort) is stored is answered from the store
     with no child: a clean one is recorded against the lane's tree
     as a review would, a changes-needed one replays its findings. The rest run, grouped by the diff they read, and a
     parsed verdict is stored, only while the lane is still at `before`: an unparsed, failed or timed-out lens never is.
     One pilot_lens event per lens says what it read."""
     tree, found, hits, todo = before[1], {}, {}, []
-    keys = {x: cache_key(b, x, model, scopes.get(x, ("", b""))[1]) if tree else "" for x in lenses}
+    keys = {x: cache_key(b, x, model, scopes.get(x, ("", b""))[1], effort) if tree else "" for x in lenses}
     stored = _load(p) if any(keys.values()) else {}
     verdicts, findings, whys, unparsed = {}, [], [], []
     for x in lenses:
@@ -310,7 +332,7 @@ def review_cached(p, b, main, before, lenses, model, scopes, note=""):
             todo.append(x)
     for since in sorted({scopes.get(x, ("", b""))[0] for x in todo}, key=lambda s: (s != "", s)):
         group = [x for x in todo if scopes.get(x, ("", b""))[0] == since]
-        v, f, w, u = review(p, b.id, group, model, since=since, note=note)
+        v, f, w, u = review(p, b.id, group, model, since=since, note=note, effort=effort)
         verdicts.update(v)
         findings += f
         unparsed += u
@@ -525,6 +547,11 @@ FIX_USD = 1.0  # USD: what one fix session is assumed to cost until the ledger h
 FIX_FINDINGS, FIX_TEXT = 20, 300  # what the fix prompt carries: this many findings, each cut
 FIX_MODEL = "sonnet"
 FIX_AGENT = "sampo:fm-builder"
+
+
+def fix_effort(n):
+    """T-6124: the fixer's --effort for fix round n: medium, then high from round 2 on (a round before it failed)."""
+    return "medium" if n <= 1 else "high"
 # a call that met a busy lock: 3 tries, 15 s then 30 s apart, so about 60 s in all with each try's own 5 s wait on the lock
 LOCK_BACKOFF = (15.0, 30.0)
 # The fix session has NO shell (round 2): a Bash allow list (git add/commit, the test runner) still runs code the session
@@ -621,6 +648,7 @@ def fix_argv(p, b, found, n, cap, agent=True):
         "--strict-mcp-config", "--mcp-config", json.dumps({"mcpServers": {}}), "--tools", FIX_TOOLS,
         *(["--agent", FIX_AGENT] if agent else []),
         *(["--add-dir", os.path.dirname(brief)] if os.path.isfile(brief) else []),
+        *(["--effort", fix_effort(n)] if not effort_off() else []),
         "--allowedTools", *allow,
         "--disallowedTools", *deny])
 
@@ -1193,7 +1221,7 @@ def pilot(p, tid, main):
         before, asked_at = _state(main, b), c.now()
         sensitive = _sensitive(main, before[0])
         names, whole = lane_diff(main, before[0])
-        lenses, model = lenses_for(b, sensitive, p, names, whole)  # the fix may have made the diff sensitive
+        lenses, model, effort = plan_for(b, sensitive, p, names, whole)  # the fix may have made the diff sensitive
         res.update(lenses=lenses, model=model)
         # T-6089: the local model reads each lens first; a sampled lane, or a lane of a cold class, is read by Claude on every
         # lens, to check the local reviewer against it. The adversary lens and a sensitive lane are never local (local_lenses)
@@ -1205,7 +1233,7 @@ def pilot(p, tid, main):
         # T-6044: the first read may take only the fix for a lens that was clean at the last stamped tip; after a fix
         # round of this pilot every lens reads the whole diff (the accept needs each one at the new tip, T-5707)
         scopes = {x: ("", whole) for x in claude} if fixes else scopes_for(main, b, claude, before[0], whole, sensitive)
-        verdicts, findings, why, unparsed = review_cached(p, b, main, before, claude, model, scopes, note)  # not _busy: its lock comes after the reviewers
+        verdicts, findings, why, unparsed = review_cached(p, b, main, before, claude, model, scopes, note, effort)  # not _busy: its lock comes after the reviewers
         for x, (verdict, found) in settled.items():  # T-6089: the local answer that stands, as review() words a Claude one
             verdicts[x] = verdict
             findings += [f"{x}: " + " ".join(f"{sev} {at} {text}".split()) for sev, at, text in found[:20]]

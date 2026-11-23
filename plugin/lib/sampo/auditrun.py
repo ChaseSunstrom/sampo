@@ -163,7 +163,7 @@ def schema_flag():
     return has
 
 
-def _argv(model, cap, lane=""):
+def _argv(model, cap, lane="", effort=""):
     """The reviewer's argv. A lane's files are the builder's own text: the child runs in an empty scratch folder outside
     the repo and is given the lane only as an extra directory to read (T-5706 rounds 3 and 4: never a cwd or a settings
     source, so a hook or a CLAUDE.md the builder wrote, nested or not, does not run or steer; ideas.child_env drops the
@@ -180,7 +180,8 @@ def _argv(model, cap, lane=""):
             "--mcp-config", json.dumps({"mcpServers": {}}), "--max-budget-usd", f"{cap:g}",
             # T-6043: the CLI holds the reply to the schema (structured_output) when this claude has the flag
             *(["--json-schema", json.dumps(REPLY_SCHEMA)] if schema_flag() else []),
-            *(["--add-dir", lane] if lane else []), "--append-system-prompt", SYSTEM]
+            *(["--add-dir", lane] if lane else []), "--append-system-prompt", SYSTEM,
+            *(["--effort", effort] if effort else [])]  # T-6124: the pilot's depth effort; none when FOREMAN_EFFORT=off
 
 
 BLOCKING = c.BLOCKING_SEVERITIES  # T-5706: a finding this severe or worse keeps its lens from being clean
@@ -428,6 +429,7 @@ def run(p, args):
     lenses = [x for x in (args.lens or head_lenses or list(c.DEFAULT_LENSES)) if x != "self" or pilot]
     # T-5841: no --model takes the depth map's (haiku for a light change, sonnet for the rest)
     model = args.model or (getattr(prep, "depth", None) or {}).get("model") or "haiku"  # T-6101: haiku by default
+    effort = getattr(args, "effort", "") or ""  # T-6124: the pilot passes its depth's --effort; "" passes none
     if not lenses:
         raise cli.UsageError(f"fm audit run: no reviewer lens is left to run for {b.id} (`self` is the main thread's "
                              f"own: fm task audit {b.id} self …); pass --lens with a reviewer lens "
@@ -455,7 +457,7 @@ def run(p, args):
     note = getattr(args, "pilot_note", "") or ""  # T-5707: the pilot's re-review scope (the fix delta, the prior findings), as data
     for i in range(0, len(lenses), PARALLEL):
         batch = lenses[i:i + PARALLEL]
-        jobs = [(_argv(model, cap, lane), f"{brief}{fmt}{named}{where_note}{note}\n\nReview only the lens: {x}\nIgnore the other lens sections.\n"
+        jobs = [(_argv(model, cap, lane, effort), f"{brief}{fmt}{named}{where_note}{note}\n\nReview only the lens: {x}\nIgnore the other lens sections.\n"
                  + CLOSING.format(lens=x), x)
                 for x in batch]
         try:
@@ -490,7 +492,7 @@ def run(p, args):
                 except budget.BudgetError as e:
                     skipped = str(e)
         if pending and not skipped:
-            repair = [(_argv(model, _cap(p), lane), repair_prompt(x, text, errs), x) for x, text, errs in pending]
+            repair = [(_argv(model, _cap(p), lane, effort), repair_prompt(x, text, errs), x) for x, text, errs in pending]
             try:
                 again = ideas.run_children(repair, args.timeout, "audit", usage=spent)
             except OSError as e:

@@ -14,6 +14,7 @@ import sys
 import tempfile
 import threading
 import time
+from types import SimpleNamespace
 import unittest
 import unittest.mock
 from unittest import mock
@@ -776,8 +777,8 @@ class Lanes(ForemanTestCase):
         self.assertIn("sampo focus", p.stderr)
 
     def test_the_brief_agent_line_names_effort_by_tier(self):
-        # T-0779: S builders run at medium effort, M at high, beside the model
-        for tier, effort in (("S", "medium"), ("M", "high")):
+        # T-0779, T-6124: S builders run at low effort, a normal M at medium, beside the model
+        for tier, effort in (("S", "low"), ("M", "medium")):
             extra = ["--interpretation", "Reading 1: a. Reading 2: b.", "--approach", "1) a; fails if: x 2) use what exists: b; fails if: y 3) do less: c; fails if: z Choice 1 (80%): a"] if tier != "S" else []
             tid = first(self.fm("task", "new", f"T{tier}", "--type", "FEATURE", "--tier", tier, "--ac", "ok :: true",
                                 "--step", "s", *extra, "--json").stdout)["id"]
@@ -796,14 +797,14 @@ class Lanes(ForemanTestCase):
                                                          "--json").stdout)["id"]
         small, code = mk("Small", "S", "plugin/lib/sampo/x.py"), mk("Code", "M", "plugin/lib/sampo/x.py", *plan)
         docs = mk("Docs", "M", "docs/guide.md")
-        for tid, model, effort in ((small, "haiku", "medium"), (docs, "haiku", "medium")):
+        for tid, model, effort in ((small, "haiku", "low"), (docs, "haiku", "low")):
             out = json.loads(self.fm("lane", "brief", tid, "--json", env=on).stdout)
             self.assertIn(f'model: "{model}", effort: "{effort}"', out["agent"], tid)
             self.assertIn("builder_model: haiku", open(c.find_brief(c.find_project(self.repo), tid).path).read())
         out = self.fm("lane", "brief", small, "--model", "opus", env=on).stdout
         self.assertIn('model: "opus"', out)
         self.fm("models", "default", "route")  # T-6101: the history route's pick is the one this check reads
-        self.assertIn('model: "sonnet", effort: "high"', self.fm("lane", "brief", code, env=on).stdout, "normal: the route")
+        self.assertIn('model: "sonnet", effort: "medium"', self.fm("lane", "brief", code, env=on).stdout, "normal: the route")
         self.assertIn('model: "sonnet"', self.fm("lane", "brief", small, env={"FOREMAN_PROCESS_TIER": "off"}).stdout)
 
     def test_a_light_lane_never_asks_the_route_so_it_writes_no_promotion_and_fills_no_probe_window(self):
@@ -7490,6 +7491,150 @@ class HaikuDefault(RouteBase):
         self.assertEqual(json.loads(out.getvalue())["model"], "sonnet")
         logged = [e for e in c.ledger_tail(self.p, 400, kinds=("lane_escalate",)) if e.get("task") == tid]
         self.assertTrue(logged and "2 failed rounds" in json.dumps(logged[-1].get("data")), logged)
+
+
+class EffortByStep(RouteBase):
+    """T-6124: effort follows the step, not the agent. A builder launches at low for an S tier or a light process-tier scope
+    and at medium otherwise; each failed review round lifts it one level (capped at high), a HIGH finding on the last round
+    lifts it too, and each lift is logged on the task once. FOREMAN_EFFORT=off is today's mapping: S medium, the rest high."""
+    MODE = "haiku"
+    PLAN = ["--interpretation", "Reading 1: a. Reading 2: b.", "--approach",
+            "1) a; fails if: x 2) use what exists: b; fails if: y 3) do less: c; fails if: z Choice 1 (80%): a"]
+    CODE, DOCS = "plugin/lib/sampo/x.py", "docs/guide.md"
+    ON, OFF = {"FOREMAN_PROCESS_TIER": ""}, {"FOREMAN_PROCESS_TIER": "off"}
+
+    def setUp(self):
+        super().setUp()
+        self.fm("lane", "max", "20")
+        self.k = 0
+
+    def task(self, tier="S", scope=CODE):
+        self.k += 1
+        extra = [] if tier == "S" else self.PLAN
+        return first(self.fm("task", "new", f"Effort {self.k}", "--type", "FEATURE", "--tier", tier, "--ac", "ok :: true",
+                             "--step", "s", "--scope", scope, *extra, "--json").stdout)["id"]
+
+    def effort(self, tid, env=None):
+        agent = json.loads(self.fm("lane", "brief", tid, "--json", env=env or {}).stdout)["agent"]
+        return re.search(r'effort: "(\w+)"', agent).group(1)
+
+    def round(self, tid, text):
+        """One failed review round: a reported finding, then the builder returned to apply it."""
+        self.k += 1
+        c.log_event(self.p, "finding", task=tid, data={"verdict": "reported", "file": "a.py", "text": text})
+        c.log_event(self.p, "subagent", task=tid, data={"agent_type": "sampo:fm-builder", "agent_id": f"e{self.k}"})
+
+    def test_an_s_tier_builder_runs_at_low_and_a_normal_m_at_medium(self):
+        s, m = self.task("S"), self.task("M")
+        self.assertEqual(self.effort(s, self.OFF), "low")
+        self.assertEqual(self.effort(m, self.OFF), "medium")
+
+    def test_a_light_process_tier_scope_builds_at_low(self):
+        docs, code = self.task("M", self.DOCS), self.task("M", self.CODE)
+        self.assertEqual(self.effort(docs, self.ON), "low")
+        self.assertEqual(self.effort(code, self.ON), "medium")
+
+    def test_each_failed_round_lifts_one_level_and_the_top_is_high(self):
+        s = self.task("S")
+        self.round(s, "finding one")
+        self.assertEqual(self.effort(s, self.OFF), "medium")
+        self.round(s, "finding two")
+        self.assertEqual(self.effort(s, self.OFF), "high")
+        self.round(s, "finding three")
+        self.assertEqual(self.effort(s, self.OFF), "high", "capped at high")
+
+    def test_a_high_finding_on_the_last_round_lifts_a_level_and_says_why(self):
+        s = self.task("S")
+        self.round(s, "HIGH data loss on resume")
+        self.assertEqual(self.effort(s, self.OFF), "medium")
+        logged = [e for e in c.ledger_tail(self.p, 400, kinds=("lane_escalate",)) if e.get("task") == s]
+        self.assertTrue(logged and "HIGH" in json.dumps(logged[-1].get("data")), logged)
+
+    def test_each_lift_is_logged_on_the_task_once(self):
+        s = self.task("S")
+        self.round(s, "finding one")
+        self.effort(s, self.OFF)
+        self.effort(s, self.OFF)
+        logged = [e for e in c.ledger_tail(self.p, 400, kinds=("lane_escalate",))
+                  if e.get("task") == s and "effort" in (e.get("data") or {})]
+        self.assertEqual(len(logged), 1, logged)
+        self.assertEqual(logged[0]["data"]["effort"], "medium")
+
+    def test_each_launch_writes_a_lane_effort_event(self):
+        s = self.task("S")
+        self.effort(s, self.OFF)
+        events = [e for e in c.ledger_tail(self.p, 400, kinds=("lane_effort",)) if e.get("task") == s]
+        self.assertTrue(events and events[-1]["data"]["role"] == "builder" and events[-1]["data"]["effort"] == "low", events)
+
+    def test_foreman_effort_off_is_todays_mapping(self):
+        s, m = self.task("S"), self.task("M", self.CODE)
+        self.round(s, "HIGH one")
+        self.round(s, "two")
+        self.assertEqual(self.effort(s, {**self.OFF, "FOREMAN_EFFORT": "off"}), "medium")
+        self.assertEqual(self.effort(m, {**self.ON, "FOREMAN_EFFORT": "off"}), "high")
+
+
+class EffortGate(unittest.TestCase):
+    """T-6124: the per-class gate. A class whose lowered-effort lanes first-pass more than 5 points under the earlier lanes'
+    rate, over at least 20 lowered lanes, reverts to one level higher, and stays reverted (a recovery later does not undo
+    it). The rates compare exactly, so a drop of exactly 5 points does not revert."""
+
+    def rows(self, base, low, cls="small"):
+        """(lanes, first-pass lanes) for the earlier lanes, then for the lowered ones, in landing order."""
+        (n, k), (m, j) = base, low
+        return ([{"class": cls, "lowered": False, "passed": i < k} for i in range(n)]
+                + [{"class": cls, "lowered": True, "passed": i < j} for i in range(m)])
+
+    def test_nineteen_lowered_lanes_never_revert_the_class(self):
+        self.assertEqual(slanes.effort_gate(self.rows((20, 20), (19, 0))), set())
+
+    def test_twenty_lowered_lanes_six_points_under_revert_the_class(self):
+        self.assertEqual(slanes.effort_gate(self.rows((100, 94), (50, 44))), {"small"})
+
+    def test_a_drop_of_exactly_five_points_does_not_revert(self):
+        self.assertEqual(slanes.effort_gate(self.rows((20, 20), (20, 19))), set())
+
+    def test_no_earlier_lanes_means_nothing_to_compare(self):
+        self.assertEqual(slanes.effort_gate(self.rows((0, 0), (25, 0))), set())
+
+    def test_the_revert_is_sticky_and_scoped_to_its_class(self):
+        rows = self.rows((100, 94), (50, 44))
+        rows += [{"class": "small", "lowered": True, "passed": True} for _ in range(60)]
+        rows += [{"class": "trivial", "lowered": False, "passed": True} for _ in range(20)]
+        rows += [{"class": "trivial", "lowered": True, "passed": True} for _ in range(19)]
+        self.assertEqual(slanes.effort_gate(rows), {"small"})
+
+    def test_a_reverted_class_lifts_one_level_and_nothing_else_moves(self):
+        self.assertEqual(slanes.effort_level("low", "small", {"small"}), "medium")
+        self.assertEqual(slanes.effort_level("low", "small", set()), "low")
+        self.assertEqual(slanes.effort_level("high", "small", {"small"}), "high")
+        self.assertEqual(slanes.effort_level("medium", "normal", {"small"}), "medium")
+
+
+class EffortOrder(RouteBase):
+    """T-6124: the gate reads the landed lanes in the order they landed (each one's first finish in the ledger), not in the
+    order the briefs load: "earlier lanes" are earlier in time."""
+
+    def lane(self, tid, lowered, passed):
+        c.log_event(self.p, "lane_effort", task=tid, data={"role": "builder", "effort": "low" if lowered else "medium",
+                                                           "base": "low" if lowered else "medium", "class": "small"})
+        c.log_event(self.p, "finish", task=tid, data={"failed": not passed})
+
+    def test_the_gate_follows_landing_time_not_load_order(self):
+        earlier = [f"T-{i:04d}" for i in range(1, 31)]  # held at medium, landed first
+        lowered = [f"T-{i:04d}" for i in range(31, 56)]  # failed at low, landed after them
+        for tid in earlier:
+            self.lane(tid, lowered=False, passed=True)
+        for tid in lowered:
+            self.lane(tid, lowered=True, passed=False)
+        load_order = [SimpleNamespace(id=t) for t in lowered + earlier]  # the lowered lanes load first
+        ids = {b.id for b in load_order}
+        with mock.patch.object(c, "load_briefs", return_value=load_order), \
+                mock.patch("sampo.outcomes.outcomes", return_value={t: {} for t in ids}), \
+                mock.patch.object(slanes, "effort_class", return_value="small"):
+            rows = slanes.effort_rows(self.p)
+        self.assertEqual([r["lowered"] for r in rows], [False] * 30 + [True] * 25, "landing order")
+        self.assertEqual(slanes.effort_gate(rows), {"small"}, "the earlier lanes held, the lowered ones did not")
 
 
 class HaikuSwitch(RouteBase):

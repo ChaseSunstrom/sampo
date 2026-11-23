@@ -88,6 +88,7 @@ OPERATOR_SWITCHES.add("READ_DEDUPE")  # T-6064: =off answers every repeat Read w
 OPERATOR_SWITCHES.add("CARD_ORIGIN")  # T-5613: a bench arm names its calls "bench"; never a test's origin, a test sets its own
 OPERATOR_SWITCHES.add("TRAIN_PROBES")  # T-3770: a runner's probe switch is never a test's
 OPERATOR_SWITCHES.add("REVIEW_DEPTH")  # T-5841: =full gives every review all five lenses; a test that needs it sets it itself
+OPERATOR_SWITCHES.add("EFFORT")  # T-6124: =off restores today's effort mapping; a test that needs it sets it itself
 OPERATOR_SWITCHES.add("TOWER_GAP")  # T-3504: the tower-update push gap; a test that needs it sets it itself
 OPERATOR_SWITCHES.add("TEST_RUN_ID")  # T-4268: the check's id for its gate's record; a nested run in a class never gets it
 OPERATOR_SWITCHES.add("RUN_ORIGIN")  # T-6006: who started this run (land, verify, ship, probe); a class's own run names its own

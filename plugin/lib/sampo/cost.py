@@ -1403,6 +1403,8 @@ def _share_add(rec, usage, model, f=1.0):
     """Add f of one reply's usage (and of its turn, under its model) to a role's share of a lane."""
     for k, name in PER_LANE_KINDS.items():
         rec[k] += f * (usage.get(name) or 0)
+    if usage.get("thinking"):  # T-6124: the output of a reply that holds a thinking block (_replies marks it)
+        rec["thinking_out"] = rec.get("thinking_out", 0.0) + f * (usage.get("output_tokens") or 0)
     rec["turns"] += f
     if model:
         rec["models"][model] = rec["models"].get(model, 0) + f
@@ -1496,7 +1498,7 @@ def _replies(path, base=None):
             path = _safe(path, base)
             if path is None:
                 return None
-        seen = {}
+        seen, thinks = {}, set()
         with open(path, encoding="utf-8", errors="replace") as f:
             for n, line in enumerate(f):
                 if '"usage"' not in line:
@@ -1507,8 +1509,12 @@ def _replies(path, base=None):
                     continue
                 m = e.get("message") if isinstance(e, dict) and e.get("type") == "assistant" else None
                 if isinstance(m, dict) and isinstance(m.get("usage"), dict):
-                    seen[m.get("id") or n] = (m["usage"], str(m.get("model") or ""))
-        return list(seen.values())
+                    mid = m.get("id") or n
+                    seen[mid] = (m["usage"], str(m.get("model") or ""))
+                    if any(isinstance(x, dict) and x.get("type") in ("thinking", "redacted_thinking")
+                           for x in (m.get("content") or [])):
+                        thinks.add(mid)  # T-6124: the reply holds a thinking block (cost --by-effort's thinking share)
+        return [({**u, "thinking": k in thinks}, model) for k, (u, model) in seen.items()]
     except (OSError, ValueError):
         return None
 
@@ -2123,6 +2129,8 @@ def cmd_cost(args):
         return _task(args, p, cli)
     if getattr(args, "by_model", False):
         return _by_model(p, args, cli)
+    if getattr(args, "by_effort", False):
+        return _by_effort(p, args, cli)
     if getattr(args, "forecast", False):
         return _forecast(args, cli)
     folder = transcripts_dir(p.root)
@@ -2324,6 +2332,46 @@ def _by_model(p, args, cli):
     lines += [f"  {m} · {k}: {r['passed']} passed ({', '.join(f'{n} {g}' for g, n in sorted(r['verified'].items()))})"
               for m, kinds in sorted(rows.items()) for k, r in sorted(kinds.items())]
     return cli.out(args, {"days": args.days, "by_model": rows}, "\n".join(lines))
+
+
+def _by_effort(p, args, cli):
+    """T-6124: per role and effort, the lanes launched at it (lane_effort events, the window's) and how many of them landed
+    (a lane_landed event: the merge into trunk). The thinking share (the output of replies holding a thinking block, over
+    all their output: per_lane's shares) is the spend, so it reads over every launch; the first-pass rate (outcomes' first
+    finish) and the review rounds each failed (lanes.rounds_all) read over the landed lanes only, since a lane that never
+    landed has no outcome to read them against."""
+    from sampo import lanes, outcomes
+    since, groups, landed = _since(args.days), {}, set()
+    for e in c.ledger_tail(p, 50000, kinds=("lane_effort",)):
+        d = e.get("data") if isinstance(e.get("data"), dict) else {}
+        if e.get("task") and d.get("role") and d.get("effort") and str(e.get("ts", ""))[:19] >= since:
+            groups.setdefault((str(d["role"]), str(d["effort"])), set()).add(e["task"])
+    for e in c.ledger_tail(p, 50000, kinds=("lane_landed",)):  # a lane_landed task may name several, comma-joined
+        landed.update(t for t in str(e.get("task") or "").split(",") if t)
+    shares, first, rounds = per_lane(p, args.days).get("lanes") or {}, outcomes._first_finish(p), lanes.rounds_all(p)
+    rows = []
+    for (role, effort), tids in sorted(groups.items()):
+        recs = [(shares.get(t) or {}).get(role) or {} for t in tids]
+        out = sum(r.get("output", 0) for r in recs)
+        won = [t for t in tids if t in landed]
+        known = [first[t] for t in won if t in first]
+        rows.append({"role": role, "effort": effort, "launched": len(tids), "landed": len(won),
+                     "thinking": round(sum(r.get("thinking_out", 0) for r in recs) / out, 3) if out else None,
+                     "first_pass": round(sum(known) / len(known), 3) if known else None,
+                     "rounds": round(sum(rounds.get(t, (0, ""))[0] for t in won) / len(won), 2) if won else None})
+
+    def pct(x):
+        return "-" if x is None else f"{x:.0%}"
+    lines = [f"Lanes launched at each effort, last {args.days:g} day(s), and how many landed (first-pass and rounds over the "
+             f"landed ones):" if rows else
+             f"No lane launched at an effort in the last {args.days:g} day(s) (lane_effort is logged at each builder launch)."]
+    lines += [f"  {'role':<9} {'effort':<7} {'launched':>8}  {'landed':>6}  {'thinking':>8}  {'first-pass':>10}  {'rounds':>6}"] \
+        if rows else []
+    def rounds(x):
+        return "-" if x is None else f"{x:.2f}"
+    lines += [f"  {r['role']:<9} {r['effort']:<7} {r['launched']:>8}  {r['landed']:>6}  thinking {pct(r['thinking']):>4}  "
+              f"first-pass {pct(r['first_pass']):>4}  rounds {rounds(r['rounds']):>4}" for r in rows]
+    return cli.out(args, {"days": args.days, "by_effort": rows}, "\n".join(lines))
 
 
 def _week(p, days):

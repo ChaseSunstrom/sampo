@@ -4,6 +4,8 @@ description: Sampo builder for one S/M task, launched with isolation "worktree" 
 tools: Read, Grep, Glob, Edit, Write, Bash
 model: haiku
 effort: high
+# T-6124: a launch passes its own effort (the agent line `sampo lane brief` prints: low for an S or light scope, medium
+# otherwise, one level more per failed review round); this is the default for a launch that passes none.
 autoCompactWindow: 150000
 # T-5680: builder turns in the automation data (~/.cache/claude-ops/automation-builders.md) run p90 161, max 315, so the
 # cap is 320; at 150 a real build stopped short. A Workflow stage has no turn cap of its own, so this one is the cap.

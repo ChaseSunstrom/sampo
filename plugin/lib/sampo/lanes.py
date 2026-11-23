@@ -4010,7 +4010,7 @@ _route = route  # builder_brief has a local named route
 
 def light_model(ptier):
     """T-5714: (model, effort) a builder takes for a trivial or small change by process tier, else None (the route's pick)."""
-    return ("haiku", "medium") if ptier in ("trivial", "small") else None
+    return ("haiku", "low") if ptier in ("trivial", "small") else None  # T-6124: a light scope launches at low effort
 
 
 def plan_model(b):
@@ -4037,17 +4037,34 @@ def art_purpose(b):
 def failed_rounds(p, tid):
     """T-6101: the review rounds task `tid` has failed: each run of 'reported' findings that a builder's return (a
     fm-builder subagent row) answers. Read from the ledger's last 5000 lines, so an older round can fall out of it."""
-    rounds, open_round = 0, False
+    return round_state(p, tid)[0]
+
+
+def rounds_all(p):
+    """T-6124: {task: (rounds, sev)} for each task with a reported finding in the ledger's last 5000 lines: the review rounds it
+    failed, and the severity ("HIGH" or "CRITICAL") of a finding in its last one, "" if none. A round opens at a reported
+    finding and closes at a builder's stop; a finding's severity is the first word of its text."""
+    st = {}  # task: [rounds, round open, sev]
     for e in c.ledger_tail(p, 5000, kinds=("finding", "subagent")):
-        if e.get("task") != tid:
+        tid = e.get("task")
+        if not tid:
             continue
+        s = st.setdefault(tid, [0, False, ""])
         data = e.get("data") if isinstance(e.get("data"), dict) else {}
         if e.get("event") == "finding" and data.get("verdict") == "reported":
-            if not open_round:
-                rounds, open_round = rounds + 1, True
+            if not s[1]:
+                s[0], s[1], s[2] = s[0] + 1, True, ""
+            word = str(data.get("text") or "").split(" ", 1)[0].strip("*[]:").upper()
+            s[2] = s[2] or (word if word in ("HIGH", "CRITICAL") else "")
         elif e.get("event") == "subagent" and str(data.get("agent_type") or "").endswith("fm-builder"):
-            open_round = False
-    return rounds
+            s[1] = False
+    return {t: (s[0], s[2]) for t, s in st.items()}
+
+
+def round_state(p, tid):
+    """T-6124: (rounds, sev): the review rounds task `tid` has failed, and the severity ("HIGH" or "CRITICAL") of a finding in
+    the last one, "" if none (rounds_all's entry for it)."""
+    return rounds_all(p).get(tid, (0, ""))
 
 
 def escalation(p, b):
@@ -4058,6 +4075,80 @@ def escalation(p, b):
         return None
     n = failed_rounds(p, b.id)
     return ("sonnet", f"{n} failed rounds") if n >= ESCALATE_ROUNDS else None
+
+
+EFFORTS = ("low", "medium", "high")  # T-6124: the effort ladder, lowest first
+EFFORT_GATE_MIN = 20  # lowered lanes in a class before its first-pass rate is compared with the earlier lanes'
+
+
+def lift_effort(effort, n=1):
+    """T-6124: `effort` moved n levels up the ladder, never past high."""
+    return EFFORTS[min(len(EFFORTS) - 1, EFFORTS.index(effort) + n)]
+
+
+def effort_level(base, cls, reverted):
+    """T-6124: the effort class `cls` launches at: one level higher once the per-class gate has reverted it."""
+    return lift_effort(base) if cls in reverted else base
+
+
+def effort_gate(rows):
+    """T-6124: the classes the per-class effort gate reverts. rows are the landed builder lanes in landing order, each
+    {"class", "lowered", "passed"} (lowered: launched at low effort; passed: its first finish held). A class reverts once it
+    has EFFORT_GATE_MIN lowered lanes and their first-pass rate is more than 5 points under the earlier lanes' rate (exact
+    fractions: exactly 5 points does not revert). Sticky: a recovery later does not undo a revert."""
+    from fractions import Fraction
+    seen, out = collections.defaultdict(lambda: [0, 0, 0, 0]), set()  # earlier lanes, their passes; lowered lanes, passes
+    for r in rows:
+        s, i = seen[r["class"]], (2 if r["lowered"] else 0)
+        s[i] += 1
+        s[i + 1] += bool(r["passed"])
+        if r["class"] not in out and s[2] >= EFFORT_GATE_MIN and s[0] and \
+                Fraction(s[1], s[0]) - Fraction(s[3], s[2]) > Fraction(5, 100):
+            out.add(r["class"])
+    return out
+
+
+def effort_class(b):
+    """T-6124: the class the effort gate reads a builder lane by: its process tier when its scope is trivial or small, else
+    its tier."""
+    pt = c.plan_ptier(b)[0]
+    return pt if pt in ("trivial", "small") else b.tier
+
+
+def effort_rows(p):
+    """T-6124: the landed builder lanes in the order they landed, as effort_gate reads them: each lane's first finish, which
+    _first_finish keeps in ledger order (the ledger is appended in time), not the order the briefs load. A lane is lowered
+    when its first launch was at the low mapping (its lane_effort event's base); a lane with no such event, one launched
+    before the ledger had it, is not lowered."""
+    from sampo import outcomes
+    outs, first = outcomes.outcomes(p), outcomes._first_finish(p)  # first: each task at its first finish, in time order
+    lowered = {}
+    for e in c.ledger_tail(p, 50000, kinds=("lane_effort",)):
+        data = e.get("data") if isinstance(e.get("data"), dict) else {}
+        if e.get("task") and data.get("role") == "builder" and e["task"] not in lowered:
+            lowered[e["task"]] = data.get("base") == "low"
+    briefs = {b.id: b for b in c.load_briefs(p, include_archive=True)}
+    return [{"class": effort_class(briefs[t]), "lowered": lowered.get(t, False), "passed": first[t]}
+            for t in first if t in briefs and t in outs]
+
+
+def builder_effort(p, b, light):
+    """T-6124: (effort, base, why) a builder of brief b launches at. The mapping is low for an S tier or a light process-tier
+    scope and medium otherwise; the per-class gate lifts a reverted class one level; each failed review round lifts one
+    level (a HIGH or CRITICAL finding on the last round at least one), capped at high. `why` names a round lift, "" for none.
+    `base` is the mapping before the gate and the lift, the value a lane_effort event logs. FOREMAN_EFFORT=off is today's
+    mapping (medium for S or light, high otherwise), with no gate and no lift."""
+    low = b.tier == "S" or bool(light)
+    if os.environ.get("FOREMAN_EFFORT", "").strip().lower() == "off":
+        today = "medium" if low else "high"
+        return today, today, ""
+    mapped = "low" if low else "medium"
+    effort = effort_level(mapped, effort_class(b), effort_gate(effort_rows(p)))
+    rounds, sev = round_state(p, b.id)
+    lifted = lift_effort(effort, min(len(EFFORTS) - 1, max(rounds, 1 if sev else 0)))
+    if lifted == effort:
+        return effort, mapped, ""
+    return lifted, mapped, f"{rounds} failed round{'s' if rounds != 1 else ''}" + (f", the last one {sev}" if sev else "")
 
 
 def confirm_routes(p, res):
@@ -5758,11 +5849,11 @@ def builder_brief(p, b, args, resume_branch=None, after="", stacked=None, check=
             x.append_log(f"local builder unavailable: {fell}; briefed for sonnet")
         if oversize:  # T-6047: past the size cap on the builder's say-so: the reason stays on the task
             x.append_log(f"builder brief past the {OWN_CAP}-char cap ({own} chars), briefed anyway: {c.fit(oversize, 300)}")
-    effort = "medium" if b.tier == "S" else "high"
-    light = plan_model(b)  # T-5714: a trivial or small change by its scope: haiku at medium effort, unless --model says
+    light = plan_model(b)  # T-5714: a trivial or small change by its scope: haiku, unless --model says
+    effort, mapped, lift_why = builder_effort(p, b, light)  # T-6124: the effort follows the step, lifted by failed rounds
     purpose = art_purpose(b)  # T-6101: an art or UI brief is the one that may take opus; every other route answers haiku
     if light:  # a light lane skips the route: it promotes no model and fills no probe window
-        chosen, effort, route, probe = light[0], light[1], f"{light[2]}: {light[0]} at {light[1]} effort", False
+        chosen, route, probe = light[0], f"{light[2]}: {light[0]} at {effort} effort", False
     else:
         chosen, route, probe = _route(p, b.tier, tid=b.id, racing=bool(racing), art=bool(purpose))
     esc = escalation(p, b) if chosen == "haiku" and not getattr(args, "model", None) else None  # T-6101
@@ -5791,6 +5882,11 @@ def builder_brief(p, b, args, resume_branch=None, after="", stacked=None, check=
     escalated = esc[1] if esc and chosen == "sonnet" else ""  # T-6101: the reason the brief and the ledger carry
     if escalated:
         c.log_event(p, "lane_escalate", task=b.id, data={"model": "sonnet", "why": f"{escalated} on this task's review"})
+    if lift_why and not [e for e in c.ledger_tail(p, 400, kinds=("lane_escalate",))  # T-6124: a lift logged once per level
+                         if e.get("task") == b.id and (e.get("data") or {}).get("effort") == effort]:
+        c.log_event(p, "lane_escalate", task=b.id, data={"effort": effort, "why": f"{lift_why} on this task's review"})
+    c.log_event(p, "lane_effort", task=b.id, data={"role": "builder", "effort": effort, "base": mapped,
+                                                  "class": effort_class(b)})  # T-6124: fm cost --by-effort reads these
     marks = (f"escalated: sonnet ({escalated}). " if escalated else "") + \
         (f"purpose: {purpose}. " if chosen == "opus" and purpose else "")  # the Agent hook lets these two through
     cli.mutate(p, b.id, mark, "lane_builder", {"path": path, "chars": len(text)})  # T-2368: fm lane stats
@@ -5803,8 +5899,8 @@ def builder_brief(p, b, args, resume_branch=None, after="", stacked=None, check=
     if oversize:  # T-6047: the ledger keeps the override beside the lane's own events
         c.log_event(p, "lane_brief_oversize", task=b.id, data={"chars": own, "cap": OWN_CAP, "why": c.fit(oversize, 300)})
     # T-1796: builders run on Sonnet (Opus M lanes were 22% of a week's usage); the main thread reviews either. T-5714:
-    # except a trivial or small change by its scope (docs, tests, a claimed S), which runs on haiku at medium effort.
-    # T-0779: and its effort follows the tier: medium for small well-specified diffs, high for M
+    # except a trivial or small change by its scope (docs, tests, a claimed S), which runs on haiku at low effort.
+    # T-6124: and its effort follows the step: low for an S tier or a light scope, medium otherwise, lifted by failed rounds
     model = f', model: "{chosen}", effort: "{effort}"'
     agent = f'{AGENT_HEAD}{model}, {agent_prompt(path, marks)}'
     if own > OWN_CAP:  # T-6047: written past the cap (--oversize or a resume): the warning names the cap, not "split it"
