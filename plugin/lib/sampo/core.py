@@ -6797,27 +6797,80 @@ _ONE_READING_RE = lazy(r"(?<!no )(?<!not )\b(?:only|just|one|single|sole)\s+(?:h
 _RIVAL_OPEN = lazy(r"- \[ \] rival (?:reading|approach): ")
 
 
+_ASK_LEAD = (r"(?:^|[.!?;:\n])[\s>*\-]*(?:(?:please|then|and|also|just|now|first|next)\s+)*|"
+             r"\b(?:please|then|and|also|just|now|to|should|must|can you|could you|will you|go ahead and|need to|needs to|want to|wants to)\s+")
+_ASK_NOT = lazy(r"(?i)\b(?:don'?t|do not|never|not|no|without|cannot|can'?t)\b[^.!?;\n]*$")
+
+
+def _asked_for(raw, verb):
+    """T-6058 review: whether the Raw request asks for the action `verb` names: the verb as an imperative (opening a
+    sentence or clause, or after please/then/to/want to…) and not under a negation before it. 'don't publish yet' and
+    'why did the publish fail' only talk about it and waive nothing."""
+    word = (verb or "").split()[0] if (verb or "").split() else ""
+    if not word:
+        return False
+    stem = word[:-1] if word.endswith("e") else word
+    for m in re.finditer(r"(?i)(?:" + _ASK_LEAD + r")(?P<v>" + re.escape(stem) + r"(?:e|es|ed|ing|s|d|ion)?)\b", raw or ""):
+        if not _ASK_NOT.search(raw[:m.start("v")]):
+            return True
+    return False
+
+
 def _one_way(b, waived=None):
     """The first step's one-way verb, unless the Raw request itself names it (the user asked for that). A list passed as
     `waived` gets the verb of each step the plan's test-only structure let through (T-4712: tests_only_waiver)."""
-    rx, raw = (HARD_S_RE if b.tier == "S" else HARD_RE), b.section("Raw request")
+    s_tier = b.tier == "S"
+    rx, raw = (_DESTROY_S_RE if s_tier else _DESTROY_RE), b.section("Raw request")
+    named = lambda verb: _asked_for(raw, verb)  # noqa: E731
+    cmd_rx = _CMD_ONE_WAY_S_RE if s_tier else _CMD_ONE_WAY_RE
     tests = None  # T-4712: decided once, and only when a verb hit asks
     for s in b.steps():
         m = rx.search(s.text)
         if m and m.group(1).lower() in ("delete", "drop") and _CODE_OBJ.match(s.text[m.end():]):
-            continue  # T-2521: a code symbol in a tracked file: git undoes its removal
-        if m and not re.search(r"(?i)\b" + re.escape(m.group(1)[:5]), raw):
+            m = None  # T-2521: a code symbol in a tracked file: git undoes its removal
+        c1 = cmd_rx.search(s.text)  # T-6058: one-way by what the step DOES: a command it runs, or a leading release imperative;
+        if c1 and not named(c1.group(1).split()[-1]):  # a word in prose ("merge", "publish" mid-sentence) holds no plan
+            return c1.group(1).lower()
+        lead = None if m else (_LEAD_ONE_WAY_S_RE if s_tier else _LEAD_ONE_WAY_RE).match(s.text)
+        hit = m if m and not named(m.group(1)) else lead if lead and not named(lead.group(1)) else None
+        if hit:  # a destroy verb (delete, drop table: a data path) or a leading imperative: only a pre-filter
             if tests is None:
                 tests = _tests_only(b)
             if tests and not _RUNS_ONE_WAY_RE.search(s.text) and (
                     b.meta.get("scope") or any(_TEST_PATH.search(q) for q in _ANY_PATH.findall(s.text))):
                 # positive evidence only: the plan states a scope (_tests_only made it tests alone) or this very step names
-                # a test file; a prose step with neither ("then publish the package") is held whatever the verify says
+                # a test file; a prose step with neither ("publish the package") is held whatever the verify says
                 if waived is not None:
-                    waived.append(m.group(0).lower())
+                    waived.append(hit.group(0).lower())
                 continue  # T-4712: the verb is only a pre-filter: a plan that touches and runs tests alone is two-way
-            return m.group(0).lower()
+            return hit.group(0).lower()
+    for a in (b.acceptance() if hasattr(b, "acceptance") else ()):  # a verify command that ships, tags or pushes is the action itself (a dry run is not)
+        cmd = verify_of(a.text) or ""
+        for part in _CMD_SPLIT.split(re.sub(r"\d*>&\d*|&>", " ", cmd)):  # each command of a chain on its own
+            hit = None if re.search(r"--dry-run\b", part) else cmd_rx.search(part)
+            if hit and not named(hit.group(1).split()[-1]):
+                return hit.group(1).lower()
+    for g in (getattr(b, "meta", None) or {}).get("scope") or []:  # a release scope glob: the artifact folders a release writes
+        if _RELEASE_SCOPE_RE.search(str(g)) and not named("release"):
+            return "release"
     return ""
+
+
+# T-6058: what makes a step one-way. DESTROY: a verb on data (delete, drop table), read with its object. CMD: a real command
+# in the step text or a verify (group 1 is the command, named in the answer). LEAD: a release imperative opening the step.
+_DESTROY_RE = lazy(r"(?i)\b(delete|drop)(?:s|es|d|ed|ing)?\b")
+_DESTROY_S_RE = lazy(r"(?i)\b(delete|drop\s+table|drop(?=\s+`[^`]*(?:/|\.(?:jsonl?|csv|tsv|db|sqlite3?|sql|log|bak))`|\s+`[^`]+`\s+tables?\b))(?:s|es|d|ed|ing)?\b")
+_CMD_COMMON = (r"(?:sampo|fm)\s+(?:ship|release|publish|deploy|migrate)|gh\s+release|(?:npm|cargo|twine|pip|docker)\s+(?:publish|upload|push)|"
+               r"make\s+(?:deploy|release|publish)|kubectl\s+(?:apply|delete)|terraform\s+(?:apply|destroy)|alembic\s+upgrade|"
+               r"manage\.py\s+migrate|git\s+(?:-C\s+\S+\s+)?tag\s+(?:-[asfm]+\s+)*v?\d|gh\s+pr\s+merge")
+_CMD_PUSH = r"git\s+(?:-C\s+\S+\s+)?push"
+_CMD_PUSH_S = _CMD_PUSH + r"(?=[^\n;&|]*(?:--tags|--force|--delete|--mirror|\s-[a-zA-Z]*f[a-zA-Z]*\b|\s[+:]\S))"  # a plain push is routine on S
+_CMD_ONE_WAY_RE = lazy(r"(?i)\b(" + _CMD_COMMON + "|" + _CMD_PUSH + r")\b")
+_CMD_ONE_WAY_S_RE = lazy(r"(?i)\b(" + _CMD_COMMON + "|" + _CMD_PUSH_S + r")\b")
+_LEAD_IN = r"(?:(?:now|then|and|finally|next|also|first|just|please|so|later|lastly)\b[,\s]*)*"  # T-6058: a short lead-in hides nothing
+_LEAD_ONE_WAY_RE = lazy(r"(?i)\s*" + _LEAD_IN + r"(ship|release(?!\s+notes?\b)|publish|deploy|migrate|push(?=\s+to\b))(?:s|es|d|ed|ing)?\b")
+_LEAD_ONE_WAY_S_RE = lazy(r"(?i)\s*" + _LEAD_IN + r"(ship|release(?!\s+notes?\b)|publish|deploy|migrate)(?:s|es|d|ed|ing)?\b")
+_RELEASE_SCOPE_RE = lazy(r"(?i)(?:^|/)(?:dist|deploy|publish|releases)/")  # the folders a release writes (not skills/release docs)
 
 
 def tests_only_waiver(b):
@@ -6896,8 +6949,13 @@ _ANY_PATH = lazy(r"(?<![\w/.-])(?:[\w.-]+(?:/[\w.-]+)+|[\w-]+\.(?:csv|tsv|json|j
 
 
 # T-2521: the verb's object is a code identifier (snake_case with _, dotted, backticked or called), after "the unused"
+# T-6058: a backticked object counts only when it looks like code (an _, a call, a dotted or camelCase name) and not like
+# data (a path, a data-file extension), and no data noun (rows, table) follows: anything else fails toward holding
+_DATA_EXT = r"(?:jsonl?|csv|tsv|db|sqlite3?|sql|log|txt|bak|ya?ml|toml|lock|env)"
 _CODE_OBJ = lazy(r"\s+(?:the\s+)?(?:unused\s+|dead\s+|old\s+)?"  # a file name (old.csv, old_data.csv) is never one
-                 r"(?:`[^`]+`|\w*_\w*\b(?!\.)|\w+(?:\.\w+)*\.\w*_\w*\b(?!\.)|\w+(?:\.\w+)*\(\))")
+                 r"(?:`(?=[^`]*(?:_|\(|[a-z][A-Z]|\.\w))(?![^`]*/)(?![^`]*\." + _DATA_EXT + r"`)[^`]+`"
+                 r"|\w*_\w*\b(?!\.)|\w+(?:\.\w+)*\.\w*_\w*\b(?!\.)|\w+(?:\.\w+)*\(\))"
+                 r"(?!\s+(?:rows?|records?|tables?|columns?|data|database|entries|collections?|indexes|files?)\b)")
 
 
 def rival_gap(b, pt=None):

@@ -96,6 +96,7 @@ class OneWayByStructure(unittest.TestCase):
 
     FILE = "plugin/tests/test_land_ship.py"
     HOOK = f"failing test in {FILE}, bound the hook's loop, release held pushes in tearDown"  # T-4719's step, naming its test file
+    LEAD = f"release held pushes in tearDown, failing test in {FILE}"  # T-6058: the same words opening the step: an imperative
 
     def test_a_test_only_fix_is_not_one_way_for_a_word_in_a_step(self):  # T-4719
         step = self.HOOK
@@ -104,27 +105,27 @@ class OneWayByStructure(unittest.TestCase):
         self.assertEqual(self.rival(steps=(step,), acs=self.TESTS, scope=[self.FILE]), [])
 
     def test_a_one_way_word_is_let_through_only_on_positive_evidence_of_tests(self):
-        # no test path in the step and no stated scope: nothing says what the step touches, so the word holds the plan
-        for step in ("failing test, bound the hook's loop, release held pushes in tearDown",
-                     "add the test, then publish the package to the registry", "add the test, then deploy to prod"):
+        # no test path in the step and no stated scope: nothing says what the step touches, so the opening verb holds the plan
+        for step in ("release held pushes in tearDown, failing test, bound the hook's loop",
+                     "publish the package to the registry, add the test", "deploy to prod, add the test"):
             self.assertTrue(c._one_way(brief("S", ap="", steps=(step,), acs=self.TESTS)), step)
             self.assertTrue(self.rival(steps=(step,), acs=self.TESTS), step)
             self.assertEqual(c.tests_only_waiver(brief("S", ap="", steps=(step,), acs=self.TESTS)), "", step)
         # a stated scope of tests only is the other evidence (the plan said where it works)
-        step = "add the test, then release held pushes in tearDown"
+        step = "release held pushes in tearDown, add the test"
         self.assertEqual(c._one_way(brief("S", ap="", steps=(step,), acs=self.TESTS, scope=["plugin/tests/*.py"])), "")
         # a stated scope outside the tests, or another path in the step, still holds it
         self.assertEqual(c._one_way(brief("S", ap="", steps=(step,), acs=self.TESTS, scope=["plugin/lib/x.py"])), "release")
-        self.assertEqual(c._one_way(brief("S", ap="", steps=(f"test in {self.FILE}, release plugin/lib/x.py",), acs=self.TESTS)), "release")
+        self.assertEqual(c._one_way(brief("S", ap="", steps=(f"release plugin/lib/x.py, test in {self.FILE}",), acs=self.TESTS)), "release")
 
     def test_the_one_way_pattern_is_a_floor_that_only_keeps_a_hold(self):
         for step in (f"test in {self.FILE}, then run `make deploy` to release it", f"test in {self.FILE}, `sampo ship` to release it",
-                     f"test in {self.FILE}, then git -C x push origin main to release it",
+                     f"test in {self.FILE}, then git -C x push --force origin main to release it",
                      f"test in {self.FILE}, then `kubectl apply -f x` to deploy it"):
             self.assertTrue(c._one_way(brief("S", ap="", steps=(step,), acs=self.TESTS)), step)
 
     def test_the_same_words_with_a_non_test_verify_or_scope_are_still_one_way(self):
-        step = f"failing test in {self.FILE}, release held pushes in tearDown"
+        step = self.LEAD
         self.assertEqual(c._one_way(brief("S", ap="", steps=(step,), acs=(("it works", "true"),))), "release")
         self.assertEqual(c._one_way(brief("S", ap="", steps=(step,), acs=self.TESTS, scope=["plugin/lib/x.py"])), "release")
         self.assertEqual(c._one_way(brief("S", ap="", steps=("release plugin/lib/x.py to users",), acs=self.TESTS)), "release")
@@ -132,12 +133,14 @@ class OneWayByStructure(unittest.TestCase):
             self.assertTrue(c._one_way(brief("S", ap="", steps=(step,), acs=self.TESTS)), step)
 
     def test_an_M_plan_is_tests_only_only_when_its_scope_says_so(self):  # T-4543 (M, no scope, a step naming docs/map)
-        step = "failing tests in plugin/tests/test_disk_pressure.py; the tidy item merged into the trunk; map entry in docs/map"
-        self.assertEqual(c._one_way(brief("M", ap="", steps=(step,), acs=self.TESTS)), "merged")
-        step = "failing test, then the tidy item merged into the trunk"
-        self.assertEqual(c._one_way(brief("M", ap="", steps=(step,), acs=self.TESTS)), "merged")
+        step = "release the tidy item into the trunk; failing tests in plugin/tests/test_disk_pressure.py; map entry in docs/map"
+        self.assertEqual(c._one_way(brief("M", ap="", steps=(step,), acs=self.TESTS)), "release")
+        step = "release the tidy item into the trunk, failing test"
+        self.assertEqual(c._one_way(brief("M", ap="", steps=(step,), acs=self.TESTS)), "release")
+        # T-6058: the same item merged into the trunk, said in prose, holds nothing
+        self.assertEqual(c._one_way(brief("M", ap="", steps=("failing test, then the tidy item merged into the trunk",), acs=self.TESTS)), "")
         self.assertEqual(c._one_way(brief("M", ap="", steps=(step,), acs=self.TESTS, scope=["plugin/tests/*.py"])), "")
-        self.assertEqual(c._one_way(brief("S", ap="", steps=("a step touching docs/map, release it",), acs=self.TESTS)), "release")
+        self.assertEqual(c._one_way(brief("S", ap="", steps=("release it, a step touching docs/map",), acs=self.TESTS)), "release")
 
     def test_a_test_only_plan_with_a_publishing_step_is_still_held(self):
         for step in ("add the test, then run `sampo ship` to publish", "test it, then release it with gh release create v1",
@@ -151,7 +154,7 @@ class OneWayByStructure(unittest.TestCase):
         self.assertEqual(c._one_way(brief("S", ap="", steps=("publish the notes",), acs=acs)), "publish")
 
     def test_a_verify_command_counts_as_a_test_run_by_its_command_words_in_every_part(self):
-        step = self.HOOK
+        step = self.LEAD
         for cmd in ("sampo ship --tag pytest", "git push origin HEAD:pytest", "pytest -k x | sampo ship",
                     "pytest -k x & sampo ship", "pytest -k x\nsampo ship", "pytest $(sampo ship)", "pytest `sampo ship`",
                     "pytest -k x && make deploy", "pytest -k x; kubectl apply -f x", "echo pytest", "cat run_tests.sh"):
@@ -170,7 +173,7 @@ class OneWayByStructure(unittest.TestCase):
         self.assertTrue(c.rival_gap(b))
 
     def test_the_verb_a_test_only_plan_was_let_through_with_is_named_for_the_close(self):  # T-4712: recorded at focus
-        step = self.HOOK
+        step = self.LEAD
         self.assertEqual(c.tests_only_waiver(brief("S", ap="", steps=(step,), acs=self.TESTS)), "release")
         self.assertEqual(c.tests_only_waiver(brief("S", ap="", steps=("failing test, fix the loop",), acs=self.TESTS)), "")
         self.assertEqual(c.tests_only_waiver(brief("S", ap="", steps=(step,), acs=(("it works", "true"),))), "")  # held, not let through

@@ -3,6 +3,7 @@ standing orders, tier drift at done, assumption re-checks, a build-vs-reuse line
 MASTER.md naming every module."""
 import os
 import subprocess
+import unittest
 
 from helpers import ForemanTestCase
 
@@ -293,3 +294,92 @@ class PlanShape(Base):  # T-4492: an empty reading or approach names the whole s
         self.fm("task", "set", t, "--section", "Interpretation", "--text", "Reading 1: a. Reading 2: b.")
         left = [g for g in c.plan_gaps(c.find_brief(self.p, t)) if g.startswith(("Interpretation", "Approach"))]
         self.assertEqual([g.split(":")[0] for g in left], ["Approach (options → choice → why)"], left)
+
+
+class OneWayAction(unittest.TestCase):  # T-6058: a step is one-way by the action it runs, never by a word in its prose
+    @staticmethod
+    def brief(tier="S", steps=("red test",), acs=(("it works", "python3 plugin/tests/run.py test_x"),), scope=None, raw="x"):
+        b = c.Brief.new("T-0001", "T", "FIX", tier, now="2026-01-01T00:00:00Z")
+        b.set_section("Raw request", "> " + raw)
+        for text, cmd in acs:
+            b.add_ac(text, verify=cmd)
+        for s in steps:
+            b.add_step(s)
+        if scope is not None:
+            b.meta["scope"] = scope
+        return b
+
+    def test_a_prose_word_in_a_step_or_a_criterion_holds_nothing(self):
+        for tier in ("S", "M"):
+            for step in ("write the brainstorm so the merge of the two drafts reads clearly",
+                         "check that the notes we publish say what changed",
+                         "explain why we never push to main and when a release is cut",
+                         "the tidy item merged into the trunk is only described", "add a test that a deploy log is kept"):
+                self.assertEqual(c._one_way(self.brief(tier, steps=(step,))), "", (tier, step))
+        acs = (("the notes name the merge and the publish step", "python3 plugin/tests/run.py test_x"),)
+        self.assertEqual(c._one_way(self.brief("M", steps=("red test",), acs=acs)), "")
+
+    def test_a_command_that_ships_holds_the_plan_in_a_step_or_a_verify(self):
+        for cmd in ("sampo ship", "git tag v1.2", "gh release create v1", "npm publish", "make deploy", "kubectl apply -f x"):
+            self.assertTrue(c._one_way(self.brief(steps=(f"then run `{cmd}` for the users",))), cmd)
+            self.assertTrue(c._one_way(self.brief(acs=(("it is out", cmd),))), cmd)
+        self.assertEqual(c._one_way(self.brief("M", steps=("run `git push origin main`",))), "git push")
+        self.assertEqual(c._one_way(self.brief("M", acs=(("it is out", "git push origin main"),))), "git push")
+        self.assertEqual(c._one_way(self.brief(acs=(("it ships", "sampo ship --dry-run"),))), "")  # a dry run changes nothing
+        self.assertEqual(c._one_way(self.brief(acs=(("lists", "git tag -l"),))), "")
+
+    def test_a_plain_push_on_an_S_plan_is_routine_and_a_forced_one_is_not(self):
+        self.assertEqual(c._one_way(self.brief("S", steps=("run `git push origin main`",))), "")
+        self.assertEqual(c._one_way(self.brief("S", steps=("run `git push --force origin main`",))), "git push")
+
+    def test_a_step_that_opens_with_a_release_imperative_holds_the_plan(self):
+        for step in ("publish the notes", "release plugin/lib/x.py to users", "ship it", "deploy the build", "then publish v2"):
+            self.assertTrue(c._one_way(self.brief(steps=(step,))), step)
+        self.assertEqual(c._one_way(self.brief("M", steps=("push to origin",))), "push")
+        self.assertEqual(c._one_way(self.brief("S", steps=("release notes: draft them",))), "")
+
+    def test_the_raw_request_naming_the_action_waives_it(self):
+        self.assertEqual(c._one_way(self.brief(steps=("publish the notes",), raw="publish the notes")), "")
+        self.assertEqual(c._one_way(self.brief(steps=("run `make deploy`",), raw="deploy it")), "")
+
+    def test_a_release_scope_glob_holds_the_plan_and_a_docs_folder_named_release_does_not(self):
+        self.assertEqual(c._one_way(self.brief(scope=["dist/*"])), "release")
+        self.assertEqual(c._one_way(self.brief(scope=["plugin/skills/release/SKILL.md", "plugin/lib/x.py"])), "")
+
+    def test_one_real_command_in_a_chain_holds_the_plan_beside_a_dry_run(self):  # T-6058 review
+        for cmd in ("sampo ship --dry-run && sampo ship", "sampo ship --dry-run | sampo ship",
+                    "sampo ship --dry-run & sampo ship"):
+            self.assertEqual(c._one_way(self.brief(acs=(("it is out", cmd),))), "sampo ship", cmd)
+        self.assertEqual(c._one_way(self.brief(acs=(("it is out", "sampo ship --dry-run; git tag v1.2"),))), "git tag v1")
+        self.assertEqual(c._one_way(self.brief("M", acs=(("it is out", "sampo ship --dry-run && git push origin main"),))), "git push")
+        self.assertEqual(c._one_way(self.brief(acs=(("dry only", "sampo ship --dry-run && sampo ship --dry-run"),))), "")
+
+    def test_the_raw_request_waives_a_verb_only_when_it_asks_for_that_action(self):  # T-6058 review
+        for raw in ("don't publish yet", "why did the publish fail", "do not publish it, only draft the notes",
+                    "please don't publish the notes", "the publish step is flaky, explain it"):
+            self.assertEqual(c._one_way(self.brief(steps=("publish the notes",), raw=raw)), "publish", raw)
+            self.assertEqual(c._one_way(self.brief(steps=("run `make deploy`",), raw=raw.replace("publish", "deploy"))), "make deploy", raw)
+        for raw in ("publish the notes", "please publish the notes", "fix the loop, then publish the notes", "I want to publish it",
+                    "Fix it. Publish the notes."):
+            self.assertEqual(c._one_way(self.brief(steps=("publish the notes",), raw=raw)), "", raw)
+
+    def test_a_delete_or_drop_of_a_backticked_data_path_or_table_holds_the_plan(self):  # T-6058 round 2
+        for step in ("drop `state/ledger.jsonl`", "delete `users` rows", "delete `data/old.csv`", "drop `users` table",
+                     "delete `old.db`", "delete `events` records"):
+            for tier in ("S", "M"):
+                self.assertTrue(c._one_way(self.brief(tier, steps=(step,))), (tier, step))
+        for step in ("delete `old_name` and its test", "drop the unused fmcore._x helper", "delete `parse_args`", "delete parse_args()"):
+            self.assertEqual(c._one_way(self.brief("M", steps=(step,))), "", step)
+
+    def test_every_spelling_of_a_forced_push_holds_an_S_plan(self):  # T-6058 round 2
+        for cmd in ("git push -f origin main", "git push --force-with-lease origin main", "git push origin +main",
+                    "git push --mirror", "git push --delete origin v1", "git push -fu origin main", "git push origin :old"):
+            self.assertEqual(c._one_way(self.brief("S", steps=(f"run `{cmd}`",))), "git push", cmd)
+        self.assertEqual(c._one_way(self.brief("S", steps=("run `git push -u origin main`",))), "")
+
+    def test_a_short_lead_in_before_the_release_verb_does_not_hide_the_step(self):  # T-6058 round 2
+        for step in ("now ship it", "then publish the notes", "and then deploy the build", "finally, release it to users",
+                     "Now, publish v2", "also migrate the table"):
+            self.assertTrue(c._one_way(self.brief("S", steps=(step,))), step)
+        self.assertIn("push", c._one_way(self.brief("M", steps=("then push to origin",))))
+        self.assertEqual(c._one_way(self.brief("S", steps=("now release notes are drafted",))), "")

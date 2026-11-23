@@ -476,6 +476,9 @@ class OneWayVerb(unittest.TestCase):  # T-2521: deleting a code symbol in a trac
 
             def section(self, name):
                 return "tidy the parser"
+
+            def acceptance(self):
+                return []
         for step in ("delete _CONF_RE", "drop the unused fmcore._x helper", "delete `old_name` and its test",
                      "delete parse_args()"):
             self.assertEqual(c._one_way(B(step)), "", step)

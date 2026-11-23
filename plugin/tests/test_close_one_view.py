@@ -132,7 +132,7 @@ class TestsOnlyClaim(Base):
     change at the close: a file outside the tests asks for the rival read the gate would have asked at plan time."""
     ON = {"FOREMAN_NO_RIVAL": "0"}
     # T-4719's step: tests only; T-1290's: really a non-test edit (each names its test file: the plan's positive evidence)
-    RELEASE = "failing test in plugin/tests/test_land_ship.py, bound the hook's loop, release held pushes in tearDown"
+    RELEASE = "release held pushes in tearDown, failing test in plugin/tests/test_land_ship.py, bound the hook's loop"
     DELETE = "failing test in plugin/tests/test_land_ship.py, then delete the copy of the rules"
 
     def plan(self, step):
