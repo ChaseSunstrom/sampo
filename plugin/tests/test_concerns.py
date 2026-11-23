@@ -281,6 +281,181 @@ class Proof(Ledger):
             cn.show(self.p, "K-000000", "path:page.html")
 
 
+class SurfaceEvidence(ForemanTestCase):
+    """T-6023: a step that tells a builder to record `sampo smoke` can never close in a project with no smoke target (the
+    command exits 1: nothing to check yet). The advice, the step text and every message that lists the surface commands
+    name `sampo smoke` only where a target is set, else a surface run that works here."""
+
+    SMOKE = "sampo smoke"
+
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        self.p = c.find_project(self.repo)
+
+    def target(self, smoke):
+        meta = c.read_meta(self.p)
+        meta["smoke"] = smoke
+        c.write_meta(self.p, meta)
+
+    def task_with(self, step=None, touched=None):
+        self.made = getattr(self, "made", 0) + 1
+        title = f"{'abcdefghij'[self.made % 10]}{self.made} {'zebra quartz mango violin'.split()[self.made % 4]} widget"
+        tid = json.loads(self.fm("capture", title, "--type", "FEATURE", "--tier", "S", "--anyway", "--json").stdout)["id"]
+        b = c.find_brief(self.p, tid)
+        if step:
+            b.add_step(step)
+            c.save_brief(self.p, b)
+        if touched:
+            c.log_event(self.p, "touched", task=tid, data={"file": os.path.join(self.repo, touched)})
+        return c.find_brief(self.p, tid)
+
+    def advice(self):
+        """Every writer of surface-evidence advice, as the text each gives for this project: the paths gap, the
+        concern step's gap, the step a repeated concern writes, the proof help and the refusal of a non-surface number."""
+        paths = cn.surface_gaps(self.p, self.task_with(touched="web/app.css"))
+        steps = cn.surface_gaps(self.p, self.task_with(step=f"{cn.SURFACE_STEP} (K-ABCDEF): look"))
+        refused = cn._run_argv(self.p, "echo 3")[1]
+        return {"paths gap": paths[0], "step gap": steps[0], "step text": cn._step_text(self.p, {"id": "K-ABCDEF", "surface": "the page"}),
+                "proof help": cn.proof_help(self.p), "number refusal": refused}
+
+    def test_no_target_no_writer_names_sampo_smoke_and_each_names_a_surface_command_that_runs(self):
+        for name, text in self.advice().items():
+            self.assertNotIn(self.SMOKE, text, f"{name}: sampo smoke exits 1 with no target, so the step can never close")
+            self.assertIn("sampo shot", text, f"{name} names the surface command that runs here")
+
+    def test_no_target_advice_is_a_command_the_close_accepts(self):
+        gap = cn.surface_gaps(self.p, self.task_with(touched="web/app.css"))[0]
+        self.assertIn("--run \"sampo shot URL\"", gap)
+        self.assertTrue(cn._surface_cmd(self.p, "sampo shot http://localhost:3000/"))
+
+    def test_a_target_of_any_kind_names_sampo_smoke(self):
+        for smoke in ({"web": "http://localhost:1/"}, {"http": {"url": "http://localhost:1/", "status": None, "key": None}},
+                      {"cmd": {"run": "echo ok", "expect": None}}):
+            self.target(smoke)
+            self.assertTrue(cn.smoke_target(self.p), smoke)
+            for name, text in self.advice().items():
+                self.assertIn(self.SMOKE, text, f"{name} with {list(smoke)[0]} target")
+
+    def test_a_target_set_through_the_verb_names_sampo_smoke(self):
+        self.fm("smoke", "set", "web", "http://localhost:1/")
+        self.assertIn("--run \"sampo smoke\"", cn.surface_gaps(self.p, self.task_with(touched="web/app.css"))[0])
+
+    def test_smoke_off_or_an_empty_target_is_no_target(self):
+        for smoke in ({"off": "no URL serves this UI"}, {}, {"web": ""}, {"web": "http://x/", "off": "why"}, "web", None):
+            self.target(smoke)
+            self.assertFalse(cn.smoke_target(self.p), smoke)
+            self.assertNotIn(self.SMOKE, self.advice()["paths gap"], smoke)
+
+    def test_a_listed_project_surface_command_is_named_first(self):
+        meta = c.read_meta(self.p)
+        meta["surface_commands"] = ["make deploy-staging"]
+        c.write_meta(self.p, meta)
+        gap = cn.surface_gaps(self.p, self.task_with(touched="web/app.css"))[0]
+        self.assertIn("--run 'make deploy-staging'", gap)
+        self.assertNotIn(self.SMOKE, gap)
+        self.assertTrue(cn._surface_cmd(self.p, "make deploy-staging"))
+
+    def test_a_listed_command_that_runs_sampo_smoke_is_never_named_without_a_target(self):
+        """Review: meta surface_commands may list sampo smoke itself; with no target that is the command that exits 1."""
+        meta = c.read_meta(self.p)
+        meta["surface_commands"] = ["sampo smoke", "python3 plugin/bin/sampo smoke", "fm smoke --profile all",
+                                    "env X=1 sampo smoke", "make smoke-site"]
+        c.write_meta(self.p, meta)
+        for name, text in self.advice().items():
+            self.assertNotIn(self.SMOKE, text, name)
+            self.assertNotIn("fm smoke", text, name)
+        gap = cn.surface_gaps(self.p, self.task_with(touched="web/app.css"))[0]
+        self.assertIn("--run 'make smoke-site'", gap, "a listed command that only has smoke in its name is kept")
+        meta["surface_commands"] = ["sampo smoke"]
+        c.write_meta(self.p, meta)
+        self.assertIn("--run \"sampo shot URL\"", cn.surface_gaps(self.p, self.task_with(touched="web/app.css"))[0])
+        self.fm("smoke", "set", "web", "http://localhost:1/")
+        self.assertIn("--run \"sampo smoke\"", cn.surface_gaps(self.p, self.task_with(touched="web/app.css"))[0],
+                      "with a target set it is named again")
+
+    def test_a_listed_command_is_quoted_so_the_shell_runs_it_as_one_word(self):
+        import shlex
+        for own in ("make deploy-staging; touch /tmp/x", "make $(id) `id` $HOME", "make -d 'a b' \"c\"",
+                    "make x '&' '|' '>' \"it's\" #"):
+            meta = c.read_meta(self.p)
+            meta["surface_commands"] = [own]
+            c.write_meta(self.p, meta)
+            rec, _ = cn.surface_how(self.p, "T-0001", 1)
+            self.assertEqual(shlex.split(rec)[-1], own, "one shell word that is the command, expanded by nothing")
+            self.assertEqual(shlex.split(rec)[:-1], ["sampo", "task", "evidence", "T-0001", "--step", "1", "--run"])
+        meta["surface_commands"] = ["multi\nline", "tab\tsep\x1b[31m"]
+        c.write_meta(self.p, meta)
+        self.assertIn('"sampo shot URL"', cn.surface_how(self.p, "T-0001", 1)[0], "a command with a control char is skipped")
+
+    def test_a_target_that_sampo_smoke_cannot_run_is_no_target(self):
+        """Review: smoke_target must fail closed against smoke._other_checks, which runs a cmd only with a run string and
+        an http check only with a url; each of these exits 1 'nothing to check yet', so none may advise sampo smoke."""
+        for smoke in ({"cmd": {"run": "", "expect": None}}, {"cmd": {"run": None}}, {"cmd": {}}, {"cmd": "echo ok"},
+                      {"cmd": {"run": ["echo"]}}, {"http": {"url": ""}}, {"http": {}}, {"http": "http://x/"},
+                      {"http": {"url": None, "status": 200}}, {"web": None}, {"web": 0}, {"web": ["http://x/"]},
+                      {"web": "   "}, {"web": {"url": "http://x/"}}):
+            self.target(smoke)
+            self.assertFalse(cn.smoke_target(self.p), smoke)
+            self.assertNotIn(self.SMOKE, cn.surface_gaps(self.p, self.task_with(touched="web/app.css"))[0], smoke)
+        for smoke in ({"cmd": {"run": "echo ok"}}, {"http": {"url": "http://localhost:1/"}}, {"web": "http://localhost:1/"}):
+            self.target(smoke)
+            self.assertTrue(cn.smoke_target(self.p), smoke)
+
+    def test_every_meta_that_is_no_target_is_one_sampo_smoke_refuses_to_run(self):
+        """The two agree: sampo smoke says 'nothing to check yet' exactly where smoke_target is false."""
+        for smoke in ({}, {"off": "why"}, {"cmd": {"run": "", "expect": None}}, {"http": {"url": ""}}, {"cmd": {}}):
+            self.target(smoke)
+            self.assertFalse(cn.smoke_target(self.p), smoke)
+            r = self.fm("smoke", check=False)
+            self.assertEqual(r.returncode, 1, f"{smoke}: {r.stdout}{r.stderr}")
+            self.assertIn("nothing to check yet", r.stderr)
+        self.target({"cmd": {"run": "true", "expect": None}})
+        self.assertTrue(cn.smoke_target(self.p))
+        self.assertEqual(self.fm("smoke", check=False).returncode, 0)
+
+    def test_the_gap_clears_with_the_command_it_named(self):
+        b = self.task_with(step=f"{cn.SURFACE_STEP} (K-ABCDEF): look")
+        self.assertEqual(len(cn.surface_gaps(self.p, b)), 1)
+        self.assertEqual(cn.surface_gaps(self.p, b, then=[(1, "sampo shot http://localhost:1/")]), [])
+
+    def test_a_walker_lists_every_writer_of_sampo_smoke_advice(self):
+        """Every string in plugin/lib/sampo that says `sampo smoke`, by file and function: a new writer fails here until
+        it is listed with the reason it is safe (project-aware, or not advice) and, if it advises, covered above."""
+        import ast
+        lib = os.path.join(os.path.dirname(os.path.abspath(cn.__file__)))
+        found = set()
+        for name in sorted(os.listdir(lib)):
+            path = os.path.join(lib, name)
+            if not name.endswith(".py"):
+                continue
+            with open(path, encoding="utf-8") as f:
+                text = f.read()
+            if "sampo smoke" not in text:
+                continue
+            tree = ast.parse(text)
+            docs = {id(n.body[0].value) for n in ast.walk(tree)
+                    if isinstance(n, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and n.body
+                    and isinstance(n.body[0], ast.Expr) and isinstance(n.body[0].value, ast.Constant)}
+
+            def visit(node, where):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    where = node.name
+                if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docs \
+                        and "sampo smoke" in node.value:
+                    found.add((name, where))
+                for ch in ast.iter_child_nodes(node):
+                    visit(ch, where)
+            visit(tree, "<module>")
+        # the two that say it, each only where smoke_target is true; advice() above runs every caller of them (the paths
+        # gap, the step gap, the repeat's step text, the proof help, the number refusal) for both kinds of project
+        covered = {("concerns.py", "surface_how"), ("concerns.py", "surface_list")}
+        gated = {("hooks.py", "_drive_push")}  # the drained-queue line says it only with meta smoke web set
+        help_text = {("cli.py", "_build_parser")}  # argparse help of the smoke verb and shot: not a step or an advice
+        self.assertEqual(found - covered - gated - help_text, set(), "a writer of sampo smoke advice that is not listed")
+        self.assertEqual((covered | gated | help_text) - found, set(), "a listed writer that is gone: drop it from the list")
+
+
 class Link(Ledger):
     """T-4200 review: a task captured from a message links to its concern even when the capture is far back in a
     long ledger. The lines are written as sampo writes them (prev, ts, session_id, project, task, event, data)."""

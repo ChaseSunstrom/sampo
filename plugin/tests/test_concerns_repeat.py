@@ -196,7 +196,8 @@ class Gate(Repeat):
         self.assertEqual(len(got), 1)
         self.assertIn(self.CID, got[0])
         self.assertIn("sampo concerns show", got[0])
-        self.assertIn("sampo smoke", got[0])
+        self.assertIn("sampo shot URL", got[0])  # T-6023: no smoke target here, and sampo smoke exits 1 without one
+        self.assertNotIn("sampo smoke", got[0])
 
     def test_gate_unit_test_evidence_alone_is_refused_and_named(self):
         tid, b = self.reopened()

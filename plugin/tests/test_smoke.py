@@ -10,6 +10,7 @@ import unittest
 
 from helpers import ForemanTestCase
 
+from sampo import core as c
 from sampo import smoke
 
 BIN = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bin")
@@ -52,6 +53,19 @@ class Smoke(ForemanTestCase):
         r = self.fm("check", env=self.runner([{"where": "desktop start", "what": "console error: boom"}]), check=False)
         self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(self.fm("check", env=self.runner([]), check=False).returncode, 0)
+
+    def test_set_refuses_an_empty_command_and_a_target_with_no_address(self):
+        """T-6023: a blank cmd, or a web/http with no host, stored a target that has nothing to run, so the product check
+        read as set (and advice named sampo smoke) while the run exited 1 with nothing to check."""
+        self.fm("init")
+        for words in (["cmd", ""], ["cmd", "  "], ["cmd", "", ""], ["web", "http://"], ["web", "https:///x"],
+                      ["http", "http://"], ["http", "https://?a=1"], ["web"], ["http"], ["web", "not-a-url"]):
+            r = self.fm("smoke", "set", *words, check=False)
+            self.assertNotEqual(r.returncode, 0, f"{words}: {r.stdout}")
+            self.assertIn("fm smoke set web", r.stderr, words)
+            self.assertFalse(c.read_meta(c.find_project(self.repo)).get("smoke"), f"{words} stored nothing")
+        self.assertEqual(self.fm("smoke", "set", "cmd", "true").returncode, 0)
+        self.assertEqual(self.fm("smoke", "set", "http", "http://127.0.0.1:8199/").returncode, 0)
 
     def test_smoke_without_a_target_says_how(self):
         self.fm("init")

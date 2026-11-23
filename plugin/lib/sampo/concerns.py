@@ -57,10 +57,43 @@ SURFACE_CMDS = (("sampo", "smoke"), ("fm", "smoke"), ("sampo", "shot"), ("fm", "
                 ("fm", "concerns", "show"), ("sampo", "stories"), ("fm", "stories"), ("sampo", "flow"), ("fm", "flow"),
                 ("curl",), ("wget",))
 PATHS_GATE_FROM = "2026-11-18T00:00:00Z"  # T-5026: a task closed before the user-visible-paths gate shipped could not have had the run
-PROOF_HELP = ("a proof is git:<ref> (a commit on a remote-tracking branch), url:<address> (it answers), path:<file> "
-              "(it exists inside the project) or num:<value> via <command> (a surface command, sampo smoke or shot, curl, "
-              "or one in meta.json surface_commands, exits 0 and prints the value; num:<value> up via <command> when a "
-              "higher number is better)")
+_SMOKE_RUN = re.compile(r"(?:^|[\s/=;&|(])(?:sampo|fm)\s+smoke\b")  # a listed command that is itself the smoke verb
+
+
+def smoke_target(p):
+    """T-6023: whether this project has a product check `sampo smoke` can run (smoke.has_target: a web URL, an http
+    endpoint with a url or a command with a run string, not switched off). With none, `sampo smoke` exits 1 ("nothing to
+    check yet"), so a step that asks for it as evidence can never close. It fails closed: a meta it cannot read as a
+    target is no target, and no target means smoke is never advised."""
+    from sampo import smoke
+    return smoke.has_target(c.read_meta(p).get("smoke"))
+
+
+def surface_how(p, tid, step):
+    """T-6023: (the `sampo task evidence` line to record a surface run for a step, the other commands that count): the
+    one a builder can run in THIS project. `sampo smoke` only where a smoke target is set; else the first command the
+    project lists as its own surface command (meta surface_commands), else `sampo shot URL`."""
+    rec = f"sampo task evidence {tid} --step {step} --run"
+    if smoke_target(p):
+        return f'{rec} "sampo smoke"', "sampo shot URL, curl URL"
+    extra = c.read_meta(p).get("surface_commands")
+    own = next((x for x in extra if isinstance(x, str) and x.strip() and x.isprintable() and not _SMOKE_RUN.search(x)
+                and _surface_run(p, x)), None) if isinstance(extra, list) else None
+    if own:  # shlex.quote: the project's text reaches a shell as one word, never expanded or split
+        return f"{rec} {shlex.quote(own)}", "sampo shot URL, curl URL"
+    return f'{rec} "sampo shot URL"', "curl URL"
+
+
+def surface_list(p):
+    """T-6023: the surface commands a message names, `sampo smoke` among them only where it can run."""
+    return ("sampo smoke, " if smoke_target(p) else "") + "sampo shot URL, curl"
+
+
+def proof_help(p):
+    return ("a proof is git:<ref> (a commit on a remote-tracking branch), url:<address> (it answers), path:<file> "
+            f"(it exists inside the project) or num:<value> via <command> (a surface command, {surface_list(p)}, "
+            "or one in meta.json surface_commands, exits 0 and prints the value; num:<value> up via <command> when a "
+            "higher number is better)")
 USER_SOURCES = ("user", "intake", "steer")  # T-4663: the captures that are the user's words made a task (steer: Sampo's expansion of one; the others are an agent's)
 OUT_MAX = 64 * 1024  # T-4663: a num proof's command prints at most this much; more and it is killed and refused
 ROLL_BYTES = 256 * 1024  # T-4663: a ledger past this size is rolled by tick (roll): the last of each kind kept, the rest archived
@@ -668,7 +701,7 @@ def _check_full(p, proof):
     kind, sep, rest = (proof or "").strip().partition(":")
     kind, rest = kind.strip().lower(), rest.strip()
     if not sep or not rest:
-        return False, PROOF_HELP, {}
+        return False, proof_help(p), {}
     if kind == "git":
         return (*_git_proof(p, rest), {})
     if kind == "url":
@@ -685,7 +718,7 @@ def _check_full(p, proof):
         return (True, f"{rest} exists", {}) if os.path.exists(path) else (False, f"no such path: {rest}", {})
     if kind == "num":
         return _num_proof(p, rest)
-    return False, PROOF_HELP, {}
+    return False, proof_help(p), {}
 
 
 def _git_proof(p, ref):
@@ -831,7 +864,7 @@ def _run_argv(p, cmd):
     if not argv:
         return None, "a number must come with its command"
     if not _surface_run(p, cmd):
-        return None, ("only a command that looks at the real surface proves a number (sampo smoke, sampo shot URL, curl, "
+        return None, (f"only a command that looks at the real surface proves a number ({surface_list(p)}, "
                       "or one named in meta.json surface_commands): a number a command only echoes proves nothing")
     return _run_capped(argv, p.root)
 
@@ -1003,10 +1036,10 @@ def repeated(p, briefs=None):
     return out
 
 
-def _step_text(r):
+def _step_text(p, r):
     surface = c.fit(c.plain(" ".join(str(r["surface"] or "").split())), 60)
     return (f"{SURFACE_STEP} ({r['id']}): open the real thing the user looks at ({surface}) and record what you see "
-            f"(sampo smoke, sampo shot URL, curl); the earlier cause was wrong or incomplete, so find the cause there "
+            f"({surface_list(p)}); the earlier cause was wrong or incomplete, so find the cause there "
             f"before changing anything")
 
 
@@ -1029,7 +1062,7 @@ def _reopen(p, b, r):
         b.meta["status"] = "planned"
     if not exempt:
         mine = [s for s in b.steps() if s.text.startswith(SURFACE_STEP) and r["id"] in s.text and not s.done]
-        b.set_current(mine[-1].n if mine else b.add_step(_step_text(r)))
+        b.set_current(mine[-1].n if mine else b.add_step(_step_text(p, r)))
     c.save_brief(p, b)
 
 
@@ -1047,7 +1080,7 @@ def _capture(p, r):
     b, new = eco.capture_once(p, text, "FIX", "discovered", key=f"CONTEXT: {r['id']} reported again")
     if new:
         if _norm(r["surface"]) not in EXEMPT:
-            b.set_current(b.add_step(_step_text(r)))
+            b.set_current(b.add_step(_step_text(p, r)))
             c.save_brief(p, b)
         return b, "captured"
     if b.status in c.CLOSED:
@@ -1231,9 +1264,10 @@ def _paths_gap(p, b, then, then_ac=()):
         return []
     have = (f" has only {c.joinmore(['`' + x + '`' for x in cmds], 3)}: not a surface run;" if cmds
             else " has no run on the real surface;")
+    rec, others = surface_how(p, b.id, "N")
     return [f"{b.id} touches what the user looks at ({c.joinmore(files, 3)}) and{have} unit tests alone cannot close it: "
-            f"look at the real surface and record it: sampo task evidence {b.id} --step N --run \"sampo smoke\" "
-            f"(or sampo shot URL, curl URL; a run before the last edit does not count); with no surface to reach (no URL, "
+            f"look at the real surface and record it: {rec} "
+            f"(or {others}; a run before the last edit does not count); with no surface to reach (no URL, "
             f"no browser): sampo task log {b.id} \"surface waived: <why>\""]
 
 
@@ -1261,8 +1295,9 @@ def surface_gaps(p, b, then=(), then_ac=(), paths=True):
                 shown = {x["id"] for x in fold(p, briefs=[]) if x["state"] == "shown"}
             if cid in shown:
                 continue
-        how = (f"look at the real surface and record it: sampo task evidence {b.id} --step {s.n} --run \"sampo smoke\" "
-               f"(or sampo shot URL, curl URL), or sampo concerns show {cid or 'K-ID'} --proof \"<what the user can now see>\"")
+        rec, others = surface_how(p, b.id, s.n)
+        how = (f"look at the real surface and record it: {rec} "
+               f"(or {others}), or sampo concerns show {cid or 'K-ID'} --proof \"<what the user can now see>\"")
         have = (f" has only {c.joinmore(['`' + x + '`' for x in cmds], 3)}: not a surface run; " if cmds
                 else " has no run on the real surface; ")
         out.append(f"step {s.n} ({SURFACE_STEP}{f', {cid}' if cid else ''}){have}the concern was reported again, so "
@@ -1303,7 +1338,7 @@ def cmd_concerns(args):
     try:
         if action == "show":
             if not args.id or args.proof is None:
-                raise cli.UsageError('sampo concerns show ID --proof "<what the user can now see>" (' + PROOF_HELP + ")")
+                raise cli.UsageError('sampo concerns show ID --proof "<what the user can now see>" (' + proof_help(p) + ")")
             got = show(p, args.id, args.proof)
             _refresh_state(p)  # T-4217: STATE.md drops it now
             return cli.out(args, got, f"{got['id']} shown: {got['checked']}")

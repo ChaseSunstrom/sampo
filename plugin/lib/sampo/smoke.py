@@ -114,6 +114,28 @@ def crawl(pw, url, out, timeout=240, profile=""):
             "motion_notes": [_clean(n) for n in res.get("motion_notes") or [] if isinstance(n, str)][:20]}
 
 
+def _url_ok(text):
+    """T-6023: an http(s) address with a host (`http://` and `https:///x` name nothing to open)."""
+    from urllib.parse import urlsplit
+    try:
+        u = urlsplit(text)
+        return u.scheme in ("http", "https") and bool(u.hostname)
+    except ValueError:
+        return False
+
+
+def has_target(smoke):
+    """T-6023: whether meta["smoke"] gives `fm smoke` something to run: a web URL, an http endpoint with a url or a cmd
+    with a run string, and not switched off. Stricter than the run reads it (a value of another type, a blank string)
+    so it fails closed: a project this calls targetless is never told to record `sampo smoke`, which exits 1 there."""
+    if not isinstance(smoke, dict) or "off" in smoke:
+        return False
+    web, cmd, http = smoke.get("web"), smoke.get("cmd"), smoke.get("http")
+    return bool((isinstance(web, str) and web.strip())
+                or (isinstance(cmd, dict) and isinstance(cmd.get("run"), str) and cmd["run"].strip())
+                or (isinstance(http, dict) and isinstance(http.get("url"), str) and http["url"].strip()))
+
+
 def nudge(surfaces, meta):
     """fm doctor's line for a project that ships a web UI nobody checks (None when there's nothing to say)."""
     if "web UI" in surfaces and not meta.get("smoke"):  # {"web": url}, or {"off": why} for a UI no URL serves
@@ -145,12 +167,12 @@ def cmd_smoke(args):
                          + ("fail it." if meta["smoke_strict"] else "are reported, not failed."))
     if args.action == "set":
         kind, rest = (args.words[:1] or [""])[0], args.words[1:]
-        url_ok = len(rest) == 1 and rest[0].startswith(("http://", "https://"))
+        url_ok = len(rest) == 1 and _url_ok(rest[0])  # T-6023: with a host: "http://" alone is no address
         if kind == "web" and url_ok:
             entry = rest[0]
         elif kind == "http" and url_ok:  # T-0460: an API or service endpoint
             entry = {"url": rest[0], "status": args.status, "key": args.json_key}
-        elif kind == "cmd" and rest:  # T-0460: a CLI, a daemon's status command, a voice pipeline's self-test
+        elif kind == "cmd" and " ".join(rest).strip():  # T-0460: a CLI, a daemon's status command, a voice pipeline's self-test
             entry = {"run": " ".join(rest), "expect": args.expect}
         else:
             raise cli.UsageError("fm smoke set web <http(s) url> | http <http(s) url> [--status N] [--json-key K] | "
