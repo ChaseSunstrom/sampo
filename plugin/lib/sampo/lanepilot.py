@@ -30,6 +30,7 @@ from sampo import budget
 from sampo import contract
 from sampo import core as c
 from sampo import lanes
+from sampo import mapmerge
 from sampo import train
 
 ACCEPT_TIMEOUT = 600  # s: the accept starts the lane's check and returns; the check runs detached
@@ -837,23 +838,31 @@ def _driver_problem(lane, scan):
     and `diff` would run it, and HARDEN_GIT cannot switch off a driver whose name it does not know, so such a lane is
     refused rather than read (round 4). Reads files only, runs nothing; fails closed on an error. Round 5: git calls no longer
     depend on this (core.driver_args empties every defined driver), so it is defence in depth; every refusal it gives is a
-    Tainted one, the error ones included."""
+    Tainted one, the error ones included. T-6178: the merge.sampo-map.driver mapmerge.ensure writes is not counted while
+    every value of it is mapmerge.command() exactly; any other value, and any other driver, still refuses."""
     if scan is None:
         return Tainted("the lane's worktree could not be walked to look for attribute files")
     if getattr(scan, "nested", ""):  # round 6: a submodule or nested repo has a git config of its own that driver_args never lists
         return Tainted(c.plain(f"{DRIVER_WHY}: the lane holds a nested git repo or submodule ({scan.nested}), whose own "
                                f"config git would read"))
-    r = _g(lane, "config", "--list", "-z", timeout=SENSITIVE_TIMEOUT, proc=True)
+    r = _g(lane, "config", "--list", "--show-origin", "-z", timeout=SENSITIVE_TIMEOUT, proc=True)
     if r.returncode != 0:
         return Tainted("the git config could not be listed to look for drivers")
-    defined, files = {k: set() for k in DRIVERS}, [os.path.join(lane, x) for x in scan[1]]
-    for row in r.stdout.split("\0"):
+    defined, files, own = {k: set() for k in DRIVERS}, [os.path.join(lane, x) for x in scan[1]], []
+    own_key = f"merge.{mapmerge.NAME}.driver"  # T-6178: Sampo's own map driver, exempt by its value (below)
+    rows = r.stdout.split("\0")  # --show-origin: an origin, then its key and value, each pair NUL-ended
+    for origin, row in zip(rows[0::2], rows[1::2]):
         key, _, value = row.partition("\n")
         parts = key.split(".")
         if key.lower() == "core.attributesfile" and value:
             files.append(os.path.expanduser(value))
-        if len(parts) >= 3 and parts[0].lower() in DRIVERS and parts[-1].lower() in DRIVERS[parts[0].lower()]:
+        if key == own_key:
+            if origin != "command line:":  # the -c override driver_args puts in front is not the config's value
+                own.append(value)
+        elif len(parts) >= 3 and parts[0].lower() in DRIVERS and parts[-1].lower() in DRIVERS[parts[0].lower()]:
             defined[parts[0].lower()].add(".".join(parts[1:-1]))
+    if any(v != mapmerge.command() for v in own):  # every value must be mapmerge.command(); none, or one other, refuses
+        defined["merge"].add(mapmerge.NAME)
     gitdir = lanes._gitdir_of(lane)
     common = lanes._common_of(gitdir) if gitdir else None
     if not gitdir or not common:

@@ -1178,6 +1178,71 @@ class LastLineReaders(unittest.TestCase):
         self.assertIn("seconds", json.loads(r.stdout))
 
 
+class OwnMapDriver(PilotCase):
+    """T-6178: mapmerge.ensure writes merge.sampo-map.driver (T-5472), and the driver check counted it as a planted one, so
+    every lane was refused. Only that driver, set to mapmerge.command() exactly, is exempt: another command for it, any
+    other defined driver an attributes file names, and a nested repo still refuse."""
+
+    def lane_dir(self):
+        return c.find_brief(c.find_project(self.repo), self.tid).meta["lane"]
+
+    def cfg(self, key, value):
+        subprocess.run(["git", "-C", self.repo, "config", key, value], check=True)
+
+    def attrs(self, text):
+        with open(os.path.join(self.lane_dir(), ".gitattributes"), "w") as f:
+            f.write(text)
+
+    def problem(self):
+        lane = self.lane_dir()
+        return lanepilot._driver_problem(lane, lanepilot._scan(lane))
+
+    def test_own_map_driver_at_the_mapmerge_command_passes(self):
+        from sampo import mapmerge
+        self.cfg(f"merge.{mapmerge.NAME}.driver", mapmerge.command())
+        self.attrs("MASTER.md merge=sampo-map\ndocs/map/*.md merge=sampo-map\n")
+        self.assertEqual(self.problem(), "")
+
+    def test_own_map_driver_with_another_command_is_refused(self):
+        from sampo import mapmerge
+        self.cfg(f"merge.{mapmerge.NAME}.driver", "python3 -I /nonexistent/evil.py %O %A %B %P %L")
+        self.attrs("MASTER.md merge=sampo-map\n")
+        why = self.problem()
+        self.assertIsInstance(why, lanepilot.Tainted, why)
+        self.assertIn("merge=sampo-map", why)
+
+    def test_own_map_driver_with_the_command_plus_a_suffix_is_refused(self):
+        from sampo import mapmerge
+        self.cfg(f"merge.{mapmerge.NAME}.driver", mapmerge.command() + " ; touch /nonexistent/x")
+        self.attrs("MASTER.md merge=sampo-map\n")
+        self.assertIsInstance(self.problem(), lanepilot.Tainted)
+
+    def test_own_map_driver_and_a_second_value_that_differs_is_refused(self):
+        from sampo import mapmerge
+        self.cfg(f"merge.{mapmerge.NAME}.driver", mapmerge.command())
+        subprocess.run(["git", "-C", self.repo, "config", "--add", f"merge.{mapmerge.NAME}.driver", "cat"], check=True)
+        self.attrs("MASTER.md merge=sampo-map\n")
+        self.assertIsInstance(self.problem(), lanepilot.Tainted)
+
+    def test_another_defined_driver_the_attributes_name_is_refused(self):
+        from sampo import mapmerge
+        self.cfg(f"merge.{mapmerge.NAME}.driver", mapmerge.command())
+        self.cfg("filter.evil.clean", "cat")
+        self.attrs("*.zzz filter=evil\n")  # alone: the refusal names the one driver it reads, not the sampo-map one
+        why = self.problem()
+        self.assertIsInstance(why, lanepilot.Tainted, why)
+        self.assertIn("filter=evil", why)
+
+    def test_a_nested_repo_still_refuses_with_the_own_map_driver(self):
+        from sampo import mapmerge
+        self.cfg(f"merge.{mapmerge.NAME}.driver", mapmerge.command())
+        self.attrs("MASTER.md merge=sampo-map\n")
+        os.makedirs(os.path.join(self.lane_dir(), "vendor", "x", ".git"))
+        why = self.problem()
+        self.assertIsInstance(why, lanepilot.Tainted, why)
+        self.assertIn(os.path.join("vendor", "x", ".git"), why)
+
+
 class LocalModelStub:
     """T-6089: a loopback server standing in for the local model. Each request is one lens's review (the lens is read
     from the prompt): its reply is replies[lens], else that lens's clean typed reply. asked keeps the lens of each request."""
