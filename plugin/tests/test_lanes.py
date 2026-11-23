@@ -6299,17 +6299,21 @@ class LocalBuilder(ForemanTestCase):
         with mock.patch.object(slanes.subprocess, "Popen", return_value=stub), mock.patch("os.killpg") as killpg:
             self.assertEqual(slanes._local_code(self.p, mock.Mock(id="T-1"), "/nonexistent", "jarvis"), 124)
         killpg.assert_not_called()
+        from sampo import killsafe  # T-6095: the guard refuses a pid not started here; the stub declares its child started
         stub = mock.Mock(pid=424242, poll=mock.Mock(return_value=None))
         stub.wait.side_effect = [subprocess.TimeoutExpired("sampo", 1), 0]
-        with mock.patch.object(slanes.subprocess, "Popen", return_value=stub), mock.patch("os.killpg") as killpg:
+        with mock.patch.dict(killsafe._STARTED, {424242: None}), \
+                mock.patch.object(slanes.subprocess, "Popen", return_value=stub), mock.patch("os.killpg") as killpg:
             self.assertEqual(slanes._local_code(self.p, mock.Mock(id="T-1"), "/nonexistent", "jarvis"), 124)
         killpg.assert_any_call(424242, signal.SIGKILL)
         self.assertEqual({a[0][0] for a in killpg.call_args_list}, {424242}, "only the child's own group")
 
     def test_a_wrapper_that_is_stopped_takes_the_child_group_with_it(self):
+        from sampo import killsafe  # T-6095: the child's pid is one this process started (the stub declares it)
         stub = mock.Mock(pid=424242, poll=mock.Mock(return_value=None))
         stub.wait.side_effect = KeyboardInterrupt()  # what the SIGTERM handler raises in the wrapper
-        with mock.patch.object(slanes.subprocess, "Popen", return_value=stub), mock.patch("os.killpg") as killpg:
+        with mock.patch.dict(killsafe._STARTED, {424242: None}), \
+                mock.patch.object(slanes.subprocess, "Popen", return_value=stub), mock.patch("os.killpg") as killpg:
             with self.assertRaises(KeyboardInterrupt):
                 slanes._local_code(self.p, mock.Mock(id="T-1"), "/nonexistent", "jarvis")
         killpg.assert_called_once_with(424242, signal.SIGKILL)
