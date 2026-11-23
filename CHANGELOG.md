@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- sampo lane brief runs each criterion's verify on trunk HEAD first: all green closes the task with those runs as evidence and no builder, a mix briefs only the red criteria, and a run that ran zero tests, matched no -k or timed out counts red (T-6063).
 - A repeat Read of a range the same session and agent already read gets a short note (or only the changed hunks) instead of the text again, in Claude Code and in the headless loop, and sampo cost --repeat-reads counts repeated-read characters per session (T-6064).
 - The chained-lanes split script redacts each brief value before quoting it and is written without a second redaction pass, so a secret next to a quote no longer leaks into it and no pattern can unquote brief text; a part that does not read back with shlex is not written (T-6074).
 - Headless reviewers now answer in one typed JSON reply whose schema generates the prompt format, goes to claude as --json-schema and validates the reply, with one repair retry and the old regex parser kept as a counted fallback (T-6043).
