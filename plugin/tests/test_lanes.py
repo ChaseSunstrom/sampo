@@ -6492,6 +6492,219 @@ class LaneSay(_LaneRepo):
         self.assertEqual(slanes.reviewer_findings(msg)[0], ("adversary", "HIGH", "a.py:3", "the cap is never read"))
 
 
+class FoldFollowUp(_LaneRepo):
+    """T-6065: a follow-up captured against a lane that has not landed (--parent T-X, or a non-user capture naming T-X
+    while its lane is open) joins that lane's pending fix items: no new task, no cold builder. The fix round and the
+    resume brief list it; a landed parent or --new makes a task as before."""
+
+    ITEM = "FIX: the cap in shared.py is read before the config is loaded, so the first call ignores it"
+
+    def setUp(self):
+        super().setUp()
+        self.path = self.lane("x = 1\n")
+        self.p = c.find_project(self.repo)
+
+    def ids(self):
+        return {b.id for b in c.load_briefs(self.p)}
+
+    def cap(self, text, *flags, check=True):
+        return self.fm("capture", text, *flags, check=check)
+
+    def pending(self, tid="T-0001"):
+        from sampo import triggers
+        return [x for x in triggers.follow_items(c.find_brief(self.p, tid)) if x["mark"] == " "]
+
+    def test_parent_folds_into_the_open_lane_and_makes_no_task(self):
+        before = self.ids()
+        r = self.cap(self.ITEM, "--parent", "T-0001", "--source", "followup")
+        self.assertIn("folded into T-0001's next round", r.stdout)
+        self.assertEqual(self.ids(), before, "no new task")
+        self.assertEqual(len(self.pending()), 1)
+        self.assertIn("cap in shared.py", self.pending()[0]["body"])
+
+    def test_parent_folds_a_users_own_capture_too(self):
+        # an explicit --parent is the user's own word for where it goes
+        before = self.ids()
+        r = self.cap(self.ITEM, "--parent", "T-0001")
+        self.assertIn("folded into T-0001's next round", r.stdout)
+        self.assertEqual(self.ids(), before)
+
+    def test_a_mention_while_the_lane_is_open_folds(self):
+        before = self.ids()
+        r = self.cap("FIX: T-0001 reads the cap before the config is loaded and drops the first call", "--source", "discovered")
+        self.assertIn("folded into T-0001's next round", r.stdout)
+        self.assertEqual(self.ids(), before)
+        self.assertEqual(len(self.pending()), 1)
+
+    def test_a_users_own_mention_is_still_a_task(self):
+        # a user's ask that names a task is theirs to place: only --parent folds it
+        r = self.cap("FIX: T-0001 reads the cap before the config is loaded and drops the first call")
+        self.assertIn("Captured as T-0002", r.stdout)
+        self.assertEqual(self.pending(), [])
+
+    def test_a_landed_parent_makes_a_task(self):
+        b = c.find_brief(self.p, "T-0001")
+        b.meta["status"] = "done"
+        c.save_brief(self.p, b)
+        before = self.ids()
+        r = self.cap(self.ITEM, "--parent", "T-0001", "--source", "followup")
+        self.assertIn("Captured as", r.stdout)
+        r = self.cap("FIX: T-0001 loads the schema twice when the importer restarts", "--source", "discovered")
+        self.assertIn("Captured as", r.stdout)
+        self.assertEqual(len(self.ids()), len(before) + 2)
+
+    def test_a_merged_lane_waiting_on_its_close_is_landed(self):
+        b = c.find_brief(self.p, "T-0001")
+        b.meta["lane_stop"] = "merged: waiting on the close"
+        c.save_brief(self.p, b)
+        r = self.cap(self.ITEM, "--parent", "T-0001", "--source", "followup")
+        self.assertIn("Captured as", r.stdout)
+
+    def test_new_forces_a_task(self):
+        before = self.ids()
+        r = self.cap(self.ITEM, "--parent", "T-0001", "--new", "--source", "followup")
+        self.assertIn("Captured as", r.stdout)
+        r = self.cap("FIX: T-0001 loads the schema twice when the importer restarts", "--new", "--source", "discovered")
+        self.assertIn("Captured as", r.stdout)
+        self.assertEqual(len(self.ids()), len(before) + 2)
+        self.assertEqual(self.pending(), [])
+
+    def test_a_parent_that_is_not_a_task_is_refused(self):
+        r = self.cap(self.ITEM, "--parent", "T-9999", "--source", "followup", check=False)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("T-9999", r.stdout + r.stderr)
+
+    def test_a_second_run_adds_nothing(self):
+        self.cap(self.ITEM, "--parent", "T-0001", "--source", "followup")
+        self.cap(self.ITEM, "--parent", "T-0001", "--source", "followup")
+        self.assertEqual(len(self.pending()), 1)
+
+    def test_the_fix_round_lists_a_folded_item_with_no_review_finding(self):
+        self.cap(self.ITEM, "--parent", "T-0001", "--source", "followup")
+        out = self.fm("lane", "say", "T-0001", "fix").stdout
+        self.assertIn("cap in shared.py is read before the config", out)
+        self.assertIn("sampo task follow T-0001", out, "the round names how each is settled")
+        got = json.loads(self.fm("lane", "say", "T-0001", "fix", "--json").stdout)
+        self.assertEqual(len(got["folded"]), 1)
+
+    def test_the_resume_brief_lists_a_folded_item(self):
+        self.cap(self.ITEM, "--parent", "T-0001", "--source", "followup")
+        state = slanes.resume_state(self.p, c.find_brief(self.p, "T-0001"), self.base(), "foreman/T-0001")
+        self.assertIn("Folded follow-ups", state)
+        self.assertIn("cap in shared.py is read before the config", state)
+
+    def test_a_settled_item_is_not_pending_again(self):
+        self.cap(self.ITEM, "--parent", "T-0001", "--source", "followup")
+        key = self.pending()[0]["key"]
+        self.fm("task", "follow", "T-0001", key, "--done")
+        self.assertEqual(self.pending(), [])
+        r = self.fm("lane", "say", "T-0001", "fix", check=False)
+        self.assertNotIn("cap in shared.py", r.stdout)
+
+    def test_urgent_security_and_other_sources_are_filed_never_folded(self):
+        # review: a fold would drop the urgency (the lane's round reads it as one more item) and cross another project's text
+        before = self.ids()
+        for text, flags in (("FIX: the importer drops the last row of a file with no final newline", ("--urgent", "--source", "followup")),
+                            ("FIX: the session cookie is written without a Secure flag", ("--type", "SECURITY", "--source", "followup")),
+                            ("FIX: the other project's scheduler skips a job on the hour", ("--source", "cross-project")),
+                            ("FIX: the tower's nightly report counts a dropped task twice", ("--source", "self"))):
+            r = self.cap(text, "--parent", "T-0001", *flags)
+            self.assertIn("Captured as", r.stdout, flags)
+        r = self.cap("FIX: T-0001 reads the cap before the config is loaded and drops it", "--urgent", "--source", "discovered")
+        self.assertIn("Captured as", r.stdout)
+        self.assertEqual(len(self.ids()), len(before) + 5)
+        self.assertEqual(self.pending(), [])
+        urgent = [b for b in c.load_briefs(self.p) if b.id not in before and b.priority == "urgent"]
+        self.assertGreaterEqual(len(urgent), 2, "the urgent ones keep their urgency")
+
+    def test_a_cross_project_capture_naming_a_task_is_a_task(self):
+        r = self.cap("FIX: T-0001 in the other project reads its cap too early and drops the first call",
+                     "--source", "cross-project")
+        self.assertIn("Captured as", r.stdout)
+        self.assertEqual(self.pending(), [])
+
+    def test_a_merged_lane_files_a_task_for_a_mention_too(self):
+        b = c.find_brief(self.p, "T-0001")
+        b.meta["lane_stop"] = "merged 2026-11-22T00:00:00Z"
+        c.save_brief(self.p, b)
+        r = self.cap("FIX: T-0001 loads the schema twice when the importer restarts", "--source", "discovered")
+        self.assertIn("Captured as", r.stdout)
+        self.assertEqual(self.pending(), [])
+
+    def test_a_recapture_after_the_item_was_settled_files_a_task(self):
+        self.cap(self.ITEM, "--parent", "T-0001", "--source", "followup")
+        self.fm("task", "follow", "T-0001", self.pending()[0]["key"], "--done")
+        before = self.ids()
+        r = self.cap(self.ITEM, "--parent", "T-0001", "--source", "followup")
+        self.assertIn("Captured as", r.stdout, "a finding that came back after its fix is not dropped")
+        self.assertEqual(len(self.ids()), len(before) + 1)
+
+    def test_a_lane_takes_a_few_folded_items_then_the_rest_are_tasks(self):
+        from sampo import triggers
+        for i in range(triggers.FOLD_CAP):
+            r = self.cap(f"FIX: the cap in module{i}.py is read before the config is loaded", "--parent", "T-0001",
+                         "--source", "followup")
+            self.assertIn("folded into", r.stdout, i)
+        before = self.ids()
+        r = self.cap("FIX: the cap in another.py is read before the config is loaded", "--parent", "T-0001", "--source", "followup")
+        self.assertIn("Captured as", r.stdout)
+        self.assertEqual(len(self.ids()), len(before) + 1)
+        self.assertEqual(len(self.pending()), triggers.FOLD_CAP)
+
+    def test_parent_with_from_file_is_refused(self):
+        att = os.path.join(self.repo, "att.log")
+        with open(att, "w") as f:
+            f.write("trace\n")
+        r = self.cap("FIX: the trace", "--parent", "T-0001", "--from-file", att, "--source", "followup", check=False)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("--from-file", r.stdout + r.stderr)
+
+    def test_the_about_field_reaches_the_share_end_to_end(self):
+        # the whole path: a lane lands, a --new capture names it as its parent, the share counts it as a follow-up task
+        from sampo import triggers
+        c.log_event(self.p, "lane_landed", task="T-0001", data={"tasks": ["T-0001"]})
+        self.cap(self.ITEM, "--parent", "T-0001", "--new", "--source", "followup")
+        got = triggers.follow_share(self.p)
+        self.assertEqual((got["landed"], got["with_follow_up"]), (1, 1), got)
+
+    def test_the_share_is_split_before_and_after_the_change_date(self):
+        from sampo import triggers
+        at = "2026-11-22T00:00:00Z"
+        for lane, ts in (("T-0101", "2026-11-18T00:00:00Z"), ("T-0102", "2026-11-19T00:00:00Z"),
+                         ("T-0103", "2026-11-23T00:00:00Z"), ("T-0104", "2026-11-24T00:00:00Z")):
+            with mock.patch.object(c, "now", return_value=ts):
+                c.log_event(self.p, "lane_landed", task=lane, data={"tasks": [lane]})
+            with mock.patch.object(c, "now", return_value=c.iso(c.parse_ts(ts).timestamp() + 3600)):
+                if lane in ("T-0101", "T-0102", "T-0103"):  # the two before the date had a task about them; one after did
+                    c.log_event(self.p, "capture", task="T-02" + lane[-2:], data={"source": "followup", "from": lane})
+        got = triggers.follow_share(self.p, now="2026-11-30T00:00:00Z", days=30, split=at)
+        self.assertEqual((got["before"]["landed"], got["before"]["with_follow_up"]), (2, 2))
+        self.assertEqual((got["after"]["landed"], got["after"]["with_follow_up"]), (2, 1))
+        self.assertIn("before", triggers.share_line(got))
+        shown = json.loads(self.fm("triggers", "--follow-share", "--json").stdout)["follow_share"]
+        self.assertIn("before", shown)
+
+    def test_the_48h_share_of_landed_lanes_with_a_follow_up_task(self):
+        from sampo import triggers
+        day = "2026-11-10T00:00:00Z"
+        for lane in ("T-0101", "T-0102", "T-0103"):
+            with mock.patch.object(c, "now", return_value=day):
+                c.log_event(self.p, "lane_landed", task=lane, data={"tasks": [lane]})
+        later = lambda h: c.iso(c.parse_ts(day).timestamp() + h * 3600)
+        with mock.patch.object(c, "now", return_value=later(10)):  # a task about T-0101, 10 h after it landed
+            c.log_event(self.p, "capture", task="T-0201", data={"source": "followup", "about": ["T-0101"]})
+        with mock.patch.object(c, "now", return_value=later(60)):  # about T-0102, but 60 h after: outside the window
+            c.log_event(self.p, "capture", task="T-0202", data={"source": "followup", "about": ["T-0102"]})
+        with mock.patch.object(c, "now", return_value=later(11)):  # a fold is no task: it is counted apart
+            c.log_event(self.p, "follow_folded", task="T-0103", data={"key": "abcd1234"})
+        got = triggers.follow_share(self.p, now=later(100), days=30)
+        self.assertEqual((got["landed"], got["with_follow_up"], got["folded"]), (3, 1, 1))
+        self.assertAlmostEqual(got["share"], 1 / 3, places=3)
+        shown = json.loads(self.fm("triggers", "--follow-share", "--json").stdout)
+        self.assertIn("follow_share", shown)
+        self.assertIn("landed lanes", self.fm("triggers", "--follow-share").stdout)
+
+
 class PatchIdentity(unittest.TestCase):  # T-6025: a review is carried by the exact bytes of a commit's change, whitespace included
     def setUp(self):
         self.tmp = tempfile.mkdtemp()

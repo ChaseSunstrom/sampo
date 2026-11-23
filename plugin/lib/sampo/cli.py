@@ -407,6 +407,26 @@ def cmd_capture(args):
     type_ = c.WORK_TAGS.get(type_, type_)
     if type_ not in c.TYPES:
         raise UsageError(f"unknown type {args.type!r}; one of {', '.join(c.TYPES)}")
+    parent = getattr(args, "parent", None)
+    if parent and not re.fullmatch(r"T-\d{4,}", parent):
+        raise UsageError(f"--parent {parent!r}: a task id like T-0123")
+    if parent and args.from_file:
+        raise UsageError("--parent joins a follow-up's text to that lane's next round: it takes no --from-file "
+                         "(attach the file with a capture of its own, or say what it shows)")
+    if parent and getattr(args, "self_", False):
+        raise UsageError("--parent names a task of this project: it takes no --self (the tower's inbox is another project)")
+    from sampo import triggers
+    if (text and not (args.from_file or getattr(args, "new", False) or args.self_)  # T-6065: a follow-up on a lane that has
+            and triggers.foldable(type_, args.source, args.urgent, parent)):          # not landed joins its next round
+        with c.lock(p.dir):
+            host = triggers.lane_target(p, text, parent, mention=args.source != "user")
+            key = triggers.fold_into_lane(p, host, text, type_) if host else None
+        if host and key:
+            c.regen_views(p, mirror=False)
+            return out(args, {"folded": "lane", "task": host.id, "key": key},
+                       f"Not filed: folded into {host.id}'s next round (its lane has not landed): the fix round and the "
+                       f"resume brief list it, and sampo task follow {host.id} f-{key} --done settles it. "
+                       f"--new files a task instead.") or 0
     via_fold = False  # T-4743: only a capture that went the fold's way counts against the trigger's allowance
     if text and not (args.from_file or args.anyway or args.urgent):  # T-4743: a discovered or followup item an open task
         from sampo import triggers  # owns goes onto it, and a trigger past its daily allowance holds it; never a user's ask
@@ -447,6 +467,7 @@ def cmd_capture(args):
         from sampo import triggers  # T-4743: a capture that went the fold's way is marked: that is what the allowance counts
         c.log_event(p, "capture", task=b.id, session=session(), data=dict(
             {"source": args.source, "type": type_},
+            **({"about": about} if (about := list(dict.fromkeys(([parent] if parent else []) + re.findall(r"\bT-\d{4,}\b", text)))) else {}),  # T-6065: what follow_share reads
             **({"via": "fold"} if via_fold and not triggers.exempt(
                 type_, args.source, "urgent" if args.urgent else None) else {})))
         _shadow_intake(p, text, b)
@@ -10160,6 +10181,13 @@ def _build_parser(only=None):
     s.add_argument("--tier", type=str.upper, choices=c.TIERS)
     s.add_argument("--scope", action="append")
     s.add_argument("--urgent", action="store_true")
+    s.add_argument("--parent", metavar="T-ID", help="T-6065: this is a follow-up on that task: while its lane has not "
+                   "landed it joins the lane's next fix round (no new task); a landed or laneless parent, a SECURITY or "
+                   "--urgent item, a --self or cross-project capture, or a lane already holding 10 folded items files a "
+                   "task; not with --from-file")
+    s.add_argument("--new", action="store_true", help="T-6065: file a task even where the capture would join an open lane "
+                   "(a --parent, or a discovered/followup capture naming a task whose lane is open; a user's own capture "
+                   "that merely names a task is always a task: only --parent folds it)")
     s.add_argument("--anyway", action="store_true", help="keep a request whose title is close to an open task's of the same type: "
                                                          "without it sampo capture refuses it, exit 5, naming the task "
                                                          "(only sampo capture checks; sampo intake, sampo task new and fm "
@@ -11393,6 +11421,9 @@ def _build_parser(only=None):
                                                        "filed best-first once the day has room (T-4743)")
     s.add_argument("--replay", action="store_true", help="tasks the last --days filed before against after the fold, "
                                                          "append and allowance (reads only; T-4743)")
+    s.add_argument("--follow-share", action="store_true", help="of the lanes landed in the last --days, the share that had a "
+                   "follow-up task within 48 h, split by lanes landed before and after the fold shipped (triggers.FOLD_DATE), "
+                   "and the follow-ups folded into an open lane instead (reads only; T-6065)")
 
     s = add("repeats", lazy("sampo.repeats", "cmd_repeats"), tier=("Reports", 1030),
             help="commands and procedures this project keeps repeating, and what project tool each could become")

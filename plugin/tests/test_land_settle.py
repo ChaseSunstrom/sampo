@@ -74,6 +74,25 @@ class SettleFollowUp(Settle):
         self.assertIn("1 closed (1 settled)", r.stdout + r.stderr)
 
 
+    def test_a_follow_up_folded_into_the_lane_is_filed_as_a_task_by_its_land(self):
+        # T-6065: a capture folded into an unlanded lane that no round settled is never lost: the land files it
+        tid = self.lane(1, "1.txt", when="2026-01-01T00:00:00")
+        self.fm("task", "set", tid, "scope=1.txt")
+        r = self.fm("capture", "FIX: 1.txt never flushes its last line when the buffer is empty", "--parent", tid,
+                    "--source", "followup")
+        self.assertIn("folded into", r.stdout)
+        self.assertEqual(len(self.open_follows(tid)), 1)
+        self.audited(tid)
+        self.returned(tid)
+        before = len(self.tasks())
+        r = self.land()
+        self.assertEqual(self.brief(tid).status, "done", r.stdout + r.stderr)
+        self.assertEqual(self.open_follows(tid), [], r.stdout + r.stderr)
+        self.assertEqual(len(self.tasks()), before + 1, "the folded item became a task of its own")
+        filed = max(self.tasks(), key=lambda b: c.id_num(b.id))
+        self.assertEqual(filed.meta.get("source"), "followup")
+
+
 class SettleSteps(Settle):
     def test_a_step_with_no_verify_of_its_own_takes_the_first_criterion_as_its_run(self):
         tid = self.lane(1, "1.txt", ac="true", tier="M", when="2026-01-01T00:00:00")  # M: a step has no run of its own

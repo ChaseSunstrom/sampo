@@ -146,6 +146,9 @@ def cmd_triggers(args):
         return cmd_held(p, args, cli)
     if getattr(args, "replay", False):
         return cmd_replay(p, args, cli)
+    if getattr(args, "follow_share", False):  # T-6065
+        r = follow_share(p, days=min(max(args.days, 1), 3650), split=FOLD_DATE)
+        return cli.out(args, {"follow_share": r}, share_line(r))
     args.days = min(max(args.days, 1), 3650)
     status, caps = _status(p), _captures(p, LOOKBACK_DAYS)
     rows = sorted(stats(p, args.days, status).values(), key=lambda r: (-r["fired"], r["trigger"]))
@@ -937,6 +940,132 @@ def follow_items(b):
 
 def _is_open(item):
     return not item["mark"].strip()
+
+
+# ---- T-6065: a follow-up on a lane that has not landed joins that lane's next round, not a task with a cold builder
+LANE_SRC = "folded"  # the follow-up line's source word: put on the lane by sampo capture, read by the fix round and the resume brief
+_TASK_REF = re.compile(r"\bT-\d{4,}\b")
+SHARE_HOURS = 48      # a follow-up task within this long of a lane's landing counts against it (follow_share)
+
+
+def open_lane(b):
+    """True while b has a lane that has not landed: a builder holds the task (or its lane waits for one), the task is not
+    closed, and the lane has not merged (lane_stop "merged…": it waits on its close, so a finding now has no round)."""
+    return bool(b and b.meta.get("lane") and b.status not in c.CLOSED
+                and not str(b.meta.get("lane_stop") or "").startswith("merged"))
+
+
+FOLD_CAP = 10         # a lane's round holds this many folded items open; the next is filed as a task (a round is a few fixes, not a backlog)
+FOLD_DATE = "2026-11-22T00:00:00Z"  # the day the fold shipped: follow_share's before/after split
+
+
+def foldable(type_, source, urgent=False, parent=None):
+    """Whether a capture may join a lane's round at all, judged by the fields it carries: never a SECURITY item or an urgent
+    one (the round reads a folded item as one more fix: the urgency would be lost), nor a source other than discovered and
+    followup (a cross-project or self capture is another project's text, a trigger is its own ask). A user's capture folds
+    only on an explicit `parent`: the user said where it goes."""
+    if type_ == "SECURITY" or urgent:
+        return False
+    src = _AS.get(source, source)
+    return src in FOLDED or (src == "user" and bool(parent))
+
+
+def lane_target(p, text, parent=None, mention=True):
+    """The brief of the unlanded lane a capture belongs to: the one named by `parent` (None when it has no open lane), else,
+    with `mention`, the first task its text names whose lane is open. A parent that is not a task is a UsageError."""
+    if parent:
+        b = c.find_brief(p, parent)
+        if b is None:
+            from sampo import cli
+            raise cli.UsageError(f"--parent {parent}: no such task")
+        return b if open_lane(b) else None
+    if mention:
+        for tid in dict.fromkeys(_TASK_REF.findall(str(text or ""))):
+            b = c.find_brief(p, tid)
+            if open_lane(b):
+                return b
+    return None
+
+
+def fold_into_lane(p, b, text, type_):
+    """Put the follow-up on lane task b's pending fix items (its Follow-ups section, source `folded`): the next fix round and
+    resume brief list it, the close waits for it to be settled, and a land that finds it open files it as a task, so it is
+    never lost. Returns its key; a second capture of an item still open adds nothing. None (the caller files a task) when
+    the item was settled already (a finding that came back after its fix) or the lane holds FOLD_CAP open folded items.
+    The caller holds c.lock(p.dir)."""
+    key, whole, short, long_ = _finding(text)
+    have = [x for x in follow_items(b) if x["key"] == key]
+    if have:
+        return key if any(_is_open(x) for x in have) else None
+    if len(lane_items(b)) >= FOLD_CAP:
+        return None
+    link = f" — whole text: {_sidecar(p, b.id, key, whole)}" if long_ else ""
+    body = b.section(FOLLOW).strip("\n")
+    b.set_section(FOLLOW, (body + "\n" if body else "") + f"- [ ] {type_}: {short} (f-{key} {LANE_SRC}){link}\n")
+    c.save_brief(p, b)
+    c.log_event(p, "follow_folded", task=b.id, data={"key": key, "type": type_})
+    return key
+
+
+def lane_items(b):
+    """The open follow-ups put on lane task b by a capture (fold_into_lane), oldest first."""
+    return [x for x in follow_items(b) if _is_open(x) and x["src"] == LANE_SRC]
+
+
+def lane_lines(b, width=200):
+    """lane_items as the lines a round message or resume brief carries: plain, one line each, fit to width."""
+    return [f"- f-{x['key']} {c.fit(c.plain(c.redact(x['body'])), width)}" for x in lane_items(b)]
+
+
+def follow_share(p, now=None, days=30, hours=SHARE_HOURS, split=None):
+    """{landed, with_follow_up, share, folded, hours, days}: of the lanes that landed in the last `days`, how many had a
+    task captured about them (a capture event's `about` or `from` names the lane) within `hours` of landing; `folded`
+    counts the follow-ups put on an open lane instead (follow_folded events) over the same days. With `split` (a ts) also
+    `before` and `after`: {landed, with_follow_up, share} for the lanes that landed before and from that moment on, so the
+    change reads as two numbers. Read from the ledger."""
+    end = c.parse_ts(now) if isinstance(now, str) else now or datetime.datetime.now(datetime.timezone.utc)
+    start = end - datetime.timedelta(days=days)
+    landed, caps, folded = {}, [], 0
+    for e in c.ledger_tail(p, 20000, kinds=("lane_landed", "capture", "follow_folded")):
+        t = c.parse_ts(e.get("ts"))
+        d = e.get("data") or {}
+        if not t or t < start or t > end:
+            continue
+        if e["event"] == "lane_landed":
+            for tid in d.get("tasks") or [e.get("task")]:
+                if tid:
+                    landed.setdefault(tid, t)
+        elif e["event"] == "follow_folded":
+            folded += 1
+        else:
+            caps.append((t, [d.get("from"), *(d.get("about") or ())]))
+    hit = {tid for tid, at in landed.items()
+           if any(tid in names and at <= t <= at + datetime.timedelta(hours=hours) for t, names in caps)}
+
+    def part(tids):
+        n = len([x for x in tids if x in hit])
+        return {"landed": len(tids), "with_follow_up": n, "share": (n / len(tids)) if tids else None}
+    out = dict(part(list(landed)), folded=folded, hours=hours, days=days)
+    if split:  # T-6065: the lanes that landed before the fold shipped against those after it
+        cut = c.parse_ts(split)
+        out["split"] = split
+        out["before"] = part([x for x, at in landed.items() if at < cut])
+        out["after"] = part([x for x, at in landed.items() if at >= cut])
+    return out
+
+
+def _share_part(r, hours):
+    return "no lane landed" if not r["landed"] else f"{r['with_follow_up']} of {r['landed']} ({r['share']:.0%})"
+
+
+def share_line(r):
+    got = "no lane landed in the window" if not r["landed"] else (
+        f"{r['with_follow_up']} of {r['landed']} landed lanes ({r['share']:.0%}) had a follow-up task within {r['hours']} h")
+    line = f"Last {r['days']} days: {got}; {r['folded']} follow-up(s) folded into an open lane instead of filed as tasks."
+    if r.get("split"):
+        line += (f"\nLanded before {r['split'][:10]} (the fold shipped): {_share_part(r['before'], r['hours'])}; "
+                 f"from then on: {_share_part(r['after'], r['hours'])}.")
+    return line
 
 
 def follow_gaps(p, b):
