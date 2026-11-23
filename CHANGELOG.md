@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- Audit prep puts every kill, killpg, pkill, rm -rf, rmtree and git reset --hard with a computed or global target into the reviewer brief, in Python, shell and Sampo's mapped languages, flags a test that stubs Popen with no int pid, and makes the adversary lens clear each line (T-5902).
 - An M plan whose scope is only docs or tests now pays S's plan gate (criteria and steps), the cold rival read is asked under 60% (80% on a sensitive scope) instead of a flat 80%, and a trivial or small brief names haiku at medium effort; FOREMAN_PROCESS_TIER=off restores the old gate (T-5714).
 - Ward now guards the PowerShell tool: a call naming a credential path in any spelling (~, $env:HOME, backslashes, case) or writing Sampo state is refused like the same Bash call, and PowerShell it can't read to the end is refused (T-6018).
 - A builder's or reproducer's full report goes to .fm-scratch/report.txt (Claude Code refuses a subagent's Write to report.md), its message is capped at 6 lines, and the SubagentStop close reads the close lines from that file when the message lacks them (T-5963).
