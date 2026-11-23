@@ -929,7 +929,11 @@ def result(stdout):
         except ValueError:
             continue
         if isinstance(data, dict) and "result" in data:
-            return str(data.get("result") or ""), data.get("total_cost_usd")
+            if isinstance(data.get("structured_output"), dict):  # T-6043: --json-schema's answer, never the prose beside it
+                text = json.dumps(data["structured_output"])  # (a result string can quote a verdict of its own)
+            else:
+                text = str(data.get("result") or "")
+            return text, data.get("total_cost_usd")
     return stdout or "", None
 
 

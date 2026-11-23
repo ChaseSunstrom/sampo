@@ -1620,6 +1620,19 @@ def check_cc_features(version=None, plugin=PLUGIN):
                   else f"Claude Code {have} supports every Claude Code feature Sampo uses")
 
 
+def check_reviewer_schema(supported=None):
+    """T-6043: WARN when the installed claude has no --json-schema in print mode: fm audit run then leaves the flag off and
+    holds the reviewer's reply to the schema by the prompt and the parser alone (a malformed reply costs a repair child).
+    `supported`: stubbed; default auditrun.schema_flag() (`claude --help`, cached a day; unknown counts as supported)."""
+    if supported is None:
+        from sampo import auditrun
+        supported = auditrun.schema_flag()
+    if supported:
+        return Result("reviewer schema", "PASS", "claude takes --json-schema; reviewer replies are held to the schema")
+    return Result("reviewer schema", "WARN", "this claude has no --json-schema in print mode: fm audit run leaves it off, "
+                  "and a reply that misses the schema costs a repair retry; upgrade it (claude update)")
+
+
 _INSTALL_ENV = {"PATH", "HOME", "USER", "LOGNAME", "LANG", "TERM", "TMPDIR", "CLAUDE_CONFIG_DIR"}  # what a --no-plugins --no-native install.sh reads (T-3608)
 
 
@@ -3625,7 +3638,7 @@ def run_all(full=False, accept_supply=False):
                 check_statusline(settings, manifest, os.path.join(PLUGIN, "hooks", "statusline")),
                 check_deny_rules(settings, manifest), check_rules_symlink(), check_scripts(home, full),
                 check_integrity(integrity_roots(projects), projects, current=c.find_project(os.getcwd()) or False),
-                check_routing(), check_cc_features(), check_upstream()]
+                check_routing(), check_cc_features(), check_reviewer_schema(), check_upstream()]
     return results
 
 

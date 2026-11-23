@@ -17,6 +17,7 @@ from unittest import mock
 from test_audit_run import STUB
 from test_lane_land import LandCase, OLD
 
+from sampo import auditrun
 from sampo import cli
 from sampo import core as c
 from sampo import lanepilot
@@ -91,7 +92,48 @@ class SelfLensFormat(PilotCase):
         self.pilot()
         calls = self.calls()
         self.assertEqual([x["lens"] for x in calls], ["self"])
-        self.assertIn(cli._REVIEW_OUT, calls[0]["stdin"], "prep builds no self section, so the format rides the prompt")
+        self.assertIn(auditrun.typed_format(), calls[0]["stdin"], "prep builds no self section, so the format rides the prompt")
+
+
+class Replay(PilotCase):
+    """T-6043: the pilot reads a reviewer's findings from the typed fields, whatever the markdown would have said."""
+    tier = "M"
+
+    def test_findings_come_from_the_typed_fields(self):
+        reply = {"lens": "edge", "verdict": "changes needed", "findings": [
+            {"severity": "HIGH", "file": "pkg/mod.py", "line": 42, "text": "an empty list divides by zero"}], "not_checked": []}
+        os.environ["STUB_REPLY"] = json.dumps(reply)
+        self.addCleanup(os.environ.pop, "STUB_REPLY", None)
+        p = c.find_project(self.repo)
+        verdicts, findings, why, _ = lanepilot.review(p, self.tid, ["edge"], "haiku")
+        self.assertEqual(verdicts, {"edge": "changes needed"})
+        self.assertEqual(findings, ["edge: HIGH pkg/mod.py:42 an empty list divides by zero"])
+
+    def test_the_typed_fields_win_over_the_flattened_strings(self):
+        data = {"verdicts": {"edge": "changes needed"}, "findings": {"edge": ["flattened junk"]},
+                "typed": {"edge": [{"severity": "LOW", "file": "a.py", "line": 7, "text": "a name"},
+                                   {"severity": "HIGH", "file": "", "line": 0, "text": "no place"}]}}
+
+        def fake(p, args):
+            print(json.dumps(data))
+        with mock.patch.object(auditrun, "run", fake):
+            _, findings, _, _ = lanepilot.review(c.find_project(self.repo), self.tid, ["edge"], "haiku")
+        self.assertEqual(findings, ["edge: LOW a.py:7 a name", "edge: HIGH no place"])
+
+    def test_a_recorded_reply_replays_through_the_pilots_review(self):
+        from test_audit_run import recorded
+        rec = [x for x in recorded() if x[2]["path"] == "typed" and x[2]["findings"]]
+        self.assertTrue(rec, "a recorded typed reply with findings")
+        for n, env, expect in rec:
+            path = os.path.join(self.tmp, n + ".env")
+            with open(path, "w") as f:
+                f.write(env)
+            os.environ["STUB_ENVELOPE"] = path
+            self.addCleanup(os.environ.pop, "STUB_ENVELOPE", None)
+            with self.subTest(reply=n):
+                verdicts, findings, why, _ = lanepilot.review(c.find_project(self.repo), self.tid, [expect["lens"]], "haiku")
+                self.assertEqual(verdicts, {expect["lens"]: expect["verdict"]})
+                self.assertEqual(findings, [f"{expect['lens']}: {s} {at} {t}".replace("  ", " ") for s, at, t in expect["findings"]])
 
 
 class MidReview(PilotCase):
@@ -527,12 +569,13 @@ class PilotAnswer(PilotCase):
         self.assertNotIn("A" * 40, r["reason"], "a key in the reply is redacted")
         self.assertLess(len(r["reason"]), 400, "bounded: the tail of the reply, not the reply")
 
-    def test_every_reviewer_prompt_ends_by_asking_for_the_section(self):
+    def test_every_reviewer_prompt_ends_by_asking_for_the_one_json_object(self):
+        """T-6043: the closing line asks for the typed reply for that lens (it was the '## lens:' section)."""
         self.pilot()
         for call in self.calls():
-            # T-6028 moved the closing ask to "once ... above its findings" (this assertion was stale on trunk)
-            self.assertTrue(call["stdin"].rstrip().endswith(f"Give the verdict header for the lens {call['lens']} once, "
-                            "in the form and place the format above gives it, above its findings."), call["stdin"][-300:])
+            # T-6028 asks for it once; T-6043 makes it the one JSON object
+            self.assertTrue(call["stdin"].rstrip().endswith(f"Answer with the one JSON object for the lens {call['lens']}, "
+                                                            "once, in the form the format above gives."), call["stdin"][-300:])
 
     def test_a_reply_tail_that_reads_like_an_instruction_is_defanged_and_plain(self):
         """T-6011 review: the reply is untrusted text on its way to the error, the Log and the lead's line."""

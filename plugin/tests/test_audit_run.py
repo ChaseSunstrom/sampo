@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import sys
 import time
 
 from test_hooks import HookCase
@@ -11,8 +12,13 @@ from sampo import core as c
 
 STUB = r'''#!/usr/bin/env python3
 import json, os, sys
+if sys.argv[1:] == ["--help"]:  # T-6043: the probe for the print-mode schema flag (STUB_NO_SCHEMA: an older claude without it)
+    print("Usage: claude [options]\n  --output-format <format>\n" + ("" if os.environ.get("STUB_NO_SCHEMA") else "  --json-schema <schema>  JSON Schema for structured output\n"))
+    sys.exit(0)
 args, stdin = sys.argv[1:], sys.stdin.read()
-lens = next(l for l in stdin.splitlines() if l.startswith("Review only the lens: "))[22:].strip()
+repair = "Repair the reply for the lens: " in stdin  # T-6043: the one repair retry of an invalid reply
+lens = next(l for l in stdin.splitlines() if l.startswith(("Review only the lens: ", "Repair the reply for the lens: ")))
+lens = lens.split(": ", 1)[1].strip()
 with open(os.environ["STUB_LOG"], "a") as f:
     f.write(json.dumps({"args": args, "stdin": stdin, "cwd": os.getcwd(), "lens": lens, "mode": os.stat(os.getcwd()).st_mode & 0o7777,
                         "memory_env": os.environ.get("CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD"),
@@ -22,12 +28,21 @@ if os.environ.get("STUB_RUN"):  # T-5706: an argv the reviewer runs mid-review (
     subprocess.run(json.loads(os.environ["STUB_RUN"]), check=False)
 if lens == os.environ.get("STUB_FAIL_LENS"):
     sys.exit(3)
-if lens == os.environ.get("STUB_BAD_LENS"):
-    text = f"## {lens}: changes needed\n- HIGH a.py:3 the thing breaks on empty input\n- MEDIUM b.py:9 it is slow"
-elif lens in os.environ.get("STUB_NO_HEADER", "").split(","):  # T-6042: a reply with no '## <lens>: ok' header
+if os.environ.get("STUB_ENVELOPE"):  # T-6043: a recorded claude -p --output-format json reply, printed as it was
+    print(open(os.environ["STUB_ENVELOPE"]).read())
+    sys.exit(0)
+if lens == os.environ.get("STUB_BAD_LENS"):  # T-6043: replies are the typed JSON object; STUB_REPLY gives any other text
+    text = json.dumps({"lens": lens, "verdict": "changes needed", "findings": [
+        {"severity": "HIGH", "file": "a.py", "line": 3, "text": "the thing breaks on empty input"},
+        {"severity": "MEDIUM", "file": "b.py", "line": 9, "text": "it is slow"}], "not_checked": []})
+elif lens in os.environ.get("STUB_NO_HEADER", "").split(","):  # T-6042: a reply holding no verdict at all
     text = "Looked it over, all fine, nothing to report."
 else:
-    text = f"## {lens}: ok"
+    text = json.dumps({"lens": lens, "verdict": "ok", "findings": [], "not_checked": []})
+if os.environ.get("STUB_REPLY") and not repair:
+    text = os.environ["STUB_REPLY"].replace("<lens>", lens)
+if os.environ.get("STUB_REPAIRED") and repair:
+    text = os.environ["STUB_REPAIRED"].replace("<lens>", lens)
 if os.environ.get("STUB_JSON"):  # T-5842: claude -p --output-format json, with its usage
     print(json.dumps({"result": text, "total_cost_usd": 0.25, "usage": {
         "input_tokens": 100, "output_tokens": 10, "cache_read_input_tokens": 1000,
@@ -37,7 +52,7 @@ else:
 '''
 
 
-class AuditRun(HookCase):
+class AuditBase(HookCase):
     def setUp(self):
         super().setUp()
         self.fm("init")
@@ -61,6 +76,8 @@ class AuditRun(HookCase):
     def audits(self):
         return sorted({x[0] for x in next(b for b in c.load_briefs(self.project()) if b.id == self.tid).audits()})
 
+
+class AuditRun(AuditBase):
     def test_one_verdict_per_lens_and_the_findings(self):
         self.run_audit(env={"STUB_BAD_LENS": "edge"})
         want = ["intent", "adversary", "edge"]  # T-1501: no design reviewer; T-5841: an M with no linked test is normal
@@ -181,12 +198,11 @@ class AuditRun(HookCase):
         for call in self.calls():
             lens, text = call["lens"], call["stdin"]
             with self.subTest(lens=lens):
-                self.assertEqual(len(re.findall(r"##\s*<lens>\s*:\s*ok", text)), 1,
-                                 "the format line asks for the header once")
+                self.assertEqual(text.count(auditrun.typed_format()), 1, "T-6043: the format is asked for once")
                 self.assertNotRegex(text[text.index("Review only the lens:"):], rf"##\s*`?{lens}`?\s*:",
-                                    "the lens line and CLOSING name no second header of their own")
+                                    "the lens line and CLOSING name no header of their own")
                 self.assertNotRegex(auditrun.CLOSING, r"(?i)\bend with\b|\bmust end\b|\bfinal\b|\blast\b")
-                self.assertIn("once", auditrun.CLOSING)
+                self.assertIn("JSON object", auditrun.CLOSING)
                 self.assertIn(lens, auditrun.CLOSING.format(lens=lens))
 
     def test_the_echoed_template_header_is_no_verdict(self):  # T-5706 round 3 item 3
@@ -527,3 +543,316 @@ class AuditRun(HookCase):
         diff = open(os.path.join(self.project().dir, "audits", f"{self.tid}.diff")).read()
         self.assertIn("CHANGELOG.md", diff)
         self.assertNotIn("+x = 2", diff, "another task's uncommitted edit isn't the lane's")
+
+
+REPLIES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "reviewer_replies")
+MD_REPLY = "## <lens>: changes needed\n- HIGH a.py:3 the loop never ends on empty input\n\n## Not checked\n- none\n"
+
+
+def typed(lens, verdict="ok", findings=()):
+    return json.dumps({"lens": lens, "verdict": verdict, "findings": list(findings), "not_checked": []})
+
+
+class TypedReply(AuditBase):
+    """T-6043: the reviewer's reply is one JSON object; one schema builds the prompt's format text and the parser."""
+
+    def fallbacks(self):
+        return [e for e in c.ledger_tail(self.project(), 300) if e.get("event") == "fallback"]
+
+    def test_the_format_text_is_built_from_the_schema_and_names_every_field_and_value(self):
+        from sampo import auditrun
+        text = auditrun.typed_format()
+        item = auditrun.REPLY_SCHEMA["properties"]["findings"]["items"]
+        names = set(auditrun.REPLY_SCHEMA["properties"]) | set(item["properties"])
+        for name in names:
+            self.assertIn(f"`{name}`", text)
+        for spec in (auditrun.REPLY_SCHEMA["properties"]["verdict"], item["properties"]["severity"]):
+            for v in spec["enum"]:
+                self.assertIn(json.dumps(v), text)
+        self.assertEqual({m for m in re.findall(r"`([a-z_]+)`", text)}, names, "no field the parser does not know")
+
+    def test_a_field_added_to_the_schema_reaches_the_prompt_and_the_parser_drift_fails(self):
+        import copy
+        from unittest import mock
+        from sampo import auditrun
+        schema = copy.deepcopy(auditrun.REPLY_SCHEMA)
+        schema["properties"]["findings"]["items"]["properties"]["owner"] = {"type": "string", "description": "who fixes it"}
+        schema["properties"]["findings"]["items"]["required"].append("owner")
+        with mock.patch.object(auditrun, "REPLY_SCHEMA", schema):
+            self.assertIn("`owner`", auditrun.typed_format(), "the prompt follows the schema")
+            reply, errors = auditrun.parse_typed("edge", typed("edge", "changes needed", [
+                {"severity": "LOW", "file": "a.py", "line": 1, "text": "x"}]))
+            self.assertIsNone(reply)
+            self.assertTrue(any("owner" in e for e in errors), "the parser follows the same schema")
+
+    def test_the_example_the_schema_gives_parses_clean(self):
+        from sampo import auditrun
+        reply, errors = auditrun.parse_typed("edge", auditrun.example_reply("edge"))
+        self.assertEqual(errors, [])
+        self.assertEqual(reply["lens"], "edge")
+
+    def test_parse_typed_reads_findings_and_a_medium_finding_blocks_an_ok(self):
+        from sampo import auditrun
+        text = typed("edge", "ok", [{"severity": "MEDIUM", "file": "a.py", "line": 3, "text": "slow"},
+                                    {"severity": "LOW", "file": "b.py", "line": 0, "text": "name"}])
+        reply, errors = auditrun.parse_typed("edge", text)
+        self.assertEqual(errors, [])
+        self.assertEqual(auditrun.reply_tuple(reply), ("changes needed", [("MEDIUM", "a.py:3", "slow"), ("LOW", "b.py", "name")]))
+
+    def test_prose_wrapped_and_fenced_json_is_extracted(self):
+        from sampo import auditrun
+        obj = typed("edge", "ok")
+        for wrapped in (f"I read the diff.\n\n{obj}\n\nThat is all.", f"```json\n{obj}\n```", f'{{"note": 1}} then {obj}'):
+            with self.subTest(wrapped=wrapped[:30]):
+                reply, errors = auditrun.parse_typed("edge", wrapped)
+                self.assertEqual((errors, reply and reply["verdict"]), ([], "ok"))
+
+    def test_an_invalid_reply_names_what_is_wrong(self):
+        from sampo import auditrun
+        bad = {"no json": "I would start by reading",
+               "bad severity": typed("edge", "ok", [{"severity": "SEVERE", "file": "a", "line": 1, "text": "x"}]),
+               "bad verdict": typed("edge", "fine"),
+               "other lens": typed("intent", "ok"),
+               "no text": typed("edge", "ok", [{"severity": "LOW", "file": "a", "line": 1}]),
+               "line is a string": typed("edge", "ok", [{"severity": "LOW", "file": "a", "line": "3", "text": "x"}])}
+        for what, text in bad.items():
+            with self.subTest(what=what):
+                reply, errors = auditrun.parse_typed("edge", text)
+                self.assertIsNone(reply)
+                self.assertTrue(errors)
+
+    def test_the_prompt_carries_the_generated_format_not_the_markdown_one_and_the_child_gets_the_schema(self):
+        from sampo import auditrun, cli
+        self.run_audit()
+        self.assertTrue(self.calls())
+        for call in self.calls():
+            self.assertIn(auditrun.typed_format(), call["stdin"])
+            self.assertNotIn(cli._REVIEW_OUT, call["stdin"], "one format, not two")
+            self.assertNotIn("## <lens>", call["stdin"])
+            a = call["args"]
+            self.assertEqual(json.loads(a[a.index("--json-schema") + 1]), auditrun.REPLY_SCHEMA)
+
+    def test_a_typed_run_records_audits_and_findings_and_reports_the_typed_fields(self):
+        p = self.run_audit("--json", env={"STUB_BAD_LENS": "edge"})
+        data = json.loads(p.stdout)
+        self.assertEqual(data["verdicts"], {"intent": "ok", "adversary": "ok", "edge": "changes needed"})
+        self.assertEqual(data["typed"]["edge"][0], {"severity": "HIGH", "file": "a.py", "line": 3,
+                                                    "text": "the thing breaks on empty input"})
+        self.assertEqual(data["fallbacks"], 0)
+        self.assertEqual(self.audits(), ["adversary", "intent"])
+        self.assertEqual(self.fallbacks(), [])
+
+    def test_an_invalid_reply_gets_one_repair_retry_and_no_fallback(self):
+        p = self.run_audit("--json", "--lens", "edge", env={"STUB_REPLY": "I would start by reading a.py"})
+        calls = self.calls()
+        self.assertEqual([x["lens"] for x in calls], ["edge", "edge"], "the review, then one repair")
+        self.assertIn("Repair the reply for the lens: edge", calls[1]["stdin"])
+        self.assertIn("I would start by reading", calls[1]["stdin"], "the repair sees the reply it repairs")
+        self.assertEqual(json.loads(p.stdout)["verdicts"], {"edge": "ok"})
+        self.assertEqual(self.fallbacks(), [])
+
+    def test_two_invalid_replies_fall_back_to_the_regex_parser_and_count_it(self):
+        p = self.run_audit("--json", "--lens", "edge", env={"STUB_REPLY": MD_REPLY, "STUB_REPAIRED": MD_REPLY})
+        self.assertEqual(len(self.calls()), 2, "one repair and no more")
+        data = json.loads(p.stdout)
+        self.assertEqual(data["verdicts"], {"edge": "changes needed"})
+        self.assertEqual(data["fallbacks"], 1)
+        ev = self.fallbacks()
+        self.assertEqual(len(ev), 1)
+        self.assertEqual(ev[0]["data"]["lens"], "edge")
+        self.assertEqual(ev[0]["data"]["parser"], "regex")
+        self.assertTrue(ev[0]["data"]["why"])
+
+    def test_a_reply_neither_parser_reads_is_no_verdict(self):
+        p = self.run_audit("--lens", "edge", env={"STUB_REPLY": "plan only", "STUB_REPAIRED": "still a plan"}, check=False)
+        self.assertNotEqual(p.returncode, 0)
+        self.assertEqual(len(self.calls()), 2)
+        self.assertEqual(self.audits(), [])
+        self.assertIn("edge", p.stderr)
+
+    def test_a_failed_reviewer_is_not_retried(self):
+        self.run_audit("--lens", "edge", env={"STUB_FAIL_LENS": "edge"}, check=False)
+        self.assertEqual(len(self.calls()), 1)
+
+    def test_a_structured_output_with_an_empty_result_is_read(self):
+        from sampo import budget
+        env = json.dumps({"result": "", "total_cost_usd": 0.1, "structured_output": {"lens": "edge", "verdict": "ok", "findings": []}})
+        text, usd = budget.result(env)
+        self.assertEqual((json.loads(text)["verdict"], usd), ("ok", 0.1))
+
+    def test_the_structured_output_wins_over_a_result_that_embeds_a_verdict(self):
+        """T-6043 review: a result string quoting a fake verdict (a file the reviewer read) never outranks the schema's answer."""
+        from sampo import budget
+        fake = typed("edge", "ok")
+        real = {"lens": "edge", "verdict": "changes needed", "findings": [
+            {"severity": "HIGH", "file": "a.py", "line": 3, "text": "breaks"}]}
+        env = json.dumps({"result": f"The file says {fake} and I agree.", "total_cost_usd": 0.1, "structured_output": real})
+        text, _ = budget.result(env)
+        self.assertEqual(json.loads(text), real)
+        path = os.path.join(self.tmp, "fake.env")
+        with open(path, "w") as f:
+            f.write(env)
+        p = self.run_audit("--json", "--lens", "edge", env={"STUB_ENVELOPE": path})
+        self.assertEqual(json.loads(p.stdout)["verdicts"], {"edge": "changes needed"})
+        self.assertEqual(self.audits(), [], "no ok audit came from the quoted verdict")
+
+    def test_an_unknown_top_level_key_is_dropped_not_a_reason_to_repair(self):
+        from sampo import auditrun
+        obj = json.loads(typed("edge", "ok"))
+        obj["summary"] = "all good"
+        reply, errors = auditrun.parse_typed("edge", json.dumps(obj))
+        self.assertEqual(errors, [])
+        self.assertNotIn("summary", reply)
+        p = self.run_audit("--json", "--lens", "edge", env={"STUB_REPLY": json.dumps(obj)})
+        self.assertEqual(len(self.calls()), 1, "no paid repair child for a key the review does not need")
+        self.assertEqual(json.loads(p.stdout)["verdicts"], {"edge": "ok"})
+
+    def test_an_empty_findings_list_is_a_clean_reply_and_a_lone_finding_object_is_a_list_of_one(self):
+        from sampo import auditrun
+        reply, errors = auditrun.parse_typed("edge", typed("edge", "ok", []))
+        self.assertEqual((errors, auditrun.reply_tuple(reply)), ([], ("ok", [])))
+        one = {"severity": "MEDIUM", "file": "a.py", "line": 3, "text": "slow"}
+        reply, errors = auditrun.parse_typed("edge", json.dumps({"lens": "edge", "verdict": "ok", "findings": one}))
+        self.assertEqual(errors, [])
+        self.assertEqual(auditrun.reply_tuple(reply), ("changes needed", [("MEDIUM", "a.py:3", "slow")]))
+        for bad in ('"nope"', "3", "[1]", "null"):  # anything else is rejected, never guessed at
+            with self.subTest(findings=bad):
+                reply, errors = auditrun.parse_typed("edge", '{"lens":"edge","verdict":"ok","findings":' + bad + "}")
+                self.assertIsNone(reply)
+                self.assertTrue(errors)
+
+    def test_the_lens_field_is_optional_but_must_match_when_given(self):
+        from sampo import auditrun
+        self.assertEqual(auditrun.parse_typed("edge", '{"verdict":"ok","findings":[]}')[1], [])
+        self.assertTrue(auditrun.parse_typed("edge", typed("intent", "ok"))[1])
+
+    def test_the_repair_retry_rechecks_the_contract_and_the_budget_and_is_skipped_when_either_refuses(self):
+        # the contract ends while the first child reads (the stub marks it ended, as a time bound passing would)
+        self.fm("contract", "--usd", "50")
+        end = json.dumps([sys.executable, "-c", "import json,sys;p=sys.argv[1];m=json.load(open(p));"
+                          "m['contract']['ended']='time';json.dump(m,open(p,'w'))",
+                          os.path.join(self.project().dir, "meta.json")])
+        p = self.run_audit("--json", "--lens", "edge", env={"STUB_REPLY": MD_REPLY, "STUB_RUN": end})
+        self.assertEqual(len(self.calls()), 1, "the contract ended: no repair child")
+        data = json.loads(p.stdout)
+        self.assertEqual((data["verdicts"], data["fallbacks"]), ({"edge": "changes needed"}, 1))
+        self.assertIn("repair not run", self.fallbacks()[0]["data"]["why"])
+        self.assertIn("time", self.fallbacks()[0]["data"]["why"])
+        os.remove(self.log)
+        # the child costs $0.25 (STUB_JSON), the ledger's mean for audit starts at $0.10: a $0.30 command cap passes the
+        # start's estimate, and not the $0.25 spent plus a second estimate
+        self.fm("contract", "off")
+        bud.record("audit", 0.1)
+        self.fm("budget", "set", "--run", "0.3")
+        p = self.run_audit("--json", "--lens", "edge", env={"STUB_REPLY": MD_REPLY, "STUB_JSON": "1"})
+        self.assertEqual(len(self.calls()), 1, "the budget refused: no repair child")
+        self.assertIn("repair not run", self.fallbacks()[-1]["data"]["why"])
+        self.assertIn("budget", self.fallbacks()[-1]["data"]["why"])
+
+    def test_the_schema_flag_is_dropped_for_a_claude_that_lacks_it_and_the_prompt_still_carries_the_format(self):
+        from sampo import auditrun
+        p = self.run_audit("--json", "--lens", "edge", env={"STUB_NO_SCHEMA": "1"})
+        self.assertEqual(json.loads(p.stdout)["verdicts"], {"edge": "ok"})
+        for call in self.calls():
+            self.assertNotIn("--json-schema", call["args"])
+            self.assertIn(auditrun.typed_format(), call["stdin"], "the embedded schema is the prompt's format text")
+
+    def test_the_schema_flag_probe_is_cached_and_a_claude_that_will_not_say_is_assumed_to_have_it(self):
+        from unittest import mock
+        from sampo import auditrun
+        calls = []
+
+        def run(argv, **kw):
+            calls.append(argv)
+            return mock.Mock(returncode=0, stdout="  --json-schema <s>\n", stderr="")
+        with mock.patch.object(auditrun.subprocess, "run", run):
+            self.assertTrue(auditrun.schema_flag())
+            self.assertTrue(auditrun.schema_flag())
+        self.assertEqual(len(calls), 1, "asked once, then read from the cache")
+        os.remove(auditrun._schema_cache())
+        with mock.patch.object(auditrun.subprocess, "run", side_effect=OSError("no claude")):
+            self.assertTrue(auditrun.schema_flag(), "no answer is no evidence the flag is missing")
+
+    def test_the_doctor_names_the_reviewer_schema_flag(self):
+        from sampo import doctor
+        self.assertEqual(doctor.check_reviewer_schema(True).status, "PASS")
+        r = doctor.check_reviewer_schema(False)
+        self.assertEqual(r.status, "WARN")
+        self.assertIn("--json-schema", r.detail)
+
+    def test_a_local_model_is_asked_under_the_schema_and_its_reply_parsed(self):
+        from unittest import mock
+        from sampo import auditrun
+        seen = {}
+
+        def ask(card, prompt):
+            seen["schema"] = card["output"]
+            return {"text": typed("edge", "ok"), "model": "m", "usage": {}}
+        with mock.patch("sampo.callcards._ask", ask):
+            reply, errors = auditrun.ask_local("edge", "review it")
+        self.assertEqual((errors, reply["verdict"]), ([], "ok"))
+        self.assertEqual(seen["schema"], auditrun.REPLY_SCHEMA)
+
+    def test_a_local_model_that_cannot_answer_is_an_error_not_a_verdict(self):
+        from unittest import mock
+        from sampo import auditrun
+
+        def ask(card, prompt):
+            raise ValueError("no local model is configured here")
+        with mock.patch("sampo.callcards._ask", ask):
+            reply, errors = auditrun.ask_local("edge", "review it")
+        self.assertIsNone(reply)
+        self.assertIn("no local model", errors[0])
+
+
+def recorded():
+    names = sorted(x[:-5] for x in os.listdir(REPLIES) if x.endswith(".json") and not x.endswith(".expect.json")) \
+        if os.path.isdir(REPLIES) else []
+    out = []
+    for n in names:
+        with open(os.path.join(REPLIES, n + ".json"), encoding="utf-8") as f:
+            env = f.read()
+        with open(os.path.join(REPLIES, n + ".expect.json"), encoding="utf-8") as f:
+            out.append((n, env, json.load(f)))
+    return out
+
+
+class Replay(AuditBase):
+    """T-6043: reviewer replies recorded from the real claude CLI (scrubbed) go through the parser."""
+
+    def test_there_are_recorded_replies_and_none_names_a_home_or_a_user(self):
+        rec = recorded()
+        self.assertGreaterEqual(len(rec), 3)
+        self.assertTrue({"typed", "regex"} <= {e["path"] for _, _, e in rec}, "both paths have a recording")
+        for n, env, _ in rec:
+            self.assertNotRegex(env, r"/home/|/Users/|@[a-z0-9-]+\.[a-z]", n)
+
+    def test_each_recorded_reply_replays_to_its_verdict_and_findings(self):
+        from sampo import auditrun, budget
+        for n, env, expect in recorded():
+            with self.subTest(reply=n):
+                text, _ = budget.result(env)
+                lens = expect["lens"]
+                reply, errors = auditrun.parse_typed(lens, text)
+                if expect["path"] == "typed":
+                    self.assertEqual(errors, [])
+                    got = auditrun.reply_tuple(reply)
+                else:
+                    self.assertIsNone(reply, "a legacy or unreadable reply is not a typed one")
+                    got = auditrun.parse(lens, text)
+                self.assertEqual((got[0], [list(x) for x in got[1]]), (expect["verdict"], expect["findings"]))
+
+    def test_a_recorded_reply_through_a_whole_run_gives_its_verdict(self):
+        for n, env, expect in recorded():
+            path = os.path.join(self.tmp, n + ".env")
+            with open(path, "w") as f:
+                f.write(env)
+            with self.subTest(reply=n):
+                p = self.run_audit("--json", "--lens", expect["lens"], env={"STUB_ENVELOPE": path}, check=False)
+                data = json.loads(p.stdout)
+                if expect["path"] == "unread":  # a real reply neither parser reads fails loud: no verdict, a failure
+                    self.assertNotEqual(p.returncode, 0)
+                    self.assertNotIn(expect["lens"], data["verdicts"])
+                    continue
+                self.assertEqual(data["verdicts"], {expect["lens"]: expect["verdict"]})
+                self.assertEqual(data["fallbacks"], 1 if expect["path"] == "regex" else 0)

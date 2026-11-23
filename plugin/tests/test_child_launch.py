@@ -368,6 +368,8 @@ ROUTED = {  # site -> the launcher call its module must make
     "research.py::_child": "ideas.run_children(",
 }
 ALLOWED = {
+    "auditrun.py::schema_flag": "`claude --help` read once (cached a day) for the print-mode --json-schema flag: it starts no "
+                                "model session, takes no input and runs under a 10 s timeout",
     "pilotsig.py::_headless": "the lane pilot's builder needs the plugin's agents and tools: it runs in ideas.fresh_cwd with the "
                               "lane by --add-dir, user settings only and the pilot's own env; not --disable-slash-commands",
     "pilotsig.py::claude_found": "asks whether claude_cmd() finds a program; nothing starts",

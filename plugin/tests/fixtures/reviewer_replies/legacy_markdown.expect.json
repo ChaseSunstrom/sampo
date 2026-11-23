@@ -1,0 +1,4 @@
+{"lens": "edge", "path": "regex", "verdict": "changes needed", "findings": [
+ ["HIGH", "", "average() raises ZeroDivisionError on empty input"],
+ ["HIGH", "", "first() raises IndexError on empty input"],
+ ["LOW", "", "average loses precision on mixed-magnitude floats"]]}

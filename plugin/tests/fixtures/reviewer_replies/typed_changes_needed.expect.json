@@ -1,0 +1,3 @@
+{"lens": "edge", "path": "typed", "verdict": "changes needed", "findings": [
+ ["MEDIUM", "avg.py:2", "average([]) divides by len(xs)=0 and raises ZeroDivisionError, although the task requires the helper to accept any list including an empty one."],
+ ["MEDIUM", "avg.py:6", "first([]) indexes xs[0] on an empty list and raises IndexError, although the task requires the helper to accept any list including an empty one."]]}

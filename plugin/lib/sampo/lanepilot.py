@@ -109,7 +109,12 @@ def review(p, tid, lenses, model):
     except ValueError:
         data = {}
         why = why or "audit run output unreadable"  # T-6042: its own reason: not an unparsed reply, not changes needed
-    findings = [f"{lens}: {x}" for lens, xs in (data.get("findings") or {}).items() for x in xs]
+    # T-6043: a typed reply's findings are read from their fields; the flattened strings serve a lens the regex parser read
+    typed = data.get("typed") if isinstance(data.get("typed"), dict) else {}
+    findings = [f"{lens}: " + " ".join(f"{f.get('severity', '')} {at} {f.get('text', '')}".split())
+                for lens, fs in typed.items() if isinstance(fs, list) for f in fs if isinstance(f, dict)
+                for at in [f"{f.get('file') or ''}" + (f":{f['line']}" if f.get("line") else "")]]
+    findings += [f"{lens}: {x}" for lens, xs in (data.get("findings") or {}).items() if lens not in typed for x in xs]
     return data.get("verdicts") or {}, findings, why, list(data.get("unparsed") or [])  # auditrun's own classification
 
 
