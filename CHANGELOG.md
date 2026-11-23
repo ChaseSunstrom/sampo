@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- sampo task prove proves a test-only repair of a trunk red: the start tree keeps its failing test and the repaired one must pass there (T-6108).
 - Lane pilot reviews each lens on the local model first and calls Claude only on a HIGH or CRITICAL finding, an unparsed or down endpoint, an oversize prompt, a sensitive adversary, a routed-back class, or a 1-in-5 parity sample; cost --local-parity prints agreement (T-6089).
 - Haiku is now the default model for every Sampo pick (builder route, DEPTH_MODEL, spawn table, Agent hook); sonnet only after two failed rounds, and `sampo models default route` restores the history route (T-6101).
 - The land end starts its failure-class scan as a detached child, so a land never waits on it, and its model calls are cut at a 20 s budget (T-6109).
