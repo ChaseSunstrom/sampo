@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- Ward now guards the PowerShell tool: a call naming a credential path in any spelling (~, $env:HOME, backslashes, case) or writing Sampo state is refused like the same Bash call, and PowerShell it can't read to the end is refused (T-6018).
 - A builder's or reproducer's full report goes to .fm-scratch/report.txt (Claude Code refuses a subagent's Write to report.md), its message is capped at 6 lines, and the SubagentStop close reads the close lines from that file when the message lacks them (T-5963).
 - A pilot reviewer reply that parses to no verdict now ends the run as the exception "reply unparsed" (counted, never changes needed), and selfcheck files a task when 3 runs in 2 h parsed no verdict or when landed work sits unshipped (T-6042).
 - Four test modules that put a Claude config folder under /tmp, which the hardened launcher refuses, now use safe_config_dir, and a test_suite_hygiene walker fails any test that sets CLAUDE_CONFIG_DIR without it unless it is listed with why no child starts (T-6020).
