@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- The builder brief shows a model-written test command only when an allowlisted runner runs it in an allowed form; any other command drops the working-set note (T-6112).
 - A local builder run's deadline now grows with the plan's steps and the measured speed (cap 90 min), a --lane run cut by its deadline exits 75 and the wrapper resumes it once, a verify that names no test is a round to write the test rather than a failed fix, and an own endpoint's context is capped at 16k tokens (T-6090).
 - The ship push hold judges each direct commit with timing off and times their whole range once on the last commit's tree (a slower hook in any of them still holds the push, and each commit is then timed on its own to name it; a commit's pass is recorded only after its timing passed) (T-6048).
 - sampo ship pushes the newest commit the verify records show green in the whole suite (a red record holds only its merge and the commits after it), waits for and reuses a verify running on its tree, records its own green run, and keeps a cut run's unrun classes so the next ship runs only them; the land ends a ship with SIGTERM before SIGKILL (T-6097).
