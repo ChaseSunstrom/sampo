@@ -17,7 +17,50 @@ from collections import Counter, defaultdict
 
 from sampo import killsafe  # T-5900: the one os.kill/os.killpg guard (os only: cheap on every hook call)
 
-LOADED_NS = time.time_ns()  # T-4045: when this process loaded Sampo's code; a source newer than it may not be what runs
+LOADED_NS = time.time_ns()  # T-4045: when this process loaded Sampo's code; a source newer than it may not be what runs.
+# Kept for one purpose only: recall.py's bytecode-cache check (a .pyc older than its source is not reused). The question
+# "has the code on disk moved since this process loaded it?" is code_changed (T-6169), which re-execs a loop on a yes.
+
+
+def _code_key(path):
+    """T-6169: (mtime_ns, inode) of one module file: what a wake compares against the one taken at start."""
+    st = os.stat(path)
+    return (st.st_mtime_ns, st.st_ino)
+
+
+def code_stamp(folder=None):
+    """T-6169: {path: (mtime_ns, inode)} of every sampo module file (plugin/lib/sampo/*.py). A folder that can't be listed
+    stamps nothing, and a file that vanishes between listing and stat is left out."""
+    folder = folder or os.path.dirname(os.path.abspath(__file__))
+    out = {}
+    try:
+        names = os.listdir(folder)
+        out[folder] = _code_key(folder)  # the folder's own mtime moves when a module is added, removed or renamed
+    except OSError:
+        return out
+    for n in names:
+        path = os.path.join(folder, n)
+        if n.endswith(".py"):
+            try:
+                out[path] = _code_key(path)
+            except OSError:
+                pass
+    return out
+
+
+def code_changed(start):
+    """T-6169: True when a module file's mtime or inode differs from `start` (code_stamp taken at start), or the file is
+    gone. One os.stat per file start stamped: no directory listing, no subprocess, so a wake costs that many stats."""
+    for path, key in start.items():
+        try:
+            if _code_key(path) != tuple(key):
+                return True
+        except OSError:
+            return True
+    return False
+
+
+CODE_START = code_stamp()  # T-6169: the module files as this process loaded them; a loop's wake that finds one changed re-execs
 
 
 class _Later:

@@ -7667,5 +7667,96 @@ class HaikuSwitch(RouteBase):
             self.assertIsNone(hooks._spawn_rule(pl))
 
 
+class StaleCodeLoop(unittest.TestCase):
+    """T-6169: 68 verify runners from before T-6012 slept 3-9 h in ship_yield, each set to run its own full suite once the
+    ship ended, because a merge had changed the code they run. A wake that finds a sampo module file changed since the
+    process started hands the runner claim over and re-execs with the same argv; an unchanged one keeps sleeping.
+    os.execv is always mocked: a real exec would replace the test process."""
+
+    class Reexec(Exception):
+        pass
+
+    def setUp(self):
+        from sampo import release
+        self.p = object()  # a stand-in project: ship_yield reads its meta only through the mocks below
+        for target, attr, kw in ((c, "read_meta", {"return_value": {}}),
+                                 (train, "_ship_alive", {"side_effect": [True, True, False]}),
+                                 (release, "_claim_alive", {"return_value": False})):
+            patcher = unittest.mock.patch.object(target, attr, **kw)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.mocks = {}
+        for target, attr, kw in ((slanes, "SHIP_YIELD_POLL", {"new": 0.01}),
+                                 (slanes, "_pm_runner_release", {}),
+                                 (os, "execv", {"side_effect": self.Reexec})):
+            patcher = unittest.mock.patch.object(target, attr, **kw)
+            self.mocks[attr] = patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def patch_changed(self, value):
+        """code_changed is patched only in the two wake tests: the stat test needs the real one."""
+        patcher = unittest.mock.patch.object(c, "code_changed", return_value=value)
+        self.mocks["code_changed"] = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_a_changed_module_re_execs_at_the_next_wake_after_the_claim_is_handed_over(self):
+        self.patch_changed(True)
+        with self.assertRaises(self.Reexec):
+            slanes.ship_yield(self.p, cap=5)
+        self.mocks["_pm_runner_release"].assert_called_once_with(self.p)
+        self.mocks["execv"].assert_called_once()
+        exe, argv = self.mocks["execv"].call_args[0]
+        self.assertEqual(exe, sys.executable)
+        self.assertEqual(list(argv), list(getattr(sys, "orig_argv", [sys.executable] + sys.argv)))
+    def test_an_unchanged_module_keeps_sleeping_and_never_execs(self):
+        self.patch_changed(False)
+        waited = slanes.ship_yield(self.p, cap=5)
+        self.assertGreater(waited, 0)
+        self.mocks["execv"].assert_not_called()
+        self.mocks["_pm_runner_release"].assert_not_called()
+
+    def test_code_changed_is_one_stat_per_module_file_and_no_subprocess(self):
+        start = c.code_stamp()
+        self.assertTrue(start, "the package's module files are stamped at start")
+        with unittest.mock.patch.object(subprocess, "Popen") as popen, \
+                unittest.mock.patch.object(os, "stat", wraps=os.stat) as stat:
+            self.assertFalse(c.code_changed(start))
+        popen.assert_not_called()
+        self.assertEqual(stat.call_count, len(start))
+        some = next(iter(start))
+        self.assertTrue(c.code_changed(dict(start, **{some: (0, 0)})), "a module whose mtime or inode moved is a change")
+        self.assertTrue(c.code_changed(dict(start, **{os.path.join(os.path.dirname(some), "gone.py"): (0, 0)})),
+                        "a module that is gone is a change")
+
+    def test_a_new_module_file_in_the_package_folder_is_a_change(self):
+        folder = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, folder, True)
+        with open(os.path.join(folder, "old.py"), "w") as f:
+            f.write("x = 1\n")
+        start = c.code_stamp(folder)
+        self.assertIn(folder, start, "the folder's own mtime is stamped: a file added or removed moves it")
+        self.assertFalse(c.code_changed(start))
+        with open(os.path.join(folder, "new.py"), "w") as f:
+            f.write("y = 2\n")
+        self.assertTrue(c.code_changed(start))
+
+    def test_a_pilot_round_re_execs_when_the_code_changed(self):
+        from sampo import lanepilot
+        self.patch_changed(True)
+        with self.assertRaises(self.Reexec):
+            lanepilot.pilot(self.p, "T-0001", "/nonexistent-main")
+        self.mocks["_pm_runner_release"].assert_called_once_with(self.p)
+        self.mocks["execv"].assert_called_once()
+
+    def test_an_exec_that_fails_logs_retakes_the_claim_and_carries_on(self):
+        self.patch_changed(True)
+        self.mocks["execv"].side_effect = OSError("exec refused")
+        with unittest.mock.patch.object(slanes, "_pm_runner_claim", return_value=True) as claim, \
+                unittest.mock.patch.object(c, "log_event") as log:
+            slanes._reexec_if_code_changed(self.p)  # returns: the old code runs on, holding the claim again
+        claim.assert_called_once_with(self.p)
+        self.assertTrue(any("exec" in str(a) for a in log.call_args_list), "the failed exec is logged")
+
+
 if __name__ == "__main__":
     unittest.main()

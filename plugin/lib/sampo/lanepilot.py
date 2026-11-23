@@ -1196,6 +1196,8 @@ def pilot(p, tid, main):
     accept), or exception (a gate, a refused review or the accept said no). Never accepts a lane with a blocking
     finding: the accept runs only when every reviewed lens came back clean."""
     from sampo import cli
+    from sampo.lanes import _reexec_if_code_changed  # T-6169: a round starts on the code on disk
+    _reexec_if_code_changed(p)
     t0 = time.monotonic()
     b = cli.need_brief(p, tid)
     res = {"tid": b.id, "outcome": "exception", "lenses": [], "findings": [], "model": "", "seconds": 0.0,
@@ -1217,6 +1219,7 @@ def pilot(p, tid, main):
         return done("exception", why)
     fixes, note, rounds, spent = 0, "", fix_rounds(), []  # spent: USD of each fix round so far
     while True:
+        _reexec_if_code_changed(p)  # T-6169: a round that begins after a module changed re-execs (the ledger keeps the lane)
         # T-6044: the tip every read below (diff, scan, cache key, reviewers) is taken at; a fix round re-reads it
         before, asked_at = _state(main, b), c.now()
         sensitive = _sensitive(main, before[0])

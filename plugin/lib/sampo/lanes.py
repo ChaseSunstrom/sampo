@@ -8193,7 +8193,35 @@ def ship_yield(p, cap=None):
     while limit > time.monotonic() - t0 and running():
         waited = True
         time.sleep(min(SHIP_YIELD_POLL, max(0.0, limit - (time.monotonic() - t0))))
+        _reexec_if_code_changed(p)  # T-6169: a wake that finds the code changed on disk hands over and re-execs
     return max(round(time.monotonic() - t0, 2), 0.01) if waited else 0.0
+
+
+def _reexec_if_code_changed(p=None):
+    """T-6169: 68 verify runners slept 3-9 h in ship_yield, each set to run its own full suite after a merge had changed the
+    code they ran. A wake (ship_yield, the land's waits, the pilot's rounds) that finds a sampo module file changed since
+    this process started gives up its runner claim (p's, when this process holds it) and re-execs with the same argv: the
+    new process runs the code now on disk, and the work is kept (a pending merge record stays pending for it). Returns only
+    when the code is unchanged. The exec keeps the pid, so the claim's stale-check still names the same process."""
+    if not c.code_changed(c.CODE_START):
+        return
+    released = False
+    if p is not None:
+        try:
+            _pm_runner_release(p)
+            released = True
+        except Exception:  # the claim goes stale in PM_RUNNER_STALE_S if its file cannot be cleared: the exec goes on
+            pass
+    sys.stdout.flush()
+    sys.stderr.flush()
+    try:
+        os.execv(sys.executable, list(getattr(sys, "orig_argv", None) or [sys.executable] + sys.argv))
+    except OSError as e:  # the exec was refused: the old code runs on, and never holding nothing
+        if p is not None:
+            c.log_event(p, "code_reexec_failed", data={"error": str(e)[:200]})
+        if released:
+            with contextlib.suppress(Exception):
+                _pm_runner_claim(p)
 
 
 PM_RUNNER_STALE_S = 600  # T-6012: a runner claim its owner has not refreshed in this long is nobody's (a wedged runner)

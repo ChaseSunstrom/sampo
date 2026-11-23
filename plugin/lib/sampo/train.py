@@ -5139,6 +5139,9 @@ def _wait_pm(p, ids, who):
     if not first:
         return ""
     t0 = time.monotonic()
+    if c.code_changed(c.CODE_START):  # T-6169: a land never re-execs here (its merges are done): it says what it runs
+        print(f"{who}: running code from before the sampo files changed on disk (loaded at {time.ctime(c.LOADED_NS / 1e9)})",
+              file=sys.stderr, flush=True)
     print(f"{who}: waiting for the post-merge verify of {', '.join(sorted({t for t, _, _ in first}))} "
           f"(up to {PM_WAIT_S:.0f} s) before the closes: its tests are theirs", file=sys.stderr, flush=True)
     while _pm_unsettled(p, ids):
