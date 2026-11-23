@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- The seven test classes red on trunk pass again: their stubs, pins and expectations now follow the commits that moved them (T-6129).
 - The land re-queues a conflict park its lane pilot resolved so it trains with no lead call, names both sides' hunks in the hand row of a park the pilot gave up on, and trains OVERLAP lanes in successive passes (T-6102).
 - Builder briefs and agent files are pinned to ask for no report file, and the close reads the close lines from the returned message (T-6106).
 - sampo task prove proves a test-only repair of a trunk red: the start tree keeps its failing test and the repaired one must pass there (T-6108).
