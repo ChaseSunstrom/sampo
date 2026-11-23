@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- Lane pilot fix rounds keep the fixer's answer and no longer stop on Python bytecode or nested scratch repos (T-6194).
 - Reviewer effort is lifted one level for a review class whose low-effort reviews escape more often than its earlier reviews (T-6165).
 - A lane pilot failing with one reason three times in a row raises one urgent andon in sampo next and files one discovered task, once per reason per day (T-6180).
 - Detached verify runners, land waits and pilot rounds re-exec when a Sampo module changed on disk, so a merge no longer leaves a sleeping runner on old code (T-6169).
