@@ -1050,6 +1050,10 @@ def cmd_lane(args):
             f"\nIsolation refusals of this project's calls: {ref['all']} in all, {ref['last_7_days']} in the last 7 days "
             "(T-4139: the harness refused them before sampo ran)")
         return cli.out(args, {"stats": rows, "refusals": ref, "landing": land}, text)
+    if args.action == "local" and getattr(args, "stats", False):  # T-6061: the local landing rate by lane class, and what it saved
+        from sampo import localruns
+        rows = localruns.stats(p)
+        return cli.out(args, {"classes": [{"class": k, "tries": t, "landed": n} for k, t, n in rows]}, localruns.stats_text(p))
     if args.action == "classify":  # T-5723: the detached pass classify_spawn starts: classes the findings no brief has
         import threading
 
@@ -5549,6 +5553,12 @@ def builder_brief(p, b, args, resume_branch=None, after="", stacked=None, check=
         parts += ["## Resume", prose + ("\n" + state if state else ""), ""]
     if after:  # T-2354: a recovery says why the lane came back
         parts += ["## Why it came back", after.strip(), ""]
+    if getattr(args, "model", None) != LOCAL:  # T-6061: a lane the local run stopped on carries that run's diff and notes
+        try:
+            from sampo import localruns
+            parts += localruns.attempt_section(p, b.id, base, main)
+        except Exception:  # noqa: BLE001 — a note about a past run never costs the builder its brief
+            pass
     try:
         with open(_drop_path(p, b.id), encoding="utf-8") as f:
             drop = json.load(f)
@@ -5666,6 +5676,12 @@ def builder_brief(p, b, args, resume_branch=None, after="", stacked=None, check=
             warns.append(f"local builder unavailable ({fell}): briefed for sonnet")
     elif getattr(args, "model", None):
         chosen, route, probe = args.model, f"--model {args.model}", False
+    elif b.tier == "S" and resume_branch is None and not racing:  # T-6061: the local model builds an S lane first
+        local, why = local_first(p, b)
+        if local:
+            chosen, route, probe = LOCAL, f"local-first: sampo code on {local} ({why}); Claude takes over if it stops", False
+        elif why:
+            route += f" (not local-first: {why})"
     paused = paused if chosen != LOCAL else ""  # T-5884: a local run spends no Claude usage: the hold does not apply to it
     if paused:  # T-5562: the hook rewrites a launch to haiku while the hold lasts; the printed call says so up front
         chosen, route, probe = budget.HELD_MODEL, f"{budget.HELD_MODEL} while usage is ahead of pace ({paused})", False
@@ -5693,7 +5709,9 @@ def builder_brief(p, b, args, resume_branch=None, after="", stacked=None, check=
     extra = {}
     if chosen == LOCAL:  # T-5884: the launch is a shell command: it starts the headless run detached and returns at once
         agent = f"sampo lane local {b.id}"
-        extra = {"launch": agent, "runs": " ".join(local_argv(local, b.id)), "profile": local}
+        from sampo import localruns
+        extra = {"launch": agent, "runs": " ".join(local_argv(local, b.id)), "profile": local, "claude_tokens": 0,
+                 "claude_tokens_basis": localruns.CLAUDE_TOKENS_BASIS}  # T-6061 review: the zero is inferred, and said so
     # T-6063: the brief-time run's answer, for the caller
     ran = {"green": [n for n, _, _ in true_now], "red": red_now} if red_now is not None else {}
     return cli.out(args, {"id": b.id, "path": path, "agent": agent, "model": chosen, "route": route, "out": out + [b.id], "warnings": warns, **extra, **ran},
@@ -5731,6 +5749,32 @@ def local_profile(p):
     except (models.ModelError, OSError, ValueError):
         pass
     return None
+
+
+def local_first(p, b):
+    """T-6061: (profile, why) when S brief b's builder is the local model first, else (None, why it is not; '' when that is
+    no news: off, no profile). Not local-first: a lane the local run already stopped on (Claude takes it with the diff), a
+    scope that touches a security-sensitive or guard path or names none, a class that lands locally under 30% of 5+
+    tries in 30 days. The kill switch is FOREMAN_LOCAL_FIRST=off. Nothing here gates a close: the review and the
+    criteria's verify still decide every landing."""
+    from sampo import localruns
+    if os.environ.get("FOREMAN_LOCAL_FIRST", "").strip().lower() == "off" or b.tier != "S":
+        return None, ""
+    cls = localruns.class_of(b)
+    s = localruns.landing(p, localruns.LAND_WINDOW_DAYS).get(cls) or {"tries": 0, "landed": 0}
+    no = ""
+    if localruns.read_attempt(p, b.id) or b.meta.get("local_escalated"):
+        no = "the local run already stopped on it: Claude takes it with the local diff and notes"
+    elif blocked := localruns.blocked_paths(b):
+        no = f"scope touches a security-sensitive or guard path, or names none ({c.joinmore(blocked, 3)})"
+    elif localruns.under_threshold(p, cls):
+        no = f"class {cls} lands locally {s['landed']} of {s['tries']}, under {localruns.LAND_RATE:.0%}"
+    prof = local_profile(p)  # no profile answering is no news: a user without a local model reads no local-first line
+    if not prof:
+        return None, ""
+    if no:
+        return None, no
+    return prof, (f"class {cls}: {s['landed']} of {s['tries']} landed locally" if s["tries"] else f"class {cls}: no local run yet")
 
 
 def local_argv(name, tid):
@@ -5809,13 +5853,97 @@ def _local_code(p, b, lane, name):
             signal.signal(signal.SIGTERM, old)
 
 
+def _local_log_size(p, tid):
+    """The byte length of local-ID.log now (0 when there is none): where this run's own output starts."""
+    try:
+        return os.path.getsize(os.path.join(p.dir, f"local-{tid}.log"))
+    except OSError:
+        return 0
+
+
+def _local_log_tail(p, tid, limit=4000, since=0):
+    """The last `limit` characters of what local-ID.log gained after byte `since` (the headless run's own output: its stop
+    line; an earlier run of the lane left the bytes before it, and its stop line is not this run's), '' when there is none.
+    A log shorter than `since` was replaced: all of it is this run's."""
+    try:
+        with open(os.path.join(p.dir, f"local-{tid}.log"), "rb") as f:
+            size = f.seek(0, os.SEEK_END)
+            f.seek(max(since if since <= size else 0, size - limit))
+            return c.redact(f.read().decode("utf-8", "replace"))
+    except OSError:
+        return ""
+
+
+def _local_verify(p, tid):
+    """The criteria's verify in the lane as a localruns.Check: green only when _verify returned. Any error from it (a red
+    criterion, a timeout, a missing worktree, a bug) is Check(False, why): never a pass."""
+    from sampo import localruns
+    try:
+        _verify(c.find_brief(p, tid), p)
+    except Exception as e:  # noqa: BLE001 — whatever it raised, the lane is not verified
+        return localruns.Check(False, localruns.inert(e, 300) or "the criteria's verify did not pass")  # its own test's output: data
+    return localruns.Check(True)
+
+
+def _local_escalate(p, b, main, outcome, why, stop_text, lane="", base=""):
+    """T-6061: the local run stopped (abstained, failed its verify, timed out, was refused): the lane goes to a Claude
+    builder with the local run's diff and notes. The outcome and notes are stored (localruns.write_attempt: the Claude
+    brief's "The local attempt" section reads them), the lane's worktree is taken back with its work kept as a WIP commit on
+    its branch (resume), and a fresh brief is written for a Claude builder. A refused run (its change broke the scope's
+    bounds: a sensitive, guard or out-of-scope path) is kept out of that branch: its diff is stored as evidence and the lane
+    is reset to `base` first, and when that fails nothing is handed over. The new brief's launch line goes to this run's
+    log, the task's Log and the lead's notify line. Any failure here is logged and leaves the lane (fails closed)."""
+    import argparse
+    import contextlib
+    import io
+    from sampo import cli, localruns, selfcheck
+    why = localruns.inert(why, 300)  # whatever the run made (a git path, its test's output) is one inert line from here on
+    fresh = c.find_brief(p, b.id)
+    notes = (c.fit(stop_text.strip(), 1500) + "\n" if stop_text.strip() else "") + "\n".join(
+        l for l in fresh.section("Log").splitlines() if l.startswith("- "))[-1500:]
+    data = {"outcome": outcome, "why": why, "notes": notes.strip(), "branch": f"foreman/{b.id}", "at": c.now()}
+    try:
+        if outcome == "refused":
+            data["diff"] = c.redact(localruns._must_git(lane, "diff", "--no-color", base))[:localruns.DIFF_STORE_MAX]
+            for step in (("reset", "--hard", base), ("clean", "-ffdq")):  # none of the refused change rides on
+                r = c._git(lane, *localruns.GIT_SAFE, *step, timeout=60, proc=True)
+                if r.returncode:
+                    raise OSError(f"git {step[0]} failed in the lane ({str(r.stderr).strip()[:100]})")
+        localruns.write_attempt(p, b.id, data)
+
+        def mark(x):
+            x.meta["local_escalated"] = c.now()
+            x.append_log(f"local builder escalated ({outcome}: {c.fit(why, 120)}): a Claude builder takes the lane with the "
+                         f"local diff and notes")
+        cli.mutate(p, b.id, mark, "local_escalate", {"outcome": outcome})
+        shown = io.StringIO()
+        with contextlib.redirect_stdout(shown):  # the launch line: said below to the log, the task and the lead
+            resume(p, c.find_brief(p, b.id), main, argparse.Namespace(model=None, json=True, force=None), ended=True,
+                   after=f"The local model built it first and stopped ({outcome}: {c.fit(why, 200)}): see The local attempt below.")
+        text = shown.getvalue()
+        print(text, end="")
+        try:
+            launch = str(json.loads(text).get("agent") or "")
+        except ValueError:
+            launch = ""
+        launch = c.fit(" ".join((launch or text).split()), 400)
+        cli.mutate(p, b.id, lambda x: x.append_log(f"Claude builder launch (the new brief): {launch}"), "local_escalate_launch")
+        selfcheck.notify_detached(p, f"{b.id}: the local builder stopped ({outcome}: {c.fit(why, 100)}); a Claude builder takes "
+                                     f"the lane: launch it: {launch}")
+    except Exception as e:  # noqa: BLE001 — never lose the lane to the hand-over: the old way (recover or rm) still works
+        way = (f"sampo lane rm {b.id} (the refused change is still in the lane: do not recover it)" if outcome == "refused"
+               else f"sampo lane recover {b.id} (or brief it for sonnet)")
+        cli.mutate(p, b.id, lambda x: x.append_log(f"local builder escalation failed: {localruns.inert(e, 200)}; {way}"),
+                   "local_escalate_failed")
+
+
 def local_run(p, b):
     """T-5884: the local builder, here and now: the lane is made when there is none, `sampo code --task` runs in it, and a
     run that ends 0 with a commit past the main checkout's tip returns as a Claude builder does (a headless run has no
     SubagentStop hook): the commit's close lines are stored as the brief's Close fields (never over ones already
     there), builder_returned is stamped, and the review pilot starts. A run with no commit, or that failed, is logged
     (local builder stopped: why) and left for sampo lane recover or rm. The run's answer is the exit status."""
-    from sampo import bus, cli, pilotsig
+    from sampo import bus, cli, localruns, pilotsig
     name = _local_brief(p, b)
     main = c.main_worktree(p.root) or p.root
     if c.panicked():
@@ -5831,18 +5959,39 @@ def local_run(p, b):
             x.meta["builder_proc"] = f"{bus.host_id()}|{os.getpid()}|{info[1]}"
         x.append_log(f"local builder started: sampo code on {name} in {lane}")
     cli.mutate(p, b.id, start, "local_start", {"profile": name})
+    mark = _local_log_size(p, b.id)  # T-6061 review: an earlier run's stop line in the log is not this run's
     try:
         rc = _local_code(p, b, lane, name)
         why = "" if rc == 0 else f"sampo code ended {'cut after ' + str(LOCAL_WALL_S + 120) + ' s' if rc == 124 else rc}"
     except OSError as e:
-        rc, why = 1, f"sampo code could not start: {c.fit(str(e), 200)}"
+        rc, why = 1, f"sampo code could not start: {localruns.inert(e)}"
     head = c._git(main, "rev-parse", "HEAD", timeout=10).strip()
     made = bool(head) and c._git(lane, "rev-list", "--count", "HEAD", "--not", head, timeout=10).strip() not in ("", "0")
     if rc == 0 and not made:
         why = "sampo code ended 0 but the lane has no commit of its own"
-    if why or not made:
-        cli.mutate(p, b.id, lambda x: x.append_log(f"local builder stopped: {why or 'no commit'}"), "local_stop",
-                   {"rc": rc})
+    # T-6061: the attempt is recorded by lane class; a run that is not green hands over to Claude
+    stop_text = _local_log_tail(p, b.id, since=mark)
+    # the local run is never focused, so the brief records no start point: the lane's fork point from the main checkout's tip is it
+    # (a recorded one wins); empty when git can't say, which the bounds check refuses
+    base = str(c.find_brief(p, b.id).meta.get("base") or "") or c._git(lane, "merge-base", "HEAD", head, timeout=10).strip()
+    # T-6061 review: the gate that sent the lane here judged the scope the brief declared; what the run really changed (committed,
+    # edited or new, links too) is judged the same way, and a run that broke the bounds is discarded whatever its verify says
+    bounds, seen = localruns.check_bounds(c.find_brief(p, b.id), lane, base)
+    verified = None
+    if rc == 0 and made and not bounds:
+        verified = _local_verify(p, b.id)  # proof decides, in the lane, before the review; it runs the model's own in-scope code
+        # ... which can write, commit or link anything: the change is judged again after the last step that ran lane code, and
+        # must be the very state the first check judged, green verify or red (a red one's leftovers would ride the WIP commit)
+        bounds, _ = localruns.check_bounds(c.find_brief(p, b.id), lane, base, seen=seen)
+    outcome, owhy = localruns.outcome_of(rc, made, verified, stop_text, bounds)
+    try:
+        localruns.record_attempt(p, b.id, localruns.class_of(c.find_brief(p, b.id)), outcome, owhy or why)
+    except OSError:  # a record that can't be written never costs the lane its hand-over
+        pass
+    if outcome != "landed":
+        said = localruns.inert(owhy if outcome == "refused" else why or owhy or "no commit", 300)
+        cli.mutate(p, b.id, lambda x: x.append_log(f"local builder stopped: {said}"), "local_stop", {"rc": rc, "outcome": outcome})
+        _local_escalate(p, b, main, outcome, owhy or why, stop_text, lane, base)
         return rc or 1
 
     def back(x):

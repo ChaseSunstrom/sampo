@@ -12722,6 +12722,8 @@ def _build_parser(only=None):
     s.add_argument("--model", choices=["sonnet", "opus", "haiku", "local"], help="brief: the builder's model, over the history's "
                    "pick (T-2291); local: an S lane worked headless by sampo code on a JARVIS profile, Claude reviews it (T-5884)")
     s.add_argument("--foreground", action="store_true", help="local: run the builder here, not detached (T-5884)")
+    s.add_argument("--stats", action="store_true", help="local, no id: the local-first landing rate by lane class and the "
+                                                        "Claude builder tokens the landed lanes measured (T-6061)")
     s.add_argument("--revert-route", metavar="DATE", help="brief, no id: put back the dearer picks the probe-down route "
                                                           "promoted since DATE (YYYY-MM-DD), probing paused 20 lanes (T-2353)")
     s.add_argument("--no-preview", action="store_true", help="list: skip the trial merges between lanes (T-3268)")

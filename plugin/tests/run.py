@@ -77,6 +77,7 @@ OPERATOR_SWITCHES = {"LOAD_GATE", "LOAD_WAIT", "FULL_GATE", "SENTINEL", "SENTINE
 SLOT_ENV = "SAMPO_SLOT"  # T-3252: set in a class's children, so a run.py inside a slot never waits on its parent's pool
 OPERATOR_SWITCHES.add("LANE_PREVIEW_BUDGET_S")  # T-3268: the lane list preview's time budget; a test sets its own
 OPERATOR_SWITCHES.add("LAND_NICE")  # T-5527: the nice level a land or train lowers itself to; a test sets its own
+OPERATOR_SWITCHES.add("LOCAL_FIRST")  # T-6061: off sends every S lane to a Claude builder; a test sets its own
 OPERATOR_SWITCHES.add("NO_JOIN")  # T-4267: a run's own switch, never a test's
 OPERATOR_SWITCHES.add("SPAWN_TABLE")  # T-5835: =off turns the spawn table's fill and lookup refusal off; a test sets its own
 OPERATOR_SWITCHES.add("LANE_PILOT")  # T-5708: =off stops the detached lane pilots; a test of the pilot sets its own

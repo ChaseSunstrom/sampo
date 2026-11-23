@@ -6018,7 +6018,7 @@ class LocalBuilder(ForemanTestCase):
 
     def task(self, tier="S"):
         tid = first(self.fm("task", "new", f"Local {tier}", "--type", "FEATURE", "--tier", tier, "--ac", "ok :: true",
-                            "--step", "s", "--json").stdout)["id"]
+                            "--step", "s", "--scope", "made.txt", "--json").stdout)["id"]  # T-6061: a local run's change is judged by a scope
         self.fm("task", "set", tid, "approved=true", check=False)  # an L task wants a Build vs reuse section first
         return tid
 
