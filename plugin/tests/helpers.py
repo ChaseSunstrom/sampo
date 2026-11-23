@@ -395,7 +395,8 @@ class SampoTestCase(unittest.TestCase):
                                                      "FOREMAN_GUARD_CASES", "FOREMAN_NO_LINK", "FOREMAN_NO_RIVAL",
                                                      "FOREMAN_UI_CACHE_S", "FOREMAN_DISK_FREE",
                                                      "FOREMAN_NO_LEFTOVER_SCAN", "FOREMAN_NO_COVERED",
-                                                     "FOREMAN_PROCESS_TIER")}
+                                                     "FOREMAN_PROCESS_TIER", "FOREMAN_BRIEF_VERIFY",
+                                                     "FOREMAN_BRIEF_VERIFY_S", "FOREMAN_BRIEF_SWEEP_S")}
         if not again:
             self._env = env
         # T-4198: registered first, so it runs last: unittest runs tearDown, then the addCleanup functions last added
@@ -410,6 +411,11 @@ class SampoTestCase(unittest.TestCase):
         # T-5714: the plan gate, the rival bar and the builder model read the process tier; the older tests mean today's
         # S, M and L gate, so they run with it off (test_ptier_plan_gate turns it on)
         os.environ["FOREMAN_PROCESS_TIER"] = "off"
+        # T-6063: a brief runs each criterion's verify on HEAD first and closes a task that is already true; the older tests
+        # make tasks whose verify is a bare `print(1)` and mean to brief a builder, so it is off (test_lane_brief turns it on)
+        os.environ["FOREMAN_BRIEF_VERIFY"] = "off"
+        os.environ.pop("FOREMAN_BRIEF_VERIFY_S", None)
+        os.environ.pop("FOREMAN_BRIEF_SWEEP_S", None)
         # T-4288: no "Already covered?" note on task new and capture (test_nudges.Covered turns it on): its cache check
         # stats every file of the package, so 630 classes that only made a task depended on all 168 and re-ran on any edit
         os.environ["FOREMAN_NO_COVERED"] = "1"

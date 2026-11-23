@@ -2316,7 +2316,7 @@ def resume(p, b, main, args, ended=False, recover=None, after=""):
     cli.mutate(p, b.id, reset, "lane_recover" if recover else "lane_resume",
                  {"path": path, "branch": branch if have else None, "forced": why or None, **(recover or {})})
     bus.release(p, b.id)  # T-1068: the fresh brief claims again
-    return builder_brief(p, c.find_brief(p, b.id), args, resume_branch=branch if have else None, after=after)
+    return builder_brief(p, c.find_brief(p, b.id), args, resume_branch=branch if have else None, after=after, check=False)
 
 
 def _sides(p, b):
@@ -2486,7 +2486,7 @@ def race(p, b, main, args):
     try:
         with contextlib.redirect_stdout(io.StringIO()):  # the briefs' own output; the launch lines follow
             for t in (nids if design else (b.id, *nids)):
-                builder_brief(p, c.find_brief(p, t), quiet)
+                builder_brief(p, c.find_brief(p, t), quiet, check=False)  # T-6063: a race plans both sides, so none is closed as true
     except Exception:  # review: no half-started race (orphan clones, a race mark nobody can clear)
         for nid in nids:
             cli.mutate(p, nid, lambda y: (y.meta.__setitem__("status", "dropped"),
@@ -4377,7 +4377,12 @@ def brief_ready(p, args):
                     return owner
         return None
 
-    briefed, skipped, claimed, stop = [], [], {}, None
+    briefed, skipped, claimed, stop, closed, unchecked = [], [], {}, None, [], []
+    try:  # T-6063: the criteria are run on HEAD for the whole sweep within this many seconds; later tasks are briefed unchecked
+        sweep_s = max(1.0, float(os.environ.get("FOREMAN_BRIEF_SWEEP_S", "")))
+    except ValueError:
+        sweep_s = BRIEF_SWEEP_S
+    sweep_end = time.monotonic() + sweep_s
     for x in briefs:  # T-5479: a builder already out holds its scope: a planned task that overlaps it waits for its lane
         if x.id in working:
             for path in concrete(x):
@@ -4426,11 +4431,19 @@ def brief_ready(p, args):
             buf = io.StringIO()
             try:
                 with contextlib.redirect_stdout(buf):  # builder_brief's own text is replaced by the block below
-                    ns = argparse.Namespace(**{**vars(args), "json": True})
+                    ns = argparse.Namespace(**{**vars(args), "json": True, "verify_deadline": sweep_end})
+                    late = brief_verify_on(ns) and time.monotonic() >= sweep_end  # T-6063: the sweep's time is spent
+                    if late:
+                        ns.no_verify = True
                     # its answer is passed on, not read again; a big child and a task with no depends_on have none (None:
                     # builder_brief reads its own)
                     builder_brief(p, b, ns, stacked=stk.get(b.id))
                 data = json.loads(buf.getvalue())
+                if late:
+                    unchecked.append(b.id)
+                if data.get("closed"):  # T-6063: already true on HEAD: closed, no brief, no builder, no slot
+                    closed.append(data["id"])
+                    continue
                 briefed.append({"id": data["id"], "path": data["path"], "launch": data["agent"], "model": data["model"],
                                 "warnings": data["warnings"]})
                 if not racing:
@@ -4450,6 +4463,12 @@ def brief_ready(p, args):
         lines += [f"  {x['id']}: {x['launch']}" for x in briefed]
         lines += [f"  note: {w}" for x in briefed for w in x["warnings"]]
         lines.append("Unlaunched briefs keep their slot until fm lane rm ID.")
+    if closed:
+        lines.append(f"closed {len(closed)} already-true task(s) with no builder ({', '.join(closed)}): every criterion's "
+                     f"verify passed on HEAD, recorded as their evidence")
+    if unchecked:  # briefed without the HEAD check once the sweep's time was spent: said, not silent
+        lines.append(f"{len(unchecked)} task(s) briefed without the check on HEAD (the sweep's {int(sweep_s)} s "
+                     f"was spent: {', '.join(unchecked)}); sampo lane brief ID checks one")
     out_ids = {x["id"] for x in briefed}
     made = [(h, ms) for h, ms in made if h in out_ids]  # a host builder_brief refused is a skip line, not a batch
     lines += [f"batched {len(ms)} into {h} ({', '.join(ms)}): one builder, one verify run" for h, ms in made]
@@ -4460,7 +4479,7 @@ def brief_ready(p, args):
             lines.append(f"  and {len(skipped) - SKIPS_SHOWN} more (--json lists them all)")
     if not lines:
         lines.append("No planned S/M task to brief (fm lane list shows the open lanes).")
-    return cli.out(args, {"briefed": briefed, "skipped": skipped, "free": free, "limit": limit,
+    return cli.out(args, {"briefed": briefed, "closed": closed, "unchecked": unchecked, "skipped": skipped, "free": free, "limit": limit,
                           "batched": [{"host": h, "members": ms} for h, ms in made]}, "\n".join(lines))
 
 
@@ -5190,7 +5209,112 @@ def _autofill(p, b):
     return b, done
 
 
-def builder_brief(p, b, args, resume_branch=None, after="", stacked=None, single=False):
+BRIEF_VERIFY_S = 120  # T-6063: seconds one criterion's verify may run at brief time (FOREMAN_BRIEF_VERIFY_S), load-scaled
+BRIEF_VERIFY_TOTAL_S = 600  # and all of a task's: a criterion that finds the budget spent counts red, unrun
+
+
+def brief_verify_on(args):
+    """T-6063: whether a brief runs the task's criteria on HEAD first: on unless FOREMAN_BRIEF_VERIFY=off (0, no, false) or
+    `sampo lane brief --no-verify`."""
+    return not getattr(args, "no_verify", False) \
+        and os.environ.get("FOREMAN_BRIEF_VERIFY", "").strip().lower() not in ("off", "0", "no", "false")
+
+
+BRIEF_SWEEP_S = 300  # and a `lane brief --ready` sweep's, all its tasks together (FOREMAN_BRIEF_SWEEP_S): the rest are briefed unchecked
+# a verify that proves nothing however it exits: the shell's own words (it printed or tested, it ran no test)
+_VACUOUS = re.compile(r"\s*(?:echo|printf|true|false|test|grep|egrep|fgrep|rg|cat|ls|:|\[\[?)(?:\s|;|&|\||$)")
+
+
+def real_run(cmd, out):
+    """T-6063: whether a green verify was a test run that ran tests: the runner's own count above 0 (unittest and
+    run.py's "Ran N tests", pytest, jest, cargo, go: core._SOME_TESTS) and no failure summary, from a command that is not
+    the shell printing or testing something (`true`, `test -f`, grep, echo). A criterion that fails this is not proven, and
+    a brief lists it."""
+    return bool(cmd) and not _VACUOUS.match(cmd) and bool(c._SOME_TESTS.search(out or "")) and not c.failed_summary(out)
+
+
+def verify_at_head(p, b, main, deadline=None):
+    """T-6063: each open criterion's verify command run in a clean detached checkout of `main`'s HEAD (made here, removed
+    after: the files in the main checkout, untracked or changed, are not HEAD and no verify's own writes reach it):
+    ([(n, cmd, result)] green, [n] red, tree, sha), or None when the checkout can't be made. Green is exit 0 from a real
+    test run (real_run): zero tests, a -k that matched nothing, a timeout, `true`, `test -f`, grep and echo are red
+    (run_command's judge, then real_run), and so is a criterion with no verify command, one the guard refuses, a full
+    gate run (too long for a brief) and one that finds the budget spent (`deadline`, a monotonic time, is a sweep's)."""
+    from sampo import cli
+    try:
+        cap = max(1.0, float(os.environ.get("FOREMAN_BRIEF_VERIFY_S", "")))
+    except ValueError:
+        cap = BRIEF_VERIFY_S
+    sha = _git(main, "rev-parse", "HEAD").stdout.strip()
+    if not sha:
+        return None
+    tmp = c.scratch_tree("sampo-brief-", main)  # T-4735: the owned scratch root, locked while this lives
+    wt = os.path.join(tmp, "wt")
+    green, red, seen, t0 = [], [], {}, time.monotonic()
+    end = min(t0 + BRIEF_VERIFY_TOTAL_S, deadline) if deadline is not None else t0 + BRIEF_VERIFY_TOTAL_S
+    try:
+        if _git(main, "worktree", "add", "-q", "--detach", wt, sha).returncode:
+            return None
+        tree = c.worktree_id(wt)
+        for n, cmd in b.verify_cmds(unchecked=True):
+            left = end - time.monotonic()
+            if not cmd or cli.FULL_CHECK.match(cmd.strip()) or left <= 0:
+                red.append(n)
+                continue
+            if cmd not in seen:
+                try:
+                    cli.guard_stored(p, b, cmd)
+                    code, out = c.run_command(wt, cmd, min(c.load_scaled(cap), left))
+                    ok = code == 0 and not c.never_ran(cmd, code, out) and real_run(cmd, out)
+                    seen[cmd] = c.run_result(code, out, cmd) if ok else None
+                except (c.PolicyError, OSError):
+                    seen[cmd] = None
+            if seen[cmd] is None:
+                red.append(n)
+            else:
+                green.append((n, cmd, seen[cmd]))
+    finally:
+        _git(main, "worktree", "remove", "--force", wt)
+        shutil.rmtree(tmp, ignore_errors=True)
+        _git(main, "worktree", "prune")
+        c.scratch_release(tmp)
+    return green, red, tree, sha
+
+
+def close_already_true(p, b, main, green, tree, sha):
+    """T-6063: every criterion's verify was a test run that passed on HEAD: its runs are the task's evidence (stamped with
+    the tree of HEAD, so the close reuses them where main is that tree), then `sampo task finish` closes it as it closes
+    any task, the fresh process the land's close uses. The close's text says what happened and no more: no change was
+    made, the criteria were verified on HEAD by these runs. A refusal leaves the task planned with its evidence and says
+    why: no builder is wanted for work that is done."""
+    from sampo import cli
+    short = sha[:9]
+
+    def record(x):
+        for n, cmd, result in green:
+            x.add_evidence(cmd, result, ac=n, tree=tree, ran=True)
+    cli.mutate(p, b.id, record, "evidence", {"ac": [n for n, _, _ in green], "via": "brief-time verify on HEAD"})
+    ran = "; ".join(f"ac {n}: {c.fit(cmd, 80)}" for n, cmd, _ in green)
+    why = (f"no change was made: the criteria were verified on HEAD {short} by these runs, each a test run that ran tests and "
+           f"passed ({ran})")
+    argv = ["task", "finish", b.id, "--run", green[0][1], "--audit", why, "--docs", "none: no change was made",
+            "--lesson", "none: no change was made; the task was already true on HEAD", "--numbers", "none: no change was made"]
+    if b.tier != "S":  # an M close asks a lens each: the answer is what happened, no more
+        argv += ["--lens", f"intent: no change was made; the criteria were verified on HEAD {short} by these runs, each a test "
+                           f"run that passed",
+                 "--lens", f"adversary: no change was made, so no diff to attack; the criteria were verified on HEAD {short} "
+                           f"by these runs and none is a vacuous check (each ran tests)"]
+    from sampo import train
+    code, out, err = train._sampo(argv, env={**os.environ, "FOREMAN_BRIEF_VERIFY": "off"}, timeout=600)
+    if code:
+        said = " ".join((err.strip() or out.strip()).split())
+        raise c.PolicyError(f"{b.id} is already true on HEAD (every criterion's verify passed, recorded as evidence), but "
+                            f"its close was refused: {c.fit(said, 600)}; no builder is needed: close it by hand "
+                            f"(sampo task finish {b.id} ...)")
+    return sha
+
+
+def builder_brief(p, b, args, resume_branch=None, after="", stacked=None, check=True, single=False):
     """T-0234: a self-contained brief for one S/M task worked by a sampo:fm-builder subagent in its own worktree
     (Agent isolation "worktree"; its `fm focus` binds the task there), and the Agent call that launches it. The main
     thread reviews the branch, merges it, refocuses the task here, re-runs its criteria and closes it."""
@@ -5235,6 +5359,31 @@ def builder_brief(p, b, args, resume_branch=None, after="", stacked=None, single
                    f"{b.id} once it reports or lands)"
                    if unreported else f"each is a finished lane not landed, and a lane starts from one base: land one "
                    f"first (sampo lane land --bg), then brief {b.id}"))
+    # T-6063: before any builder is wanted, each open criterion's verify runs on HEAD: all green closes the task (a builder
+    # would write nothing), a mix briefs only the red ones. Not for a recovery or resume (its lane has the work), a lane cut
+    # from a branch other than HEAD, or a batch host (its members sit hidden under it).
+    true_now, red_now = [], None
+    skip = ("a recovery or resume: its lane has the work" if resume_branch is not None or not check
+            else "a child of a big task: its lane is cut from the big branch, not HEAD" if anchor
+            else "a stacked lane: built on a dependency's unlanded lane, not HEAD" if stack
+            else "a batch host: its members' work sits under it" if b.meta.get("batch")
+            else f"a batch member (in {b.meta['batched_in']}): its host is worked" if b.meta.get("batched_in")
+            else "no criterion has a verify command" if not any(v for _, v in b.verify_cmds(unchecked=True)) else "")
+    if skip and brief_verify_on(args) and check:  # said, not silent: a task left out of the check says why
+        print(f"sampo: {b.id}: criteria not run on HEAD before this brief: {skip}", file=sys.stderr)
+    if not skip and brief_verify_on(args):
+        main = c.main_worktree(p.root) or p.root
+        if (res := verify_at_head(p, b, main, getattr(args, "verify_deadline", None))) is not None:
+            true_now, red_now, tree, head = res
+            if true_now and not red_now:
+                sha = close_already_true(p, b, main, true_now, tree, head)
+                return cli.out(args, {"id": b.id, "closed": True, "path": "", "agent": "", "model": "", "route": "",
+                                      "out": [], "warnings": [], "green": [n for n, _, _ in true_now], "red": []},
+                               f"{b.id}: already true: every criterion's verify, a test run that passed, ran on HEAD "
+                               f"{sha[:9]}; closed with those runs as evidence, no builder")
+        else:
+            print(f"sampo: {b.id}: criteria not run on HEAD before this brief: a clean checkout of HEAD could not be "
+                  f"made", file=sys.stderr)
     # T-4821: focus's door gaps for a root door, read with no write (after the cheap refusals)
     gaps = list(dict.fromkeys([*c.plan_gaps(b, c.effective_autonomy(p), p.root), *_door_gaps(p, b)]))
     if gaps:  # T-0823: the builder's first act is fm focus, which refuses these
@@ -5247,6 +5396,19 @@ def builder_brief(p, b, args, resume_branch=None, after="", stacked=None, single
             c.log_plan_gate_refused(p, gaps, task=b.id, where="lane")  # T-5887: cardmine counts the kinds that repeat
             raise c.PolicyError(said)
     own = own_chars(b)
+    reduced = ""
+    if true_now and red_now:  # T-6063: the brief lists the red criteria only, and the size cap (T-6047) reads that brief
+        keep, k, whole = [], 0, b.section("Acceptance criteria").strip()
+        for line in whole.splitlines():
+            if c._AC_RE.match(line):
+                k += 1
+                if k in {n for n, _, _ in true_now}:
+                    continue
+            keep.append(line)
+        reduced = "\n".join(keep).strip() + (
+            f"\n\n(Criteria {', '.join(str(n) for n, _, _ in true_now)} already pass on HEAD, checked when this brief "
+            f"was written: not listed, and your close re-runs them.)")
+        own += len(reduced) - len(b.section("Acceptance criteria"))
     oversize = ""  # T-6047: why a brief past the cap was written anyway, one line: --oversize REASON, or a resume
     if own > OWN_CAP and resume_branch is not None:  # a lane that was built is finished, not refused: the skip is logged
         oversize = "resume of a lane already built: the cap holds for a new lane only"
@@ -5306,6 +5468,8 @@ def builder_brief(p, b, args, resume_branch=None, after="", stacked=None, single
     for name in ("Raw request", "Interpretation", "Acceptance criteria", "Non-goals", "Approach (options → choice → why)",
                  "Race", "Steps"):  # Race: a race's b side is told to take another approach (T-1069)
         body = b.section(name).strip()
+        if name == "Acceptance criteria" and true_now and red_now:  # T-6063: the criteria already true on HEAD are not work
+            body = reduced
         if body:
             parts += [f"## {name}", body, ""]
     main = c.main_worktree(p.root) or p.root
@@ -5511,7 +5675,9 @@ def builder_brief(p, b, args, resume_branch=None, after="", stacked=None, single
     if chosen == LOCAL:  # T-5884: the launch is a shell command: it starts the headless run detached and returns at once
         agent = f"sampo lane local {b.id}"
         extra = {"launch": agent, "runs": " ".join(local_argv(local, b.id)), "profile": local}
-    return cli.out(args, {"id": b.id, "path": path, "agent": agent, "model": chosen, "route": route, "out": out + [b.id], "warnings": warns, **extra},
+    # T-6063: the brief-time run's answer, for the caller
+    ran = {"green": [n for n, _, _ in true_now], "red": red_now} if red_now is not None else {}
+    return cli.out(args, {"id": b.id, "path": path, "agent": agent, "model": chosen, "route": route, "out": out + [b.id], "warnings": warns, **extra, **ran},
                      "".join(f"{w}\n" for w in warns) +
                      f"{b.id}: builder brief {path}\n  model {chosen}: {route}\n  launch: {agent}"
                      + (f" (a Bash call: it runs `{extra['runs']}` detached in the lane's own worktree and returns at once; "

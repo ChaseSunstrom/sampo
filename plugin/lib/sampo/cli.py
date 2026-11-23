@@ -12701,6 +12701,9 @@ def _build_parser(only=None):
                                                           "slots (T-3293)")
     s.add_argument("--no-batch", action="store_true", help="brief --ready: do not batch related S tasks (the same files, "
                                                            "at most 4, same type) into one host builder (T-5478)")
+    s.add_argument("--no-verify", action="store_true", help="brief: do not run the criteria on HEAD first (a task whose "
+                                                            "criteria all pass there is closed, no builder; FOREMAN_BRIEF_VERIFY=off "
+                                                            "does the same) (T-6063)")
     s.add_argument("--why", metavar="REASON", help="rm: drop the builder's work (its branch is kept, a locked worktree "
                                                    "goes); the next sampo lane brief starts from this (T-1823); brief: start "
                                                    "this builder although more than two trains of finished lanes wait to "

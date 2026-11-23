@@ -48,6 +48,270 @@ class FnOverlap(ForemanTestCase):
         self.assertIn("T-2", out[0])
 
 
+def real(n):
+    """A verify command whose output is a test runner's own ("Ran N tests"): the one kind of run that counts as proof."""
+    return f"python3 -c 'print(\"Ran {n} tests in 0.1s\"); print(\"OK\")'"
+
+
+RED = "python3 -c 'import sys; sys.exit(3)'"
+
+
+class AlreadyTrue(ForemanTestCase):
+    """T-6063: before a brief is written, each criterion's verify runs on a clean checkout of trunk's HEAD. All of them
+    real test runs that passed: the task closes with those runs as its evidence and no builder is launched. A mix: the
+    brief lists only the criteria not proven. A run that measured nothing (zero tests, a -k that matched nothing, `true`,
+    `test -f`, grep, echo) or timed out is never green."""
+
+    ON = {"FOREMAN_BRIEF_VERIFY": "on"}
+
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+
+    def task(self, *verifies, tier="S"):
+        acs = []
+        for i, v in enumerate(verifies, 1):
+            acs += ["--ac", f"criterion {i} holds :: {v}"]
+        return json.loads(self.fm("task", "new", "Already true work", "--type", "FEATURE", "--tier", tier, *acs,
+                                  "--step", "build it", "--json").stdout)["id"]
+
+    def brief(self, tid, env=None, *flags):
+        r = self.fm("lane", "brief", tid, *flags, "--json", env={**self.ON, **(env or {})}, check=False)
+        return r, (json.loads(r.stdout) if r.stdout.strip().startswith("{") else {})
+
+    def stored(self, tid):
+        return c.find_brief(c.find_project(self.repo), tid)
+
+    def test_every_criterion_green_closes_the_task_with_the_runs_as_evidence_and_no_builder(self):
+        tid = self.task(real(1), real(2))
+        r, out = self.brief(tid)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(out.get("closed"), out)
+        self.assertFalse(out.get("path"), out)  # no brief file, no Agent call
+        b = self.stored(tid)
+        self.assertEqual(b.status, "done", r.stderr)
+        ev = b.evidence()
+        for n in (1, 2):  # each criterion's own run, fm's (never typed), green
+            mine = [l for l in ev if l.startswith(f"- (ac {n}) `{real(n)}` → exit 0")]
+            self.assertTrue(mine and "[ran]" in mine[0] and "✗" not in mine[0], ev)
+        self.assertFalse([l for l in ev if "✗" in l], ev)
+        self.assertTrue(all(a.checked for a in b.acceptance()))
+
+    def test_the_close_says_what_happened_no_change_and_the_runs_on_head(self):
+        tid = self.task(real(1))
+        sha = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=self.repo, capture_output=True,
+                             text=True).stdout.strip()
+        r, out = self.brief(tid)
+        self.assertTrue(out.get("closed"), (r.stderr, out))
+        text = " ".join(self.fm("task", "show", tid).stdout.split())
+        self.assertIn("no change was made", text)
+        self.assertIn(f"verified on HEAD {sha}", text)
+
+    def test_a_mixed_list_briefs_only_the_red_criteria(self):
+        tid = self.task(real(1), RED)
+        r, out = self.brief(tid)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(out.get("closed"), out)
+        self.assertEqual(out.get("red"), [2], out)
+        self.assertEqual(out.get("green"), [1], out)
+        with open(out["path"]) as f:
+            text = f.read()
+        crit = text.split("## Acceptance criteria", 1)[1].split("\n## ", 1)[0]
+        self.assertIn("sys.exit(3)", crit)
+        self.assertNotIn("Ran 1 tests", crit)  # the green criterion is not listed...
+        self.assertIn("Criteria 1 already pass on HEAD", crit)  # ...and the brief says so
+        b = self.stored(tid)
+        self.assertEqual(b.status, "planned")
+        self.assertFalse(any(a.checked for a in b.acceptance()))  # nothing is ticked: the builder's close re-runs them
+        self.assertFalse(b.evidence(), b.evidence())
+
+    def test_the_criteria_filter_lists_all_when_nothing_passes(self):
+        tid = self.task(RED, "python3 -c 'import sys; sys.exit(4)'")
+        r, out = self.brief(tid)
+        self.assertEqual(out.get("red"), [1, 2], out)
+        with open(out["path"]) as f:
+            crit = f.read().split("## Acceptance criteria", 1)[1].split("\n## ", 1)[0]
+        self.assertIn("sys.exit(3)", crit)
+        self.assertIn("sys.exit(4)", crit)
+        self.assertNotIn("already pass on HEAD", crit)
+
+    def test_a_run_that_ran_zero_tests_is_red(self):
+        tid = self.task("echo 'Ran 0 tests in 0.000s'; echo OK")
+        r, out = self.brief(tid)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(out.get("closed"), out)
+        self.assertEqual(out.get("red"), [1], out)
+        self.assertEqual(self.stored(tid).status, "planned")
+
+    def test_a_k_filter_that_matched_nothing_is_red(self):
+        tid = self.task("echo 'run.py: no test matches test_x -k Nothing'; exit 1", "echo 'no tests ran in 0.01s'")
+        r, out = self.brief(tid)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(out.get("closed"), out)
+        self.assertEqual(out.get("red"), [1, 2], out)
+
+    def test_a_timeout_is_red(self):
+        tid = self.task("sleep 30")
+        r, out = self.brief(tid, env={"FOREMAN_BRIEF_VERIFY_S": "1"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(out.get("closed"), out)
+        self.assertEqual(out.get("red"), [1], out)
+        self.assertEqual(self.stored(tid).status, "planned")
+
+    def test_a_vacuous_verify_never_closes_a_task(self):
+        self.fm("lane", "max", "20")  # each brief takes a builder slot
+        for cmd in ("true", "test -f README.md", "grep -q . README.md", "echo hello", "echo 'Ran 4 tests in 0.1s'"):
+            with self.subTest(cmd=cmd):
+                tid = self.task(cmd)
+                r, out = self.brief(tid)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertFalse(out.get("closed"), out)
+                self.assertEqual(out.get("red"), [1], out)
+                self.assertEqual(self.stored(tid).status, "planned")
+
+    def test_a_vacuous_criterion_beside_a_real_one_stays_in_the_brief(self):
+        tid = self.task(real(1), "true")
+        r, out = self.brief(tid)
+        self.assertFalse(out.get("closed"), out)
+        self.assertEqual((out.get("green"), out.get("red")), ([1], [2]), out)
+
+    def test_an_m_task_all_green_closes_too(self):
+        extra = ["--interpretation", "Reading 1: a. Reading 2: b.", "--approach",
+                 "1) a; fails if: x 2) use what exists: b; fails if: y 3) do less: c; fails if: z Choice 1 (80%): a"]
+        tid = json.loads(self.fm("task", "new", "Already true M", "--type", "FEATURE", "--tier", "M", "--ac",
+                                 f"it holds :: {real(1)}", "--step", "build it", *extra, "--json").stdout)["id"]
+        r, out = self.brief(tid)
+        self.assertTrue(out.get("closed"), (r.stderr, out))
+        self.assertEqual(self.stored(tid).status, "done")
+
+    def test_the_verifies_run_in_a_clean_checkout_of_head_not_the_main_one(self):
+        """An untracked file in the main checkout is not HEAD: a verify that needs it is red."""
+        with open(os.path.join(self.repo, "untracked.txt"), "w") as f:
+            f.write("x\n")
+        tid = self.task("python3 -c 'import os; assert os.path.exists(\"untracked.txt\"); print(\"Ran 2 tests in 0.1s\")'")
+        r, out = self.brief(tid)
+        self.assertFalse(out.get("closed"), (r.stderr, out))
+        self.assertEqual(out.get("red"), [1], out)
+
+    def test_a_changed_tracked_file_in_main_is_not_head_either(self):
+        with open(os.path.join(self.repo, "README.md"), "a") as f:
+            f.write("changed-in-the-working-tree\n")
+        tid = self.task("python3 -c 'assert \"changed-in-the-working-tree\" in open(\"README.md\").read(); print(\"Ran 2 tests in 0.1s\")'")
+        r, out = self.brief(tid)
+        self.assertFalse(out.get("closed"), (r.stderr, out))
+        self.assertTrue(out.get("path"), (r.stderr, out))
+        self.assertEqual(out.get("red"), [1], out)
+
+    def test_a_file_a_verify_creates_turns_nothing_red_and_leaves_no_trace(self):
+        tid = self.task(f"touch made_by_verify.txt; {real(1)}", real(2))
+        r, out = self.brief(tid)
+        self.assertTrue(out.get("closed"), (r.stderr, out))
+        self.assertFalse(os.path.exists(os.path.join(self.repo, "made_by_verify.txt")))
+        wts = subprocess.run(["git", "worktree", "list"], cwd=self.repo, capture_output=True, text=True).stdout.splitlines()
+        self.assertEqual(len(wts), 1, wts)  # the scratch checkout of HEAD is removed
+
+    def test_a_skipped_check_says_why_on_stderr(self):
+        a, b = self.task(real(1)), self.task(real(2))
+        host = json.loads(self.fm("batch", a, b, "--json").stdout)["id"]
+        for tid, word in ((host, "batch"), (a, "batch")):
+            r, out = self.brief(tid)
+            self.assertFalse(out.get("closed"), out)
+            self.assertIn("not run on HEAD", r.stderr, (tid, r.stderr))
+            self.assertIn(word, r.stderr)
+
+    def test_a_plain_s_task_is_checked(self):
+        tid = self.task(real(1))
+        r, out = self.brief(tid)
+        self.assertNotIn("not run on HEAD", r.stderr)
+        self.assertTrue(out.get("closed"), out)
+
+    def test_brief_ready_closes_the_true_one_and_briefs_the_other(self):
+        done = self.task(real(1))
+        todo = self.task(RED)
+        r = self.fm("lane", "brief", "--ready", "--no-batch", "--json", env=self.ON)
+        out = json.loads(r.stdout)
+        self.assertEqual(out["closed"], [done], out)
+        self.assertEqual([x["id"] for x in out["briefed"]], [todo], out)
+        self.assertEqual(self.stored(done).status, "done")
+
+    def test_the_ready_sweep_stops_checking_when_its_total_is_spent_and_says_which_tasks_were_not_checked(self):
+        slow = self.task(f"sleep 3; {real(1)}")
+        late = self.task(real(2))
+        r = self.fm("lane", "brief", "--ready", "--no-batch", "--json", env={**self.ON, "FOREMAN_BRIEF_SWEEP_S": "1"})
+        out = json.loads(r.stdout)
+        self.assertEqual(out["unchecked"], [late], out)  # the first one spent the sweep's time; the second is briefed as is
+        self.assertEqual(sorted(x["id"] for x in out["briefed"]), sorted([slow, late]), out)
+        self.assertEqual(out["closed"], [], out)
+        self.assertEqual(self.stored(late).status, "planned")
+        self.assertIn(late, r.stdout)
+
+    def test_the_check_is_off_with_the_env_switch_and_with_no_verify(self):
+        tid = self.task(real(1))
+        r, out = self.brief(tid, env={"FOREMAN_BRIEF_VERIFY": "off"})
+        self.assertFalse(out.get("closed"), out)
+        self.assertTrue(out.get("path"), out)
+        self.assertEqual(self.stored(tid).status, "planned")
+        tid2 = self.task(real(1))
+        r, out = self.brief(tid2, None, "--no-verify")
+        self.assertFalse(out.get("closed"), (r.stderr, out))
+        self.assertTrue(out.get("path"), out)
+
+    def test_a_race_is_never_closed_as_already_true(self):
+        """lane race briefs every side through builder_brief: a side that closed would leave the race without a brief."""
+        tid = self.task(real(1), "test -f win.txt")  # a race wants a check that fails now; the green one is what a close would have used
+        r = self.fm("lane", "race", tid, "--json", env=self.ON)
+        out = json.loads(r.stdout)
+        self.assertEqual(self.stored(tid).status, "planned", (r.stdout, r.stderr))
+        self.assertEqual(self.stored(out["race"]).status, "planned")
+        for t in (tid, out["race"]):  # each side has its brief file: a builder can be launched
+            self.assertTrue(os.path.exists(out["briefs"][t]), out)
+
+    def big(self, *verifies):
+        """A task whose criteria are ~1.3k chars each, so eight of them are past the size cap (T-6047)."""
+        args = ["task", "new", "Big already true", "--type", "FEATURE", "--tier", "S", "--step", "build it", "--json"]
+        for i, v in enumerate(verifies, 1):
+            args += ["--ac", f"criterion {i} " + "word " * 250 + f":: {v}"]
+        return json.loads(self.fm(*args).stdout)["id"]
+
+    def test_an_all_green_task_past_the_size_cap_closes_and_is_never_size_checked(self):
+        tid = self.big(*[real(n) for n in range(1, 9)])
+        r, out = self.brief(tid)
+        self.assertTrue(out.get("closed"), (r.stderr, out))
+        self.assertEqual(self.stored(tid).status, "done")
+
+    def test_the_size_cap_reads_the_reduced_brief_of_a_mixed_task(self):
+        tid = self.big(*[real(n) for n in range(1, 8)], RED)  # ~10k chars whole, ~1.4k once the 7 green ones are dropped
+        r, out = self.brief(tid)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(out.get("red"), [8], out)
+        self.assertTrue(os.path.exists(out["path"]), out)
+
+    def test_a_mixed_task_still_past_the_size_cap_after_the_reduction_is_refused(self):
+        tid = self.big(real(1), *[RED] * 7)  # one green one dropped: seven red are still ~9k chars
+        r, out = self.brief(tid)
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("--oversize", r.stderr)
+        self.assertEqual(self.stored(tid).status, "planned")
+
+    def test_a_resume_that_finds_no_branch_briefs_anew_and_is_never_closed_as_already_true(self):
+        tid = self.task(real(1))
+        path = json.loads(self.fm("lane", "new", tid, "--json").stdout)["path"]
+        from sampo import bus
+        p = c.find_project(self.repo)
+        b = c.find_brief(p, tid)
+        b.meta["builder"] = c.now()
+        b.meta["builder_proc"] = f"{bus.host_id()}|999999999|1"
+        c.save_brief(p, b)
+        git = lambda *a, cwd=self.repo: subprocess.run(["git", "-C", cwd, *a], capture_output=True, text=True, check=True)
+        branch = git("rev-parse", "--abbrev-ref", "HEAD", cwd=path).stdout.strip()
+        git("worktree", "remove", "--force", path)
+        git("branch", "-D", branch)  # no lane, no branch: resume briefs from HEAD, as for a new task
+        r = self.fm("lane", "resume", tid, "--json", env=self.ON)
+        self.assertNotEqual(self.stored(tid).status, "done", (r.stdout, r.stderr))
+        self.assertNotIn("already true", r.stdout + r.stderr)
+        self.assertTrue(os.path.exists(os.path.join(p.dir, "audits", f"{tid}.builder.md")), (r.stdout, r.stderr))
+
+
 class SizeCap(ForemanTestCase):
     """T-6047: a builder brief whose task-owned text is past the cap is refused at plan time, with the split printed."""
 

@@ -1644,7 +1644,7 @@ def _hand_out(p, args):
             buf = io.StringIO()
             try:
                 with contextlib.redirect_stdout(buf):  # builder_brief's own text is replaced by the block below
-                    lanes.builder_brief(p, kid, argparse.Namespace(json=True, model=None))
+                    lanes.builder_brief(p, kid, argparse.Namespace(json=True, model=None), check=False)
                 data = json.loads(buf.getvalue())
                 # the brief's <BASE>: the tip the child's lane starts from (T-6025: a renewal that fails reports the child as
                 # not cut; its old cut then holds its lane's work at the close, since that lane starts elsewhere)

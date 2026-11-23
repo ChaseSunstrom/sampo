@@ -1324,4 +1324,5 @@ LISTED_GIVEN = (
     ("mandate.py", "drift"), ("pr.py", "_retest"), ("rune.py", "export"), ("smoke.py", "_other_checks"), ("stack.py", "_red"),
     ("debug.py", "cmd_whyred"), ("debug.py", "cmd_record"), ("foresight.py", "github_repo"), ("foresight.py", "default_branch"),
     ("prove.py", "_pick"), ("prove.py", "_untested"), ("prove.py", "_parses"), ("prove.py", "_flaky"), ("prove.py", "_recheck"),
-    ("prove.py", "_written"), ("prove.py", "docs_proof"))
+    ("prove.py", "_written"), ("prove.py", "docs_proof"),
+    ("lanes.py", "verify_at_head"))  # T-6063: a task's own criteria, run on a clean HEAD checkout when a brief is written
