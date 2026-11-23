@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- sampo ship pushes the newest commit the verify records show green in the whole suite (a red record holds only its merge and the commits after it), waits for and reuses a verify running on its tree, records its own green run, and keeps a cut run's unrun classes so the next ship runs only them; the land ends a ship with SIGTERM before SIGKILL (T-6097).
 - A builder's stop in the main checkout no longer starts a git read of the tip commit, so the BoardPosture child count is green on trunk again (T-6088).
 - sampo lane brief has a cheap explorer (local model, then Haiku, then a static note) write a mechanically validated working-set note that opens the builder brief, cost --per-lane shows the explorer's tokens and the explore share apart from the builder's, and the split turns off for a lane class whose first-pass rate falls below its unsplit rate (T-6062).
 - test_kalevala.KalevalaStep no longer depends on the host's claude_bench switch, and a gate-off case asserts session_argv is None (T-6086).
