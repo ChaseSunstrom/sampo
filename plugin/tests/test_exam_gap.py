@@ -140,6 +140,20 @@ class Gap(ForemanTestCase):
         self.assertGreaterEqual(min(neg["ys"]), neg["top"] - 0.01)
         self.assertGreater(neg["ys"][1], neg["zero"], "-5 is drawn below the zero line: ahead of Claude, not off the chart")
 
+    def test_the_native_panel_with_points_and_no_target_draws_the_points_alone(self):
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("no node to run the page's drawer")
+        out = subprocess.run([node, "-e", DRAW, os.path.join(os.path.dirname(louhi.__file__), "..", "..", "web", "live", "board.js")],
+                             capture_output=True, text=True, timeout=60)
+        self.assertEqual(out.returncode, 0, out.stderr[-1500:])
+        nat = json.loads(out.stdout)["native"]
+        self.assertFalse([t for t in nat["notarget"]["text"] if "undefined" in t or "NaN" in t], nat["notarget"]["text"])
+        self.assertEqual(nat["notarget"]["bad"], [], "no target: no line is drawn at a non-finite y")
+        self.assertIn("0.80x", nat["notarget"]["text"], "the last point is still labelled")
+        self.assertFalse([t for t in nat["notarget"]["text"] if t.startswith("10x")], "no target: no 10x label")
+        self.assertIn("10x 0.1x", nat["target"]["text"], "with a target the 10x line keeps its label")
+
     def test_both_arms_are_compared_on_the_scenarios_both_answered_across_rounds(self):
         g = self.fm_json("exam", "gen", "--seed", "9", "--per-kind", "6", "--lang", "python", "--kind", "bug,vuln,slow")
         run = g["run"]
@@ -221,15 +235,17 @@ function ctx() {
 }
 const T = new Proxy({}, {get: (_, k) => (k === "grid" ? "grid" : "#abcdef")});
 const base = {agents: [], models: [], links: [], gpu: null, cpm: 0, loaded: 0};
-function run(gap, w = 360, h = 230) {
-  const {g, st} = ctx(), d = Object.assign({}, base, {gap});
+function run(gap, w = 360, h = 230, native = {pts: [], target: 0.1}) {
+  const {g, st} = ctx(), d = Object.assign({}, base, {gap, native});
   B.DRAW.models.base(g, d, w, h, T, {});
   return st;
 }
 const empty = run([]), one = run([{name: "p", pts: [4]}]);
 const neg = run([{name: "n", pts: [10, -5, 3]}]);
+const notarget = run([], 360, 230, {pts: [1.5, 0.8]}), target = run([], 360, 230, {pts: [1.5, 0.8], target: 0.1});
 const h = 230, pad = 14, gapH = 54, nh = 46, gh = gapH + nh, top = h - pad - gh + 12, bot = top + gapH - 22, hi = 10, lo = -5;
 const zero = bot - (bot - top) * (0 - lo) / (hi - lo);
 console.log(JSON.stringify({empty: {text: empty.text}, one: {text: one.text, dots: one.dots},
-  neg: {ys: neg.ys, top, bot, zero, bad: neg.bad}}));
+  neg: {ys: neg.ys, top, bot, zero, bad: neg.bad},
+  native: {notarget: {text: notarget.text, bad: notarget.bad}, target: {text: target.text, bad: target.bad}}}));
 """

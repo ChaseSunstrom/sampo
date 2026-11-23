@@ -1186,13 +1186,16 @@ const SampoBoard = (() => {
           g.moveTo(x0, Y(1) + 0.5);
           g.lineTo(x1, Y(1) + 0.5);
           g.stroke();
-          g.strokeStyle = T.green;
-          g.setLineDash([3, 3]);
-          g.beginPath();
-          g.moveTo(x0, Y(nat.target) + 0.5);
-          g.lineTo(x1, Y(nat.target) + 0.5);
-          g.stroke();
-          g.setLineDash([]);
+          const tgt = Number.isFinite(nat.target);  // T-6156: no target, the points alone: no dashed 10x line, no label
+          if (tgt) {
+            g.strokeStyle = T.green;
+            g.setLineDash([3, 3]);
+            g.beginPath();
+            g.moveTo(x0, Y(nat.target) + 0.5);
+            g.lineTo(x1, Y(nat.target) + 0.5);
+            g.stroke();
+            g.setLineDash([]);
+          }
           const X = (i) => (pts.length > 1 ? x0 + (x1 - x0) * i / (pts.length - 1) : x1);
           g.strokeStyle = g.fillStyle = T.orange;
           g.beginPath();
@@ -1205,7 +1208,7 @@ const SampoBoard = (() => {
           g.stroke();
           pts.forEach((v, i) => { if (isFinite(v)) { g.beginPath(); g.arc(X(i), Y(v), 1.6, 0, TAU); g.fill(); } });
           txt(g, `${last.toFixed(2)}x`, x1 + 6, Y(last) + 3, T.orange, 7.5);
-          txt(g, `10x ${nat.target}x`, x1 + 6, Y(nat.target) + 3, T.green, 7);
+          if (tgt) txt(g, `10x ${nat.target}x`, x1 + 6, Y(nat.target) + 3, T.green, 7);
         }
       }
       {  // the frontier gap: one line per local profile, points behind Claude per run (lower is closer; below 0 beats Claude)
