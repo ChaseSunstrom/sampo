@@ -3691,10 +3691,38 @@ _WRITE_API = lazy(
 # on as a value (map(shutil.rmtree, names), pool.map(Path.unlink, paths), map(open, names, modes))
 _OPENER = lazy(r"\bopener\b|\b(?:i?map\w*|starmap|submit)\s*\(\s*(?:[\w.]*\.)?(?:shutil\.\w+|Path\.\w+)|"
                r"\bmap\s*\(\s*open\s*,[^,)]*,|\bopen\s*\((?:[^(),]*,){6}\s*(?:True|False|[01])\s*,")  # …, closefd, opener
+# T-6166 review: the writes that only a confined session's gate reads (an unconfined session never runs this search):
+# os and pathlib calls that create, resize or link a file, os.open flags, zipfile, sqlite3 and node's and ruby's writers,
+# and perl's bare mkdir, unlink and rmdir
+_CONFINED_WRITE_API = lazy(
+    r"\bos\.(?:truncate|symlink|link|mkdir|makedirs|rmdir|removedirs|chmod|lchmod|chown|mknod|mkfifo|utime|write)\b|"
+    r"\bO_(?:WRONLY|RDWR|CREAT|TRUNC|APPEND)\b|\.(?:mkdir|symlink_to|hardlink_to|chmod|lchmod|rmdir)\s*\(|"
+    r"\b(?:ZipFile|FileIO)\s*\([^)]*['\"][wxa+]|\bsqlite3\.connect\s*\(|\bopenSync\s*\([^)]*['\"][wxa+]|"
+    r"\bfs\b[^;\n]{0,40}?\.(?:mkdir|unlink|rm|rmdir|rename|symlink|link|truncate|chmod|copyFile|writeFile|appendFile|"
+    r"mkdtemp|ftruncate|utimes|chown)(?:Sync)?\s*\(|\bFile\.(?:write|delete|unlink|rename|symlink|link|chmod|truncate)\b|"
+    r"\bFile\.open\s*\([^)]*['\"][wax+]|\b(?:mkdir|unlink|rmdir)\s*\(?\s*['\"]")
+# T-6166 review: a write mode inside the string that names the file: perl's open(OUT, ">/x") and open(OUT, ">>/x")
+_OUT_PREFIXED = lazy(r"""(['"])>>?((?:[~/.]|[\w.-]+/)[^'"\s]*)\1""")
+
+
+def _out_prefixed_paths(cmd, ctx):
+    """T-6166 review: the paths a write mode in a string names (perl's open(OUT, ">/x")). _QUOTED takes a literal only
+    from its first character, so the `>` hid the target. A confined session only: an unconfined verdict doesn't move."""
+    if not getattr(ctx, "confine", None):
+        return []
+    return [m.group(2) for m in _OUT_PREFIXED.finditer(cmd)]
 # T-0344: .replace( stays a write here even with two string arguments: os.replace('a', 'b'), an aliased os or (os) look
 # the same as str.replace to a text match, and only a proved script (_open_targets) can tell them apart
 _QUOTED = lazy(r"""(['"])((?:[~/.]|[\w.-]+/)[^'"\s]*)\1""")
 _GUARDED_BY_PATH = ("core", "state-direct", "credentials", "plugin", "brief")
+
+
+def _path_kept(ctx):
+    """T-6166: the categories an interpreter-code or awk write keeps. A session confined to its lane also keeps confine,
+    as the shell's own writes do: the scans that filter by _GUARDED_BY_PATH dropped it, so a `python3 -c open(p, 'w')`
+    could write outside the lane. Claude Code's settings are core, so they are guarded already. An unconfined session
+    keeps exactly the guarded categories, as before."""
+    return _GUARDED_BY_PATH + (("confine",) if getattr(ctx, "confine", None) else ())
 # A slash command that changes plugins, MCP servers or config, sent to claude as a prompt (argv, stdin or a heredoc).
 _SLASH_BODY = (r"/(?:plugins?\s+(?:install|i|enable|disable|uninstall|remove|update|"
                r"marketplace\s+(?:add|remove|rm|update))|"
@@ -7033,7 +7061,8 @@ def _interpreter_writes(cmd, ctx):
     proved = _proved_writes(cmd, ctx)  # T-0176: a script that provably writes only its open() files
     system = _interp_system_writes(cmd, ctx)  # T-4673: the system paths it writes (the filter below keeps the guarded ones)
     if proved is None and not _WRITE_API.search(cmd) and not _OPENER.search(cmd) \
-            and not (ctx.unbriefed and _computed_path_write(cmd)):
+            and not (ctx.unbriefed and _computed_path_write(cmd)) \
+            and not (getattr(ctx, "confine", None) and _CONFINED_WRITE_API.search(cmd)):  # T-6166 review: confined only
         return system  # T-4724: a computed path opened with a mode the regex can't read is a write the guard can't rule out
     found = []
     if proved is None:  # T-1458: after a provable `cd DIR &&` chain a relative name opens there, not in ctx.cwd
@@ -7046,14 +7075,14 @@ def _interpreter_writes(cmd, ctx):
             walk = _interp_walk(cmd, ctx)
             bases = list(dict.fromkeys(bases + (walk[1] if walk is not None else _cd_union(cmd, ctx))))
     for path, real in proved if proved is not None else [
-            _walk(_expand(x, ctx), b) for x in _quoted_paths(cmd) for b in bases]:
+            _walk(_expand(x, ctx), b) for x in _quoted_paths(cmd) + _out_prefixed_paths(cmd, ctx) for b in bases]:
         what = f"{path} (written from interpreter code)" if "$" not in path else (  # T-4138: a $name the shell fills in
             "a file the script writes at a path the shell fills in, which the guard can't read (written from interpreter code)")
         hits = [(cat, what) for cat in classify_write(path, ctx)]
         if real:  # T-4667: a '..' after a link: where it really goes counts too (named by that path, no yes covers it)
             hits += [(cat, f"{real} (a '..' after a link in {path}) (written from interpreter code)")
                      for cat in classify_write(real, ctx) if cat not in {c for c, _ in hits}]
-        found += [h for h in hits if h[0] in _GUARDED_BY_PATH and h not in found]
+        found += [h for h in hits if h[0] in _path_kept(ctx) and h not in found]  # T-6166: confine when confined
     if proved is None and not found and ctx.unbriefed and _computed_path_write(cmd):
         # T-4138: no task is active and the file is named by text the script builds: not a path the scan can name
         found = [("brief", "a file the script writes at a computed path the guard can't read (written from interpreter code)")]
@@ -7888,7 +7917,7 @@ def _check_awk(args, ctx, depth, cwd, cmd):
     found = []
     for d in data if inplace else ():  # gawk -i inplace rewrites each data file
         found += [f for f in _judge(classify_write, *_walk(_expand(d, ctx), cwd), ctx, " (edited in place by gawk)")
-                  if f[0] in _GUARDED_BY_PATH + ("system",)]
+                  if f[0] in _path_kept(ctx) + ("system",)]
     for prog in progs:
         for m in re.finditer(rf"(?<![=!<>])\b([A-Za-z_]\w*)[ \t]*=(?!=)[ \t]*({_AWK_EXPR})", prog):
             assigns.setdefault(m.group(1), []).append(m.group(2))
@@ -7920,7 +7949,7 @@ def _check_awk(args, ctx, depth, cwd, cmd):
             path = _awk_value(m.group(1), assigns)
             if "$AWKVAR" not in path and path:  # ponytail: a computed file name (print > $1) isn't read
                 found += [f for f in _judge(classify_write, *_walk(_expand(path, ctx), cwd), ctx, " (written by awk)")
-                          if f[0] in _GUARDED_BY_PATH + ("system",)]
+                          if f[0] in _path_kept(ctx) + ("system",)]
         for m in re.finditer(rf"\bgetline\b[ \t]*(?:[A-Za-z_]\w*[ \t]*)?<[ \t]*({_AWK_EXPR})", prog):
             path = _awk_value(m.group(1), assigns)
             if "$AWKVAR" not in path and path:
@@ -9580,7 +9609,7 @@ def _target_cats(target, known, bare, cwds, lost, shell, ctx, classify, note="",
         e = _expand(_PART.sub("", t), ctx)
         for path in dict.fromkeys(_resolve(e, b) for b in ([ctx.cwd] if os.path.isabs(e) else cwds)):
             found += [(cat, f"{target}{note} (an unset name is empty: {path})") for cat in classify(path, ctx)
-                      if cat in _GUARDED_BY_PATH]
+                      if cat in _path_kept(ctx)]
         return found
     raw = _line_words(shell, known)
     if _unresolvable(t):
@@ -9602,7 +9631,7 @@ def _target_cats(target, known, bare, cwds, lost, shell, ctx, classify, note="",
     for path in dict.fromkeys(guesses):
         if _possible(path):
             found += [(cat, f"{target}{note} (not known before it runs: it could be {path})")
-                      for cat in classify(path, ctx) if cat in _GUARDED_BY_PATH]
+                      for cat in classify(path, ctx) if cat in _path_kept(ctx)]
     return found
 
 

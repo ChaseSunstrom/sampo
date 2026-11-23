@@ -2951,6 +2951,178 @@ class InterpreterWrites(GuardCase):
         self.assertIsNone(self.bash(cmd, cwd=os.path.join(self.fhome, "plugin"), allow=["core"]))
 
 
+class InterpreterConfine(GuardCase):
+    """T-6166: a session confined to its lane writes nothing outside it through interpreter code. The interpreter-scan
+    sites keep the confine category (the shell's own writes already carry it), an unconfined session's verdicts don't
+    move, and a read-only script that names an outside path passes. Only paths under the temp home are named; nothing
+    is written or run."""
+
+    def lane(self):
+        lane = os.path.join(os.path.dirname(self.repo), "lane-6166")
+        os.makedirs(lane, exist_ok=True)
+        return lane
+
+    def cctx(self, confined=True):
+        lane = self.lane()
+        scr = os.path.join(os.path.dirname(self.repo), "scr")
+        os.makedirs(scr, exist_ok=True)
+        return g.Ctx(cwd=lane, project_root=lane, home=self.home, foreman_home=self.fhome, scratch=[scr], allow=set(),
+                     task_id="T-0007", confine=(lane, self.repo) if confined else None)
+
+    def cats(self, cmd, confined=True):
+        return {c for c, _ in g.findings("Bash", {"command": cmd}, self.cctx(confined))}
+
+    def targets(self):
+        return {"main checkout": os.path.join(self.repo, "README.md"),
+                "another repo": os.path.join(self.feature_repo, "notes.txt"),
+                "claude settings": os.path.join(self.home, ".claude", "settings.json"),
+                "elsewhere in home": os.path.join(self.home, "elsewhere.txt")}
+
+    def writes(self, p, src):
+        return [f"open({p!r}, 'w').write('x')", f"open({p!r}, mode='a').write('x')",
+                f"from pathlib import Path; Path({p!r}).write_text('x')",
+                f"import shutil; shutil.copy({src!r}, {p!r})",
+                f"import os; os.replace({src!r}, {p!r})"]
+
+    def test_interpreter_writes_outside_the_lane_are_refused_in_a_confined_session(self):
+        src = os.path.join(self.lane(), "source.txt")
+        for name, p in self.targets().items():
+            for code in self.writes(p, src):
+                for cmd in (f'python3 -c "{code}"', f"python3 - <<'EOF'\n{code}\nEOF"):
+                    with self.subTest(target=name, cmd=cmd):
+                        self.assertIn("confine", self.cats(cmd))
+
+    def test_the_same_writes_inside_the_lane_pass(self):
+        src = os.path.join(self.lane(), "source.txt")
+        p = os.path.join(self.lane(), "fixture.txt")
+        for code in self.writes(p, src):
+            for cmd in (f'python3 -c "{code}"', f"python3 - <<'EOF'\n{code}\nEOF"):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(self.cats(cmd), set())
+
+    def test_a_read_only_script_naming_an_outside_path_passes(self):
+        for name, p in self.targets().items():
+            for cmd in (f'python3 -c "print(open({p!r}).read())"',
+                        f'python3 -c "from pathlib import Path; print(Path({p!r}).read_text())"',
+                        f'python3 -c "import os; print(os.path.getsize({p!r}))"',
+                        f"python3 - <<'EOF'\nprint(len(open({p!r}).read()))\nEOF"):
+                with self.subTest(target=name, cmd=cmd):
+                    self.assertEqual(self.cats(cmd), set())
+
+    def test_an_unconfined_session_keeps_todays_verdicts(self):
+        src = os.path.join(self.lane(), "source.txt")
+        for name, p in self.targets().items():
+            for code in self.writes(p, src):
+                cmd = f'python3 -c "{code}"'
+                with self.subTest(target=name, cmd=cmd):
+                    got = self.cats(cmd, confined=False)
+                    self.assertNotIn("confine", got)
+                    self.assertEqual(got, {"core"} if name == "claude settings" else set())
+
+    def test_the_awk_and_unset_name_sites_keep_the_confine_category_too(self):
+        other = self.targets()["another repo"]
+        for cmd in (f"gawk -i inplace '{{print}}' {other}",
+                    f"awk 'BEGIN {{ print \"x\" > \"{other}\" }}'",
+                    f"echo x > \"$NOPE\"{other}",
+                    f"echo {os.path.dirname(other)} > \"$(true)\"/elsewhere.txt"):  # a guessed name, not an unset one
+            with self.subTest(cmd=cmd):
+                self.assertIn("confine", self.cats(cmd))
+                self.assertEqual(self.cats(cmd, confined=False), set())
+
+    def forms(self, p, src):
+        """T-6166 review: the write calls the text gate used to skip (no open(…,'w'), write_text or shutil call)."""
+        return [f"import os; os.truncate({p!r}, 0)", f"import os; os.symlink({src!r}, {p!r})",
+                f"import os; os.link({src!r}, {p!r})", f"import os; os.mkdir({p!r})",
+                f"import os; os.makedirs({p!r})", f"import os; os.rmdir({p!r})",
+                f"import os; os.chmod({p!r}, 0o600)", f"from pathlib import Path; Path({p!r}).mkdir()",
+                f"from pathlib import Path; Path({src!r}).symlink_to({p!r})",
+                f"from pathlib import Path; Path({src!r}).hardlink_to({p!r})",
+                f"from pathlib import Path; Path({p!r}).chmod(0o600)",
+                f"import zipfile; zipfile.ZipFile({p!r}, 'w')", f"import tarfile; tarfile.open({p!r}, 'w')",
+                f"import io; io.FileIO({p!r}, 'w')", f"import sqlite3; sqlite3.connect({p!r})",
+                f"import os; fd = os.open({p!r}, os.O_WRONLY | os.O_CREAT | os.O_TRUNC); os.write(fd, b'x')"]
+
+    def test_the_os_and_pathlib_write_calls_outside_the_lane_are_refused(self):
+        src = os.path.join(self.lane(), "source.txt")
+        for name, p in self.targets().items():
+            for code in self.forms(p, src):
+                for cmd in (f'python3 -c "{code}"', f"python3 - <<'EOF'\n{code}\nEOF"):
+                    with self.subTest(target=name, cmd=cmd):
+                        self.assertIn("core" if name == "claude settings" else "confine", self.cats(cmd))
+
+    def test_the_os_and_pathlib_write_calls_inside_the_lane_pass(self):
+        src = os.path.join(self.lane(), "source.txt")
+        p = os.path.join(self.lane(), "fixture.txt")
+        for code in self.forms(p, src):
+            with self.subTest(cmd=code):
+                self.assertEqual(self.cats(f'python3 -c "{code}"'), set())
+
+    def test_a_shell_string_run_from_interpreter_code_is_judged_as_a_shell_command(self):
+        src = os.path.join(self.lane(), "source.txt")
+        for name, p in self.targets().items():
+            for code in (f"import os; os.system('echo x > {p}')",
+                         f"import subprocess; subprocess.run('echo x > {p}', shell=True)",
+                         f"import subprocess; subprocess.run(['sh', '-c', 'echo x > {p}'])",
+                         f"import subprocess; subprocess.run('cp {src} {p}', shell=True)",
+                         f"import os; os.system('mv {src} {p}')"):
+                with self.subTest(target=name, cmd=code):
+                    self.assertIn("core" if name == "claude settings" else "confine",
+                                  self.cats(f'python3 -c "{code}"'))
+
+    def test_a_ruby_write_outside_the_lane_is_refused_in_a_confined_session(self):
+        for name, p in self.targets().items():
+            for cmd in (f"ruby -e \"File.open('{p}', 'w') {{ |f| f.write('x') }}\"",
+                        f"ruby -e \"File.write('{p}', 'x')\"",
+                        f"ruby -e \"File.open('{p}', 'a') {{ |f| f.write('x') }}\""):
+                with self.subTest(target=name, cmd=cmd):
+                    self.assertIn("core" if name == "claude settings" else "confine", self.cats(cmd))
+
+    def test_a_node_write_outside_the_lane_is_refused_in_a_confined_session(self):
+        for name, p in self.targets().items():
+            for cmd in (f"node -e \"require('fs').writeFileSync('{p}', 'x')\"",
+                        f"node -e \"require('fs').appendFileSync('{p}', 'x')\"",
+                        f"node -e \"require('fs').openSync('{p}', 'w')\"",
+                        f"node -e \"require('fs').mkdirSync('{p}')\""):
+                with self.subTest(target=name, cmd=cmd):
+                    self.assertIn("core" if name == "claude settings" else "confine", self.cats(cmd))
+
+    def test_a_perl_write_outside_the_lane_is_refused_in_a_confined_session(self):
+        for name, p in self.targets().items():
+            for cmd in (f"perl -e 'open(OUT, \">{p}\"); print OUT \"x\"'",
+                        f"perl -e 'open(OUT,\">{p}\")'",
+                        f"perl -e 'open(OUT,\">>{p}\")'"):
+                with self.subTest(target=name, cmd=cmd):
+                    self.assertIn("core" if name == "claude settings" else "confine", self.cats(cmd))
+
+    def test_an_awk_write_outside_the_lane_is_refused_in_a_confined_session(self):
+        for name, p in self.targets().items():
+            for cmd in (f"awk 'BEGIN {{ print \"x\" > \"{p}\" }}'",
+                        f"awk 'BEGIN {{ print \"x\" >> \"{p}\" }}'",
+                        f"awk 'BEGIN {{ printf \"x\" > \"{p}\" }}'"):
+                with self.subTest(target=name, cmd=cmd):
+                    self.assertIn("core" if name == "claude settings" else "confine", self.cats(cmd))
+
+    def test_read_only_ruby_node_perl_and_awk_naming_an_outside_path_pass(self):
+        for name, p in self.targets().items():
+            for cmd in (f"ruby -e \"puts File.read('{p}')\"",
+                        f"node -e \"console.log(require('fs').readFileSync('{p}'))\"",
+                        f"perl -e 'open(IN, \"<{p}\"); print <IN>'",
+                        f"awk '{{ print $0 }}' {p}"):
+                with self.subTest(target=name, cmd=cmd):
+                    self.assertEqual(self.cats(cmd), set())
+
+    def test_the_new_forms_keep_todays_verdicts_in_an_unconfined_session(self):
+        src = os.path.join(self.lane(), "source.txt")
+        for name, p in self.targets().items():
+            for code in self.forms(p, src)[:3] + [f"import os; os.system('echo x > {p}')"]:
+                with self.subTest(target=name, cmd=code):
+                    self.assertNotIn("confine", self.cats(f'python3 -c "{code}"', confined=False))
+            for cmd in (f"ruby -e \"File.write('{p}', 'x')\"", f"node -e \"require('fs').openSync('{p}', 'w')\"",
+                        f"perl -e 'open(OUT,\">{p}\")'", f"awk 'BEGIN {{ print \"x\" > \"{p}\" }}'"):
+                with self.subTest(target=name, cmd=cmd):
+                    self.assertNotIn("confine", self.cats(cmd, confined=False))
+
+
 class Remote(GuardCase):
     def test_starting_fm_serve_needs_the_users_yes(self):
         # a persistent session reachable from the user's claude.ai account: only their reply to fm ask grants it
