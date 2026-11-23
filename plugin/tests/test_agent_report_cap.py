@@ -10,7 +10,7 @@ from helpers import PLUGIN, read_text
 from sampo import lanes as slanes
 
 AGENTS = os.path.join(PLUGIN, "agents")
-REPORT_LINE = re.compile(r"(?m)^(?:Report in|Output|Return)\b[^\n]*1500 characters")
+REPORT_LINE = re.compile(r"(?m)^(?:Report in|Output|Return)\b[^\n]*(?:1500|3000) characters")  # T-6162: the builder's is 3000
 WRITES_THE_REST = ("builder", "reproducer")  # the two agents that can write .fm-scratch/ and name it
 
 
@@ -43,7 +43,8 @@ class ReportCap(unittest.TestCase):
             with self.subTest(agent=name):
                 body = _body(os.path.join(AGENTS, f"fm-{name}.md"))
                 report = _report(body)
-                self.assertRegex(report, r"(?:≤|at most) 6 lines", "the message is capped at 6 lines")
+                cap = "at most 3000 characters" if name == "builder" else r"(?:≤|at most) 6 lines"  # T-6162
+                self.assertRegex(report, cap, "the message is capped at its shape's cap")
                 self.assertNotIn(".fm-scratch/report", body, "no report file: the harness refuses the write")
         builder = _body(os.path.join(AGENTS, "fm-builder.md"))
         self.assertIn("trailer", builder.split("\n\nReport in")[0], "the close lines go on the tip commit")

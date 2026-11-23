@@ -5804,6 +5804,7 @@ def builder_brief(p, b, args, resume_branch=None, after="", stacked=None, check=
         print(f"sampo: {b.id}: no working-set note: {c.fit(str(e), 200)}", file=sys.stderr)
     if ws and ws["lines"]:
         parts[ws_at:ws_at] = ws["lines"]
+    parts += ["## Your report", c.REPORT_SHAPE, ""]  # T-6162: the one shape; the PreToolUse refusal of a report file names it too
     parts += ["## Standing rules", "Checked before the merge (sampo check --affected runs their tests); break none:",
               *STANDING, *[f"- {d}: {t}" for d, t in standing_decisions(p)], ""]
     parts += cargo_brief(p)  # T-4575

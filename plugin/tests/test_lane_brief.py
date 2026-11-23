@@ -848,6 +848,62 @@ class ReportInMessage(LandCase):
         self.assertEqual(self.brief(tid).section("Close fields").strip(), "")
 
 
+class NoReportFile(LandCase):
+    """T-6162: builders still tried to Write .fm-scratch/report.md (95 refused writes in 48 h, one wasted turn a lane). The
+    report shape, its cap (3000 characters, the close lines excluded) and 'no report file' are the text a builder reads;
+    the one report-file mention is a 'never'; and a builder's Write of a report file is refused by the PreToolUse hook
+    with the shape in its message. A Write of any other file is not refused by that rule."""
+
+    CAP = "at most 3000 characters"
+    REPORT_WORD = re.compile(r"report(?:\s+file|\.md)|\.fm-scratch/report", re.I)
+    NEVER = re.compile(r"\b(?:no|never)\b", re.I)
+    BUILDER = {"agent_id": "a42cb51b932d1111a", "agent_type": "sampo:fm-builder"}
+
+    def brief_text(self):
+        tid = json.loads(self.fm("task", "new", "Report shape", "--type", "FEATURE", "--tier", "S",
+                                 "--ac", "red :: python3 -c 'import sys; sys.exit(3)'", "--step", "build it",
+                                 "--json").stdout)["id"]
+        r = self.fm("lane", "brief", tid, "--json", env={"FOREMAN_BRIEF_VERIFY": "on"}, check=False)
+        out = json.loads(r.stdout) if r.stdout.strip().startswith("{") else {}
+        self.assertTrue(out.get("path"), (r.stdout, r.stderr))
+        with open(out["path"], encoding="utf-8") as f:
+            return f.read()
+
+    def test_the_report_shape_and_its_cap_are_in_the_agent_and_the_brief(self):
+        body = read_text(os.path.join(PLUGIN, "agents", "fm-builder.md"))
+        self.assertIn(self.CAP, body, "the agent file caps the final message at 3000 characters")
+        self.assertIn("close lines", body, "the close lines are not counted in the cap")
+        self.assertNotIn("6 lines", body, "the six-line cap is replaced, not kept beside the new one")
+        text = self.brief_text()
+        self.assertIn("## Your report", text, "the brief states the shape")
+        self.assertIn(self.CAP, text)
+
+    def test_a_report_file_is_named_only_in_a_never(self):
+        texts = {os.path.basename(p): read_text(p)
+                 for p in glob.glob(os.path.join(PLUGIN, "agents", "fm-*.md")) + glob.glob(os.path.join(PLUGIN, "rules", "*.md"))}
+        texts["rendered brief"] = self.brief_text()
+        for name, text in texts.items():
+            for line in text.splitlines():
+                if self.REPORT_WORD.search(line):
+                    with self.subTest(source=name):
+                        self.assertRegex(line, self.NEVER, line[:200])
+
+    def test_a_builders_write_of_a_report_file_is_refused_with_the_shape(self):
+        for name in ("report.md", "final-report.md"):
+            with self.subTest(file=name):
+                r = self.hook("PreToolUse", {"tool_name": "Write", "tool_input": {
+                    "file_path": os.path.join(self.repo, ".fm-scratch", name), "content": "x"}, **self.BUILDER})
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn(self.CAP, r.stdout + r.stderr, "the refusal names the shape")
+
+    def test_other_writes_are_not_refused_by_the_report_rule(self):
+        for path, who in ((".fm-scratch/batch.json", self.BUILDER), (".fm-scratch/report.md", {})):
+            with self.subTest(file=path, agent=bool(who)):
+                r = self.hook("PreToolUse", {"tool_name": "Write", "tool_input": {
+                    "file_path": os.path.join(self.repo, path), "content": "x"}, **who})
+                self.assertNotIn(self.CAP, r.stdout + r.stderr)
+
+
 class DependencyMerged(ForemanTestCase):
     """T-6105: a dependency whose own merge is already on the integration branch counts as met at brief time, whatever its
     brief says. T-6089 was refused 'waits on T-6044 (still building)' while T-6044's merge 0ec3dc293 sat in foreman/build.

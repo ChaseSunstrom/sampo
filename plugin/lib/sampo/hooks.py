@@ -4276,6 +4276,13 @@ def _pre_tool_use(raw):
             if tool != "Workflow":
                 return 0
             return 0 if _workflow_held(pl) else _workflow_stages(pl)  # T-5680: a Workflow's stages name a type or model
+        if tool == "Write":  # T-6162: a builder's report file is refused with the report's shape, before the guard's own reasons
+            report = _report_write_deny(pl)
+            if report:
+                print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                                         "permissionDecisionReason": report}}))
+                print(report, file=sys.stderr)
+                return 2
         try:
             import fmguard as guard
             ctx, p, act, found, block = _guard_decision(pl, guard)
@@ -4932,6 +4939,21 @@ def _builder_check_deny(pl, fmguard):
                         "tests instead: python3 plugin/tests/run.py test_<module> [-k <slice>] (T-4514); a CLEAN task's "
                         "behaviour lock is the bounded form: sampo check --evidence T-<id> --step 1 --lock (T-4648).")
     return None
+
+
+def _report_write_deny(pl):
+    """T-6162: a builder's Write of a report file (.fm-scratch/report.md, or any *report*.md under .fm-scratch) is refused
+    with the one report shape: the final message is the report (95 refused writes in 48 h, one wasted turn a lane). Only
+    the payload's path is read, never the file; any other path, or a session with no agent_id, gives None."""
+    if not pl.get("agent_id") or pl.get("agent_type") not in c.EDITING_AGENT_NAMES:
+        return None
+    ti = pl.get("tool_input") if isinstance(pl.get("tool_input"), dict) else {}
+    parts = os.path.normpath(str(ti.get("file_path") or "")).replace("\\", "/").split("/")
+    base = parts[-1].lower()
+    if ".fm-scratch" not in parts[:-1] or "report" not in base or not base.endswith(".md"):
+        return None
+    return ("Sampo: a builder's report is not a file: Claude Code refuses this Write, and the text returns to the lead "
+            "anyway. " + c.REPORT_SHAPE)
 
 
 def _isolation_denial(pl):
