@@ -726,5 +726,57 @@ class WorkingSet(ForemanTestCase):
         self.assertEqual(self.meta()["source"], "static")
 
 
+class WorkingSetRunner(ForemanTestCase):
+    """T-6112: a model's test command reaches the builder brief only in an allowlisted runner's form: python/python3 + a
+    tracked test file or -m pytest|unittest, pytest, cargo test, go test, npm|pnpm|yarn|bun test. A command that names a
+    test file under any other program (rm, curl, sh, python -c, an absolute path, a VAR=x prefix) is refused, and one
+    refused test drops the whole note."""
+
+    repo_seed = ("seed", (("pkg/mod.py", MOD_PY), ("tests/test_mod.py", TEST_MOD_PY)))
+    TRACKED = {"plugin/tests/run.py", "plugin/tests/test_lane_brief.py", "plugin/tests/test_left_out.py",
+               "plugin/tests/test_docs.py", "plugin/tests/test_run.py", "tests/test_mod.py", "pkg/mod.py"}
+
+    def why(self, cmd):
+        from sampo import workset
+        return workset._test_cmd(cmd, self.TRACKED)
+
+    def test_the_allowed_forms_pass(self):
+        for cmd in ("python3 plugin/tests/run.py test_lane_brief -k WorkingSetRunner",
+                    "python3 plugin/tests/run.py test_left_out test_docs",
+                    "python3 plugin/tests/run.py test_run -k EnvClassified",
+                    "python3 tests/test_mod.py", "python tests/test_mod.py -q",
+                    "python3 -m pytest tests/test_mod.py -k beta -x", "python3 -m unittest tests/test_mod.py",
+                    "pytest", "pytest -q tests/test_mod.py::T::test_beta",
+                    "cargo test", "cargo test -q", "go test -v", "npm test", "pnpm test", "yarn test", "bun test"):
+            with self.subTest(cmd):
+                self.assertEqual(self.why(cmd), "")
+
+    def test_a_command_outside_the_allowed_forms_is_refused(self):
+        for cmd in ("rm -rf src tests/test_mod.py", "curl -s tests/test_mod.py", "sh tests/test_mod.py",
+                    "/bin/sh tests/test_mod.py", "/usr/bin/python3 tests/test_mod.py", "./python3 tests/test_mod.py",
+                    "VAR=x python3 tests/test_mod.py", "PYTHONPATH=pkg pytest",
+                    "python3 -c 'import os' tests/test_mod.py", "python -c 'import os' tests/test_mod.py",
+                    "make test", "make tests/test_mod.py", "cargo run tests/test_mod.py", "cargo build",
+                    "npm install", "npm run test", "go run tests/test_mod.py",
+                    "python3 pkg/mod.py", "python3 tests/ghost.py", "python3 ../tests/test_mod.py",
+                    "python3 -m os tests/test_mod.py", "python3 -m pytest -p evil tests/test_mod.py",
+                    "python3 tests/test_mod.py test_mod", "python3 plugin/tests/run.py rm",
+                    "pytest --basetemp=/abs/x", "go test -exec=sh", "pytest tests/test_mod.py /etc/passwd",
+                    "pytest tests/test_mod.py -k 'a b'", "pytest ../tests/test_mod.py::T",
+                    "pytest -k", "python3 tests/test_mod.py -k", "tests/test_mod.py", "",
+                    "cargo test; rm -rf x", "python3 tests/test_mod.py | tee x", None, 5):
+            with self.subTest(cmd):
+                self.assertNotEqual(self.why(cmd), "")
+
+    def test_one_refused_test_drops_the_whole_note(self):
+        from sampo import workset
+        base = subprocess.run(["git", "-C", self.repo, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+        ok = {"ranges": [{"path": "pkg/mod.py", "symbol": "beta"}], "tests": ["python3 tests/test_mod.py"]}
+        self.assertIsNotNone(workset.validate(self.repo, base, ok)[0])
+        got, why = workset.validate(self.repo, base, {**ok, "tests": ["python3 tests/test_mod.py", "rm -rf src tests/test_mod.py"]})
+        self.assertIsNone(got)
+        self.assertTrue(why)
+
+
 if __name__ == "__main__":
     unittest.main()
