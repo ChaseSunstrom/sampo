@@ -5725,7 +5725,8 @@ def builder_brief(p, b, args, resume_branch=None, after="", stacked=None, check=
     if chosen == LOCAL:  # T-5884: the launch is a shell command: it starts the headless run detached and returns at once
         agent = f"sampo lane local {b.id}"
         from sampo import localruns
-        extra = {"launch": agent, "runs": " ".join(local_argv(local, b.id)), "profile": local, "claude_tokens": 0,
+        extra = {"launch": agent, "runs": " ".join(local_argv(local, b.id, local_deadline(_local_steps(b)))), "profile": local,
+                 "claude_tokens": 0,
                  "claude_tokens_basis": localruns.CLAUDE_TOKENS_BASIS}  # T-6061 review: the zero is inferred, and said so
     # T-6063: the brief-time run's answer, for the caller
     ran = {"green": [n for n, _, _ in true_now], "red": red_now} if red_now is not None else {}
@@ -5745,6 +5746,58 @@ def builder_brief(p, b, args, resume_branch=None, after="", stacked=None, check=
 
 
 LOCAL_WALL_S = 30 * 60  # T-5884: a local builder's run: sampo code's own --deadline; the wrapper cuts it 2 min after
+# T-6090: three runs on the local endpoint: 41 to 47 output tokens/s, but 43 to 63 percent of an 1800 s wall went to stalls
+# (a cold first call, call timeouts, thinking-only retries). One flat deadline cut two of them; the floor stays and each
+# step past the first adds LOCAL_STEP_S, stretched by how much slower than LOCAL_REF_TPS the run measures, under a cap.
+LOCAL_STEP_S = 10 * 60
+LOCAL_WALL_MAX_S = 90 * 60
+LOCAL_REF_TPS = 45.0  # the measured speed the floor and the step time were set at
+CODE_OUT_OF_TIME = 75  # sampo code --lane's exit when its --deadline cut it with the journal kept (smith.CODE_OUT_OF_TIME)
+
+
+def local_deadline(steps, tps=None):
+    """T-6090: the seconds a local run may take: LOCAL_WALL_S for one step, LOCAL_STEP_S more for each further one, all of
+    it times LOCAL_REF_TPS over the measured tokens per second when that is below the reference (never less for a faster
+    run: the stalls do not shrink with speed), at most LOCAL_WALL_MAX_S. A speed that is not a positive number is none."""
+    try:
+        n = max(1, int(steps))
+    except (TypeError, ValueError):
+        n = 1
+    slow = 1.0
+    if isinstance(tps, (int, float)) and not isinstance(tps, bool) and tps == tps and 0 < tps < LOCAL_REF_TPS:
+        slow = LOCAL_REF_TPS / tps
+    return int(min(LOCAL_WALL_MAX_S, (LOCAL_WALL_S + LOCAL_STEP_S * (n - 1)) * slow))
+
+
+def local_speed(p, tid):
+    """T-6090: the output tokens a second a local run's own transcript measures, or None: only the calls that made 300 or
+    more tokens in under 2 minutes count (a stall is not speed, a short call is mostly its fixed cost), and under three of
+    them is too few. A torn or odd line is skipped; the read never fails."""
+    path = os.path.join(p.dir, "code", f"{tid}.events.jsonl")
+    last, toks, secs, n = None, 0, 0.0, 0
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                try:
+                    d = json.loads(line)
+                    ts = float(d["ts"])
+                    out = int(d["call_out"]) if d.get("event") == "tokens" else 0
+                except (ValueError, TypeError, KeyError, AttributeError):
+                    continue
+                if d.get("event") == "tokens" and last is not None and out >= 300 and 0 < ts - last < 120:
+                    toks, secs, n = toks + out, secs + (ts - last), n + 1
+                last = ts
+    except OSError:
+        return None
+    return toks / secs if n >= 3 and secs > 0 else None
+
+
+def _local_steps(b, left=False):
+    """The plan's step count (those not done when `left`), at least one."""
+    try:
+        return max(1, len([s for s in b.steps() if not (left and s.done)]))
+    except (TypeError, AttributeError):  # not a brief: the one step the floor was set for
+        return 1
 
 
 def local_profile(p):
@@ -5792,11 +5845,15 @@ def local_first(p, b):
     return prof, (f"class {cls}: {s['landed']} of {s['tries']} landed locally" if s["tries"] else f"class {cls}: no local run yet")
 
 
-def local_argv(name, tid):
+def local_argv(name, tid, deadline=LOCAL_WALL_S, resume=False):
     """T-5884: the headless run as the brief shows it (`sampo` stands for this plugin's own bin): sampo code works the
     task's own plan on profile `name`, and --lane has it commit with its close lines as trailers and stop (the review
-    and the land close the task, as for a Claude builder; fm task finish is refused to a briefed builder)."""
-    return ["sampo", "code", "--task", tid, "--model", name, "--lane", "--plain", "--restart", "--deadline", str(LOCAL_WALL_S)]
+    and the land close the task, as for a Claude builder; fm task finish is refused to a briefed builder).
+    T-6090: `deadline` is the run's seconds (local_deadline); `resume` carries the stopped run's journal on instead of
+    setting it aside (--restart)."""
+    head = ["--resume", tid] if resume else ["--task", tid]
+    return ["sampo", "code", *head, "--model", name, "--lane", "--plain", *([] if resume else ["--restart"]),
+            "--deadline", str(int(deadline))]
 
 
 def _local_brief(p, b):
@@ -5840,10 +5897,14 @@ def _local_spawn(p, b):
     return proc.pid
 
 
-def _local_code(p, b, lane, name):
-    """T-5884: one `sampo code --task` run in the lane's own worktree, its process group killed LOCAL_WALL_S plus two
-    minutes in: the exit status (124 when cut). Its output goes where this process's does."""
-    argv = local_argv(name, b.id)
+def _local_code(p, b, lane, name, resume=False):
+    """T-5884: one `sampo code --task` run in the lane's own worktree, its process group killed two minutes past its
+    deadline: the exit status (124 when cut). Its output goes where this process's does.
+    T-6090: the deadline is the plan's (local_deadline of its steps; of the steps left and the speed the stopped run
+    measured, for `resume`, which is `sampo code --resume`)."""
+    deadline = (local_deadline(_local_steps(b, left=True), local_speed(p, b.id)) if resume
+                else local_deadline(_local_steps(b)))
+    argv = local_argv(name, b.id, deadline, resume)
     argv = [sys.executable, os.path.join(c.PLUGIN_ROOT, "bin", "sampo"), *argv[1:]]
     from sampo import pilotsig
     proc = subprocess.Popen(argv, cwd=lane, stdin=subprocess.DEVNULL, start_new_session=True)
@@ -5856,7 +5917,7 @@ def _local_code(p, b, lane, name):
     except ValueError:  # not the main thread: no handler
         pass
     try:
-        return proc.wait(timeout=LOCAL_WALL_S + 120)
+        return proc.wait(timeout=deadline + 120)
     except subprocess.TimeoutExpired:
         pilotsig._kill_group(proc)  # guarded: only a real pid above 1 is signalled (T-5899)
         proc.wait()
@@ -5977,7 +6038,13 @@ def local_run(p, b):
     mark = _local_log_size(p, b.id)  # T-6061 review: an earlier run's stop line in the log is not this run's
     try:
         rc = _local_code(p, b, lane, name)
-        why = "" if rc == 0 else f"sampo code ended {'cut after ' + str(LOCAL_WALL_S + 120) + ' s' if rc == 124 else rc}"
+        if rc == CODE_OUT_OF_TIME and not c.panicked():  # T-6090: its journal is kept; one resume, then the lane fails
+            cli.mutate(p, b.id, lambda x: x.append_log("local builder hit its deadline: resuming once (sampo code --resume)"),
+                       "local_resume", {"profile": name})
+            rc = _local_code(p, c.find_brief(p, b.id) or b, lane, name, resume=True)
+        why = "" if rc == 0 else ("sampo code ended cut by the wrapper 2 min after its deadline" if rc == 124
+                                  else "sampo code ended at its deadline again after a resume" if rc == CODE_OUT_OF_TIME
+                                  else f"sampo code ended {rc}")
     except OSError as e:
         rc, why = 1, f"sampo code could not start: {localruns.inert(e)}"
     head = c._git(main, "rev-parse", "HEAD", timeout=10).strip()

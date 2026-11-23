@@ -6248,7 +6248,271 @@ class LocalBuilder(ForemanTestCase):
         spawn.assert_not_called()
 
 
-BR_INTERP = "Reading 1: the gate counts options. Reading 2: the gate reads the words under each option."
+import test_code as tcode  # noqa: E402  (T-6090: its stub model server and case class, not its tests, are the base here)
+
+
+class LocalBuilderTime(ForemanTestCase):
+    """T-6090: three local builder runs (T-5949, T-5965, T-5907) on the local endpoint: one returned, two stopped at the
+    flat 1800 s deadline with 43 to 63 percent of it spent on stalls (a cold first call, call timeouts, thinking-only
+    retries), tools and verify 1 to 17 percent. The deadline now grows with the plan's steps and the run's measured
+    speed under a cap, a deadline stop resumes once before the lane fails, and an own endpoint's context is capped."""
+
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        self.fm("lane", "max", "20")
+        self.p = c.find_project(self.repo)
+
+    def task(self, steps=1):
+        args = ["task", "new", "Local time", "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true", "--json"]
+        for n in range(steps):
+            args += ["--step", f"step {n + 1}"]
+        tid = first(self.fm(*args).stdout)["id"]
+        self.fm("task", "set", tid, "approved=true", check=False)
+        return tid
+
+    def events(self, tid, rows):
+        """The run's event transcript as smith writes it: (ts, call_in, call_out) per model call, a start event first."""
+        d = os.path.join(self.p.dir, "code")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, f"{tid}.events.jsonl"), "w", encoding="utf-8") as f:
+            f.write(json.dumps({"event": "start", "ts": 1000.0}) + "\n")
+            for ts, cin, cout in rows:
+                f.write(json.dumps({"event": "tokens", "ts": 1000.0 + ts, "call_in": cin, "call_out": cout}) + "\n")
+
+    def test_the_deadline_grows_with_the_steps_and_stops_at_the_cap(self):
+        self.assertEqual(slanes.local_deadline(1), slanes.LOCAL_WALL_S, "one step: the floor the first runs had")
+        self.assertEqual(slanes.local_deadline(0), slanes.LOCAL_WALL_S)
+        steps = [slanes.local_deadline(n) for n in range(1, 6)]
+        self.assertEqual(steps, sorted(steps))
+        self.assertEqual(len(set(steps[:3])), 3, "each step is a time of its own")
+        self.assertEqual(slanes.local_deadline(500), slanes.LOCAL_WALL_MAX_S)
+        self.assertEqual(slanes.local_deadline(500, tps=1.0), slanes.LOCAL_WALL_MAX_S, "slow and long: still the cap")
+        self.assertGreater(slanes.LOCAL_WALL_MAX_S, slanes.LOCAL_WALL_S)
+
+    def test_a_slower_measured_speed_gives_more_time_and_a_faster_one_never_less_than_the_floor(self):
+        ref = slanes.LOCAL_REF_TPS
+        base = slanes.local_deadline(2, tps=ref)
+        self.assertEqual(base, slanes.local_deadline(2), "no measure: the reference speed")
+        self.assertGreater(slanes.local_deadline(2, tps=ref / 2), base)
+        self.assertEqual(slanes.local_deadline(2, tps=ref * 3), base, "a fast run is not given less than the plan's own time")
+        self.assertEqual(slanes.local_deadline(1, tps=ref * 3), slanes.LOCAL_WALL_S)
+        for bad in (0, -5, float("nan"), float("inf"), "fast", None):
+            self.assertEqual(slanes.local_deadline(2, tps=bad), base, repr(bad))
+
+    def test_the_speed_is_the_runs_own_output_tokens_per_second(self):
+        tid = self.task()
+        self.assertIsNone(slanes.local_speed(self.p, tid), "no transcript: no measure")
+        rows = [(5, 3000, 2), (15, 3500, 450), (25, 4000, 450), (205, 4500, 450), (215, 5000, 450), (225, 5500, 450)]
+        self.events(tid, rows)  # the 180 s gap is a stall, not speed; the 45 tok/s calls are
+        self.assertAlmostEqual(slanes.local_speed(self.p, tid), 45.0, places=1)
+        self.events(tid, rows[:3])
+        self.assertIsNone(slanes.local_speed(self.p, tid), "two long calls are too few to measure")
+        with open(os.path.join(self.p.dir, "code", f"{tid}.events.jsonl"), "a", encoding="utf-8") as f:
+            f.write("not json\n{\"event\": \"tokens\", \"ts\": \"x\"}\n")  # a torn line never fails the read
+        self.assertIsNone(slanes.local_speed(self.p, tid))
+
+    def test_the_run_and_the_brief_carry_the_scaled_deadline_and_a_resume_carries_the_journal_on(self):
+        argv = slanes.local_argv("jarvis", "T-0001")
+        self.assertEqual(argv[argv.index("--deadline") + 1], str(slanes.LOCAL_WALL_S))
+        argv = slanes.local_argv("jarvis", "T-0001", deadline=slanes.local_deadline(4))
+        self.assertEqual(argv[argv.index("--deadline") + 1], str(slanes.local_deadline(4)))
+        self.assertIn("--restart", argv, "a first run starts over beside any set-aside journal")
+        again = slanes.local_argv("jarvis", "T-0001", deadline=999, resume=True)
+        self.assertEqual(again[:4], ["sampo", "code", "--resume", "T-0001"])
+        self.assertNotIn("--restart", again, "a resume carries the journal on: --restart would set it aside")
+        self.assertNotIn("--task", again)
+        for need in ("--lane", "--plain", "--model", "jarvis"):
+            self.assertIn(need, again)
+        self.assertEqual(again[again.index("--deadline") + 1], "999")
+        tid = self.task(steps=3)
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(slanes, "local_profile", return_value="jarvis"), contextlib.redirect_stdout(out), \
+                contextlib.redirect_stderr(err):
+            slanes.builder_brief(self.p, c.find_brief(self.p, tid), argparse.Namespace(model="local", json=True))
+        self.assertIn(f"--deadline {slanes.local_deadline(3)}", json.loads(out.getvalue())["runs"])
+
+    def stub_proc(self, rc):
+        """A Popen that was never started: no pid, so nothing it is given can reach os.kill or os.killpg."""
+        return mock.Mock(pid=0, **{"wait.return_value": rc, "poll.return_value": rc})
+
+    def test_the_wrapper_runs_sampo_code_with_the_plans_deadline_and_waits_a_little_past_it(self):
+        tid = self.task(steps=3)
+        b = c.find_brief(self.p, tid)
+        with mock.patch.object(slanes.subprocess, "Popen", return_value=self.stub_proc(0)) as popen:
+            self.assertEqual(slanes._local_code(self.p, b, self.repo, "jarvis"), 0)
+            want = slanes.local_deadline(3)
+            argv = popen.call_args[0][0]
+            self.assertEqual(argv[argv.index("--deadline") + 1], str(want))
+            self.assertIn("--task", argv)
+            popen.return_value.wait.assert_called_once_with(timeout=want + 120)
+            self.assertEqual(slanes._local_code(self.p, b, self.repo, "jarvis", resume=True), 0)
+            argv = popen.call_args[0][0]
+            self.assertIn("--resume", argv)
+            self.assertNotIn("--restart", argv)
+
+    def test_a_resume_is_timed_by_the_steps_left_and_the_speed_the_first_run_measured(self):
+        tid = self.task(steps=3)
+        b = c.find_brief(self.p, tid)
+        b.set_section("Steps", "1. [x] one\n2. [ ] two\n3. [ ] three  <- CURRENT")
+        c.save_brief(self.p, b)
+        b = c.find_brief(self.p, tid)
+        self.assertEqual([s.done for s in b.steps()], [True, False, False])
+        rows = [(10, 3000, 450), (20, 3500, 450), (30, 4000, 450), (40, 4500, 450)]  # 45 tok/s
+        self.events(tid, rows)
+        with mock.patch.object(slanes.subprocess, "Popen", return_value=self.stub_proc(0)) as popen:
+            slanes._local_code(self.p, b, self.repo, "jarvis", resume=True)
+        argv = popen.call_args[0][0]
+        self.assertEqual(argv[argv.index("--deadline") + 1], str(slanes.local_deadline(2, slanes.local_speed(self.p, tid))))
+
+    def run_with(self, tid, codes):
+        """local_run with sampo code stood in for by one scripted exit status per run: the calls it was made with, the
+        exit status, the brief, and the review pilot's mock. A status 0 stands for a run that committed."""
+        calls = []
+
+        def code(p, b, lane, name, resume=False):
+            calls.append(resume)
+            rc = codes[len(calls) - 1]
+            if rc == 0:
+                with open(os.path.join(lane, f"made{len(calls)}.txt"), "w", encoding="utf-8") as f:
+                    f.write("x\n")
+                subprocess.run(["git", "-C", lane, "add", "-A"], check=True)
+                subprocess.run(["git", "-C", lane, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm",
+                                f"Local ({tid})", "-m", f"CHANGELOG: Local ({tid}).\nTITLE: Local ({tid})\nDOCS: none: a test"],
+                               check=True)
+            return rc
+        out = io.StringIO()
+        with mock.patch.object(slanes, "local_profile", return_value="jarvis"), contextlib.redirect_stdout(out), \
+                contextlib.redirect_stderr(io.StringIO()):
+            slanes.builder_brief(self.p, c.find_brief(self.p, tid), argparse.Namespace(model="local", json=True))
+        with mock.patch.object(slanes, "local_profile", return_value="jarvis"), \
+                mock.patch.object(slanes, "_local_code", side_effect=code), \
+                mock.patch.object(slanes, "_verify", return_value=None), \
+                mock.patch("sampo.localruns.check_bounds", return_value=([], None)), \
+                mock.patch("sampo.pilotsig.spawn", return_value=4242) as pilot:
+            rc = slanes.local_run(self.p, c.find_brief(self.p, tid))
+        return calls, rc, c.find_brief(self.p, tid), pilot
+
+    def test_a_deadline_stop_resumes_once_and_the_resumed_run_returns_like_any_other(self):
+        tid = self.task()
+        calls, rc, b, pilot = self.run_with(tid, [slanes.CODE_OUT_OF_TIME, 0])
+        self.assertEqual(calls, [False, True], "the second run is the resume")
+        self.assertEqual(rc, 0)
+        self.assertTrue(b.meta.get("builder_returned"))
+        self.assertIn("resum", b.section("Log"), "the log says the run was resumed")
+        pilot.assert_called_once_with(self.p, tid)
+
+    def test_a_second_deadline_stop_fails_the_lane_and_a_third_run_is_never_made(self):
+        tid = self.task()
+        calls, rc, b, pilot = self.run_with(tid, [slanes.CODE_OUT_OF_TIME] * 3)
+        self.assertEqual(calls, [False, True], "resumed once, not again")
+        self.assertEqual(rc, slanes.CODE_OUT_OF_TIME)
+        self.assertFalse(b.meta.get("builder_returned"))
+        self.assertIn("local builder stopped", b.section("Log"))
+        pilot.assert_not_called()
+
+    def test_any_other_failure_is_not_resumed(self):
+        for rc in (1, 124, 3):
+            tid = self.task()
+            calls, got, b, pilot = self.run_with(tid, [rc, 0])
+            self.assertEqual(calls, [False], f"exit {rc}: one run")
+            self.assertEqual(got, rc)
+            pilot.assert_not_called()
+
+    def test_an_own_endpoints_context_is_capped_so_the_late_calls_do_not_carry_every_old_result(self):
+        from sampo import smith
+        own = {"name": "jarvis", "own": True, "context": 131072}
+        self.assertEqual(smith._room(own), smith.OWN_ROOM, "40k tokens of old results were sent to the late calls")
+        self.assertEqual(smith._room(dict(own, context=8192)), 8192 - min(smith.MAX_TOKENS, 8192 // 4), "a small context stays its own")
+        self.assertGreater(smith._room({"name": "far", "context": 131072}), smith.OWN_ROOM, "other profiles are as they were")
+        self.assertEqual(smith._room(dict(own, price=1.0)), 0, "a priced profile is still sent by the last results")
+        self.assertEqual(smith._room({"name": "jarvis", "own": True}), 0, "no known context: still no room")
+
+    def test_a_verify_line_is_no_test_matched_only_when_run_py_says_so_on_a_line_of_its_own(self):
+        from sampo import smith
+        none = [(1, "python3 plugin/tests/run.py test_x -k Gone", "run.py: no test matches test_x with -k Gone\n")]
+        self.assertTrue(smith._no_test_matches(none))
+        self.assertTrue(smith._no_test_matches(none + [(2, "true", "")][:0]), "one such criterion")
+        mixed = none + [(2, "python3 test_calc.py", "AssertionError: 4 != 5")]
+        self.assertFalse(smith._no_test_matches(mixed), "another criterion fails for its own reason: a fix round")
+        said = [(1, "python3 test_x.py", "FAIL: the message was 'run.py: no test matches' in the test's own words")]
+        self.assertFalse(smith._no_test_matches(said), "a test's output that quotes it decides nothing")
+        self.assertFalse(smith._no_test_matches([]))
+
+
+class LocalBuilderTimeRun(tcode.CodeCase):
+    """T-6090: the headless run, against a stub model server (the shape sampo code --task --lane has on the local
+    endpoint): a verify that matches no test is a step to write the test, and a lane run cut by its deadline exits with
+    its own status and carries on from its journal."""
+    repo_seed = ("seed the bug", (
+        ("calc.py", "def add(a, b):\n    return a - b\n"),
+        ("test_calc.py", "import calc\nassert calc.add(2, 3) == 5, calc.add(2, 3)\nprint('ok')\n"),
+        # the verify of a step that is to write its own test: it names test_new, which no file holds yet (run.py's words)
+        ("check_calc.py", "import os\nimport subprocess\nimport sys\nif not os.path.exists('test_new.py'):\n"
+                          "    sys.exit('run.py: no test matches test_new')\n"
+                          "sys.exit(subprocess.call([sys.executable, 'test_new.py']))\n")))
+    NEW = {"file": "test_new.py", "content": "import calc\nassert calc.add(2, 3) == 5, calc.add(2, 3)\nprint('ok')\n"}
+
+    def brief(self, verify="python3 check_calc.py"):
+        a = ["task", "new", "make calc.add add", "--type", "FIX", "--tier", "S", "--json", "--step", "fix calc.add and test it",
+             "--ac", f"calc.add adds :: {verify}"]
+        return json.loads(self.fm(*a).stdout)["id"]
+
+    def test_a_verify_naming_no_test_is_a_step_to_write_the_test_not_a_failed_fix_round(self):
+        tid = self.brief()
+        f = self.serve("openai", tcode.call("edit", file="calc.py", old="a - b", new="a + b"), tcode.call("done", summary="fixed"),
+                       tcode.call("write", **self.NEW), tcode.call("done", summary="wrote the test"))
+        r = self.code("--task", tid, "--model", "fake", "--json", check=False)
+        self.assertEqual(self.task(tid)["status"], "done", r.stdout + r.stderr)
+        ev = [json.loads(x) for x in r.stdout.splitlines() if x.startswith("{")]
+        self.assertEqual([e for e in ev if e["event"] == "fix"], [], "no fix round was spent on a test not written yet")
+        said = f.said(2).lower()
+        self.assertIn("write that test first", said, "the round after the red verify asks for the test")
+        self.assertIn("no test matches", said, "it is shown what the verify said")
+        self.assertNotIn("fix the work", said, "it is not asked to fix the work: the verify has no test to fail")
+        self.assertTrue(os.path.exists(os.path.join(self.repo, "test_new.py")))
+
+    def test_a_test_that_is_still_not_written_after_the_rounds_for_it_falls_to_the_fix_rounds(self):
+        from sampo import smith
+        tid = self.brief()
+        note = lambda n: tcode.call("write", file=f"n{n}.txt", content="x\n")  # noqa: E731  an edit that is no test
+        script = [tcode.call("edit", file="calc.py", old="a - b", new="a + b"), tcode.call("done", summary="fixed")]
+        for n in range(smith.TEST_ROUNDS):
+            script += [note(n), tcode.call("done", summary="no test")]
+        script += [tcode.call("write", **self.NEW), tcode.call("done", summary="fix round")]
+        f = self.serve("openai", *script)
+        r = self.code("--task", tid, "--model", "fake", "--json", check=False)
+        ev = [json.loads(x) for x in r.stdout.splitlines() if x.startswith("{")]
+        fixes = [e for e in ev if e["event"] == "fix"]
+        self.assertEqual([e.get("round") for e in fixes], [1], "the rounds for the test are not counted; the next is the first fix")
+        self.assertEqual(self.task(tid)["status"], "done", r.stdout + r.stderr)
+        asked = [e for e in ev if e["event"] == "note" and "to write it" in e.get("text", "")]
+        self.assertEqual(len(asked), smith.TEST_ROUNDS, "asked for the test twice, then the fix rounds")
+        self.assertGreater(len(f.seen), 2 * smith.TEST_ROUNDS)
+
+    def test_a_lane_run_cut_by_its_deadline_exits_with_its_own_status_and_resume_carries_it_on(self):
+        tid = self.brief(verify="python3 test_calc.py")
+        self.serve("openai", *[tcode.call("run", cmd="sleep 1")] * 8)
+        r = self.code("--task", tid, "--model", "fake", "--lane", "--plain", "--deadline", "4", check=False)
+        self.assertEqual(r.returncode, 75, r.stdout + r.stderr)
+        self.assertIn("out of time", r.stdout + r.stderr, "localruns.classify_stop reads this text")
+        self.assertIn(f"--resume {tid}", r.stdout + r.stderr)
+        self.assertEqual(self.task(tid)["status"], "active", "resumable")
+        git = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+        self.serve("openai", *tcode.FIX)
+        r = self.code("--resume", tid, "--model", "fake", "--lane", "--plain", "--deadline", "120", env=git, check=False)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("return a + b", self.calc())
+        self.assertIn(f"({tid})", self.last_commit(), "the lane commit is made by the resumed run")
+
+    def test_a_run_that_is_not_a_lane_run_keeps_exit_1_on_a_deadline(self):
+        tid = self.brief(verify="python3 test_calc.py")
+        self.serve("openai", *[tcode.call("run", cmd="sleep 1")] * 8)
+        r = self.code("--task", tid, "--model", "fake", "--plain", "--deadline", "4", check=False)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+
+
+BR_INTERP ="Reading 1: the gate counts options. Reading 2: the gate reads the words under each option."
 BR_OPTIONS = ("1) use what exists: the existing gap list. likely outcome: the data is there. fails if: a caller cuts it. "
               "2) do less: one gap per line. fails if: the skeleton still costs a round. "
               "3) print every gap and write the skeleton. likely outcome: one round. fails if: the file is stale. ")

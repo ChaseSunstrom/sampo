@@ -77,6 +77,9 @@ FM = os.path.join(PLUGIN, "bin", "fm")
 HOOK = os.path.join(PLUGIN, "hooks", "hook")
 TYPES = ("FIX", "FEATURE", "CLEAN", "PERFORMANCE", "SECURITY", "RESEARCH")
 REPAIRS, ROUNDS = 2, 3
+TEST_ROUNDS = 2  # T-6090: rounds to write a test a verify names and no file holds, before it counts as a failing fix
+CODE_OUT_OF_TIME = 75  # T-6090: the exit of a --lane run its --deadline cut (lanes.CODE_OUT_OF_TIME resumes it once)
+OWN_ROOM = 16000  # T-6090: tokens of conversation sent to an own endpoint: 3k grew to 40k and each late call re-read it all
 FINISH_FIX_ROUNDS, FINISH_CHARS = 2, 1000  # T-4597: fix rounds on fm task finish's refusal; the refusal's head and tail each
 EARLY_DONE_REFUSALS = 2  # T-3180: dones refused while no edit is made and a verify fails
 CAP = 3000            # characters of a run's head, and of its tail, the model sees
@@ -612,11 +615,14 @@ For example: {example}"""
 
 
 class CodeError(Exception):
-    """fm code stops: the message is the whole story (exit 1); then, when given, is the one command to run next."""
+    """fm code stops: the message is the whole story (exit 1); then, when given, is the one command to run next.
+    T-6090: `status` is the exit a `--lane` run ends with (CODE_OUT_OF_TIME for a deadline stop, whose journal is kept);
+    every other run, and every other stop, exits 1."""
 
-    def __init__(self, msg, then=None):
+    def __init__(self, msg, then=None, status=1):
         super().__init__(msg)
         self.then = then
+        self.status = status
 
 
 class NoValidSlot(CodeError):
@@ -1625,7 +1631,8 @@ def _room(profile):
     """T-4490: the tokens a conversation may fill on a profile sent by room: its context less the output reserve; 0
     for a priced profile (it pays for every token each turn) and for one whose context is not known."""
     ctx = profile.get("served") or profile.get("context") or 0
-    return 0 if profile.get("price") else max(ctx - min(MAX_TOKENS, ctx // 4), 0)
+    room = 0 if profile.get("price") else max(ctx - min(MAX_TOKENS, ctx // 4), 0)
+    return min(room, OWN_ROOM) if profile.get("own") else room  # T-6090: an own endpoint's calls are slow: send less
 
 
 def _shown(digest, start, out):
@@ -4448,7 +4455,7 @@ class Run:
             left = self.ends - time.monotonic() if self.ends else None
             if left is not None and left <= 0:  # T-4083: stop with the trail before the caller's kill
                 raise CodeError(f"stopped: out of time (--deadline {self.deadline:g} s) before {name} was done; "
-                                f"fm code --resume {self.tid} carries on")
+                                f"fm code --resume {self.tid} carries on", status=CODE_OUT_OF_TIME)
             self.check_cap(name)
             self.turns += 1
             try:  # T-5769: the keeper's decision on record in this run's journal; never a reason to stop a run
@@ -8301,6 +8308,16 @@ def _task_text(run):
             + run.fence(f"Title: {run.plan['title']}\nDone when:\n{crit}{aside}\nSteps:\n{steps}") + _context_note(run))
 
 
+_NO_TEST = re.compile(r"^run\.py: no test matches\b", re.M)
+
+
+def _no_test_matches(failed):
+    """T-6090: whether every failed verify is run.py saying, on a line of its own, that its filter matches no test: the
+    test is what the step is to write, so the failure is not the work's. A test's own output that quotes the words, or
+    another criterion failing for its own reason, is not."""
+    return bool(failed) and all(_NO_TEST.search(str(out or "")) for _n, _cmd, out in failed)
+
+
 def _failures(failed):
     return "\n\n".join(f"criterion {n}: `{cmd}` failed:\n{out}" for n, cmd, out in failed)
 
@@ -8844,7 +8861,7 @@ def cmd_code(args):
             _tell(p, f"fm code {run.tid} stopped: {_one_line(str(e), 200)}")
         run.emit("error", msg, quiet=True, task=run.tid, next=then, **_lost_data(lost))
         print(f"{msg}\nNext: {then}", file=sys.stderr)
-        raise SystemExit(1)
+        raise SystemExit(getattr(e, "status", 1) if getattr(args, "lane", False) else 1)  # T-6090: the wrapper resumes a 75
     except Blocked as e:
         lost = run.unwind()  # T-4426
         run.fm("task", "block", run.tid, str(e)[:500])
@@ -11428,17 +11445,28 @@ def _drive(run, profile):
         run.emit("changed", "", quiet=True, step=n, files=files, stat=_numstat(run.root, files),
                  **({"missing": absent} if absent else {}))
     run.steps_done = True  # T-4426: every step finished: a later stop is the verify's to report (T-4614: and a red keep check's)
-    rounds = 0
+    rounds = tested = 0
     while True:
         failed = run.verify("verify")
         if not failed:
             break
+        if _no_test_matches(failed) and tested < TEST_ROUNDS and not _no_clock(run):
+            tested += 1  # T-6090: the test the step was to write is not there: not a failed fix, and no fix round is spent
+            run.emit("note", f"the verify names a test that does not exist yet: round {tested} of {TEST_ROUNDS} to write it")
+            where = places(_failures(failed), run.root)
+            run.phase(f"test:{tested}", profile,
+                      f"{_task_text(run)}\n\nEvery step is done, but a verify command names a test that no file holds yet "
+                      f"(run.py said: no test matches). Write that test first, in the file and under the name the "
+                      f"command filters on, so it fails for the right reason or passes if the work is already done:\n\n"
+                      f"{run.fence(_failures(failed))}" + (f"\n\nWhere: {', '.join(where)}" if where else "")
+                      + ", then call done.")
+            continue
         if _mend(run, profile, failed):
             continue  # a repaired check is run at once: no fix round is spent on it, and each is asked once
         if _no_clock(run):  # T-4588: a round the clock can't run is not counted, and the stop says it is the clock
             raise CodeError(f"stopped: out of time (--deadline {run.deadline:g} s) with the verify still failing after "
                             f"{rounds} fix rounds: {_one_line(_failures(failed), 300)}; fm code --resume {run.tid} "
-                            "carries on", then=f"fm code --resume {run.tid}")
+                            "carries on", then=f"fm code --resume {run.tid}", status=CODE_OUT_OF_TIME)
         rounds += 1
         model = profile
         if rounds > ROUNDS:
