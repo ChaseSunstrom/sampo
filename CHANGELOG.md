@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- Detached verify runners, land waits and pilot rounds re-exec when a Sampo module changed on disk, so a merge no longer leaves a sleeping runner on old code (T-6169).
 - The guard refuses interpreter code that writes outside a builder's lane (python -c open, write_text, shutil.copy, os.replace), as the shell's own writes are (T-6166).
 - The lane pilot's driver check exempts Sampo's own sampo-map merge driver when it is mapmerge.command() exactly, so lanes are no longer refused (T-6178).
 - The ReadDedupe test for a refused whole read now pins the context budget's every-time refusal, so trunk's baseline red is cleared (T-6179).
