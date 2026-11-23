@@ -14,7 +14,7 @@ import time
 import unittest
 from unittest import mock
 
-from test_audit_run import STUB
+from test_audit_run import STUB, typed
 from test_lane_land import LandCase, OLD
 
 from sampo import auditrun
@@ -38,7 +38,9 @@ class PilotCase(LandCase):
             f.write(STUB)
         os.chmod(os.path.join(bindir, "claude"), 0o755)
         self.log = os.path.join(self.tmp, "stub.log")
-        env = {"PATH": bindir + os.pathsep + os.environ["PATH"], "STUB_LOG": self.log, "FOREMAN_NO_BACKGROUND": "1"}
+        # T-6089: no local model here unless a test names one (LocalReviewCase): the older pilot tests read with Claude alone
+        env = {"PATH": bindir + os.pathsep + os.environ["PATH"], "STUB_LOG": self.log, "FOREMAN_NO_BACKGROUND": "1",
+               "FOREMAN_NO_LOCAL_MODELS": "1"}
         patch = mock.patch.dict(os.environ, env)
         patch.start()
         self.addCleanup(patch.stop)
@@ -1139,6 +1141,232 @@ class LastLineReaders(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr[-300:])
         self.assertEqual(len(r.stdout.strip().splitlines()), 1, r.stdout)
         self.assertIn("seconds", json.loads(r.stdout))
+
+
+class LocalModelStub:
+    """T-6089: a loopback server standing in for the local model. Each request is one lens's review (the lens is read
+    from the prompt): its reply is replies[lens], else that lens's clean typed reply. asked keeps the lens of each request."""
+
+    def __init__(self):
+        import http.server
+        import threading
+        self.replies, self.asked, self.closed = {}, [], False
+        stub = self
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_POST(self):
+                n = int(self.headers.get("Content-Length") or 0)
+                body = json.loads(self.rfile.read(n) or b"{}")
+                text = "\n".join(m.get("content") or "" for m in body.get("messages", []) if isinstance(m, dict))
+                found = re.search(r"Review only the lens: (\w+)", text)
+                lens = found.group(1) if found else "?"
+                stub.asked.append(lens)
+                reply = stub.replies.get(lens, typed(lens))
+                data = json.dumps({"choices": [{"message": {"role": "assistant", "content": reply}, "finish_reason": "stop"}],
+                                   "usage": {"prompt_tokens": 7, "completion_tokens": 3}}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+        self.srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.url = f"http://127.0.0.1:{self.srv.server_address[1]}/v1"
+        threading.Thread(target=self.srv.serve_forever, args=(0.02,), daemon=True).start()
+
+    def close(self):
+        if not self.closed:
+            self.closed = True
+            self.srv.shutdown()
+            self.srv.server_close()
+
+
+class LocalReviewCase(PilotCase):
+    """T-6089: the lane's reviewers run on the local model first. The stub local server stands in for it (models.json
+    names it as the only profile, no other local server is probed); STUB_LOG counts the Claude reviewer children."""
+
+    def setUp(self):
+        super().setUp()
+        from sampo import models
+        self.stub = LocalModelStub()
+        self.addCleanup(self.stub.close)
+        os.makedirs(self.home, exist_ok=True)
+        with open(os.path.join(self.home, "models.json"), "w", encoding="utf-8") as f:
+            json.dump({"default": "local-stub", "profiles": {"local-stub": {
+                "kind": "openai", "base_url": self.stub.url, "model": "stub-local"}}}, f)
+        extra = mock.patch.dict(os.environ, {"FOREMAN_NO_LOCAL_MODELS": ""})
+        extra.start()
+        self.addCleanup(extra.stop)
+        for name, value in (("LOCAL", []), ("_sleep", lambda s: None)):  # no real probe, no backoff sleep
+            patch = mock.patch.object(models, name, value)
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def reviewed_by_claude(self):
+        return sorted(x["lens"] for x in self.calls())
+
+    def parity_rows(self):
+        p = c.find_project(self.repo)
+        return [e["data"] for e in c.ledger_tail(p, 2000, kinds=("local_parity",))]
+
+    def seed_parity(self, lens, cls, claude, matched, match=True):
+        p = c.find_project(self.repo)
+        c.log_event(p, "local_parity", task=self.tid, data={
+            "lens": lens, "class": cls, "local": "ok", "claude": "ok" if match else "changes needed",
+            "match": match, "claude_findings": claude, "matched": matched, "sampled": True})
+
+
+class LocalReviewFirst(LocalReviewCase):
+    def setUp(self):
+        super().setUp()
+        patch = mock.patch.object(lanepilot, "sampled", return_value=False)  # the salt's pick is not this class's subject
+        patch.start()
+        self.addCleanup(patch.stop)
+        cls = lanepilot.lane_class(self.brief())
+        for _ in range(lanepilot.PARITY_WINDOW):  # a warm class: its local verdicts stand (a cold class is sampled)
+            self.seed_parity("intent", cls, claude=2, matched=2)
+
+    def test_a_clean_lane_is_read_locally_except_the_adversary_lens_which_is_claudes(self):
+        r = self.pilot()
+        self.assertEqual(r["outcome"], "accepted", r)
+        self.assertEqual(self.stub.asked, ["intent"], "every lens but the adversary is asked of the local model")
+        self.assertEqual(self.reviewed_by_claude(), ["adversary"], "the adversary lens is Claude's on every lane (security round)")
+        self.assertEqual(self.audits(), ["adversary", "intent"], "the local ok is intent's audit, Claude's is adversary's")
+        self.assertTrue(any("local reviewer" in x for x in self.brief().evidence()), "the audit names its reviewer")
+        self.assertTrue(self.accepted())
+
+    def test_a_high_local_finding_escalates_its_lens_to_claude(self):
+        self.stub.replies["intent"] = typed("intent", "changes needed", [
+            {"severity": "HIGH", "file": "f1.txt", "line": 1, "text": "breaks on empty input"}])
+        r = self.pilot()
+        self.assertEqual(self.stub.asked, ["intent"], "the local model was asked the intent lens first")
+        self.assertEqual(self.reviewed_by_claude(), ["adversary", "intent"], "the HIGH intent lens goes to Claude, adversary as always")
+        self.assertEqual(r["outcome"], "accepted", r)  # Claude's clean reviews decide, not the local HIGH
+
+    def test_a_lane_with_no_adversary_lens_is_read_by_claude_alone(self):
+        with mock.patch.object(lanepilot, "lenses_for", return_value=(["intent"], "haiku")):
+            r = self.pilot()
+        self.assertEqual(self.stub.asked, [], "no lane is accepted on local verdicts alone: nothing is read locally")
+        self.assertEqual(self.reviewed_by_claude(), ["intent"], r)
+        self.assertEqual(r["outcome"], "accepted", r)
+
+    def test_an_unparsed_local_reply_escalates_that_lens(self):
+        self.stub.replies["intent"] = "Looked it over, all fine, nothing to report."
+        r = self.pilot()
+        self.assertEqual(self.reviewed_by_claude(), ["adversary", "intent"], "a reply with no verdict is Claude's to read")
+        self.assertEqual(r["outcome"], "accepted", r)
+
+    def test_an_endpoint_that_is_down_escalates_every_lens(self):
+        self.stub.close()
+        r = self.pilot()
+        self.assertEqual(self.reviewed_by_claude(), ["adversary", "intent"], "no local answer: every lens to Claude")
+        self.assertEqual(r["outcome"], "accepted", r)
+
+
+class LocalReviewFirstSensitive(LocalReviewCase):
+    name = "auth.py"  # a sensitive path: all five lenses, on sonnet
+
+    def test_a_sensitive_diffs_adversary_lens_is_never_local(self):
+        r = self.pilot()
+        self.assertEqual(r["model"], "sonnet", r)
+        self.assertEqual(self.stub.asked, [], "a sensitive lane reads no lens locally")
+        self.assertEqual(self.reviewed_by_claude(), sorted(r["lenses"]), "every lens of a sensitive lane is Claude's")
+        self.assertTrue(len(r["lenses"]) > 1, r)
+
+
+class LocalReviewParity(LocalReviewCase):
+    def test_the_sample_pick_is_one_lane_in_five_over_many_diffs(self):
+        diffs = [f"diff {i}\n".encode() for i in range(1000)]
+        picked = [lanepilot.sample_pick("salt", d) for d in diffs]
+        self.assertEqual(picked, [lanepilot.sample_pick("salt", d) for d in diffs], "the same salt and diff pick the same way")
+        self.assertTrue(150 <= sum(picked) <= 250, sum(picked))
+
+    def test_the_same_diff_with_another_salt_can_flip_the_pick(self):
+        diff = b"the same lane diff\n"
+        self.assertEqual({lanepilot.sample_pick(f"salt-{i}", diff) for i in range(20)}, {True, False})
+
+    def test_the_salt_is_created_once_kept_mode_0600_and_is_what_the_pick_uses(self):
+        p = c.find_project(self.repo)
+        diff = b"the lane diff\n"
+        first = lanepilot.sampled(p, diff)
+        path = os.path.join(p.dir, lanepilot.SALT_FILE)
+        self.assertEqual(os.stat(path).st_mode & 0o777, 0o600, "the salt file is readable by its owner only")
+        with open(path, encoding="utf-8") as f:
+            salt = f.read()
+        self.assertEqual(lanepilot.sampled(p, diff), first, "a second call reads the same salt")
+        with open(path, encoding="utf-8") as f:
+            self.assertEqual(f.read(), salt, "the salt is created once, not rewritten")
+        self.assertEqual(first, lanepilot.sample_pick(salt, diff))
+
+    def test_a_sampled_lane_gets_the_claude_review_and_its_agreement_is_recorded(self):
+        with mock.patch.object(lanepilot, "sampled", return_value=True):
+            r = self.pilot()
+        self.assertEqual(r["outcome"], "accepted", r)
+        self.assertEqual(self.reviewed_by_claude(), ["adversary", "intent"], "Claude reviews every lens of a sampled lane")
+        rows = self.parity_rows()
+        self.assertEqual(sorted(x["lens"] for x in rows), ["intent"], "the adversary lens has no local answer to check")
+        self.assertTrue(all(x["match"] and x["claude_findings"] == 0 for x in rows), rows)
+
+    def test_a_disagreeing_local_verdict_is_recorded_and_claude_still_governs(self):
+        self.stub.replies["intent"] = typed("intent", "changes needed", [
+            {"severity": "HIGH", "file": "f1.txt", "line": 1, "text": "breaks"}])
+        with mock.patch.object(lanepilot, "sampled", return_value=True):
+            r = self.pilot()
+        self.assertEqual(r["outcome"], "accepted", r)  # Claude's clean intent review is the verdict of a sampled lane
+        row = [x for x in self.parity_rows() if x["lens"] == "intent"][0]
+        self.assertFalse(row["match"], row)
+
+    def test_a_cold_class_samples_every_lane_until_it_has_ten_samples(self):
+        with mock.patch.object(lanepilot, "sampled", return_value=False):
+            r = self.pilot()
+        self.assertEqual(r["outcome"], "accepted", r)
+        self.assertEqual(self.reviewed_by_claude(), ["adversary", "intent"], "a class with no parity samples is Claude's on every lens")
+        self.assertEqual(self.stub.asked, ["intent"], "the local model still reads every local lens, so the samples accrue")
+        self.assertEqual([x["lens"] for x in self.parity_rows()], ["intent"])
+
+    def test_finding_recall_matches_by_file_and_line_within_five_lines(self):
+        self.assertEqual(lanepilot.located_matches([("a.py", 10), ("b.py", 40)], [("a.py", 14), ("b.py", 60)]), (1, 2))
+        self.assertEqual(lanepilot.located_matches([("a.py", 10)], [("c.py", 10)]), (0, 1), "a different file is no match")
+        self.assertEqual(lanepilot.located_matches([], [("a.py", 1)]), (0, 0), "no Claude finding, nothing to miss")
+
+    def test_a_class_under_80_percent_recall_over_10_samples_routes_back_to_claude(self):
+        cls = lanepilot.lane_class(self.brief())
+        for _ in range(10):
+            self.seed_parity("intent", cls, claude=2, matched=1)  # 50% recall
+        with mock.patch.object(lanepilot, "sampled", return_value=False):
+            self.pilot()
+        self.assertEqual(self.reviewed_by_claude(), ["adversary", "intent"], "routed back: intent is Claude's for this class")
+        self.assertEqual(self.stub.asked, [], "and the adversary lens was never local")
+
+    def test_nine_samples_are_still_cold_so_the_lane_is_sampled(self):
+        cls = lanepilot.lane_class(self.brief())
+        for _ in range(9):
+            self.seed_parity("intent", cls, claude=2, matched=1)
+        with mock.patch.object(lanepilot, "sampled", return_value=False):
+            self.pilot()
+        self.assertEqual(self.reviewed_by_claude(), ["adversary", "intent"], "under 10 samples the class is cold: Claude reads every lens")
+
+    def test_ten_clean_samples_let_the_local_verdict_stand(self):
+        cls = lanepilot.lane_class(self.brief())
+        for _ in range(10):
+            self.seed_parity("intent", cls, claude=2, matched=2)
+        with mock.patch.object(lanepilot, "sampled", return_value=False):
+            self.pilot()
+        self.assertEqual(self.reviewed_by_claude(), ["adversary"], "a warm class at full recall: intent stands locally")
+        self.assertEqual(self.stub.asked, ["intent"])
+
+    def test_cost_local_parity_prints_the_agreement_per_lens_and_class(self):
+        cls = lanepilot.lane_class(self.brief())
+        for _ in range(10):
+            self.seed_parity("intent", cls, claude=2, matched=1)
+        out = self.fm("cost", "--local-parity").stdout
+        self.assertIn("intent", out)
+        self.assertIn(cls, out)
+        self.assertIn("50%", out, "the recall over the window")
+        self.assertIn("routed back", out)
 
 
 if __name__ == "__main__":

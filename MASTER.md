@@ -114,7 +114,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmanergy` (T-2563, gen-2 moonshot: anergy for permission prompts [→ files-lib-1](docs/map/files-lib-1.md)
 - `fmobjections` (T-3276: `sampo audit ahead ID` ranks ledger `finding` events (rejected and this task's left out… [→ files-lib-1](docs/map/files-lib-1.md)
 - `fmauditrun` (T-1186: `sampo audit run ID`, the audit lenses as headless… [→ files-lib-1](docs/map/files-lib-1.md)
-- `fmlanepilot` (T-5706: `sampo lane pilot ID | --all [--dry]`, a returned lane reviewed and accepted headless… [→ files-lib-1](docs/map/files-lib-1.md)
+- `fmlanepilot` (T-5706: `sampo lane pilot ID | --all [--dry]`, a returned lane reviewed and accepted headless; T-6089: the local model reviews each lens first, the adversary lens is always Claude's and a sensitive lane is read by Claude on every lens; Claude reads any other lens only on a HIGH or CRITICAL finding, no verdict, no answer, or a class routed back; a lane picked by a salted hash (1 in 5) or of a class with under 10 samples is read by Claude on every lens to check the local reviewer: `sampo cost --local-parity`… [→ files-lib-1](docs/map/files-lib-1.md)
 - `fmaway` (T-1155: `sampo away`, the summary on return after a long gap) [→ files-lib-1](docs/map/files-lib-1.md)
 - `fmbacktest` (T-1058: `sampo backtest`, where a changed rule, known fix or card… [→ files-lib-1](docs/map/files-lib-1.md)
 - `fmbench`… [→ files-lib-1](docs/map/files-lib-1.md)

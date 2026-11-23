@@ -2063,9 +2063,39 @@ def _cpu(args, p, cli):
     return cli.out(args, r, _cpu_text(r))
 
 
+def _local_parity(p, args, cli):
+    """T-6089: the local reviewer against Claude's on the sampled lanes, per lens and lane class: how often the verdicts
+    agree over every sample, the finding recall over the last PARITY_WINDOW, and whether the class routes back to Claude."""
+    from sampo import lanepilot
+    rows = lanepilot.parity_rows(p)
+    groups = {}
+    for r in rows:
+        groups.setdefault((str(r.get("lens") or ""), str(r.get("class") or "")), []).append(r)
+    out = []
+    for (lens, cls), mine in sorted(groups.items()):
+        agree = sum(1 for r in mine if r.get("match"))
+        matched, total, window = lanepilot.parity_window(rows, lens, cls)
+        out.append({"lens": lens, "class": cls, "samples": len(mine), "agreement": round(100 * agree / len(mine)),
+                    "window": window, "recall": round(100 * matched / total) if total else None,
+                    "routed_back": lanepilot.routed_back(rows, lens, cls)})
+    lines = [f"Local reviewer against Claude on the sampled lanes (1 in {lanepilot.LOCAL_SAMPLE}, T-6089): per lens and lane "
+             f"class, the verdict agreement over all samples, the finding recall over the last {lanepilot.PARITY_WINDOW}, and "
+             f"whether the class is routed back to Claude (recall under {round(100 * lanepilot.PARITY_FLOOR)}%)."]
+    if not out:
+        lines.append("No sampled lane has a local review yet.")
+    for x in out:
+        recall = f"recall {x['recall']}% over {x['window']}" if x["recall"] is not None else "recall n/a (no Claude finding)"
+        lines.append(f"  {x['lens']:<10} {x['class']:<20} {x['samples']:>3} sample(s)  agreement {x['agreement']}%  {recall}"
+                     f"  {'routed back to Claude' if x['routed_back'] else 'local'}")
+    return cli.out(args, {"parity": out, "window": lanepilot.PARITY_WINDOW, "floor": lanepilot.PARITY_FLOOR},
+                   "\n".join(lines))
+
+
 def cmd_cost(args):
     from sampo import cli
     p = cli.resolve(args)
+    if getattr(args, "local_parity", False):  # T-6089
+        return _local_parity(p, args, cli)
     if getattr(args, "cpu", False):  # T-6006
         return _cpu(args, p, cli)
     if getattr(args, "vs_native", False):  # T-6060

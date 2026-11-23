@@ -10964,6 +10964,9 @@ def _build_parser(only=None):
                    "(implies --per-lane)")
     s.add_argument("--compare-baseline", action="store_true", help="the change per role against the saved baseline "
                    "(implies --per-lane)")
+    s.add_argument("--local-parity", action="store_true", help="the local lane reviewer against Claude's on the sampled "
+                   "lanes: verdict agreement and finding recall per lens and lane class, and the classes routed back to "
+                   "Claude (T-6089)")
     s.add_argument("--sessions", action="store_true",
                    help="per session: turns, context per turn, the cache read/write/output split and cache busts")
     s.add_argument("--outputs", action="store_true", help="context by how often later calls re-read it: share of cache "
