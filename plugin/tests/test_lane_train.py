@@ -2,6 +2,7 @@
 the culprit lanes, fast-forwards the main checkout's branch, and records a gate pass `sampo check` reuses while the code
 tree (minus CHANGELOG.md and the sync mirror) is the same."""
 # map-links: plugin/lib/sampo/train.py
+import contextlib
 import json
 import math
 import os
@@ -15,6 +16,7 @@ from unittest import mock
 from helpers import ForemanTestCase
 
 from sampo import core as c
+from sampo import train
 
 first = lambda text: json.JSONDecoder().raw_decode(text)[0]  # noqa: E731
 
@@ -2546,6 +2548,210 @@ class TrainHold(TrainCase):
         self.write(proc, text, root=os.path.join(self.tmp, "elsewhere"))
         ctx = hooks._guard_ctx({"cwd": self.repo}, fmguard)[0]
         self.assertIsNone(fmguard.check("Bash", {"command": "git commit -m x"}, ctx), "a train that holds another checkout")
+
+
+OLD = "2026-01-01T00:00:00"  # a lane quiet this long counts as finished (core.finished_lanes)
+CLEAN_CMD = "python3 plugin/tests/run.py " + " ".join(c.repo_shape_classes())  # a --hold run's command (train._held_classes)
+
+
+def _report(tid, what="Lane work"):
+    return (f"Branch foreman/x, commit abc1234.\n\n**CHANGELOG:** {what} lands with one gate run ({tid}).\n"
+            f"TITLE: {what} ({tid})\n- LESSON: a report line the close reads is one nobody retypes.\n"
+            f"NUMBERS: none: no metric moves\nDOCS: none: an internal lane\n")
+
+
+class SelfResolve(TrainCase):
+    """T-6102: a lane the land parked for a code conflict gets its headless resolve from the land (pilotsig.resolve_run, run
+    in-process here under the claim the detached pilot takes), is re-queued into the same land's train once it is green,
+    with no lead call; a resolve that fails twice leaves a hand row naming both sides' hunks; OVERLAP pairs train in
+    successive passes with the merge between them. (A LandCase subclass would import test_lane_land, which imports this
+    module: the few helpers it needs are here.)"""
+
+    def setUp(self):
+        super().setUp()
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(self.repo)
+        self.p = c.find_project(self.repo)
+        self.calls = []
+        with open(os.path.join(self.repo, "CHANGELOG.md"), "w") as f:
+            f.write("# Changelog\n\n## Unreleased\n### Highlights\n\n- big\n\n### Everything else\n\n- older (T-9999).\n")
+        self.git("add", "CHANGELOG.md")
+        self.git("commit", "-qm", "changelog")
+
+    def lane(self, n, name, text=None, ac="true", when=None, tier="S", reviewed=True):
+        tid = super().lane(n, name, text=text, ac=ac, when=when, tier=tier, reviewed=reviewed)
+        self.record_clean_run(tid)  # the land holds a lane with no passing affected run at its tip
+        return tid
+
+    def record_clean_run(self, tid):
+        p = c.find_project(self.repo)
+        b = c.find_brief(p, tid)
+        b.add_evidence(c.AFFECTED_LABEL + CLEAN_CMD, "✓ 10 tests", step=1, ran=True,
+                       ts=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+        c.save_brief(p, b)
+
+    def returned(self, tid, what="Lane work"):
+        r = self.hook("SubagentStop", {"agent_type": "sampo:fm-builder", "agent_id": "a1b2c3d4",
+                                       "last_assistant_message": _report(tid, what)})
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def audited(self, *ids):
+        for tid in ids:
+            self.fm("task", "audit", tid, "self", "one fm-reviewer pass on the branch", "no findings")
+
+    def brief(self, tid):
+        return c.find_brief(c.find_project(self.repo), tid)
+
+    @contextlib.contextmanager
+    def in_project(self):
+        """T-5368: the sampo verbs train._sampo spawns find this test's project, as fm() gives its own subprocesses."""
+        env = {"FOREMAN_HOME": self.home, "FOREMAN_INHIBITED": "1", "FOREMAN_DOCTOR_BENCH": "0", "FOREMAN_DOCTOR_BUILD": "0"}
+        here = os.getcwd()
+        os.chdir(self.repo)
+        try:
+            with mock.patch.dict(os.environ, env):
+                yield
+        finally:
+            os.chdir(here)
+
+    def head(self):
+        return subprocess.run(["git", "-C", self.repo, "rev-parse", "HEAD"], capture_output=True, text=True,
+                              check=True).stdout.strip()
+
+    def conflict(self):
+        """A lane and main that both add same.txt with other text: the conflict the land parks before any criteria run."""
+        with open(os.path.join(self.repo, "same.txt"), "w") as f:
+            f.write("main\n")
+        a = self.lane(1, "same.txt", "lane\n", when=OLD)
+        self.git("add", "same.txt")
+        self.git("commit", "-qm", "main moves")
+        return a
+
+    def run_land(self, resolver, claim=None, on_held=None, watch=None, wait=None):
+        """train.land in this process: the headless run is `resolver(tid, lane)`, the pilot's claim is taken as the detached
+        pilot would take it, and the train calls are recorded (one list of ids per train, in order). claim(p, tid) replaces
+        the claim-and-resolve (a resolve that never finishes); on_held runs once, the first time a claim reads as held (a
+        lane accepted meanwhile); watch's claim is read at each train (self.held_at_train); wait replaces RESOLVE_WAIT_S."""
+        from sampo import pilotsig
+        seen, real_train, real_held = [], train.train, pilotsig.held
+        pending = [on_held] if on_held else []
+        self.held_at_train = []
+
+        def trained(p, main, ids, *args, **kw):
+            seen.append(list(ids))
+            if watch:
+                self.held_at_train.append(real_held(c.find_brief(p, watch)))
+            return real_train(p, main, ids, *args, **kw)
+
+        def held_watch(b):
+            res = real_held(b)
+            if res and pending:
+                pending.pop()()
+            return res
+
+        def claim_and_resolve(p, tid):
+            with c.lock(p.dir, timeout=5.0):
+                b = c.find_brief(p, tid)
+                b.meta["pilot_pid"] = str(os.getpid())
+                b.meta["pilot_kind"] = pilotsig.KIND
+                c.save_brief(p, b)
+            return pilotsig.resolve_run(p, tid)
+
+        def headless(p, tid, lane, agent, prompt, left):
+            self.calls.append(tid)
+            return resolver(tid, lane)
+        bound = mock.patch.object(train, "RESOLVE_WAIT_S", wait, create=True) if wait is not None else contextlib.nullcontext()
+        with bound, mock.patch.object(train, "train", trained), \
+                mock.patch.object(pilotsig, "held", held_watch), \
+                mock.patch.object(pilotsig, "resolve", side_effect=claim or claim_and_resolve), \
+                mock.patch.object(pilotsig, "_headless", side_effect=headless), \
+                mock.patch.object(pilotsig, "spawn", return_value=1), \
+                mock.patch.object(pilotsig, "tick", return_value=[]), \
+                mock.patch.object(pilotsig, "claude_found", return_value=True), \
+                mock.patch.object(pilotsig, "budget_high", return_value=False), self.in_project():
+            got = train.land(self.p, self.repo, None)
+        return got, seen
+
+    def test_a_conflict_park_is_resolved_and_merged_by_the_same_land_with_no_lead_call(self):
+        a = self.conflict()
+        b = self.lane(2, "b.txt", when=OLD)
+        self.audited(a, b)
+        self.returned(a, "Lane one")
+        self.returned(b, "Lane two")
+        main = self.head()
+
+        def resolver(tid, lane):  # the resolver's run: trunk merged in, both sides kept, committed, its own checks run
+            subprocess.run(["git", "-C", lane, "merge", "-q", "--no-edit", main], capture_output=True)
+            with open(os.path.join(lane, "same.txt"), "w") as f:
+                f.write("main\nlane\n")
+            subprocess.run(["git", "-C", lane, "add", "same.txt"], check=True)
+            subprocess.run(["git", "-C", lane, "commit", "-qm", "resolve the conflict"], check=True, capture_output=True)
+            self.audited(tid)
+            self.record_clean_run(tid)
+            from sampo import pilotsig
+            return pilotsig._Run(True, "")
+        got, seen = self.run_land(resolver)
+        self.assertEqual(self.calls, [a], "the resolver ran once, for the parked lane")
+        self.assertEqual(seen, [[b], [a]], "the parked lane is re-queued into the same land's next train: " + str(seen))
+        self.assertEqual([t for t, _ in got["parked"]], [], got)
+        subjects = subprocess.run(["git", "-C", self.repo, "log", "--format=%s", "HEAD"], capture_output=True, text=True)
+        self.assertIn("resolve the conflict", subjects.stdout, "the resolved lane's commit landed on trunk")
+
+    def test_two_failed_tries_leave_a_hand_row_that_names_both_sides_hunks(self):
+        a = self.conflict()
+        self.audited(a)
+        self.returned(a, "Lane one")
+        from sampo import pilotsig
+        got, _ = self.run_land(lambda tid, lane: pilotsig._Run(True, ""))  # a run that ends and changes nothing
+        self.assertEqual(len(self.calls), 2, "two tries, then the pilot gives up: " + str(self.calls))
+        self.assertEqual([t for t, _ in got["parked"]], [a], got)
+        log = self.brief(a).section("Log")
+        self.assertIn("gave up on the merge conflict after 2 tries", log)
+        self.assertIn("hunks: same.txt (main L1; lane L1)", log, "the hand row names both sides' hunks: " + log)
+
+    def test_overlapping_lanes_train_in_two_passes_with_the_merge_between(self):
+        a = self.lane(1, "a1.py", "def shared_step():\n    return 1\n", when=OLD)
+        b = self.lane(2, "b1.py", "def shared_step():\n    return 2\n", when=OLD)
+        self.audited(a, b)
+        self.returned(a, "Lane one")
+        self.returned(b, "Lane two")
+        got, seen = self.run_land(lambda tid, lane: self.fail("no resolve for a lane nothing parked"))
+        self.assertEqual(seen, [[a], [b]], "an OVERLAP pair (both add shared_step) trains one after the other: " + str(seen))
+        self.assertEqual([t for t, _ in got["parked"]], [], got)
+
+    def test_the_resolve_wait_is_twenty_minutes_not_the_pilots_two_hours(self):  # T-6102 review
+        self.assertEqual(train.RESOLVE_WAIT_S, 20 * 60, "a land waits for a running resolve 20 minutes at most")
+
+    def test_a_lane_accepted_mid_wait_trains_without_waiting_for_a_resolve_that_never_finishes(self):  # T-6102 review
+        """The resolve's claim stays held for the whole test (a stub that never finishes: its claim is held for 30 s more,
+        far short of the pilot's cap), and the land waits for it only up to RESOLVE_WAIT_S (0.5 s here). A lane accepted
+        while the land waits is trained at once, while the resolve still runs; the parked lane stays parked at the bound."""
+        from sampo import pilotsig
+        a = self.conflict()
+        self.audited(a)
+        self.returned(a, "Lane one")
+        c_ = self.lane(3, "c.txt", "lane3\n", when=OLD)
+        self.audited(c_)
+        self.returned(c_, "Lane three")
+        lane3 = os.path.join(self.tmp, "lane3")
+        with open(os.path.join(lane3, "c.txt"), "w") as f:  # an edit not committed: not finished, so not queued at the start
+            f.write("lane3 edited\n")
+
+        def never_finishes(p, tid):
+            with c.lock(p.dir, timeout=5.0):
+                b = c.find_brief(p, tid)
+                b.meta["pilot_kind"] = pilotsig.KIND
+                b.meta["claude_starting"] = str(int(time.time() - pilotsig.VERB_WALL_S + 30))
+                c.save_brief(p, b)
+
+        def accept_c():  # `sampo lane accept` meanwhile: the edit is committed (the tree is clean), the lane is --first
+            subprocess.run(["git", "-C", lane3, "checkout", "--", "c.txt"], check=True)
+            train.first_ids(self.p, [c_])
+        got, seen = self.run_land(lambda tid, lane: self.fail("no resolve runs: the claim never finishes"),
+                                  claim=never_finishes, on_held=accept_c, watch=a, wait=0.5)
+        self.assertEqual(seen, [[c_]], "the lane accepted mid-wait trains while the resolve still runs: " + str(seen))
+        self.assertEqual(self.held_at_train, [True], "the resolve was still held at that train: " + str(self.held_at_train))
+        self.assertEqual([t for t, _ in got["parked"]], [a], "the resolve that never finished stays parked at the bound: " + str(got))
 
 
 if __name__ == "__main__":

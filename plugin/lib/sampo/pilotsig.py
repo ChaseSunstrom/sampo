@@ -53,6 +53,9 @@ MAX_USD = "5"  # one headless run's dollars (claude -p --max-budget-usd)
 MAX_LIVE = 2  # headless runs alive at once across all lanes
 BUDGET_STOP = 80  # percent of a usage window past which no headless run starts
 NAME_MAX = 120  # a conflicted file's name in the prompt is cut to this many characters
+SIDES_FILES = 3  # T-6102: the conflicted files whose hunks a hand row names (the first this many, in name order)
+SIDES_HUNKS = 3  # T-6102: the hunks a side's words name per file, then "+N more"
+SIDES_MAX = 240  # T-6102: the whole hunks words, cut to this many characters (a brief's text is data, never long)
 KIND = "resolve"  # the brief's pilot_kind while a headless resolver pilot holds the claim (MAX_LIVE counts these)
 
 
@@ -669,9 +672,9 @@ def _shape(p, b):
     return train.clash_shape(main, "HEAD", tip, timeout=60)
 
 
-def _note_try(p, tid, cause, shape):
-    """The brief's resolve_causes (one class per failed try) and resolve_shape (the conflict's, once): read by _stuck for the
-    lead's line, since the cap is told by a later pilot that never saw the runs."""
+def _note_try(p, tid, cause, shape, sides=""):
+    """The brief's resolve_causes (one class per failed try), resolve_shape and resolve_sides (the conflict's, once): read by
+    _stuck for the lead's line, since the cap is told by a later pilot that never saw the runs."""
     with c.lock(p.dir, timeout=5.0):
         b = c.find_brief(p, tid)
         if b is None:
@@ -680,7 +683,56 @@ def _note_try(p, tid, cause, shape):
         b.meta["resolve_causes"] = (got if isinstance(got, list) else []) + [cause]
         if shape and not b.meta.get("resolve_shape"):
             b.meta["resolve_shape"] = shape
+        if sides and not b.meta.get("resolve_sides"):
+            b.meta["resolve_sides"] = sides
         c.save_brief(p, b)
+
+
+def _side_hunks(repo, base, rev, f):
+    """T-6102: the new-side line spans that `rev` changed in file f against `base` ('L3, L10-12 +1 more'; 'none' when it changed
+    none). `-U0`: the spans are the changed lines themselves; a span of no lines (a deletion) names its line."""
+    out = subprocess.run(["git", "-C", repo, "diff", "-U0", "--no-color", "--no-ext-diff", base, rev, "--", f],
+                         capture_output=True, text=True, errors="replace", timeout=60).stdout
+    spans = []
+    for m in re.finditer(r"^@@ -\S+ \+(\d+)(?:,(\d+))? @@", out, re.M):
+        start, n = int(m.group(1)), int(m.group(2) or 1)
+        spans.append(f"L{start}" if n <= 1 else f"L{start}-{start + n - 1}")
+    if not spans:
+        return "none"
+    more = len(spans) - SIDES_HUNKS
+    return ", ".join(spans[:SIDES_HUNKS]) + (f" +{more} more" if more > 0 else "")
+
+
+def _sides(p, b):
+    """T-6102: the hunks each side of the conflict changed in the files it is on, read before the first run so the hand row
+    names both sides (the main checkout's HEAD against the park's tip, from their merge base): 'same.txt (main L1; lane L1)'
+    per file, '; ' between them. '' when the park's tip is not a commit of the main checkout, or there is no conflict."""
+    tip = str(b.meta.get("lane_stop_tip") or "")
+    if not re.fullmatch(r"[0-9a-f]{7,64}", tip):
+        return ""
+    main = c.main_worktree(p.root) or p.root
+    if subprocess.run(["git", "-C", main, "cat-file", "-e", f"{tip}^{{commit}}"], capture_output=True, timeout=30).returncode:
+        return ""
+    from sampo import train
+    got = train._clash(main, "HEAD", tip, timeout=60)
+    if not got or not got[0]:
+        return ""
+    base = subprocess.run(["git", "-C", main, "merge-base", "HEAD", tip], capture_output=True, text=True, timeout=60,
+                          check=True).stdout.strip()
+    words = [f"{_name(f)} (main {_side_hunks(main, base, 'HEAD', f)}; lane {_side_hunks(main, base, tip, f)})"
+             for f in got[0][:SIDES_FILES]]
+    return c.fit("; ".join(words), SIDES_MAX)
+
+
+def _first_sides(p, b, plan_cause):
+    """T-6102: the sides' hunks for a merge-conflict try that has none recorded yet, read before the try's run; '' otherwise, or
+    when they cannot be read (guarded: they are a word for the hand row, never a reason to stop the run)."""
+    try:
+        if plan_cause == "merge_conflict" and not b.meta.get("resolve_sides"):
+            return _sides(p, b)
+    except Exception:  # noqa: BLE001
+        traceback.print_exc()
+    return ""
 
 
 def _first_shape(p, b, plan_cause):
@@ -694,7 +746,7 @@ def _first_shape(p, b, plan_cause):
     return ""
 
 
-def _note_failed_try(p, tid, lane, before, run, shape):
+def _note_failed_try(p, tid, lane, before, run, shape, sides=""):
     """T-6014: record a failed try's cause class and the conflict's shape (read before the run, '' if none). Every step is
     guarded: a cause that cannot be read says 'unknown', and one that cannot be saved is lost, never the run's report or
     its claim's release (resolve_run goes on to its next try or to _stuck)."""
@@ -704,7 +756,7 @@ def _note_failed_try(p, tid, lane, before, run, shape):
         traceback.print_exc()
         cause = "unknown"
     try:
-        _locked(lambda: _note_try(p, tid, cause, shape))
+        _locked(lambda: _note_try(p, tid, cause, shape, sides))
     except Exception:  # noqa: BLE001
         traceback.print_exc()
 
@@ -719,7 +771,10 @@ def _why_words(b):
         causes += ["unknown"] * (min(len(_resolves(b)), RESOLVE_TRIES) - len(causes))
     causes = causes[-RESOLVE_TRIES:]
     shape = b.meta.get("resolve_shape") if b is not None else None
-    parts = ([f"causes: {', '.join(causes)}"] if causes else []) + ([f"conflict: {shape}"] if shape in SHAPES else [])
+    sides = b.meta.get("resolve_sides") if b is not None else None  # T-6102: the hunks each side changed (_sides)
+    sides = c.fit(sides, SIDES_MAX) if isinstance(sides, str) and sides else ""
+    parts = ([f"causes: {', '.join(causes)}"] if causes else []) + ([f"conflict: {shape}"] if shape in SHAPES else []) \
+        + ([f"hunks: {sides}"] if sides else [])
     return f" ({'; '.join(parts)})" if parts else ""
 
 
@@ -915,7 +970,7 @@ def _returned(p, tid, what):
             return
         if str(b.meta.get("pilot_pid")) == str(os.getpid()):
             b.meta.pop("pilot_pid", None)
-        for k in ("lane_stop", "lane_stop_tip", "resolve_reported", "resolve_causes", "resolve_shape"):
+        for k in ("lane_stop", "lane_stop_tip", "resolve_reported", "resolve_causes", "resolve_shape", "resolve_sides"):
             b.meta.pop(k, None)
         b.meta["builder_returned"] = c.now()
         b.append_log(f"lane pilot: a headless agent resolved the {what}; it returns to the review")
@@ -980,12 +1035,13 @@ def resolve_run(p, tid):
         lane = str(b.meta["lane"])
         before = _head(lane)
         shape = _first_shape(p, b, cause)  # before the run: the conflict it faces, read once
+        sides = _first_sides(p, b, cause)  # T-6102: and the hunks each side changed in it, for the hand row
         run = _headless(p, tid, lane, agent, prompt, deadline - time.monotonic())
         if _head(lane) != before and _clean(lane):
             _returned(p, tid, what)
             spawn(p, tid)
             return {"outcome": "returned", "why": ""}
-        _note_failed_try(p, tid, lane, before, run, shape)  # the try failed: its cause class, for the lead's line
+        _note_failed_try(p, tid, lane, before, run, shape, sides)  # the try failed: its cause class, for the lead's line
     _release(p, tid)
     return {"outcome": "failed", "why": "no count"}
 

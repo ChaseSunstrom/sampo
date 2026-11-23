@@ -7132,7 +7132,7 @@ class WsRig(ForemanTestCase):
             patch = mock.patch.object(target, name, new)
             patch.start()
             self.addCleanup(patch.stop)
-        self.cfg = os.path.join(self.tmp, "cfg")
+        self.cfg = self.safe_config_dir()  # T-6020: a folder whose chain a launcher trusts, never one under /tmp (test_lanes.py:7178)
         self.folder = os.path.join(self.cfg, "projects", "".join(ch if ch.isalnum() else "-" for ch in self.repo))
         os.makedirs(os.path.join(self.folder, "lead-1", "subagents"))
         self.t0 = datetime.datetime.now(datetime.timezone.utc).timestamp() - 10 * 3600

@@ -3858,6 +3858,21 @@ def _park_kind(why):
     return "refused", ""
 
 
+def _overlap_split(main, ids, by):
+    """T-6102: (ids, late): `ids` cut before its first lane that overlaps an earlier lane of the batch (lane_overlap: both add
+    a def, or both touch a file, hub files aside), the cut lanes in `late` in order. A lane git can't read is paired with
+    nothing, as lane list pairs it (lane_overlap.facts); a batch with no overlap is (ids, [])."""
+    if len(ids) < 2:
+        return ids, []
+    from sampo import lane_overlap
+    base = c._git(main, "rev-parse", "HEAD", timeout=10).strip()
+    fx = {t: lane_overlap.facts(str((by[t].meta or {}).get("lane") or ""), base) for t in ids}
+    for j in range(1, len(ids)):
+        if any(lane_overlap.overlap({ids[i]: fx[ids[i]], ids[j]: fx[ids[j]]}) for i in range(j)):
+            return ids[:j], ids[j:]
+    return ids, []
+
+
 def _pilot_parks(p, parked, tick=True):
     """T-5766: after the land marked its parks, the lane pilot is asked for each conflict park (a refusal or a guard's grant
     is a person's): one detached headless resolver, under the pilot's single-flight claim, 2 h cap and SAMPO_LANE_PILOT
@@ -4273,6 +4288,7 @@ def start_verify(p, main, owed):
 
 
 CLOSE_POLL_S = 3.0  # T-5368: a land waiting on its closes looks for a lane named --first (one accepted is) this often
+RESOLVE_WAIT_S = 20 * 60  # T-6102: a land with nothing else to train waits this long for a conflict park's resolve, at most
 LOCK_RETRIES = 3  # T-5793: a train refused because a close held trunk is tried again this many times in a row, then the land stops
 LOCK_FAST_S = 30.0  # T-5793: a refusal after a full close wait (CLOSE_WAIT_S) is tried again once, never three times: that was an hour
 CLOSE_RETRIES = 2  # a close whose trunk moved under its run (a train's fast-forward) runs again this many times, then waits
@@ -4483,6 +4499,7 @@ def _land_trains(p, main, batch, owed, closer=None):
     closed, hand, shipped = [], [], None
     settled = []  # T-5535: the closes that settled a gap of their own (the summary's "N settled")
     by, tested = {}, {}  # T-3994: each lane's brief, and the tip each verdict judged (a park holds only that tip)
+    resolving = {}  # T-6102: a conflict park's lane -> the tip it parked at; a new commit after the lane pilot's resolve brings it back
     pipes = set()  # T-5735: the sorted lanes whose diff touches the pipeline (express, whatever their type)
     times, background, asked = [], not os.environ.get("FOREMAN_NO_BACKGROUND") and not c.panicked(), False
     ship_failed = None  # the newest request's failure to start a ship (None once a later one started or joined)
@@ -4625,6 +4642,7 @@ def _land_trains(p, main, batch, owed, closer=None):
                 print(f"sampo lane land: {i}: its park is not marked yet: {c.fit(c.plain(str(e)), 160)}", file=sys.stderr, flush=True)
                 continue  # unmarked: the pilot would see no park; the end pass marks it and asks
             if _park_kind(w)[0] == "conflict":  # T-5876: the resolver starts now, not 30 to 60 minutes later at the land's end
+                resolving[i] = tested.get(i, "")  # T-6102: the land takes the lane back when its resolve commits
                 _pilot_parks(p, [(i, w)], tick=False)  # (never raises into the land; the end pass asks again and ticks)
 
     pilot_asked, review_memo = set(), {}  # T-5968: lanes whose review the land asked the lane pilot for; one review look per lane and tip
@@ -4740,6 +4758,38 @@ def _land_trains(p, main, batch, owed, closer=None):
             if ready or first_ids(p, peek=True):
                 return True
         return False
+    resolve_end = [None]  # T-6102: the wait's deadline, set at its first entry: the bound counts across the trains it yields to
+
+    def resolve_back():
+        """T-6102: a conflict park the lane pilot resolved (a commit on the lane since it parked) joins this land's queue again,
+        sorted as any lane is (its check at the new tip, its clash with trunk), and trains in the next train with no lead call.
+        The headless resolve may still be running: with nothing else ready the land waits for it, up to RESOLVE_WAIT_S. A
+        resolve still running at that bound stays parked (the pilot's own re-queue or the next land picks it up). A lane
+        accepted meanwhile does not wait for it: the wait ends at once, the loop trains that work, and checks this again on
+        its next pass (`resolving` kept). A park the pilot gave up on (no new commit) stays parked: its hand row names both
+        sides' hunks. True when a lane came back or other work waits."""
+        from sampo import pilotsig
+        if resolve_end[0] is None:
+            resolve_end[0] = time.monotonic() + RESOLVE_WAIT_S
+        while resolving and time.monotonic() < resolve_end[0] and not c.panicked():
+            now = {b.id: b for b in c.load_briefs(p)}
+            if not any(t in now and pilotsig.held(now[t]) for t in resolving):
+                break
+            if ready or first_ids(p, peek=True):  # T-6102 review: other work is not held back by a resolve
+                return True
+            ensure_pm()
+            time.sleep(CLOSE_POLL_S)
+        resolve_end[0] = None  # the wait is over (the bound, the resolve's end, or a stop): a later park starts its own
+        now = {b.id: b for b in c.load_briefs(p)}
+        back = [t for t, at in resolving.items() if t in now and not pilotsig.held(now[t]) and tip(now[t]) != at]
+        resolving.clear()  # a park the pilot is still running on (the bound ran out) is said as parked; a later park re-adds it
+        if not back:
+            return False
+        parked[:] = [x for x in parked if x[0] not in back]
+        print(f"sampo lane land: {', '.join(back)}: resolved by the lane pilot: back in the queue", file=sys.stderr, flush=True)
+        sort(now[t] for t in back)
+        return bool(ready)
+
     left = landed + gone  # merged and open (a train by hand, a land cut short): closed after each train's own (T-3884)
     fixwait.update(_fix_waiting(p, main, left))  # T-5791: an earlier land's closes that wait for their FIX stay out of the closes
     # T-5873: every merged-and-open leftover goes on the closer in the land's first round (not a few per train boundary: a
@@ -4820,6 +4870,8 @@ def _land_trains(p, main, batch, owed, closer=None):
                 continue
             if wait_checks():  # T-5561: a stale lane's check the land started: it trains when that check is green
                 continue
+            if resolve_back():  # T-6102: a lane the pilot resolved is back in the queue: the next train takes it
+                continue
             break
         # T-5444: live, one train for all. T-5023: gated, an express lane at the head leaves the ordinary lanes' train and
         # trains alone; T-5857/T-5932: live the express lanes only lead (sorted first, merged first) and the ordinary
@@ -4834,6 +4886,11 @@ def _land_trains(p, main, batch, owed, closer=None):
             if (o := next((i for i, t in enumerate(ready) if t not in alone), None)) is not None:
                 # the first ordinary lane takes the train's last slot; the express lane it displaces leads the next train
                 ids, ready = ids[:-1] + [ready[o]], ids[-1:] + ready[:o] + ready[o + 1:]
+        ids, late = _overlap_split(main, ids, by)  # T-6102: two OVERLAP lanes train in successive passes, the merge between them
+        if late:
+            ready = late + ready
+            print(f"sampo lane land: {', '.join(late)} overlaps a lane of train {trains + 1} (lane list's OVERLAP): "
+                  "it trains in the next, after that merge", file=sys.stderr, flush=True)
         if said != (trains, tuple(ids)):  # T-5793: a train tried again is not announced again
             print(f"sampo lane land: train {trains + 1}: {', '.join(ids)}", file=sys.stderr, flush=True)
             said = (trains, tuple(ids))
