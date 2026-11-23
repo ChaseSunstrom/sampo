@@ -617,6 +617,102 @@ def _wreck_aside(p, b, main, path, branches):
 
 SIZES = ((4000, "up to 4k chars"), (8000, "up to 8k"), (16000, "up to 16k"), (None, "more"))  # T-2368
 OWN_MAX = 4000  # T-2517: a task's own sections past this land 57% in a lane against 97% (fm lane stats, Oct 21-31)
+OWN_CAP = 8000  # T-6047: past this a builder brief is refused at plan time (T-6036: first-time landing 93% at 8k or less, 48% over 16k)
+OWN_SECTIONS = ("Raw request", "Interpretation", "Approach (options → choice → why)", "Acceptance criteria", "Steps")
+SHARED_SECTIONS = ("Raw request", "Interpretation", "Approach (options → choice → why)")  # every part of a split repeats these
+
+
+def own_chars(b):
+    """T-2517: the task's own text in a builder brief (the fixed preamble, contract and card sections are not its own)."""
+    return sum(len(b.section(s)) for s in OWN_SECTIONS)
+
+
+def shared_chars(b):
+    """T-6047: the sections every part of a split repeats (raw request, interpretation, approach), in chars."""
+    return sum(len(b.section(s)) for s in SHARED_SECTIONS)
+
+
+def split_criteria(b, cap=OWN_CAP):
+    """T-6047: b's criteria packed in order into the fewest chained parts (two or more) that each hold under `cap` chars:
+    [{"acs": [Criterion], "steps": [Step], "chars": the part's own text}], or [] when no count fits. A part carries the
+    shared sections, its criteria and a contiguous, even share of the steps."""
+    shared, acs, steps = shared_chars(b), b.acceptance(), b.steps()
+    size = lambda x: len(x.text) + 6  # noqa: E731  the "- [ ] " a criterion or step line carries
+    for n in range(2, len(acs) + 1):
+        mine = [steps[len(steps) * k // n:len(steps) * (k + 1) // n] for k in range(n)]
+        room = lambda k: cap - shared - sum(map(size, mine[k]))  # noqa: E731
+        groups = [[]]
+        for a in acs:
+            k = len(groups) - 1
+            if groups[k] and sum(map(size, groups[k])) + size(a) > room(k):  # this part is full: the next starts with a
+                if k + 1 >= n:
+                    break
+                groups.append([])
+                k += 1
+            groups[k].append(a)
+        else:
+            parts = [{"acs": g, "steps": mine[k], "chars": shared + sum(map(size, g)) + sum(map(size, mine[k]))}
+                     for k, g in enumerate(groups)]
+            if len(parts) >= 2 and all(x["chars"] <= cap for x in parts):
+                return parts
+    return []
+
+
+def _split_script(p, b, parts):
+    """T-6047: the sh script that makes the chained tasks, written beside the brief: each `sampo task new` quoted, part k's
+    --depends the id the line part k-1 printed, part 1 keeping the task's own scope and dependencies. Its path."""
+    q, n = shlex.quote, len(parts)
+    sampo = q(os.path.join(c.PLUGIN_ROOT, "bin", "sampo"))
+    lines = ["#!/bin/sh", f"# T-6047: {b.id} split into {n} chained lanes (written by sampo lane brief {b.id}); run it with sh"]
+    for k, part in enumerate(parts, 1):
+        argv = [sampo, "-p", q(p.slug), "task", "new", q(f"{b.title} (part {k}/{n})"), "--type", q(b.type), "--tier", q(b.tier)]
+        for flag, vals in (("--scope", [q(s) for s in b.meta.get("scope") or []]),
+                           ("--depends", [f'"$P{k - 1}"'] if k > 1 else [q(d) for d in b.meta.get("depends_on") or []])):
+            argv += [x for v in vals for x in (flag, v)]
+        for flag, text in (("--raw", b.section("Raw request")), ("--interpretation", b.section("Interpretation")),
+                           ("--approach", b.section("Approach (options → choice → why)"))):
+            if text.strip():
+                argv += [flag, q(text.strip())]
+        argv += [x for a in part["acs"] for x in ("--ac", q(a.text))] + [x for s in part["steps"] for x in ("--step", q(s.text))]
+        lines += [f"O{k}=$({' '.join(argv)}) || exit 1", f"P{k}=${{O{k}%% *}}", f'echo "part {k}/{n}: $P{k}"']
+    lines.append(f"echo 'now drop the whole task: sampo task drop {b.id}'")
+    path = os.path.join(p.dir, "audits", f"{b.id}.split.sh")
+    with c.lock(p.dir):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        c.write_atomic(path, c.redact("\n".join(lines)) + "\n")
+    return path
+
+
+def size_refusal(p, b, own, cap=OWN_CAP, full=True):
+    """T-6047: the refusal for a brief whose own text is `own` chars: the measured reason, then with `full` the split into
+    chained lanes (a script beside the brief, one line per part here) and the override. Without it (a batch, a race, a big
+    task's children: their reason is one line in a list) one line naming the call that prints the rest."""
+    one = (f"{b.id} is not briefed: its own sections are {own} chars, past the {cap} cap (first-time landing was 93% at 8k "
+           f"chars or less against 48% over 16k, T-6036: a smaller lane lands the first time more than chaining costs)")
+    if not full:
+        return f"{one}; sampo lane brief {b.id} prints the split into chained lanes, or --oversize REASON briefs it whole"
+    parts = split_criteria(b, cap)
+    if not parts:
+        acs, shared = b.acceptance(), shared_chars(b)
+        big = max((len(a.text) + 6 for a in acs), default=0)
+        cause = (f"it has {len(acs)} criteria, nothing to split by: shorten its text, or cut the work in two by hand"
+                 if len(acs) < 2 else
+                 f"the raw request, interpretation and approach are {shared} chars and every part repeats them: shorten them "
+                 f"(sampo task set {b.id} --section Interpretation --text …)"
+                 if shared + big > cap else
+                 f"the steps ({len(b.section('Steps'))} chars) and the criteria do not pack into parts under {cap}: "
+                 f"shorten the steps")
+        return (f"{one}.\nNo split by criteria fits: {cause}.\nOr brief it whole with a reason: sampo lane brief {b.id} "
+                f"--oversize REASON")
+    path, n = _split_script(p, b, parts), len(parts)
+    lines = [f"{one}.\nSplit it into {n} chained lanes; each part repeats the raw request, interpretation and approach "
+             f"({shared_chars(b)} chars) and takes its share of the steps:"]
+    lines += [f"  part {k}/{n} (~{x['chars']} chars): criteria {', '.join(str(a.n) for a in x['acs'])}"
+              + (f", depends on part {k - 1}" if k > 1 else "") for k, x in enumerate(parts, 1)]
+    lines.append(f"Make them: sh {shlex.quote(path)}  (one sampo task new per part, each after the one before it with "
+                 f"--depends), then drop this one: sampo task drop {b.id}.\nOr brief it whole with a reason: sampo lane "
+                 f"brief {b.id} --oversize REASON (logged)")
+    return "\n".join(lines)
 
 
 def _brief_chars(p, path, tid, later):
@@ -1075,7 +1171,7 @@ def cmd_lane(args):
     if args.action == "pick":
         return pick(p, b, main, args)
     if args.action == "brief":
-        return builder_brief(p, b, args)
+        return builder_brief(p, b, args, single=True)
     if args.action == "local":  # T-5884: the headless run of a --model local brief: detached, or --foreground here
         if getattr(args, "foreground", False):
             rc = local_run(p, b)
@@ -5077,7 +5173,7 @@ def _autofill(p, b):
     return b, done
 
 
-def builder_brief(p, b, args, resume_branch=None, after="", stacked=None):
+def builder_brief(p, b, args, resume_branch=None, after="", stacked=None, single=False):
     """T-0234: a self-contained brief for one S/M task worked by a sampo:fm-builder subagent in its own worktree
     (Agent isolation "worktree"; its `fm focus` binds the task there), and the Agent call that launches it. The main
     thread reviews the branch, merges it, refocuses the task here, re-runs its criteria and closes it."""
@@ -5133,6 +5229,16 @@ def builder_brief(p, b, args, resume_branch=None, after="", stacked=None):
         if said:
             c.log_plan_gate_refused(p, gaps, task=b.id, where="lane")  # T-5887: cardmine counts the kinds that repeat
             raise c.PolicyError(said)
+    own = own_chars(b)
+    oversize = ""  # T-6047: why a brief past the cap was written anyway, one line: --oversize REASON, or a resume
+    if own > OWN_CAP and resume_branch is not None:  # a lane that was built is finished, not refused: the skip is logged
+        oversize = "resume of a lane already built: the cap holds for a new lane only"
+    elif own > OWN_CAP:
+        # --oversize is read for the one call that names a task (sampo lane brief ID): a batch, a race and a big task's
+        # children never pass it on, so one reason cannot lift the cap for every oversize task in a run
+        oversize = " ".join(((getattr(args, "oversize", None) or "") if single else "").split())
+        if not oversize:
+            raise c.PolicyError(size_refusal(p, b, own, full=single))
     if not [v for _, v in b.verify_cmds() if v]:
         raise cli.UsageError(f"{b.id} has no criterion with a verify command: a builder needs checks it can run "
                                f"(fm task ac {b.id} add \"…\" --verify \"<cmd>\")")
@@ -5341,6 +5447,8 @@ def builder_brief(p, b, args, resume_branch=None, after="", stacked=None):
         x.append_log(f"builder brief: {path}")
         if fell:  # T-5884: the reason a --model local brief went to sonnet
             x.append_log(f"local builder unavailable: {fell}; briefed for sonnet")
+        if oversize:  # T-6047: past the size cap on the builder's say-so: the reason stays on the task
+            x.append_log(f"builder brief past the {OWN_CAP}-char cap ({own} chars), briefed anyway: {c.fit(oversize, 300)}")
     effort = "medium" if b.tier == "S" else "high"
     light = plan_model(b)  # T-5714: a trivial or small change by its scope: haiku at medium effort, unless --model says
     if light:  # a light lane skips the route: it promotes no model and fills no probe window
@@ -5362,14 +5470,16 @@ def builder_brief(p, b, args, resume_branch=None, after="", stacked=None):
     if paused:  # T-5562: the hook rewrites a launch to haiku while the hold lasts; the printed call says so up front
         chosen, route, probe = budget.HELD_MODEL, f"{budget.HELD_MODEL} while usage is ahead of pace ({paused})", False
     cli.mutate(p, b.id, mark, "lane_builder", {"path": path, "chars": len(text)})  # T-2368: fm lane stats
+    if oversize:  # T-6047: the ledger keeps the override beside the lane's own events
+        c.log_event(p, "lane_brief_oversize", task=b.id, data={"chars": own, "cap": OWN_CAP, "why": c.fit(oversize, 300)})
     # T-1796: builders run on Sonnet (Opus M lanes were 22% of a week's usage); the main thread reviews either. T-5714:
     # except a trivial or small change by its scope (docs, tests, a claimed S), which runs on haiku at medium effort.
     # T-0779: and its effort follows the tier: medium for small well-specified diffs, high for M
     model = f', model: "{chosen}", effort: "{effort}"'
     agent = f'{AGENT_HEAD}{model}, {agent_prompt(path)}'
-    own = sum(len(b.section(s)) for s in ("Raw request", "Interpretation", "Approach (options → choice → why)",
-                                          "Acceptance criteria", "Steps"))
-    if own > OWN_MAX:  # T-2517: big tasks land worse in a lane; advice, never a refusal (the brief is written)
+    if own > OWN_CAP:  # T-6047: written past the cap (--oversize or a resume): the warning names the cap, not "split it"
+        warns.append(f"{b.id}'s own sections are {own} chars, past the {OWN_CAP} cap: briefed anyway ({oversize})")
+    elif own > OWN_MAX:  # T-2517: from OWN_MAX up to the cap: advice, the brief is written
         rows = stats(p)
         rate = lambda labs: (f"{sum(r['landed'] for r in rows if r['size'] in labs)} of "  # noqa: E731
                              f"{sum(r['briefs'] for r in rows if r['size'] in labs)}")

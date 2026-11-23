@@ -12676,6 +12676,9 @@ def _build_parser(only=None):
                                                    "goes); the next sampo lane brief starts from this (T-1823); brief: start "
                                                    "this builder although more than two trains of finished lanes wait to "
                                                    "land (T-4938)")
+    s.add_argument("--oversize", metavar="REASON", help="brief ID: write the brief although the task's own sections are past "
+                   "the 8000-char cap (first-time landing 93%% at 8k or less against 48%% over 16k); the reason is logged. Read "
+                   "for one named task only: never for --ready, a race or a big task's children (T-6047)")
     s = add("session", lazy("sampo.session", "cmd_session"), tier=("Running elsewhere", 1160), help="agent sessions on this device (claude, codex, gemini (legacy), "
                                                                 "opencode, agy, cursor), detached: start MESSAGE, list, tail ID, "
                                                                 "send ID MESSAGE, stop ID, rm ID, agents")
