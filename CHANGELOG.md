@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- A local model that spends two calls of one run on thinking with no text now runs the rest of that run with thinking off, and its profile record says so (T-6107).
 - The lane pilot now runs a headless fix session in a lane with MEDIUM-or-worse findings, re-reads the lenses it needs, at most 2 rounds, and hands a lane still red back as changes_asked with one exception line (T-5707).
 - The builder brief shows a model-written test command only when an allowlisted runner runs it in an allowed form; any other command drops the working-set note (T-6112).
 - A local builder run's deadline now grows with the plan's steps and the measured speed (cap 90 min), a --lane run cut by its deadline exits 75 and the wrapper resumes it once, a verify that names no test is a round to write the test rather than a failed fix, and an own endpoint's context is capped at 16k tokens (T-6090).
