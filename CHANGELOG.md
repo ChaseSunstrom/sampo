@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- The clear pass deletes through directory fds opened O_NOFOLLOW from the lane root and refuses while a process still lives in the lane, so a folder swapped for a link mid-clear deletes nothing outside the lane (T-6227).
 - The pilot retries a lane stamped under an earlier pilot code once, sampo lane pilot ID --retry clears one lane's stamp (a task id only), and a land that changes the pilot's code starts one gated sweep (T-6226).
 - sampo lane brief holds a new lane when the weekly usage cap is projected within the p90 brief-to-merge time plus 30 min, so no lane is stranded mid-flight (T-6221).
 - Pilot fix rounds start in a lane under ~/.claude even when a sibling entry has a glob character in its name, denied by a widened pattern (T-6229).
