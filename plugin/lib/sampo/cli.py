@@ -847,6 +847,49 @@ def _late_base(root):
     return fork or c.git_head(root)
 
 
+def _audit_from_review(p, args):
+    """T-5954: sampo task audit ID --from-review FILE: one audit per '## lens:' section of a reviewer's report, so the lead
+    doesn't re-type the lens, how and result it has just read. A row the task already holds is not recorded again. T-5954
+    round 2: a lens that needs changes (or has a finding above LOW) records nothing and exits 1, so the gate keeps it missing."""
+    from sampo import lanes as slanes
+    from sampo import train as _train
+    if args.lens or args.how or args.result:
+        raise UsageError("sampo task audit --from-review reads the lens, how and result from the report: give the id and "
+                         "--from-review FILE alone")
+    if not os.path.isfile(args.from_review):  # a FIFO or a device would block the read
+        raise UsageError(f"{args.from_review} is not a report file: nothing recorded")
+    try:
+        with open(args.from_review, "rb") as f:
+            raw = f.read(slanes.REVIEW_MAX + 1)
+    except OSError as e:
+        raise UsageError(f"cannot read the report {args.from_review}: {e.strerror or e}") from None
+    if len(raw) > slanes.REVIEW_MAX:
+        raise UsageError(f"the report {args.from_review} is over {slanes.REVIEW_MAX} bytes: nothing recorded")
+    rows = slanes.review_audits(raw.decode("utf-8", "replace"))
+    if not rows:
+        raise UsageError(f"{args.from_review} has no lens section (a '## lens: NAME' heading per lens): nothing recorded")
+    pre = need_brief(p, args.id)
+    tree = c.worktree_id(task_root(p, pre))  # the same tree stamp a hand-typed audit gets
+    b, lines, got, refused = pre, [], [], []
+    for r in rows:
+        lens, how, result = r["lens"], r["how"], r["result"]
+        if not r["ok"]:  # T-5954 round 2: a changes-needed lens is no audit, so the gate keeps it missing until a re-review
+            refused.append({"lens": lens, "findings": r["findings"], "result": result})
+            lines.append(f"{lens}: changes needed ({r['findings']} findings): fix first, then re-run --from-review")
+            continue
+        added = []
+
+        def add(x, lens=lens, how=how, result=result):
+            added.append(_train._add_audit_once(x, lens, how, result, tree))
+            return added[-1]
+
+        b, _ = mutate(p, args.id, add, "audit", {"lens": lens, "how": how[:200], "result": result[:300]})
+        got.append({"lens": lens, "how": how, "result": result, "recorded": added[0]})
+        lines.append(f"{b.id}: audit ({lens}) {'recorded' if added[0] else 'already recorded'}: {result}")
+    out(args, dict(c.brief_summary(b), recorded=got, refused=refused), "\n".join(lines))
+    return 1 if refused else 0  # a refused lens exits non-zero: the lead re-reviews it and runs the verb again
+
+
 def cmd_task(args):
     p = resolve(args)
     sub = args.task_cmd
@@ -855,7 +898,8 @@ def cmd_task(args):
         if own and own.meta.get("builder"):
             # T-4606: the refusal's last line is the one a '| tail' or a skimmer keeps: it names the command
             main = c.main_worktree(c.git_root(p.root) or p.root)
-            form = f"{args.id} {args.lens} <how> <result>" if sub == "audit" else args.id
+            form = (f"{args.id} --from-review FILE" if getattr(args, "from_review", None) else
+                    f"{args.id} {args.lens or '<lens>'} <how> <result>") if sub == "audit" else args.id
             err = c.PolicyError(f"{own.id} is a builder's task: the main thread reviews, merges and closes it (sampo lane "
                                 f"rm {own.id}, then sampo task {sub} from the main checkout); report back instead. "
                                 f"Nothing was written: `sampo task {sub}` from inside a lane never records on a builder's task")
@@ -1107,6 +1151,10 @@ def cmd_task(args):
             + (" as inconclusive: it never counts as passing; a sharper check is next." if args.inconclusive else "."))
         return code
     if sub == "audit":
+        if args.from_review:  # T-5954
+            return _audit_from_review(p, args)
+        if not (args.lens and args.how and args.result):
+            raise UsageError("sampo task audit needs LENS HOW RESULT, or ID --from-review FILE")
         if args.lens not in c.AUDIT_LENSES:
             raise UsageError(f"unknown lens {args.lens!r}; one of {', '.join(c.AUDIT_LENSES)}")
         pre = need_brief(p, args.id)
@@ -10378,9 +10426,11 @@ def _build_parser(only=None):
                    help="seconds to wait (default 100, under a tool call's 120 s limit); runs still going then: exit 124")
     t = tadd("audit")
     t.add_argument("id")
-    t.add_argument("lens", help=", ".join(c.AUDIT_LENSES))
-    t.add_argument("how")
-    t.add_argument("result")
+    t.add_argument("lens", nargs="?", help=", ".join(c.AUDIT_LENSES))
+    t.add_argument("how", nargs="?")
+    t.add_argument("result", nargs="?")
+    t.add_argument("--from-review", metavar="FILE", help="T-5954: a reviewer's report: one audit per '## lens:' section "
+                   "(how = its 'What I tried', result = its findings or clean); instead of LENS HOW RESULT")
     t = tadd("finish")  # one-call close-out: run the checks, mark them, audits, docs, done
     t.add_argument("id")
     t.add_argument("--dry", action="store_true", help="T-4147: list what a finish would refuse for (the same numbered "

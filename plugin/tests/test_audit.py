@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import time
+import unittest
 
 from helpers import ForemanTestCase
 from test_hooks import HookCase
@@ -1309,3 +1310,163 @@ class BriefSizeReal(HookCase):
         self.assertIn("Destructive sinks (mechanical, from the diff: each added", brief)
         self.assertEqual(data["context"], "")
         self.assertEqual([x for x in os.listdir(os.path.join(project.dir, "audits")) if ".context" in x], [])
+
+
+# T-5954: sampo task audit T-X --from-review FILE records one audit per '## lens:' section of a reviewer's report: how =
+# its 'What I tried' text, result = 'clean' or its findings. A report with no lens section is refused.
+CLEAN_REPORT = """**Verdict** — approve.
+
+## lens: intent
+**What I tried**
+Read the verb's parser and the criteria side by side, then the new rows' text.
+No findings.
+
+## lens: adversary
+**What I tried**
+Passed a report with no lens heading and a heading inside a code fence.
+No findings.
+
+**Acceptance criteria** — met.
+"""
+
+FINDINGS_REPORT = """**Verdict** — changes needed.
+
+## lens: edge
+**What I tried**
+Gave a report whose lens section is empty and one whose finding has no fix.
+- HIGH — `plugin/lib/sampo/cli.py:9150` — the report is read before its size is checked — check the size first — high
+
+## lens: intent
+**What I tried**
+Compared the criteria with the diff.
+No findings.
+"""
+
+
+class FromReviewRows(unittest.TestCase):
+    """T-5954: the rows a report's lens sections become (no repo needed)."""
+
+    def rows(self, msg):
+        from sampo import lanes as slanes
+        return slanes.review_audits(msg)
+
+    def test_a_clean_section_is_clean_and_how_is_its_what_i_tried(self):
+        got = self.rows(CLEAN_REPORT)
+        self.assertEqual([r["lens"] for r in got], ["intent", "adversary"])
+        self.assertEqual(got[0], {"lens": "intent", "how": "Read the verb's parser and the criteria side by side, then the new rows' text.",
+                                  "result": "clean", "findings": 0, "ok": True})
+
+    def test_a_finding_becomes_the_result_and_a_section_without_what_i_tried_still_has_a_how(self):
+        got = {r["lens"]: r for r in self.rows(FINDINGS_REPORT)}
+        self.assertEqual(got["edge"]["result"], "1 finding: HIGH the report is read before its size is checked")
+        self.assertEqual((got["edge"]["findings"], got["edge"]["ok"]), (1, False))
+        self.assertEqual((got["intent"]["how"], got["intent"]["result"], got["intent"]["ok"]),
+                         ("Compared the criteria with the diff.", "clean", True))
+        bare = self.rows("**Verdict** — approve.\n\n## lens: operator\nNo findings.\n")
+        self.assertEqual([(r["lens"], r["how"], r["result"], r["ok"]) for r in bare],
+                         [("operator", "the reviewer's report", "clean", True)])
+
+    def test_only_a_clean_or_low_only_lens_may_count_as_covered(self):  # T-5954 round 2: a changes-needed lens is no audit
+        def ok(text):
+            return [r["ok"] for r in self.rows(text)]
+        self.assertEqual(ok("## lens: edge\n- LOW — `a.py:1` — a name — rename — low\n"), [True])
+        self.assertEqual(ok("## lens: edge\n- MEDIUM — `a.py:1` — a gap — fix — high\n"), [False])
+        self.assertEqual(ok("## lens: edge\n- CRITICAL — `a.py:1` — a gap — fix — high\n"), [False])
+        self.assertEqual(ok("## lens: edge — changes needed\nNo findings.\n"), [False])
+        self.assertEqual(ok("## lens: edge — 3 findings: HIGH\n"), [False], "a heading that counts findings it does not list")
+        self.assertEqual(ok("## lens: edge\n- LOW — `a.py:1` — a name — rename — low\n+4 more omitted\n"), [False])
+        self.assertEqual(ok("## lens: edge\nNo findings.\n"), [True])
+
+    def test_a_report_with_no_lens_section_has_no_rows(self):
+        self.assertEqual(self.rows("**Verdict** — approve. Nothing found.\n"), [])
+        self.assertEqual(self.rows(""), [])
+
+    def test_a_section_that_is_not_checked_is_not_clean(self):
+        got = self.rows("## lens: edge — not checked (no runtime)\nNo findings.\n")
+        self.assertEqual([(r["how"], r["result"], r["ok"]) for r in got],
+                         [("the reviewer's report", "not checked (no runtime)", False)])
+
+    def test_a_lens_with_two_sections_is_one_row_with_both_sections_findings(self):  # review: rows stay one per lens
+        msg = ("## lens: edge\nNo findings.\n\n## lens: intent\nNo findings.\n\n"
+               "## lens: edge\n- LOW — `a.py:1` — a name — rename — low\n")
+        self.assertEqual([(r["lens"], r["how"], r["result"], r["ok"]) for r in self.rows(msg)],
+                         [("edge", "the reviewer's report", "1 finding: LOW a name", True),
+                          ("intent", "the reviewer's report", "clean", True)])
+
+
+class FromReview(ForemanTestCase):
+    """T-5954: sampo task audit T-X --from-review FILE, through the verb."""
+
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        self.tid = json.loads(self.fm("task", "new", "Fix login", "--type", "FIX", "--tier", "S", "--json").stdout)["id"]
+        self.fm("task", "step", self.tid, "add", "fix")
+        self.report = os.path.join(self.tmp, "report.md")
+
+    def write_report(self, text):
+        with open(self.report, "w", encoding="utf-8") as f:
+            f.write(text)
+        return self.report
+
+    def brief(self):
+        return c.find_brief(c.find_project(self.repo), self.tid)
+
+    def audit_rows(self):
+        return [x for x in self.brief().evidence() if c._AUDIT_RE.match(x)]
+
+    def test_from_review_records_one_audit_per_clean_lens(self):
+        p = self.fm("task", "audit", self.tid, "--from-review", self.write_report(CLEAN_REPORT))
+        rows = self.audit_rows()
+        self.assertEqual(len(rows), 2)
+        self.assertIn("(audit intent) `Read the verb", rows[0])
+        self.assertIn("→ clean", rows[0])
+        self.assertIn("(audit adversary)", rows[1])
+        self.assertIn("→ clean", rows[1])
+        self.assertEqual([lens for lens, _, _ in self.brief().audits()], ["intent", "adversary"])
+
+    def test_a_mixed_report_records_the_ok_lens_refuses_the_other_and_the_gate_still_blocks_it(self):  # T-5954 round 2
+        p = self.fm("task", "audit", self.tid, "--from-review", self.write_report(FINDINGS_REPORT), check=False)
+        self.assertNotEqual(p.returncode, 0, "a refused lens makes the verb exit non-zero")
+        rows = self.audit_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertIn("(audit intent)", rows[0])
+        self.assertNotIn("(audit edge)", "\n".join(rows), "a changes-needed lens records no audit")
+        self.assertIn("edge: changes needed (1 findings): fix first, then re-run --from-review", p.stdout)
+        blockers = self.brief().audit_blockers(need=("edge",))
+        self.assertTrue(any(r.startswith("audit missing: edge") for r in blockers), blockers)
+
+    def test_from_review_prints_what_it_recorded(self):
+        p = self.fm("task", "audit", self.tid, "--from-review", self.write_report(CLEAN_REPORT))
+        self.assertIn("audit (intent) recorded: clean", p.stdout)
+        self.assertIn("audit (adversary) recorded: clean", p.stdout)
+
+    def test_from_review_refuses_a_report_with_no_lens_section(self):
+        p = self.fm("task", "audit", self.tid, "--from-review",
+                    self.write_report("**Verdict** — approve. Nothing found.\n"), check=False)
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("no lens section", p.stdout + p.stderr)
+        self.assertEqual(self.audit_rows(), [], "a refused report records nothing")
+
+    def test_from_review_takes_the_report_alone(self):
+        p = self.fm("task", "audit", self.tid, "self", "how", "result", "--from-review",
+                    self.write_report(CLEAN_REPORT), check=False)
+        self.assertNotEqual(p.returncode, 0)
+        self.assertEqual(self.audit_rows(), [])
+
+    def test_from_review_refuses_a_path_that_is_not_a_file(self):  # review: a FIFO would block the read
+        p = self.fm("task", "audit", self.tid, "--from-review", self.tmp, check=False)
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("is not a report file", p.stdout + p.stderr)
+        self.assertEqual(self.audit_rows(), [])
+
+    def test_the_lens_how_result_form_still_records_one_audit(self):
+        self.fm("task", "audit", self.tid, "self", "one pass", "no findings")
+        self.assertEqual(len(self.audit_rows()), 1)
+
+    def test_from_review_twice_records_each_lens_once(self):
+        path = self.write_report(CLEAN_REPORT)
+        self.fm("task", "audit", self.tid, "--from-review", path)
+        p = self.fm("task", "audit", self.tid, "--from-review", path)
+        self.assertEqual(len(self.audit_rows()), 2, "accepting the same review twice records it once")
+        self.assertIn("already recorded", p.stdout)

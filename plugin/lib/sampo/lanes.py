@@ -3190,6 +3190,94 @@ def reviewer_lenses(msg):
     return {k: v for k, v in counts.items() if k not in unclean}
 
 
+REVIEW_MAX = 262144  # T-5954: the largest report sampo task audit --from-review reads whole
+REVIEW_HOW = "the reviewer's report"  # T-5954: the how of a lens section that names no 'What I tried'
+_TRIED = re.compile(r"(?i)^what i tried\s*(?:[:—–-]\s*|$)(.*)$")  # T-5954: the label, then any text on its line
+_TRIED_STOP = re.compile(r"(?i)^(?:no findings?\b|findings?\s*[:.]?$|clean\b|approve|changes needed|acceptance criteria\b"
+                         r"|implicit decisions\b|not checked\b|noticed\s*:|\+\d+ more omitted\b)")
+
+
+def _review_result(sec):
+    """T-5954: a lens section's result: its findings ('N findings: SEVERITY issue; …'), 'clean' when it has none and its
+    heading passes, else what its heading says ('not checked …'). A cut report never reads as clean."""
+    found = sec["findings"]
+    if found:
+        text = f"{len(found)} finding{'s' if len(found) != 1 else ''}: " + "; ".join(f"{s} {i}" for s, i in found[:3])
+        if len(found) > 3:
+            text += f" (+{len(found) - 3} more)"
+    elif sec["more"]:
+        return "findings cut from the report"
+    elif _clean_suffix(sec["suffix"]):
+        return "clean"
+    else:
+        return sec["suffix"][:300] or "not clean"
+    return (text + (" (more omitted)" if sec["more"] else ""))[:300]
+
+
+def _recordable(sec):
+    """T-5954 round 2: whether a lens may be recorded as an audit (the gate counts a recorded lens as covered). Only a lens
+    that passed or whose findings are all LOW: a changes-needed heading, a finding of any other severity, a cut list or a
+    heading that counts findings (its digits) keeps the lens out, so the gate still names it missing."""
+    if sec["more"] or not _clean_suffix(sec["suffix"]) or re.search(r"[1-9]", sec["suffix"]):
+        return False
+    return all(s == "LOW" for s, _ in sec["findings"])
+
+
+def review_audits(msg):
+    """T-5954: [{lens, how, result, findings, ok}] for each '## lens: X' section of a reviewer's report, in order; [] when it
+    has no lens section. how is the text under the section's 'What I tried' label (REVIEW_HOW when it has none: the text
+    ends at a blank line, a finding, a bullet or a line like 'No findings.'); result is _review_result; findings is the
+    count of the lens's findings; ok is _recordable (False: the verb refuses the lens). The text is the reviewer's, so
+    it is redacted here; the audit row cleans it again when it is recorded."""
+    sections, cur, state = [], None, 0  # state: 0 before the label, 1 reading its text, 2 done
+    for line, h in _report_lines(msg):
+        if h:
+            cur = {"lens": h.group(1).lower(), "suffix": h.group(2).strip(), "how": [], "findings": [], "more": False}
+            sections.append(cur)
+            state = 0
+            continue
+        if cur is None:
+            continue
+        if state == 1:
+            if not line:
+                state = 2 if cur["how"] else 1
+                continue
+            if not (_FINDING.match(line) or _OMITTED.match(line) or _TRIED_STOP.match(line) or line.startswith(("-", "*"))):
+                cur["how"].append(line)
+                continue
+            state = 2
+        if state == 0 and (m := _TRIED.match(line)):
+            state = 1
+            if m.group(1).strip():
+                cur["how"].append(m.group(1).strip())
+            continue
+        if (f := _FINDING.match(line)):
+            cur["findings"].append((_severity(f.group(1)), c.redact(f.group(3)).split(" — ")[0][:200]))
+        elif _OMITTED.match(line):
+            cur["more"] = True
+    for sec in sections:  # per section, before the merge: a second section's heading must not be lost in it
+        sec["ok"] = _recordable(sec)
+    merged = {}  # one row per lens: a lens that has two sections is one audit whose findings are both sections' (bounded)
+    for sec in sections:
+        m = merged.get(sec["lens"])
+        if m is None:
+            merged[sec["lens"]] = sec
+            continue
+        m["how"] += sec["how"]
+        m["findings"] += sec["findings"]
+        m["more"] = m["more"] or sec["more"]
+        m["ok"] = m["ok"] and sec["ok"]
+        if not _clean_suffix(m["suffix"]) or _clean_suffix(sec["suffix"]):
+            continue
+        m["suffix"] = sec["suffix"]
+    rows = []
+    for lens, sec in merged.items():
+        how = c.redact(" ".join(sec["how"]))[:300] or REVIEW_HOW
+        rows.append({"lens": lens, "how": how, "result": c.redact(_review_result(sec)),
+                     "findings": len(sec["findings"]), "ok": sec["ok"]})
+    return rows
+
+
 CLOSE_FIELDS = "Close fields"  # T-3500: the brief section a builder's report lines land in
 CLOSE_KEYS = ("changelog", "title", "lesson", "numbers", "docs", "why_not_caught", "lenses")  # T-4515: an M/L fix's why-not-caught; T-5724: the lens pass
 _CLOSE_LINE = re.compile(r"(?m)^[ \t>*_`-]*(CHANGELOG|TITLE|LESSON|NUMBERS|DOCS|WHY-NOT-CAUGHT|LENSES)[*_`]*[ \t]*:[*_`]*[ \t]*(\S.*?)[ \t*_`]*$")
