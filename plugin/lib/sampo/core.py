@@ -4588,14 +4588,14 @@ BLOCKING_WORDS = "|".join(sorted(set(BLOCKING_SEVERITIES) | {a for a, s in SEVER
 # 'HIGH: no findings', '- HIGH: 0 issues'). 'HIGH: no auth check on the route' is a finding and stays one.
 _COUNT_TAIL = r"\s*[:=]\s*(?:0|none|zero|no)(?:\s+(?:findings?|issues?))?\.?\s*$"
 # T-5706 round 3: a heading ('### HIGH — a.py:3 — x') and a numbered finding ('Finding 1 (HIGH)', 'Finding 2: HIGH') count
-_SEVERITY_LINE = re.compile(r"^(?:#+\s*)?(?:[-+*]|\d+[.)])?\s*(?:finding\s*\d*\s*[:.)-]?\s*\(?\s*)?"
-                            r"(?:severity\s*[:=-]?\s*)?(critical|crit|high|medium|med|low)\b"
-                            r"(?!" + _COUNT_TAIL + r")")
+_SEVERITY_LINE = lazy(r"^(?:#+\s*)?(?:[-+*]|\d+[.)])?\s*(?:finding\s*\d*\s*[:.)-]?\s*\(?\s*)?"
+                       r"(?:severity\s*[:=-]?\s*)?(critical|crit|high|medium|med|low)\b"
+                       r"(?!" + _COUNT_TAIL + r")")
 
 
 # T-5706 round 3: the backstop's token: an upper-case severity word standing alone ('— HIGH —', '(MEDIUM)'), not a word
 # inside 'HIGH-risk' or 'HIGHLY', and not a count ('HIGH: 0')
-_SEVERITY_TOKEN = re.compile(r"(?<![\w-])(CRITICAL|CRIT|HIGH|MEDIUM|MED|LOW)(?![\w-])(?!" + _COUNT_TAIL + r")")
+_SEVERITY_TOKEN = lazy(r"(?<![\w-])(CRITICAL|CRIT|HIGH|MEDIUM|MED|LOW)(?![\w-])(?!" + _COUNT_TAIL + r")")
 
 
 def finding_severity_anywhere(line):
@@ -7833,8 +7833,8 @@ def test_module(name):
     return parts[max(at - 1, 0)]
 
 
-_OWN_FILE = re.compile(r"^(?:[\w.\-/]*/)?(?:test_[\w\-]*|[\w\-]*_test)\.py$")
-_OWN_MOD = re.compile(  # test_x, test_x.py, test_x.Class.test, test_x::Class, test_x.py::C::t, plugin.tests.test_x, test_x*.py
+_OWN_FILE = lazy(r"^(?:[\w.\-/]*/)?(?:test_[\w\-]*|[\w\-]*_test)\.py$")
+_OWN_MOD = lazy(  # test_x, test_x.py, test_x.Class.test, test_x::Class, test_x.py::C::t, plugin.tests.test_x, test_x*.py
     r"^(?:[\w.\-/]*/)?(?:[A-Za-z_]\w*\.)*?(test_[\w*?]+)(?:\.py(?:::[\w:.\[\]\-]*)?|::[\w:.\[\]\-]*|(?:\.[A-Za-z_]\w*)*)$")
 
 

@@ -77,7 +77,7 @@ class ShipFixture(ForemanTestCase):
     def main_log(self):
         return sh(self.origin, "log", "--format=%s", "main").split("\n")
 
-    def test_cmd(self):
+    def suite_cmd(self):  # not test_*: a helper named so reads as a test the subclasses inherit (T-3815)
         """A suite command that records each run and what the tested tree's history shows."""
         return f"sh -c 'echo x >> {self.runs}; git log --format=%s > {self.seen}'"
 
@@ -127,7 +127,7 @@ class ShipWaits(ShipFixture):
         # the observed waste: this ship would have tested a snapshot the running ship is certain to make stale
         self.grant()
         holder = self.holder()
-        proc, out = self.start("--test", self.test_cmd())
+        proc, out = self.start("--test", self.suite_cmd())
         until(lambda: "waiting for" in self.text(out), 60, "the waiting line")
         line = next(ln for ln in self.text(out).splitlines() if "waiting for" in ln)
         self.assertIn(str(holder.pid), line, "the line names what it waits on")
@@ -155,7 +155,7 @@ class ShipWaits(ShipFixture):
         mine = sh(self.repo, "rev-list", "--reverse", "HEAD~2..HEAD").split()
         holder = self.holder(picks=[*mine, "e" * 40])
         before = self.main_log()
-        r = self.fm("ship", "--remote", "origin", "--test", self.test_cmd(), check=False, timeout=60)
+        r = self.fm("ship", "--remote", "origin", "--test", self.suite_cmd(), check=False, timeout=60)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertRegex(r.stdout + r.stderr, rf"running ship \(pid {holder.pid},.*every commit")
         self.assertEqual(self.run_count(), 0)
@@ -165,7 +165,7 @@ class ShipWaits(ShipFixture):
 
     def ships_at_once(self):
         self.grant()
-        r = self.fm("ship", "--remote", "origin", "--test", self.test_cmd(), check=False, timeout=120)
+        r = self.fm("ship", "--remote", "origin", "--test", self.suite_cmd(), check=False, timeout=120)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertNotIn("waiting for", r.stdout + r.stderr)
         self.assertEqual(self.run_count(), 1, "it tested at once")
@@ -189,7 +189,7 @@ class ShipWaits(ShipFixture):
         self.grant()
         holder = self.holder()
         t0 = time.monotonic()
-        r = self.fm("ship", "--remote", "origin", "--test", self.test_cmd(), check=False, timeout=120,
+        r = self.fm("ship", "--remote", "origin", "--test", self.suite_cmd(), check=False, timeout=120,
                     env={"FOREMAN_SHIP_TIMEOUT_S": "2"})
         self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("still running", r.stdout + r.stderr)
@@ -246,7 +246,7 @@ class DeadWait(ShipFixture):
     def test_a_waiting_ship_goes_ahead_at_once_when_its_holder_is_killed(self):
         self.grant()
         holder = self.holder()
-        proc, out = self.start("--test", self.test_cmd())
+        proc, out = self.start("--test", self.suite_cmd())
         until(lambda: "waiting for" in self.text(out), 60, "the waiting line")
         self.assertIsNone(proc.poll())
         self.assertEqual(self.run_count(), 0)
@@ -296,7 +296,7 @@ class Phases(ShipFixture):
         holder = self.holder()
         pf = os.path.join(self.tmp, "phases")
         open(pf, "w").close()
-        proc, out = self.start("--test", self.test_cmd(), env={release.PHASE_ENV: pf})
+        proc, out = self.start("--test", self.suite_cmd(), env={release.PHASE_ENV: pf})
         until(lambda: "waiting for" in self.text(out), 60, "the waiting line")
         until(lambda: "wait" in self.text(pf).split(), 60, "the wait phase")
         self.ends(holder)

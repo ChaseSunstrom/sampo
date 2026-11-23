@@ -111,7 +111,7 @@ def _lane_own(p, tid, main=None):
             return None
         root = main or p.root
         base = b.meta.get("base") or "HEAD"  # a merged lane (a leftover) has an empty diff against HEAD: its start commit names it
-        if base == "HEAD" and not _git(root, "merge-base", "--is-ancestor", tip, "HEAD").returncode:
+        if base == "HEAD" and _git(root, "merge-base", "--is-ancestor", tip, "HEAD").returncode == 0:
             return None  # merged, and no start commit to measure from: unknown
         return c.own_test_modules(lanes.lane_files(root, tip, base), _verify_of(b))
     except Exception:  # noqa: BLE001

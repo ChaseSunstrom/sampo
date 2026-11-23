@@ -3595,15 +3595,15 @@ _SEARCH_TOOLS = ("Grep", "Glob", "LS", "LSP", "NotebookRead", "ReadMcpResourceTo
 _MCP_FILE = (r"mcp__.+?__(?:(?!__).)*(?:" + "|".join("".join(f"[{c.upper()}{c}]" for c in w) for w in (
     "read", "list", "search", "find", "grep", "glob", "tree", "file", "dir", "folder", "cat", "view", "open",
     "stat", "head", "tail", "ls", "get", "fetch", "load", "download", "dump")) + r")(?:(?!__).)*")  # any letter case
-_MCP_FILE_RX = re.compile(_MCP_FILE)
+_MCP_FILE_RX = c.lazy(_MCP_FILE)
 # a glob that can leave the folder it runs in, be decoded (%, a URI), or has a [class] (T-6019: the guard refuses one it can't read:
 # [[:alpha:]], a bad range: any [class] is for it to read), a NUL, or names a URI scheme (a file: glob is read as its path)
-_GLOB_ESCAPES = re.compile(r"[$~\\%\[\0]|\.\.|^/|\s/|,/|\{[/.~$]|[A-Za-z][A-Za-z0-9+.-]+:")
+_GLOB_ESCAPES = c.lazy(r"[$~\\%\[\0]|\.\.|^/|\s/|,/|\{[/.~$]|[A-Za-z][A-Za-z0-9+.-]+:")
 _MCP_GLOB_KEYS = ("pattern", "patterns", "glob", "globs", "include", "includes", "query", "name")  # fmguard._MCP_GLOB_KEYS
 _SEARCH_KEYS = {"LS": "path", "LSP": "filePath", "NotebookRead": "notebook_path", "ReadMcpResourceTool": "uri"}
-_SCHEME_RX = re.compile(r"[A-Za-z][A-Za-z0-9+.-]+:")
-_GLOBBY = re.compile(r"[*?\[{]")
-_MCP_SEARCH_RX = re.compile(r"search|find|grep|glob|tree|walk|recursive|code", re.I)  # fmguard._MCP_SEARCH (a test keeps them in step)
+_SCHEME_RX = c.lazy(r"[A-Za-z][A-Za-z0-9+.-]+:")
+_GLOBBY = c.lazy(r"[*?\[{]")
+_MCP_SEARCH_RX = c.lazy(r"search|find|grep|glob|tree|walk|recursive|code", re.I)  # fmguard._MCP_SEARCH (a test keeps them in step)
 # T-6019: the guard's caps (fmguard has each under the same name), which the prefilter must stop at too: past one the call is
 # the guard's to refuse, never allowed here. A test walks the cap names of both modules and needs each to be here and equal,
 # or to be named in its list of what this module does not mirror (an input that reads as more than the guard reads is

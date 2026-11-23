@@ -260,6 +260,8 @@ class Stub:
         self.repairs = {"seen": {}, "asked": set(), "doubt": {}}
         self.fails, self.phases, self.events, self.cost = fails, [], [], {}
         self.fix_cost, self.on_phase = 0, {}
+        self.watch_steps = []  # T-4301: no step runs under a _Watch
+        self.args = types.SimpleNamespace(lane=False)  # T-5884: _drive picks _finish or _finish_lane by it
 
     def log(self, **kw):
         pass
