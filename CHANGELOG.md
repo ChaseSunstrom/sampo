@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- The close resolves a docs-impact bare file name or path suffix to its one doc the task touched and writes that path into the brief, so such a lane no longer waits for a hand close (T-6026).
 - The credential guard refuses, never allows, a search whose link walk, glob, path decoding or argument size hits a cap, and the hook's Grep/Glob prefilter builds its link roots from the expanded path (~, $HOME) and mirrors every cap as an escalation (T-6019).
 - sampo task audit ID --from-review FILE records one audit per reviewer lens section, its How from What I tried and its Result from the findings or clean (T-5954).
 - An audit reviewer reply carrying its verdict header more than once now gets the most severe verdict instead of none, and the closing prompt line asks for the header once, where the format puts it, not again at the end (T-6028).
