@@ -921,8 +921,13 @@ def workflow_problems(ti, cwd=None):
     return found
 
 
-def result(stdout):
-    """(text, usd) from `claude -p --output-format json`; plain text (an older claude, a stub) gives (text, None)."""
+NO_STRUCTURED = "(no structured_output: the child was held to a schema and did not answer under it)"
+
+
+def result(stdout, schema=False):
+    """(text, usd) from `claude -p --output-format json`; plain text (an older claude, a stub) gives (text, None).
+    schema (T-6084): the child was given --json-schema, so only its structured_output is its answer: an envelope with
+    none gives NO_STRUCTURED, never the result prose (which can quote an object a file under review planted)."""
     for line in reversed((stdout or "").strip().splitlines()):
         try:
             data = json.loads(line)
@@ -931,6 +936,8 @@ def result(stdout):
         if isinstance(data, dict) and "result" in data:
             if isinstance(data.get("structured_output"), dict):  # T-6043: --json-schema's answer, never the prose beside it
                 text = json.dumps(data["structured_output"])  # (a result string can quote a verdict of its own)
+            elif schema:
+                text = NO_STRUCTURED
             else:
                 text = str(data.get("result") or "")
             return text, data.get("total_cost_usd")

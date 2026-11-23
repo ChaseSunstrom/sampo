@@ -3830,16 +3830,21 @@ GENESIS = ("\n\n(Run one Genesis generation on this repo for the request above: 
 
 
 def _answer(text):
-    """The last JSON object with a findings key in a session's reply, or None."""
-    dec, out = json.JSONDecoder(), None
+    """The one JSON object with a findings key in a session's reply, or None (T-6084: two that differ are no answer, not
+    the last of them: a reply that quotes an object a file planted does not get to pick which one is its answer; the same
+    object given twice is one answer). An object inside another is part of it."""
+    dec, found, skip = json.JSONDecoder(), [], 0
     for m in re.finditer(r"\{", text):
+        if m.start() < skip:
+            continue
         try:
-            v = dec.raw_decode(text, m.start())[0]
+            v, end = dec.raw_decode(text, m.start())
         except (ValueError, RecursionError):
             continue
         if isinstance(v, dict) and "findings" in v:
-            out = v
-    return out
+            found.append(v)
+            skip = end
+    return found[0] if found and all(f == found[0] for f in found) else None
 
 
 def _conf(x):
@@ -3849,7 +3854,7 @@ def _conf(x):
 
 
 def _reply(text):
-    """The last JSON object with findings in a session's reply, else an empty answer."""
+    """The one JSON object with findings in a session's reply (_answer), else an empty answer."""
     out = _answer(text) or {}
     got = {"findings": [f for f in out.get("findings") or [] if isinstance(f, dict)] if isinstance(out.get("findings"), list) else [],
            "notes": out["notes"] if isinstance(out.get("notes"), list) else [], "done": out.get("done") is True}

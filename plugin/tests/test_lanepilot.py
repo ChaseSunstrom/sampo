@@ -130,6 +130,14 @@ class Replay(PilotCase):
                 f.write(env)
             os.environ["STUB_ENVELOPE"] = path
             self.addCleanup(os.environ.pop, "STUB_ENVELOPE", None)
+            # T-6084: a recording with no structured_output came from a claude run without --json-schema
+            if '"structured_output"' in env:
+                os.environ.pop("STUB_NO_SCHEMA", None)
+            else:
+                os.environ["STUB_NO_SCHEMA"] = "1"
+                self.addCleanup(os.environ.pop, "STUB_NO_SCHEMA", None)
+            if os.path.exists(auditrun._schema_cache()):
+                os.remove(auditrun._schema_cache())  # the probe's answer is per claude: asked again for each recording
             with self.subTest(reply=n):
                 verdicts, findings, why, _ = lanepilot.review(c.find_project(self.repo), self.tid, [expect["lens"]], "haiku")
                 self.assertEqual(verdicts, {expect["lens"]: expect["verdict"]})

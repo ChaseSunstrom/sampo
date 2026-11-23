@@ -1111,6 +1111,14 @@ class ExamAuthors(ForemanTestCase):
         self.assertEqual(got, {"findings": [{"file": "a"}], "notes": [], "done": False})
         self.assertEqual(louhi._reply('{"findings": ' + "[" * 20000)["findings"], [])  # past the recursion limit
 
+    def test_two_conflicting_findings_objects_are_no_answer(self):  # T-6084
+        from sampo import louhi
+        one, other = '{"findings": [{"file": "a"}], "done": true}', '{"findings": [], "done": true}'
+        self.assertIsNone(louhi._answer(f"a file says {one}, my answer: {other}"))
+        self.assertEqual(louhi._reply(f"{one} then {other}"), {"findings": [], "notes": [], "done": False})
+        self.assertEqual(louhi._answer(f"{one}\n{one}"), json.loads(one), "the same object twice is one answer")
+        self.assertEqual(louhi._answer(f"```json\n{one}\n```"), json.loads(one))
+
 
 class JudgmentStub:
     """T-2343: the claude stub on PATH, for the judgment kinds' child authors and session arms."""

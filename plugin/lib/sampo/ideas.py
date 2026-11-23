@@ -456,7 +456,7 @@ def run_children(jobs, timeout, feature, warm=0, cache=None, usage=None):
     tokens read and written are added to; usage (T-5842): a list that gets one _usage_row per job, in job order."""
     import contextlib
     with contextlib.ExitStack() as stack:
-        procs, started = [], False
+        procs, started, held = [], False, []
         try:
             cwd, env = stack.enter_context(fresh_cwd(feature)), child_env()  # T-5706 round 5: fresh per run, never shared
             for i, (argv, stdin, detail) in enumerate(jobs):
@@ -468,17 +468,19 @@ def run_children(jobs, timeout, feature, warm=0, cache=None, usage=None):
                 pr = _popen(harden(argv), timeout, cwd=cwd, text=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, env=env)
                 procs.append((pr, detail))
+                held.append("--json-schema" in argv)  # T-6084: per job, in job order
                 try:
                     pr.stdin.write(stdin)
                     pr.stdin.close()
                 finally:
                     pr.stdin = None  # before 3.13, communicate() flushes a closed stdin and raises
             started, deadline, out = True, time.time() + timeout, []
-            for pr, detail in procs:
+            for (pr, detail), schema in zip(procs, held):
                 try:
                     so, se = pr.communicate(timeout=max(1, deadline - time.time()))
                     _forget(pr)
-                    text, usd = budget.result(so)  # T-0227: the text, and what it cost
+                    # T-0227: the text, and what it cost. T-6084: a child given --json-schema answers in structured_output only
+                    text, usd = budget.result(so, schema=schema)
                     budget.record(feature, usd, detail=detail)
                     if usage is not None:
                         usage.append(_usage_row(so, usd))
