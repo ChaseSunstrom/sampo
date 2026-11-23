@@ -754,7 +754,11 @@ _MCP_KW = "|".join("".join(f"[{c.upper()}{c}]" for c in w) for w in (
 MCP_FILE_TOOL = r"mcp__.+?__(?:(?!__).)*(?:" + _MCP_KW + r")(?:(?!__).)*"
 _MCP_SEARCH = lazy(r"search|find|grep|glob|tree|walk|recursive|code", re.I)
 _MCP_GLOB_KEYS = ("pattern", "patterns", "glob", "globs", "include", "includes", "query", "name")
+# T-6019: every cap here ends in _CAP/_SCAN/_DEPTH/_CHAIN and a cap is a refusal (_Unreadable), never "nothing found": a test
+# (test_guard.GuardCaps) walks these names and needs each to have a row that trips it; hooks mirrors the ones its prefilter
+# must stop at (the same names: a test keeps them equal).
 _BRACE_CAP, _GLOB_CAP, _FORM_CAP, _STRING_CAP, _PATH_CAP, _NEST_CAP = 256, 512, 512, 2000, 4096, 6
+_STAR_CAP, _DECODE_CAP = 8, 4  # * in one glob segment; the times a path is percent-decoded
 _ANY, _PID, _PIDX = "\0any", "\0pid", "\0pidx"  # a /proc folder name: any, a pid, a pid or self and thread-self
 
 
@@ -839,6 +843,8 @@ def _seg_parts(seg):
                 i += 1
                 continue
             body = seg[i + 1:j]
+            if re.search(r"\[[:=.]", body):
+                raise _Unreadable("a glob with a POSIX [[:class:]] it can't read")  # T-6019: it would be read as a plain class
             neg = body[:1] in ("!", "^")
             cls = "[" + ("^" if neg else "") + re.sub(r"[\\\[\]^]", lambda m: "\\" + m.group(), body[1:] if neg else body) + "]"
             try:
@@ -863,12 +869,14 @@ class _Seg:
         parts = [] if self.star2 else _seg_parts(text)
         self.rx = re.compile("".join(p[1] for p in parts), re.I | re.S)
         stars = [i for i, p in enumerate(parts) if p[0] == "star"]
+        if len(stars) > _STAR_CAP:  # T-6019: the names tried below put one * in play at a time: more is not read, so refused
+            raise _Unreadable(f"a glob segment with more than {_STAR_CAP} * (the names it can match are not tried)")
 
         def build(star, anyc):
             return "".join(star(i) if p[0] == "star" else anyc if p[0] == "any" else p[2] for i, p in enumerate(parts))
 
         names = [build(lambda i, f=f: f, f or "x") for f in ("", "x", "1")]
-        names += [build(lambda i, s=s: "x" if i == s else "", "x") for s in stars[:8]]
+        names += [build(lambda i, s=s: "x" if i == s else "", "x") for s in stars]
         self.wits = [] if self.star2 else [w for w in dict.fromkeys(names) if w and self.rx.fullmatch(w)]
 
 
@@ -962,7 +970,7 @@ def _rest_hits(rest, tpath, ctx):
         return True
     last = max(i for i, g in enumerate(rest) if not g.star2)
     if any(not g.star2 and not g.wits for g in rest):
-        return False
+        return True  # T-6019: a segment with no name the guard can try (a [class] of non-ASCII letters) is not "matches nothing"
     for fill in (False, True):
         head = [("z" if fill else None) if g.star2 else g.wits[0] for g in rest[:last]]
         tail = [("z" if fill else None) if g.star2 else None for g in rest[last + 1:]]
@@ -1002,9 +1010,10 @@ def _reaches(rsegs, gsegs, targets, ctx):
     return False
 
 
-def _glob_hits(base, gpat, targets, ctx):
+def _glob_hits(base, gpat, targets, ctx, follow=False):
     """Whether the glob gpat (segments, .. read) below the folder base reaches a credential: through the folders it names
-    and through where its literal front part really goes (a link to the home)."""
+    and through where its literal front part really goes (a link to the home); with follow, also through each link the
+    tree below holds (a tool that follows links: _link_hits)."""
     segs = [_seg(s) for s in gpat]
     if _reaches(base, segs, targets, ctx):
         return True
@@ -1022,7 +1031,7 @@ def _glob_hits(base, gpat, targets, ctx):
         if real != joined and _from_real(real, rest, targets, ctx):  # the literal front is a link: the rest runs from where it goes
             return True
     root = os.path.realpath("/" + "/".join(base + lit))
-    return bool(segs[len(lit):]) and _link_hits(root, segs[len(lit):], targets, ctx)
+    return follow and bool(segs[len(lit):]) and _link_hits(root, segs[len(lit):], targets, ctx)
 
 
 def _from_real(real, rest, targets, ctx):
@@ -1037,36 +1046,63 @@ def _from_real(real, rest, targets, ctx):
 
 
 # T-5987 review: a link under the folder a glob runs in, after a wildcard segment, goes where the glob's later segments
-# are read (the kernel follows it; a tool that does not follow links lists the link only). The walk reads at most
-# _LINK_SCAN entries and goes no deeper than the glob has segments (_LINK_DEPTH for a **): a link beyond is not followed.
-_LINK_DEPTH, _LINK_SCAN, _links_seen = 6, 4000, {}
+# are read (the kernel follows it; a tool that does not follow links lists the link only). The walk goes no deeper than the
+# glob has segments (_LINK_DEPTH for a **) and reads at most _LINK_SCAN entries in all for one call (_link_spent).
+# T-6019: a walk that stops at either bound without having seen the whole tree is not "no link": it is a refusal
+# (_Unreadable), as is an entry or a folder it can't read (a folder this user can't list too: a server may run as another
+# user, so "it can't enter it either" is not known); hooks._LINK_DEPTH is _LINK_DEPTH (a test keeps them in step), and the
+# prefilter's own walk budget (hooks._PREFILTER_SCAN) is never above _LINK_SCAN.
+# T-6019 follow-up: the walk is made only for a tool that may follow a link below its folder (an MCP search: a server we
+# did not write). Grep and Glob are ripgrep without --follow (see _search_findings): a repository of a million entries is
+# an ordinary root for them, and a walk of it would be refused or cost seconds. Links reached through a link are followed
+# (_link_hits: each folder once, _LINK_CHAIN deep, one entry budget for the call). The budget is sized for the 5 s hook
+# the guard runs in: reading entries and resolving links costs about 3 ms for each thousand (measured on a 350,000-entry
+# tree: 4.9 s for all of it), so _LINK_SCAN = 50,000 is a walk of ~0.15 s, and a bigger tree is for a narrower folder.
+_LINK_DEPTH, _LINK_SCAN, _LINK_CHAIN, _links_seen, _link_spent, _links_visited = 32, 50_000, 8, {}, [0], set()
 
 
-def _links_below(root, depth):
-    """[(names below root, where it really goes)] of each link at most `depth` folders below root (links are not entered)."""
-    if (root, depth) in _links_seen:
-        return _links_seen[root, depth]
-    out, seen, queue = [], 0, [((), root)]
-    while queue and seen <= _LINK_SCAN:
+def _reset_links():
+    """The link walk's state for one call (a budget of entries for the call, not for each folder it names): cleared when a
+    call begins and when it ends, so no tree's links outlive it."""
+    _links_seen.clear()
+    _links_visited.clear()
+    _link_spent[0] = 0
+
+
+def _links_below(root, depth, capped=False):
+    """([(names below root, where it really goes)], cut) of each link at most `depth` folders below root (links are not
+    entered). cut: the walk stopped short (the entry budget of the call is spent, a folder lay at the depth bound while
+    `capped` says the glob could go deeper, or something could not be read), so a link may lie beyond what it saw. A folder
+    that is gone or is a file holds nothing; one that can't be listed (a permission) is a cut, like any other read error."""
+    key = (root, depth, capped)
+    if key in _links_seen:
+        return _links_seen[key]
+    out, cut, queue = [], False, [((), root)]
+    while queue and not cut:
         comps, d = queue.pop(0)
         try:
             with os.scandir(d) as it:
-                entries = list(it)
-        except (OSError, ValueError):
-            continue
-        for e in entries:
-            seen += 1
-            if seen > _LINK_SCAN:
-                break
-            try:
-                if e.is_symlink():
-                    out.append((comps + (e.name,), os.path.realpath(e.path)))
-                elif len(comps) + 1 < depth and e.is_dir(follow_symlinks=False):
-                    queue.append((comps + (e.name,), e.path))
-            except (OSError, ValueError):
-                continue
-    _links_seen[root, depth] = out
-    return out
+                for e in it:
+                    _link_spent[0] += 1
+                    if _link_spent[0] > _LINK_SCAN:
+                        cut = True
+                        break
+                    try:
+                        if e.is_symlink():
+                            out.append((comps + (e.name,), os.path.realpath(e.path)))
+                        elif e.is_dir(follow_symlinks=False):
+                            if len(comps) + 1 < depth:
+                                queue.append((comps + (e.name,), e.path))
+                            elif capped:
+                                cut = True
+                    except (OSError, ValueError):
+                        cut = True
+        except (FileNotFoundError, NotADirectoryError):
+            continue  # gone, or not a folder: nothing below it
+        except (OSError, ValueError):  # a PermissionError too: a folder the guard can't list is a folder it can't rule out
+            cut = True
+    _links_seen[key] = out, cut
+    return out, cut
 
 
 def _consume(gsegs, comps):
@@ -1091,15 +1127,34 @@ def _consume(gsegs, comps):
     return states
 
 
-def _link_hits(root, rest, targets, ctx):
+def _link_hits(root, rest, targets, ctx, chain=0):
     """Whether a link below the folder `root`, matched by the first segments of the glob `rest`, leads where the segments
-    left reach a credential (or is itself one a glob that ends there matches)."""
-    depth = _LINK_DEPTH if any(s.star2 for s in rest) else min(len(rest), _LINK_DEPTH)
-    for comps, real in _links_below(root, depth):
+    left reach a credential (or is itself one a glob that ends there matches). T-6019: a link under where a link goes is
+    followed too (a chain), each folder once for the segments left (_links_visited), at most _LINK_CHAIN links deep, and
+    from one entry budget for the call (_link_spent): a chain that goes further is refused, never "no link"."""
+    deep = any(s.star2 for s in rest)
+    depth = _LINK_DEPTH if deep else min(len(rest), _LINK_DEPTH)
+    links, cut = _links_below(root, depth, deep or len(rest) > _LINK_DEPTH)
+    for comps, real in links:
         for gi in _consume(rest, comps):
             left = rest[gi:]
-            if left and _from_real(real, left, targets, ctx) or not left and classify_read(real, ctx):
+            if not left:
+                if classify_read(real, ctx):
+                    return True
+            elif _from_real(real, left, targets, ctx):
                 return True
+            else:
+                key = (real, tuple(s.text for s in left))
+                if key in _links_visited:
+                    continue
+                if chain >= _LINK_CHAIN:
+                    raise _Unreadable(f"{root} holds links to links more than {_LINK_CHAIN} deep: search a narrower folder")
+                _links_visited.add(key)
+                if _link_hits(real, left, targets, ctx, chain + 1):
+                    return True
+    if cut:  # T-6019: a link may lie where the walk did not look: refused, not allowed
+        raise _Unreadable(f"{root} holds more than the guard checks for links (over {_LINK_SCAN} entries in all, folders "
+                          f"more than {_LINK_DEPTH} deep, or one it can't read): search a narrower folder")
     return False
 
 
@@ -1127,7 +1182,7 @@ def _path_forms(s, uri=False):
     those (up to three: a server may decode what a client did). With uri=True a URI of another scheme names no path."""
     from urllib.parse import unquote
     out, todo = [], [s]
-    for _ in range(4):
+    for _ in range(_DECODE_CAP):
         nxt = []
         for x in todo:
             if x in out:
@@ -1140,16 +1195,19 @@ def _path_forms(s, uri=False):
             if d != x:
                 nxt.append(d)
         todo = nxt
+    if any(x not in out for x in todo):  # T-6019: a fourth decoding is still to read: the guard stops here, so it refuses
+        raise _Unreadable("a path encoded more times than the guard decodes it")
     if len(out) > _FORMS_CAP:
         raise _Unreadable(f"a path that reads as more than {_FORMS_CAP} paths once decoded")
     forms = [x for x in out if not _FILE_URI.fullmatch(x) and not (uri and _SCHEME.match(x))]
     return [("/" + x.lstrip("/")) if x.startswith("//") else x for x in forms]
 
 
-def _search_check(tool, raw, globs, ctx, base=None):
+def _search_check(tool, raw, globs, ctx, base=None, follow=False):
     """[(category, detail)] of a search rooted at `raw` (a folder, or a file) with these globs: the root itself as a read,
-    then the credential folders and files below it that the globs can match."""
-    _links_seen.clear()
+    then the credential folders and files below it that the globs can match. follow: the tool may follow a link it meets
+    below the root (an unknown MCP server), so the tree is walked for links, bounded (_link_hits); Grep and Glob do not
+    (see _search_findings)."""
     path, real = _walk(_expand(raw, ctx), base or ctx.cwd or "/")
     found = _judge(classify_read, path, real, ctx)
     if found:
@@ -1166,7 +1224,7 @@ def _search_check(tool, raw, globs, ctx, base=None):
         for gsegs, also_abs in forms:
             for base in ([_segs(r), []] if also_abs else [_segs(r)]):
                 b, g = _climb(base, gsegs)
-                if _glob_hits(b, g, targets, ctx):
+                if _glob_hits(b, g, targets, ctx, follow):
                     return [("credentials", f"{tool} of {raw or ctx.cwd} reaches the home's credential files")]
     return []
 
@@ -1183,6 +1241,12 @@ def _mcp_strings(v, out, depth=0):
             _mcp_strings(x, out, depth + 1)
 
 
+def _split_text(s):
+    """T-6019: the non-empty lines of a string (a newline or a NUL ends one): a server may take a list of paths in one
+    string, or stop a path at a NUL, so each part is a path to judge, not a reason to skip the string."""
+    return [x for x in re.split(r"[\n\0]", s) if x]
+
+
 def _str_arg(ti, key):
     v = ti.get(key)
     if v is not None and (not isinstance(v, str) or "\0" in v):
@@ -1193,10 +1257,24 @@ def _str_arg(ti, key):
 def _search_findings(tool, ti, ctx):
     """T-5987: [(category, detail)] of a Grep, Glob, LS, LSP, NotebookRead, ReadMcpResourceTool or filesystem MCP call:
     each path it names is a read (classify_read), and a search's folder with its glob must not reach a credential."""
+    _reset_links()  # T-6019: one budget of link-walk entries for the whole call, not for each folder it names
+    try:
+        return _search_read(tool, ti, ctx)
+    finally:
+        _reset_links()
+
+
+def _search_read(tool, ti, ctx):
     try:
         if not isinstance(ti, dict):
             raise _Unreadable("its input is not an object")
         how = READ_TOOLS.get(tool)
+        # T-6019 follow-up (evidence: Claude Code 2.1.330's binary, read with grep -a): the Grep tool's ripgrep arguments begin
+        # ["--hidden", "--no-follow", ...] and Glob's are --files --null --glob P --sort=modified --no-ignore --hidden with no
+        # --follow (its --no-follow switch is a function that always answers false: ripgrep's default is not to follow). So
+        # ripgrep lists a link it meets below the folder and never enters it: only the root handed to ripgrep (and a glob's
+        # literal front, which Claude Code may hand it as the root) is followed, and those are judged by where they really go
+        # (_search_check, _glob_hits). A test (GuardCaps) pins that neither tool walks the tree.
         if tool == "Grep":
             raw, glob = _str_arg(ti, "path"), _str_arg(ti, "glob")
             _str_arg(ti, "pattern")
@@ -1214,18 +1292,25 @@ def _search_findings(tool, ti, ctx):
             uri = _str_arg(ti, "uri")
             return [f for p in (_path_forms(uri, True) if uri else ()) if p for b in _server_bases(p, ctx)
                     for f in _read_judge(p, ctx, b)]
-        strings = []
+        strings, gstrings = [], []
         _mcp_strings(ti, strings)
+        for k in _MCP_GLOB_KEYS:  # T-6019: a glob in a list in a list is a glob too
+            _mcp_strings(ti.get(k), gstrings)
         search = bool(_MCP_SEARCH.search(tool.split("__", 2)[-1]))
-        globs = [f for k in _MCP_GLOB_KEYS for v in (ti.get(k) if isinstance(ti.get(k), list) else [ti.get(k)])
-                 if isinstance(v, str) and "\0" not in v for f in _path_forms(v)]
+        globs = [f for v in gstrings for part in _split_text(v) for f in _path_forms(part)]
+        parts = [x for s in strings for x in _split_text(s)]
+        if len(parts) > 2 * _STRING_CAP:
+            raise _Unreadable(f"more than {2 * _STRING_CAP} lines in its arguments")
+        if any(len(x) > _PATH_CAP for x in parts):  # T-6019: a line no path can be is not "content" to skip: a server may cut it
+            raise _Unreadable(f"a line of more than {_PATH_CAP} characters in its arguments")
         found = []
-        for s in strings:
-            if not s or len(s) > _PATH_CAP or "\n" in s or "\0" in s:
-                continue
+        for s in parts:
             for p in _path_forms(s):  # the server decodes it, and resolves a relative path from its own folder
                 for b in _server_bases(p, ctx) if p else ():
-                    found += _search_check(tool, p, globs, ctx, b) if search else _read_judge(p, ctx, b)
+                    # T-6019 review: every base a server may resolve the path from is walked for links (the session's folder, the
+                    # home and / where a server of another start runs), from one budget: a base too big to walk refuses
+                    # (_link_hits), it is never skipped, for a link below the home or / can reach a credential too
+                    found += _search_check(tool, p, globs, ctx, b, True) if search else _read_judge(p, ctx, b)
         return list(dict.fromkeys(found))
     except (_Unreadable, OSError, ValueError, TypeError, RecursionError) as e:
         return [("system", f"the guard can't read this {tool} call: {e}")]

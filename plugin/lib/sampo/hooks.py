@@ -3596,117 +3596,279 @@ _MCP_FILE = (r"mcp__.+?__(?:(?!__).)*(?:" + "|".join("".join(f"[{c.upper()}{c}]"
     "read", "list", "search", "find", "grep", "glob", "tree", "file", "dir", "folder", "cat", "view", "open",
     "stat", "head", "tail", "ls", "get", "fetch", "load", "download", "dump")) + r")(?:(?!__).)*")  # any letter case
 _MCP_FILE_RX = re.compile(_MCP_FILE)
-_GLOB_ESCAPES = re.compile(r"[$~\\%]|\.\.|^/|\s/|,/|\{[/.~$]")  # a glob that can leave the folder it runs in, or be decoded
+# a glob that can leave the folder it runs in, be decoded (%, a URI), or has a [class] (T-6019: the guard refuses one it can't read:
+# [[:alpha:]], a bad range: any [class] is for it to read), a NUL, or names a URI scheme (a file: glob is read as its path)
+_GLOB_ESCAPES = re.compile(r"[$~\\%\[\0]|\.\.|^/|\s/|,/|\{[/.~$]|[A-Za-z][A-Za-z0-9+.-]+:")
+_MCP_GLOB_KEYS = ("pattern", "patterns", "glob", "globs", "include", "includes", "query", "name")  # fmguard._MCP_GLOB_KEYS
 _SEARCH_KEYS = {"LS": "path", "LSP": "filePath", "NotebookRead": "notebook_path", "ReadMcpResourceTool": "uri"}
 _SCHEME_RX = re.compile(r"[A-Za-z][A-Za-z0-9+.-]+:")
 _GLOBBY = re.compile(r"[*?\[{]")
-_LINK_DEPTH, _LINK_SCAN = 6, 4000  # fmguard's: a link the guard would follow is a link seen here
+_MCP_SEARCH_RX = re.compile(r"search|find|grep|glob|tree|walk|recursive|code", re.I)  # fmguard._MCP_SEARCH (a test keeps them in step)
+# T-6019: the guard's caps (fmguard has each under the same name), which the prefilter must stop at too: past one the call is
+# the guard's to refuse, never allowed here. A test walks the cap names of both modules and needs each to be here and equal,
+# or to be named in its list of what this module does not mirror (an input that reads as more than the guard reads is
+# escalated whole: a %, a [, a \\, a ~ or a $), or of what only this module has (the two below).
+_BRACE_CAP, _GLOB_CAP, _FORM_CAP, _STRING_CAP, _PATH_CAP, _NEST_CAP, _STAR_CAP = 256, 512, 512, 2000, 4096, 6, 8
+_LINK_DEPTH = 32  # the folders deep the guard's walk for links goes
+# the entries the prefilter's own walk for links reads before it hands the tree to the guard: a walk costs ~3 ms for each
+# thousand entries, and the prefilter runs in a 5 s hook before the guard does (never above fmguard._LINK_SCAN)
+_PREFILTER_SCAN = 5_000
+_PRODUCT_CAP = 256  # an MCP search's folders times its globs: past it the call is for the guard (a prefilter's own bound)
 
 
-def _glob_depth(glob):
-    """How many folders deep below its root a glob can go (fmguard._link_hits' bound)."""
-    return _LINK_DEPTH if "**" in glob else min(glob.count("/") + 1, _LINK_DEPTH)
-
-
-def _dir_links(root, depth):
-    """Whether a link that leads to a folder or a credential-like path lies at most `depth` folders below root (reads
-    at most _LINK_SCAN entries and enters no link): a glob over such a root may be followed out of it by the guard."""
-    queue, seen = [(root, 1)], 0
+def _dir_links(root, creds, spent):
+    """T-6019: whether the guard's link walk of `root` has something to decide: a link to a folder (the guard follows links
+    under where it goes: a chain), a link whose target is, holds or is inside a credential-like place, or a tree it cannot
+    rule out (the shared count `spent` of entries read passes _PREFILTER_SCAN, a folder lies deeper than _LINK_DEPTH, or
+    something can't be read, a folder it can't list too: the walk the guard stops at is no "no link"). Made only for a tool
+    that follows links (an MCP search): never for Grep or Glob."""
+    queue = [(root, 1)]
     while queue:
         d, n = queue.pop(0)
         try:
             with os.scandir(d) as it:
                 for e in it:
-                    seen += 1
-                    if seen > _LINK_SCAN:
-                        return False
-                    if e.is_symlink():
-                        if e.is_dir() or _credential_like(e.path):
-                            return True
-                    elif n < depth and e.is_dir(follow_symlinks=False):
-                        queue.append((e.path, n + 1))
-        except (OSError, ValueError):
-            continue
+                    spent[0] += 1
+                    if spent[0] > _PREFILTER_SCAN:
+                        return True
+                    try:
+                        if e.is_symlink():
+                            low = os.path.realpath(e.path).lower().rstrip("/") + "/"
+                            # a link to a folder: the guard follows what is under it too (a chain), so it decides
+                            if low.startswith("/proc/") or _credential_like(e.path) or os.path.isdir(e.path) or any(
+                                    x + "/" == low or x.startswith(low) for x in creds):
+                                return True
+                        elif e.is_dir(follow_symlinks=False):
+                            if n >= _LINK_DEPTH:
+                                return True
+                            queue.append((e.path, n + 1))
+                    except (OSError, ValueError):
+                        return True
+        except (FileNotFoundError, NotADirectoryError):
+            continue  # gone, or not a folder: nothing below it (the guard's rule: fmguard._links_below)
+        except (OSError, ValueError):  # a PermissionError too
+            return True
     return False
+
+
+def _first_brace(p):
+    """fmguard._first_brace, as it is (a test runs both over the same globs): (open, close, alternatives) of the first {a,b}
+    in a glob that closes, or None."""
+    i, n = 0, len(p)
+    while i < n:
+        if p[i] == "\\":
+            i += 2
+            continue
+        if p[i] == "{":
+            depth, j, start, parts = 0, i, i + 1, []
+            while j < n:
+                d = p[j]
+                if d == "\\":
+                    j += 2
+                    continue
+                if d == "{":
+                    depth += 1
+                elif d == "}":
+                    depth -= 1
+                    if depth == 0:
+                        return i, j, parts + [p[start:j]]
+                elif d == "," and depth == 1:
+                    parts.append(p[start:j])
+                    start = j + 1
+                j += 1
+        i += 1
+    return None
+
+
+def _brace_alts(pat):
+    """fmguard._braces: every alternative of a glob's {a,b} lists (nested ones too); None for more than _BRACE_CAP (the guard
+    refuses such a glob)."""
+    work, out = [pat], []
+    while work:
+        p = work.pop()
+        hit = _first_brace(p)
+        if hit is None:
+            out.append(p)
+        else:
+            a, b, parts = hit
+            work += [p[:a] + part + p[b + 1:] for part in parts]
+        if len(out) + len(work) > _BRACE_CAP:
+            return None
+    return out
+
+
+def _glob_alts(glob):
+    """The alternatives a glob reads as, as fmguard._glob_forms reads them (a test runs both over a table of globs and over
+    each cap): split at spaces and at commas (a word with a { is not split at commas), a ! exclusion dropped, each {a,b}
+    list expanded. None when that is more than the guard reads (over _GLOB_CAP characters, _BRACE_CAP alternatives of a
+    word or _FORM_CAP in all): such a glob is for the guard to refuse. (~ and $ are not expanded: _GLOB_ESCAPES hands them over.)"""
+    if len(glob) > _GLOB_CAP:
+        return None
+    out = []
+    for tok in glob.split():
+        for part in ([tok] if "{" in tok else tok.split(",")):
+            if not part or part.startswith("!"):
+                continue
+            alts = _brace_alts(part)
+            if alts is None:
+                return None
+            out += alts
+            if len(out) > _FORM_CAP:
+                return None
+    return out
+
+
+def _link_walker(creds):
+    """A function that says whether the guard's link walk of some folders has something to decide (_dir_links). One for a
+    call: the entries it reads are one budget, and a folder is read once."""
+    spent, done = [0], set()
+
+    def walk(roots):  # a link the guard may follow out of a folder a wildcard glob runs in: its walk, folder and all
+        reals = {os.path.realpath(x) for x in roots} | {os.path.realpath(os.path.normpath(x)) for x in roots}  # the guard walks both
+        # a folder under another one of them is read by the walk of that one: dropped (quadratic in the roots, bounded by _PRODUCT_CAP)
+        for r in sorted(r for r in reals if not any(o != r and r.startswith(o.rstrip("/") + "/") for o in reals | done)):
+            if r in done:
+                continue
+            done.add(r)
+            if _dir_links(r, creds, spent):
+                return True
+        return False
+    return walk
+
+
+def _root_hit(raw, base, creds):
+    """(whether the folder or file `raw` names, from `base`, is, holds or is inside a credential: the call is for the guard,
+    the path it was expanded to). The path is None when the text can't be read here at all (a $, a NUL, a %, a URI of another
+    scheme or with a ?query: the guard decodes and reads it), and the answer is then True."""
+    # T-5987 review: a %, or a URI of another scheme, is for the guard to decode and read; file: in any letter case
+    if "$" in raw or "\0" in raw or "%" in raw:
+        return True, None
+    m = _SCHEME_RX.match(raw)
+    if m:
+        if m.group(0).lower() != "file:":
+            return True, None
+        raw = re.sub(r"^file:(//[^/]*)?", "", raw, flags=re.I)
+        if "?" in raw or "#" in raw:
+            return True, None
+    p = os.path.join(base, os.path.expanduser(raw))  # T-6019: the folder a search begins in is this path, never the ~ it was written as
+    for q in {p.lower(), os.path.normpath(p).lower(), os.path.realpath(p).lower()}:
+        low = q.rstrip("/") + "/"
+        if low.startswith("/proc/") or _credential_like(q) or any(x + "/" == low or x.startswith(low) for x in creds):
+            return True, p
+    return False, p
+
+
+def _glob_hit(base, glob, creds, walk=None):
+    """Whether a glob run in the folder `base` leaves it (.., /, ~, $, a \\ escape, a [class], a URI), is more than the guard
+    reads (a cap), goes through a link to a credential at its literal front, or (when `walk` is given, for a tool that
+    follows links) has under its folder a link the guard's walk would have to decide (_dir_links)."""
+    if _GLOB_ESCAPES.search(glob):
+        return True
+    alts = _glob_alts(glob)
+    if alts is None:
+        return True
+    if any(len(re.findall(r"\*+", seg)) > _STAR_CAP for alt in alts for seg in alt.split("/")):
+        return True  # fmguard._Seg refuses a segment of more than _STAR_CAP *
+    roots = [base]
+    wild = False  # the guard walks a glob with a wildcard, or with no / (it runs at every depth), or none (every file)
+    for alt in alts or [""]:  # (an empty glob, or one whose every word is a ! exclusion, is every file)
+        front = re.split(r"[*?]", alt, maxsplit=1)[0]
+        if front != alt:  # a wildcard follows: the literal front is the folders before the segment it is in
+            front = front.rpartition("/")[0]
+            wild = True
+        elif "/" not in alt.rstrip("/"):
+            wild = True  # a name with no / runs at every depth
+        if front:
+            if _root_hit(os.path.join(base, front), "/", creds)[0]:
+                return True
+            roots.append(os.path.join(base, front))
+    return bool(walk) and wild and walk(roots)  # only a tool that follows links is walked (Grep, Glob: ripgrep, no --follow)
+
+
+def _mcp_texts(v):
+    """fmguard._mcp_strings: the strings in a tool's arguments (a list or an object nested up to _NEST_CAP deep), or None
+    when there are more than _STRING_CAP or it is nested deeper (the guard refuses it)."""
+    out, work = [], [(v, 0)]
+    while work:
+        v, depth = work.pop()
+        if isinstance(v, str):
+            out.append(v)
+            if len(out) > _STRING_CAP:
+                return None
+        elif isinstance(v, (list, tuple, dict)):
+            if depth >= _NEST_CAP:
+                return None
+            work += [(x, depth + 1) for x in (list(v) + list(v.values()) if isinstance(v, dict) else v)]
+    return out
+
+
+def _mcp_lines(v):
+    """fmguard._split_text over _mcp_texts: the non-empty lines (a newline or a NUL ends one), or None when the arguments
+    are more than the guard reads: too many strings, too deep, over 2 * _STRING_CAP lines, or a line over _PATH_CAP."""
+    texts = _mcp_texts(v)
+    if texts is None:
+        return None
+    lines = [x for s in texts for x in re.split(r"[\n\0]", s) if x]
+    return None if len(lines) > 2 * _STRING_CAP or any(len(x) > _PATH_CAP for x in lines) else lines
 
 
 def _search_like(pl):
     """A cheap superset of the guard's refusals of a search or listing: a call whose folder is, or holds, or is below a
-    credential folder or file of the home or a /proc entry, or whose glob can leave its folder (.., /, ~, $, a \\ escape,
-    a {/x} alternative). Anything it can't read counts. An ordinary Grep of a project never imports the guard."""
+    credential folder or file of the home or a /proc entry, whose glob can leave its folder (.., /, ~, $, a \\ escape,
+    a {/x} alternative, a [class], a URI), or (an MCP search only: a server that may follow links) under whose folder the
+    guard's link walk (_dir_links) has a link to a folder or a tree it can't rule out. Anything it can't read counts:
+    every cap here is an escalation to the guard, never an allow (T-6019). An ordinary Grep or Glob of a project never
+    imports the guard and never walks the tree (a repository of a million entries is decided at once); the walk an MCP
+    search gets is _PREFILTER_SCAN entries at most."""
     tool, ti = pl.get("tool_name", ""), pl.get("tool_input")
     if not isinstance(ti, dict):
         return True
     cwd, home = _cwd(pl), os.path.expanduser("~")
     creds = [h.lower() + "/" + r for h in {home, os.path.realpath(home)} for r in _CRED_DIRS + _CRED_FILES]
-
-    scanned = {}
-
-    def linked(root, glob):  # a wildcard glob over a root that holds a link the guard may follow out of it
-        if not _GLOBBY.search(glob):
-            return False
-        key = (root, _glob_depth(glob))
-        if key not in scanned:
-            scanned[key] = _dir_links(*key)
-        return scanned[key]
-
-    def rooted(raw, base=cwd):  # the folder or file named is, holds or is inside a credential
-        # T-5987 review: a %, or a URI of another scheme, is for the guard to decode and read; file: in any letter case
-        if "$" in raw or "\0" in raw or "%" in raw:
-            return True
-        m = _SCHEME_RX.match(raw)
-        if m:
-            if m.group(0).lower() != "file:":
-                return True
-            raw = re.sub(r"^file:(//[^/]*)?", "", raw, flags=re.I)
-            if "?" in raw or "#" in raw:
-                return True
-        p = os.path.join(base, os.path.expanduser(raw))
-        for q in {p.lower(), os.path.realpath(p).lower()}:
-            low = q.rstrip("/") + "/"
-            if low.startswith("/proc/") or _credential_like(q) or any(x + "/" == low or x.startswith(low) for x in creds):
-                return True
-        return False
-
-    def globbed(base, glob):  # a glob that leaves its folder, or whose literal front goes through a link to a credential
-        if _GLOB_ESCAPES.search(glob):
-            return True
-        front = re.split(r"[*?\[{]", glob, maxsplit=1)[0]
-        front = front if front == glob else front.rpartition("/")[0]
-        return bool(front) and rooted(os.path.join(base, front)) or linked(base, glob)
-
     if tool == "Grep" or tool == "Glob":
+        # Grep is ripgrep with --no-follow and Glob is ripgrep --files without --follow (Claude Code 2.1.330; see
+        # fmguard._search_read): a link below the folder is listed and never entered, so only the root (and a glob's literal
+        # front) is judged, by where it really goes: no walk of the tree
         root, glob = ti.get("path"), ti.get("glob" if tool == "Grep" else "pattern")
-        if any(v is not None and not isinstance(v, str) for v in (root, glob, ti.get("pattern"))) or (
+        vals = (root, glob, ti.get("pattern"))
+        if any(v is not None and not isinstance(v, str) or isinstance(v, str) and "\0" in v for v in vals) or (
                 tool == "Glob" and glob is None):
             return True
-        return rooted(root or cwd) or bool(glob) and globbed(os.path.join(cwd, os.path.expanduser(root or "")), glob)
+        hit, folder = _root_hit(root or cwd, cwd, creds)
+        return hit or _glob_hit(folder, glob or "", creds)  # no glob: every file, as the guard reads it
+    bases = (cwd, home, "/")  # the server resolves a relative path from its own folder: the home, or /, as well as the session's
     if tool in _SEARCH_KEYS:
         raw = ti.get(_SEARCH_KEYS[tool])
-        return not isinstance(raw, str) and (raw is not None or tool == "LS") or isinstance(raw, str) and rooted(raw)
-    strings, work = [], [(ti, 0)]  # a filesystem MCP tool: every string in its arguments, as a folder and as a glob
-    while work:
-        v, depth = work.pop()
-        if isinstance(v, str):
-            strings.append(v)
-        elif isinstance(v, (list, tuple, dict)):
-            if depth >= 6:
-                return True
-            work += [(x, depth + 1) for x in (list(v) + list(v.values()) if isinstance(v, dict) else v)]
-        if len(strings) > 2000:
+        if not isinstance(raw, str):
+            return raw is not None or tool == "LS"
+        return any(_root_hit(raw, b, creds)[0] for b in (bases if tool == "ReadMcpResourceTool" else (cwd,))
+                   if b == cwd or not raw.startswith(("/", "~")))
+    lines = _mcp_lines(ti)  # a filesystem MCP tool: every line of its arguments, as a folder and as a glob
+    if lines is None:
+        return True
+    roots = set()  # the folders a path names from each base a server may resolve it from (the session's, the home, /)
+    for s in lines:
+        for b in bases:
+            if b == cwd or not s.startswith(("/", "~")):
+                hit, folder = _root_hit(s, b, creds)
+                if hit:
+                    return True
+                roots.add(folder)
+    if any(_glob_hit(cwd, s, creds) for s in lines if _GLOBBY.search(s) or "\\" in s):  # a plain path is _root_hit's alone
+        return True
+    if not _MCP_SEARCH_RX.search(tool.split("__", 2)[-1]):
+        return False  # a reading tool: each line is a read, judged above
+    globs = []  # a search: its glob keys' lines, run below each folder named
+    for k in _MCP_GLOB_KEYS:
+        got = _mcp_lines(ti.get(k))
+        if got is None:
             return True
-    # the server resolves a relative path from its own folder: the home, or /, as well as the session's
-    strings = [s for s in strings if s and len(s) <= 4096 and "\n" not in s]
-    bases = (cwd, home, "/")
-    if any(rooted(s, b) for s in strings for b in bases if b == cwd or not s.startswith(("/", "~"))):
+        globs += got
+    globs = globs or [""]
+    if len(roots) * len(globs) > _PRODUCT_CAP:
         return True
-    if any(globbed(cwd, s) for s in strings if _GLOBBY.search(s) or "\\" in s):  # a plain path is rooted()'s alone
-        return True
-    wild = [s for s in strings if _GLOBBY.search(s)]  # a glob in the arguments: over each folder they name, a link
-    if wild:
-        roots = {os.path.join(b, s) for s in strings for b in bases if os.path.isdir(os.path.join(b, os.path.expanduser(s)))}
-        return len(roots) > 16 or any(linked(r, w) for r in roots | {cwd} for w in wild)
-    return False
+    walk = _link_walker(creds)
+    return any(_glob_hit(folder, g, creds, walk) for folder in roots for g in globs)  # every base is walked, as the guard does
 
 
 def _credential_search(pl):

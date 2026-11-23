@@ -4226,19 +4226,97 @@ class CredentialTools(GuardCase):
         return a, b, c
 
     def link_rows(self):
-        """(label, tool, input) of wildcard globs whose later segments reach a credential through a link they match."""
+        """(label, tool, input) of calls that reach a credential through a link: a glob's literal front that is a link (Claude
+        Code may hand ripgrep that front as its root, and ripgrep follows a root), and an MCP search whose later segments run
+        through a link it meets (a server may follow it). T-6019: not Grep or Glob below their folder: see unfollowed_rows."""
+        a, b, _c = self.make_links()
+        out = []
+        for t, is_dir, rel, name in self.targets():
+            out += [(f"Glob hl/{rel}", "Glob", {"pattern": "hl/" + rel, "path": a}),
+                    (f"Glob hl/*/{rel}", "Glob", {"pattern": "hl/*/" + rel, "path": a}),
+                    (f"mcp search_files */{rel}", "mcp__fs__search_files", {"path": a, "pattern": "*/" + rel}),
+                    (f"mcp search_files **/{rel}", "mcp__fs__search_files", {"path": a, "pattern": "**/" + rel}),
+                    (f"mcp search_files */*/{rel} deeper", "mcp__fs__search_files", {"path": b, "pattern": "*/*/" + rel})]
+        out += [("mcp */*/*", "mcp__fs__search_files", {"path": b, "pattern": "*/*/*"}),
+                ("mcp ??/*", "mcp__fs__search_files", {"path": a, "pattern": "??/*"}),
+                ("Glob hl/*", "Glob", {"pattern": "hl/*", "path": a}),
+                ("mcp **/*.py over a link to home", "mcp__fs__search_files", {"path": a, "pattern": "**/*.py"})]  # a .py in a credential folder is read
+        return out
+
+    def unfollowed_rows(self):
+        """(label, tool, input) of a Grep or Glob whose wildcard segments run through a link below its folder: ripgrep
+        (without --follow) lists the link and never enters it (T-6019 follow-up), so these read nothing of the home."""
         a, b, _c = self.make_links()
         out = []
         for t, is_dir, rel, name in self.targets():
             out += [(f"Glob */{rel}", "Glob", {"pattern": "*/" + rel, "path": a}),
                     (f"Glob **/{rel}", "Glob", {"pattern": "**/" + rel, "path": a}),
                     (f"Glob */*/{rel} deeper", "Glob", {"pattern": "*/*/" + rel, "path": b}),
-                    (f"Grep */{rel}", "Grep", {"pattern": "x", "path": a, "glob": "*/" + rel}),
-                    (f"mcp search_files */{rel}", "mcp__fs__search_files", {"path": a, "pattern": "*/" + rel})]
+                    (f"Grep */{rel}", "Grep", {"pattern": "x", "path": a, "glob": "*/" + rel})]
         out += [("Glob */*/*", "Glob", {"pattern": "*/*/*", "path": b}), ("Glob ??/*", "Glob", {"pattern": "??/*", "path": a}),
-                ("Glob hl/*", "Glob", {"pattern": "hl/*", "path": a}),
-                ("Glob **/*.py over a link to home", "Glob", {"pattern": "**/*.py", "path": a})]  # a .py in a credential folder is read
+                ("Glob **/*.py", "Glob", {"pattern": "**/*.py", "path": a}),
+                ("Grep no glob", "Grep", {"pattern": "x", "path": a}), ("Grep **/*", "Grep", {"pattern": "x", "path": b, "glob": "**/*"})]
         return out
+
+    def test_grep_and_glob_do_not_walk_the_tree_for_links(self):
+        """Ripgrep without --follow never enters a link below its folder, so neither tool is refused for one, and neither
+        reads the tree: a scan of the folder would fail the test (a repository can hold a million entries)."""
+        def no_scan(p, *a):
+            raise AssertionError(f"scandir of {p}")
+        with mock.patch.object(g.os, "scandir", no_scan):
+            for label, tool, ti in self.unfollowed_rows():
+                with self.subTest(call=label):
+                    self.assertIsNone(g.check(tool, ti, self.ctx()), label)
+
+    def test_a_mcp_search_follows_a_link_that_is_reached_through_another_link(self):
+        """T-6019 follow-up: a server may follow a link under where a link goes; one entry budget and a visited set bound it."""
+        base = os.path.join(os.path.dirname(self.home), "chain")
+        shutil.rmtree(base, ignore_errors=True)
+        self.addCleanup(shutil.rmtree, base, True)
+        mid, root = os.path.join(base, "mid"), os.path.join(base, "root")
+        os.makedirs(mid)
+        os.makedirs(os.path.join(root, "sub"))
+        os.symlink(mid, os.path.join(root, "sub", "to-mid"))  # root/sub/to-mid -> mid: harmless, holds a link
+        os.symlink(self.home, os.path.join(mid, "to-home"))  # mid/to-home -> the home
+        rel = g._CRED_FILES[0]
+        for pat in ("*/*/*/" + rel, "**/" + rel, "**/*", "*/*/to-home/" + rel):
+            with self.subTest(pattern=pat):
+                self.assertBlocked(g.check("mcp__fs__search_files", {"path": root, "pattern": pat}, self.ctx()), "credentials")
+                self.assertIsNone(g.check("Glob", {"pattern": pat, "path": root}, self.ctx()), "Glob does not enter the link")
+        self.assertIsNone(g.check("mcp__fs__search_files", {"path": root, "pattern": "*/*/*/zzz-" + rel}, self.ctx()))
+
+    def test_a_cycle_of_links_ends_and_a_chain_past_the_bound_is_refused(self):
+        base = os.path.join(os.path.dirname(self.home), "cycle")
+        shutil.rmtree(base, ignore_errors=True)
+        self.addCleanup(shutil.rmtree, base, True)
+        for n in ("a", "b", "c0", "c1", "c2", "c3", "c4"):
+            os.makedirs(os.path.join(base, n))
+        os.symlink(os.path.join(base, "b"), os.path.join(base, "a", "to-b"))
+        os.symlink(os.path.join(base, "a"), os.path.join(base, "b", "to-a"))  # a <-> b
+        for i in range(4):  # c0 -> c1 -> c2 -> c3 -> c4
+            os.symlink(os.path.join(base, f"c{i + 1}"), os.path.join(base, f"c{i}", "next"))
+        for sub in ("a", "b"):
+            with self.subTest(cycle=sub):
+                self.assertIsNone(g.check("mcp__fs__search_files", {"path": os.path.join(base, sub), "pattern": "**/zzz"},
+                                          self.ctx()), "each folder is entered once: the walk ends")
+        ti = {"path": os.path.join(base, "c0"), "pattern": "**/zzz"}
+        self.assertIsNone(g.check("mcp__fs__search_files", ti, self.ctx()))
+        with mock.patch.object(g, "_LINK_CHAIN", 2):
+            self.assertBlocked(g.check("mcp__fs__search_files", ti, self.ctx()), "system")
+
+    def test_a_chain_of_links_spends_the_one_budget_of_the_call(self):
+        base = os.path.join(os.path.dirname(self.home), "chainbudget")
+        shutil.rmtree(base, ignore_errors=True)
+        self.addCleanup(shutil.rmtree, base, True)
+        os.makedirs(os.path.join(base, "far"))
+        for j in range(30):
+            open(os.path.join(base, "far", f"f{j}"), "w").close()
+        os.makedirs(os.path.join(base, "root"))
+        os.symlink(os.path.join(base, "far"), os.path.join(base, "root", "ln"))
+        ti = {"path": os.path.join(base, "root"), "pattern": "*/zzz/*"}
+        self.assertIsNone(g.check("mcp__fs__search_files", ti, self.ctx()))
+        with mock.patch.object(g, "_LINK_SCAN", 10):  # the tree itself is one entry: the folder the link goes to is the rest
+            self.assertBlocked(g.check("mcp__fs__search_files", ti, self.ctx()), "system")
 
     def test_a_link_after_a_wildcard_segment_is_followed_to_where_it_goes(self):
         for label, tool, ti in self.link_rows():
@@ -4388,6 +4466,646 @@ class CredentialTools(GuardCase):
                 os.environ.pop("HOME", None)
             else:
                 os.environ["HOME"] = saved
+
+
+class _CapRows:
+    """T-6019: every cap and early exit of the credential guard for a search, with how it fails. Each is a row of inputs that
+    trip it; the guard answers a refusal (never "nothing found") and the hooks prefilter passes the call on to the guard.
+
+    cap (fmguard)                               fails as          prefilter (hooks._search_like)
+    _BRACE_CAP alternatives of one glob          system refusal    escalates (_glob_alts is None)
+    _GLOB_CAP characters of one glob             system refusal    escalates
+    _FORM_CAP patterns in all                    system refusal    escalates
+    [[:class:]], an unreadable [class]           system refusal    escalates on any [
+    a segment of more than 8 *                   system refusal    escalates
+    '..' after a wildcard                        system refusal    escalates on any ..
+    _FORMS_CAP / a 4th decoding of a path        system refusal    escalates on any %
+    _STRING_CAP strings, _NEST_CAP nesting       system refusal    escalates
+    lines of the arguments (2 * _STRING_CAP)     system refusal    escalates
+    a line over _PATH_CAP characters             system refusal    escalates (was: read as content and allowed)
+    (the rows below: an MCP search only; Grep and Glob are ripgrep without --follow and are never walked)
+    _LINK_SCAN entries read for links            system refusal    escalates after the smaller _PREFILTER_SCAN
+    _LINK_DEPTH folders deep for links           system refusal    escalates
+    _LINK_CHAIN links reached through links      system refusal    escalates on any link to a folder
+    an entry or a folder the walk can't read     system refusal    escalates (_dir_links answers True)
+
+    `GuardCaps.cap_trips()` is the proof for each cap by name: GuardCaps walks the names in fmguard.py and hooks.py, so a cap added
+    without a row there is a red test.
+    """
+    def cap_rows(self):
+        h, repo = self.home, self.repo
+        return [("glob of 512 brace alternatives", "Grep", {"path": repo, "glob": "{a,b}" * 9}),
+                ("glob over 512 characters", "Glob", {"pattern": "a" * 513, "path": repo}),
+                ("a glob over 512 characters in a list", "Grep", {"path": repo, "glob": "*.py " + "a" * 513}),
+                ("more than 512 patterns", "mcp__fs__search_files", {"path": repo, "patterns": [f"p{i}" for i in range(600)]}),
+                ("a POSIX class", "Glob", {"pattern": "[[:alpha:]]*", "path": repo}),
+                ("a POSIX equivalence class", "Glob", {"pattern": "[[=a=]]*", "path": repo}),
+                ("nine * in a segment", "Glob", {"pattern": "*a*a*a*a*a*a*a*a*a", "path": repo}),
+                ("nine * in a later segment", "Glob", {"pattern": "src/*a*a*a*a*a*a*a*a*a/x", "path": h}),
+                ("nine * in a braced segment", "Grep", {"path": repo, "glob": "{*a*a*a*a*a*a*a*a*a,x}"}),
+                (".. after a wildcard", "Glob", {"pattern": "*/../x", "path": repo}),
+                ("a path encoded five times", "mcp__fs__read_file", {"path": "%252525252E"}),
+                ("a path encoded five times, in a URI", "ReadMcpResourceTool", {"uri": "file://%252525252Fx"}),
+                ("a path of more than 16 decodings", "mcp__fs__read_file",
+                 {"path": "%2525252525252525252Fx%252525252525252525252Fy"}),
+                ("2001 strings", "mcp__fs__read_multiple_files", {"paths": [f"f{i}" for i in range(2001)]}),
+                ("2001 glob strings", "mcp__fs__search_files", {"path": repo, "patterns": [f"*{i}" for i in range(2001)]}),
+                ("nested 7 deep", "mcp__fs__read_file", {"a": {"b": {"c": {"d": {"e": {"f": {"g": ["x"]}}}}}}}),
+                ("4001 lines in one string", "mcp__fs__read_file", {"paths": "\n".join(f"f{i}" for i in range(4001))}),
+                ("4001 lines in a string of a list", "mcp__fs__read_file",
+                 {"paths": ["x", "\0".join(f"f{i}" for i in range(4001))]}),
+                ("a line of 4097 characters", "mcp__fs__read_file", {"path": "x" * 4097}),
+                ("a line of 4097 characters after a short one", "mcp__fs__read_multiple_files",
+                 {"paths": "a\n" + "x" * 4097}),
+                ("a glob key's line of 4097 characters", "mcp__fs__search_files", {"path": repo, "pattern": "a" * 4097}),
+                ("a glob key value nested 7 deep", "mcp__fs__search_files",
+                 {"path": repo, "pattern": [[[[[[["x"]]]]]]]}),
+                ("a Grep path that is not text", "Grep", {"pattern": "x", "path": ["/"]}),
+                ("a glob that is not text", "Grep", {"pattern": "x", "path": repo, "glob": ["a"]})]
+
+
+class GuardCaps(_CapRows, GuardCase):
+    """T-6019: a cap or an early exit is a refusal, never "no link found" or "nothing here"."""
+    def tree(self, name):
+        """A folder of ten folders of five files, holding a link at the end to a harmless folder, and the link's name."""
+        root = os.path.join(os.path.dirname(self.home), "caps-" + name)
+        shutil.rmtree(root, ignore_errors=True)
+        self.addCleanup(shutil.rmtree, root, True)
+        target = os.path.join(root, "harmless")
+        os.makedirs(target)
+        for i in range(10):
+            d = os.path.join(root, "many", f"d{i}")
+            os.makedirs(d)
+            for j in range(5):
+                open(os.path.join(d, f"f{j}"), "w").close()
+        os.symlink(target, os.path.join(root, "many", "d9", "ln"))
+        return root
+
+    def test_every_cap_of_the_guard_refuses_the_call(self):
+        for label, tool, ti in self.cap_rows():
+            with self.subTest(cap=label):
+                ti = dict({"pattern": "x"}, **ti) if tool == "Grep" else ti
+                self.assertBlocked(g.check(tool, ti, self.ctx()), "system", label)
+
+    def test_the_caps_are_the_ones_the_table_documents(self):
+        self.assertEqual((g._BRACE_CAP, g._GLOB_CAP, g._FORM_CAP, g._STRING_CAP, g._PATH_CAP, g._NEST_CAP, g._FORMS_CAP),
+                         (256, 512, 512, 2000, 4096, 6, 16))
+        self.assertEqual((g._STAR_CAP, g._DECODE_CAP), (8, 4))
+        self.assertEqual((g._LINK_DEPTH, g._LINK_SCAN, g._LINK_CHAIN), (32, 50_000, 8))
+
+    # the caps of the two modules, found by name (T-6019): a cap added without its row below is a red test
+    CAP_NAME = re.compile(r"_(\w+_)?(CAP|SCAN|DEPTH|CHAIN)$")
+    NOT_THE_SEARCH_GUARD = {"_SPAWN_CAP", "_TYPER_CAP", "_SCRIPT_CAP", "_LINE_CAP", "_SCAN"}  # bash-line and script limits, not caps of a search
+    GUARD_ONLY = {  # a cap of the guard that hooks does not copy, and why the prefilter is still a superset
+        "_FORMS_CAP": "the prefilter escalates on any % in a path",
+        "_DECODE_CAP": "the prefilter escalates on any % in a path",
+        "_LINK_SCAN": "the prefilter has its own, smaller _PREFILTER_SCAN, and escalates when it is spent",
+        "_LINK_CHAIN": "the prefilter escalates on any link to a folder, so never follows a chain"}
+    HOOKS_ONLY = {"_PREFILTER_SCAN", "_PRODUCT_CAP"}  # bounds of the prefilter itself: each one ends in an escalation
+
+    @staticmethod
+    def cap_names(module):
+        """The module-level names that look like a cap, with their values (read from the source, so a name is found even
+        when nothing calls it)."""
+        import ast
+        with open(module.__file__) as f:
+            tree = ast.parse(f.read())
+        out = {}
+        for node in tree.body:
+            if isinstance(node, ast.Assign):
+                for t in node.targets:
+                    for name in (t.elts if isinstance(t, ast.Tuple) else [t]):
+                        if isinstance(name, ast.Name) and GuardCaps.CAP_NAME.match(name.id):
+                            out[name.id] = getattr(module, name.id)
+        return {k: v for k, v in out.items() if k not in GuardCaps.NOT_THE_SEARCH_GUARD}
+
+    def cap_trips(self):
+        """{cap name: (a low value, tool, input)}: a call the guard allows as the cap is and refuses as "system" with the cap
+        set to that value."""
+        repo = self.repo
+        scan, depth, chain = self.tree("trip-scan"), self.tree("trip-depth"), self.tree("trip-chain")
+        os.makedirs(os.path.join(depth, "deep", "a", "b", "c"))
+        for i in range(4):
+            os.makedirs(os.path.join(chain, f"c{i}"), exist_ok=True)
+        for i in range(3):  # c0 -> c1 -> c2 -> c3
+            os.symlink(os.path.join(chain, f"c{i + 1}"), os.path.join(chain, f"c{i}", "next"))
+        search = "mcp__fs__search_files"
+        return {"_BRACE_CAP": (2, "Grep", {"pattern": "x", "path": repo, "glob": "{a,b,c}"}),
+                "_GLOB_CAP": (10, "Glob", {"pattern": "a" * 11, "path": repo}),
+                "_FORM_CAP": (3, search, {"path": repo, "patterns": [f"p{i}" for i in range(6)]}),
+                "_STRING_CAP": (3, "mcp__fs__read_multiple_files", {"paths": ["a", "b", "c", "d", "e"]}),
+                "_PATH_CAP": (10, "mcp__fs__read_file", {"path": "x" * 11}),
+                "_NEST_CAP": (2, "mcp__fs__read_file", {"a": {"b": {"c": ["x"]}}}),
+                # (a segment's reading is cached by its text: this one is used by no other test)
+                "_STAR_CAP": (2, "Glob", {"pattern": "*zq1*zq1*zq1", "path": repo}),
+                "_DECODE_CAP": (1, "mcp__fs__read_file", {"path": "%252Ex"}),
+                "_FORMS_CAP": (2, "mcp__fs__read_file", {"path": "%2541"}),
+                "_LINK_SCAN": (20, search, {"path": scan, "pattern": "**/x"}),
+                "_LINK_DEPTH": (2, search, {"path": os.path.join(depth, "deep"), "pattern": "**/x"}),
+                "_LINK_CHAIN": (2, search, {"path": os.path.join(chain, "c0"), "pattern": "**/zzz"})}
+
+    def test_every_cap_by_name_has_a_row_that_trips_it(self):
+        found = self.cap_names(g)
+        self.assertGreaterEqual(len(found), 12, "the walk finds the caps")
+        trips = self.cap_trips()
+        self.assertEqual(set(trips), set(found), "a cap of fmguard.py with no row in cap_trips, or a row of a cap that is gone")
+        for name, (low, tool, ti) in trips.items():
+            with self.subTest(cap=name):
+                self.assertIsNone(g.check(tool, ti, self.ctx()), "allowed as the cap is")
+                g._seg.cache_clear()  # (a segment's reading is cached by its text: the unpatched call above filled it)
+                self.addCleanup(g._seg.cache_clear)
+                with mock.patch.object(g, name, low):
+                    self.assertBlocked(g.check(tool, ti, self.ctx()), "system", name)
+
+    def test_every_cap_of_the_hooks_prefilter_is_the_guards_or_is_its_own_and_escalates(self):
+        from sampo import hooks
+        theirs, ours = self.cap_names(hooks), self.cap_names(g)
+        self.assertGreaterEqual(len(theirs), 8)
+        for name, value in theirs.items():
+            with self.subTest(cap=name):
+                if name in self.HOOKS_ONLY:
+                    continue
+                self.assertIn(name, ours, "a cap in hooks.py that is neither fmguard's nor listed in HOOKS_ONLY")
+                self.assertEqual(value, ours[name], "a mirrored cap is the guard's value")
+        for name in ours:
+            if name not in theirs:
+                self.assertIn(name, self.GUARD_ONLY, f"{name} is a cap of the guard that the prefilter does not mirror: say why")
+        self.assertTrue(self.HOOKS_ONLY <= set(theirs), "HOOKS_ONLY names caps that are gone")
+        self.assertLessEqual(hooks._PREFILTER_SCAN, g._LINK_SCAN, "the prefilter gives up before the guard does")
+        self.assertLessEqual(hooks._PREFILTER_SCAN, 10_000, "about 3 ms per 1000 entries (T-6019): the prefilter walk stays far under 1 s")
+
+    # the walk is made for a tool that may follow a link: an MCP search (Grep and Glob are ripgrep without --follow)
+    def test_a_link_walk_that_spends_its_entries_is_refused_not_allowed(self):
+        root = self.tree("scan")
+        for ti in ({"path": root, "pattern": "*/*/x"}, {"path": root, "pattern": "**/x"},
+                   {"path": root, "pattern": "x", "glob": "*/*/x"}):
+            with self.subTest(call=str(ti)):
+                self.assertIsNone(g.check("mcp__fs__search_files", ti, self.ctx()), "the whole tree is read, and holds no credential")
+                with mock.patch.object(g, "_LINK_SCAN", 20):
+                    self.assertBlocked(g.check("mcp__fs__search_files", ti, self.ctx()), "system")
+
+    def test_grep_and_glob_over_a_tree_too_big_to_walk_are_allowed(self):
+        """The blocker: a repository holds a million entries (state/, worktrees/), most of it ignored. Neither tool walks it, so
+        the entry budget never refuses them, however low it is."""
+        root = self.tree("big")
+        for tool, ti in (("Grep", {"pattern": "x", "path": root}), ("Grep", {"pattern": "x", "path": root, "glob": "**/*.py"}),
+                         ("Glob", {"pattern": "**/*.py", "path": root}), ("Glob", {"pattern": "*/*/x", "path": root}),
+                         ("Grep", {"pattern": "x", "path": root, "glob": "*/*/x"})):
+            with self.subTest(call=f"{tool} {ti}"):
+                with mock.patch.object(g, "_LINK_SCAN", 5):
+                    self.assertIsNone(g.check(tool, ti, self.ctx()))
+
+    def test_the_entry_budget_is_one_for_each_call_not_one_for_the_process(self):
+        root = self.tree("budget")
+        ti = {"path": root, "pattern": "*/*/x"}
+        with mock.patch.object(g, "_LINK_SCAN", 80):  # the tree holds about 70 entries
+            for _ in range(3):
+                self.assertIsNone(g.check("mcp__fs__search_files", ti, self.ctx()))
+
+    def test_a_folder_deeper_than_the_link_walk_goes_is_refused_not_allowed(self):
+        root = self.tree("depth")
+        os.makedirs(os.path.join(root, "deep", "a", "b", "c"))
+        os.symlink(os.path.join(root, "harmless"), os.path.join(root, "deep", "a", "b", "c", "ln"))
+        deep = os.path.join(root, "deep")
+        for ti in ({"path": deep, "pattern": "**/x"}, {"path": deep, "pattern": "*/*/*/*/x"},
+                   {"path": deep, "pattern": "x", "glob": "**/*.md"}):
+            with self.subTest(call=str(ti)):
+                self.assertIsNone(g.check("mcp__fs__search_files", ti, self.ctx()))
+                with mock.patch.object(g, "_LINK_DEPTH", 2):
+                    self.assertBlocked(g.check("mcp__fs__search_files", ti, self.ctx()), "system")
+        with mock.patch.object(g, "_LINK_DEPTH", 2):  # a glob of two segments goes two folders down: all of it seen
+            self.assertIsNone(g.check("mcp__fs__search_files", {"path": deep, "pattern": "*/x"}, self.ctx()))
+
+    def test_an_entry_the_link_walk_cannot_read_is_refused_not_skipped(self):
+        root = self.tree("unread")
+        real = os.scandir
+
+        class Bad:
+            name, path = "bad", os.path.join(root, "bad")
+
+            def is_symlink(self):
+                raise OSError("stat failed")
+
+        class Fake:
+            def __init__(self, it):
+                self.it = it
+
+            def __enter__(self):
+                return iter([Bad()] + list(self.it))
+
+            def __exit__(self, *a):
+                return False
+
+        def scandir(p):
+            return Fake(real(p)) if os.fspath(p) == os.path.join(root, "many") else real(p)
+
+        ti = {"pattern": "*/*/x", "path": root}
+        self.assertIsNone(g.check("mcp__fs__search_files", ti, self.ctx()))
+        with mock.patch.object(g.os, "scandir", scandir):
+            self.assertBlocked(g.check("mcp__fs__search_files", ti, self.ctx()), "system")
+
+    def test_a_folder_the_user_cannot_list_is_refused_not_allowed(self):
+        """Allowing it would rest on the tool not being able to enter it either: a server that runs as another user, or
+        with other rights, can. Not knowing what is below it, the guard refuses (and says to search a narrower folder)."""
+        root = self.tree("denied")
+        real = os.scandir
+
+        def scandir(p):
+            if os.fspath(p) == os.path.join(root, "many", "d3"):
+                raise PermissionError(13, "denied")
+            return real(p)
+
+        ti = {"path": root, "pattern": "*/*/x"}
+        self.assertIsNone(g.check("mcp__fs__search_files", ti, self.ctx()))
+        with mock.patch.object(g.os, "scandir", scandir):
+            self.assertBlocked(g.check("mcp__fs__search_files", ti, self.ctx()), "system")
+            self.assertIsNone(g.check("Glob", {"pattern": "*/*/x", "path": root}, self.ctx()), "Glob is not walked")
+
+    def test_a_line_over_the_path_cap_is_refused_wherever_it_stands(self):
+        """It used to be read as content and allowed: a path of a million characters ends in a credential, and a server
+        reads it as a path. Now no line of the arguments may be longer than the guard reads."""
+        cred = os.path.join(self.home, g._CRED_FILES[0])
+        for paths in ("x" * 5000 + "\n" + cred, cred + "\n" + "x" * 5000, "\n".join(["y" * 3000] * 3 + [cred]) + "\n" + "z" * 4097,
+                      "y" * 5000 + "\0" + cred):
+            with self.subTest(paths=paths[:20]):
+                self.assertBlocked(g.check("mcp__fs__read_multiple_files", {"paths": paths}, self.ctx()), "system")
+        self.assertBlocked(g.check("mcp__fs__read_file", {"path": "x" * 5000}, self.ctx()), "system")
+        self.assertIsNone(g.check("mcp__fs__read_file", {"path": "x" * 4096}, self.ctx()), "a line of the cap's size is read")
+        self.assertIsNone(g.check("mcp__fs__read_multiple_files", {"paths": "\n".join(["y" * 3000] * 3)}, self.ctx()))
+
+    def test_a_search_over_the_project_root_is_still_allowed(self):
+        """The caps are for trees the guard can't rule out, not for a repository: a Grep over the root, and a few more."""
+        for tool, ti in (("Grep", {"pattern": "x", "path": self.repo}), ("Grep", {"pattern": "x"}),
+                         ("Grep", {"pattern": "x", "path": self.repo, "glob": "**/*.py"}),
+                         ("Glob", {"pattern": "**/*.py", "path": self.repo}),
+                         ("Glob", {"pattern": "*/*/*.md", "path": self.repo}),
+                         ("mcp__fs__search_files", {"path": self.repo, "pattern": "*.py"})):
+            with self.subTest(call=f"{tool} {ti}"):
+                self.assertIsNone(g.check(tool, ti, self.ctx()))
+
+    def test_grep_and_glob_are_never_walked_because_ripgrep_does_not_follow_links(self):
+        """Claude Code's Grep runs ripgrep with --no-follow and its Glob runs `rg --files` with no --follow (read from the
+        2.1.330 binary): a link below the folder is listed, never entered. So the realpath of the root, and of a glob's literal
+        front, is the whole judgement, and no walk of the tree is made, whatever it holds."""
+        root = self.tree("rg")
+        os.symlink(self.home, os.path.join(root, "many", "to-home"))
+        calls = [("Grep", {"pattern": "x", "path": root}), ("Grep", {"pattern": "x", "path": root, "glob": "**/*"}),
+                 ("Glob", {"pattern": "**/*", "path": root}), ("Glob", {"pattern": "*/*/x", "path": root})]
+        with mock.patch.object(g, "_links_below", side_effect=AssertionError("walked")):
+            for tool, ti in calls:
+                with self.subTest(call=f"{tool} {ti}"):
+                    self.assertIsNone(g.check(tool, ti, self.ctx()))
+            with self.assertRaises(AssertionError):  # (the same tree is walked for an MCP search: the stub is live)
+                g.check("mcp__fs__search_files", {"path": root, "pattern": "**/*"}, self.ctx())
+        self.assertBlocked(g.check("mcp__fs__search_files", {"path": root, "pattern": "**/*"}, self.ctx()), "credentials")
+        # the root itself is judged by where it really goes
+        os.symlink(self.home, os.path.join(root, "home-link"))
+        for tool, ti in (("Grep", {"pattern": "x", "path": os.path.join(root, "home-link")}),
+                         ("Glob", {"pattern": "*", "path": os.path.join(root, "home-link")})):
+            with self.subTest(call=f"{tool} {ti}"):
+                self.assertBlocked(g.check(tool, ti, self.ctx()), "credentials")
+
+    def test_a_relative_wildcard_mcp_search_is_walked_from_every_base_the_server_may_run_in(self):
+        """T-6019 review: a server resolves a relative path from its own folder, which may be the home or /: a relative
+        wildcard search whose base is the home, with a link below it to a credential folder, is refused (the walk is made
+        there too, from the one budget), and a base too big to walk is refused, never skipped."""
+        home_sub = os.path.join(self.home, "relsub")
+        shutil.rmtree(home_sub, ignore_errors=True)
+        self.addCleanup(shutil.rmtree, home_sub, True)
+        os.makedirs(home_sub)
+        cred = os.path.join(self.home, g._CRED_DIRS[0])
+        os.makedirs(cred, exist_ok=True)
+        os.symlink(cred, os.path.join(home_sub, "cl"))
+        sub = os.path.join(self.repo, "relsub")  # the session's own folder holds no such link
+        os.makedirs(sub, exist_ok=True)
+        self.assertNotIn(self.home, os.path.realpath(self.repo))
+        for ti in ({"path": "relsub", "pattern": "**/*"}, {"path": "relsub", "pattern": "*/*"}, {"path": "relsub"}):
+            with self.subTest(call=str(ti)):
+                self.assertBlocked(g.check("mcp__fs__search_files", ti, self.ctx()), "credentials")
+        walked = []
+        real = g._links_below
+
+        def spy(root, *a, **k):
+            walked.append(os.path.realpath(root))
+            return real(root, *a, **k)
+        with mock.patch.object(g, "_links_below", spy):
+            g.check("mcp__fs__search_files", {"path": "relsub", "pattern": "**/*"}, self.ctx())
+        for base in (self.repo, self.home):
+            self.assertIn(os.path.realpath(os.path.join(base, "relsub")), walked)
+        with mock.patch.object(g, "_LINK_SCAN", 1):  # the home too big to walk: a refusal, not an allow
+            os.remove(os.path.join(home_sub, "cl"))
+            for n in range(3):
+                os.makedirs(os.path.join(home_sub, f"d{n}"))
+            found = g.check("mcp__fs__search_files", {"path": "relsub", "pattern": "**/*"}, self.ctx())
+            self.assertBlocked(found, "system")
+
+
+class PrefilterParity(_CapRows, GuardCase):
+    """T-6019: hooks._search_like is a superset of what the guard refuses, for each way a path can be written (~, $HOME,
+    case, percent-encoding, a URI, a path relative to the folder the server runs in), through each tool, with and without a
+    link, and at every cap."""
+    targets, enc = CredentialTools.targets, staticmethod(CredentialTools.enc)
+
+    def setUp(self):
+        patcher = mock.patch.dict(os.environ, {"HOME": self.home})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        from sampo import hooks
+        self.hooks = hooks
+        self.lroot = os.path.join(self.home, "lroot")  # a folder of the home holding a link to the home
+        os.makedirs(self.lroot, exist_ok=True)
+        if not os.path.lexists(os.path.join(self.lroot, "hl")):
+            os.symlink(self.home, os.path.join(self.lroot, "hl"))
+        self.addCleanup(shutil.rmtree, self.lroot, True)
+
+    def pre(self, tool, ti, cwd=None):
+        return self.hooks._search_like({"tool_name": tool, "tool_input": ti, "cwd": cwd or self.repo})
+
+    def spellings(self, p):
+        """The home-relative path p (or a folder of the home) as written in each way the guard reads a path."""
+        h, enc = self.home, self.enc
+        return {"~": "~/" + p, "$HOME": "$HOME/" + p, "${HOME}": "${HOME}/" + p, "absolute": h + "/" + p,
+                "upper": (h + "/" + p).upper(), "encoded": enc(h + "/" + p), "encoded ~": "~" + "/" + enc(p),
+                "twice": enc(enc(h + "/" + p)), "uri": "file://" + h + "/" + p, "uri, encoded": "file://" + enc(h + "/" + p),
+                "dotted": h + "/./x/../" + p, "doubled /": h + "//" + p,
+                "from the project": os.path.relpath(h, self.repo) + "/" + p}
+
+    def calls(self, spelling, p):
+        """(label, tool, input) of a call that reads or lists the home's path p, spelled as `spelling`."""
+        out = [("Grep", "Grep", {"pattern": "x", "path": spelling}),
+               ("Glob", "Glob", {"pattern": spelling}),
+               ("LS", "LS", {"path": spelling}),
+               ("NotebookRead", "NotebookRead", {"notebook_path": spelling}),
+               ("mcp read", "mcp__fs__read_file", {"path": spelling}),
+               ("mcp list", "mcp__fs__list_directory", {"path": spelling}),
+               ("mcp many", "mcp__fs__read_multiple_files", {"paths": ["nothing", spelling]}),
+               ("mcp nested", "mcp__fs__read_file", {"options": {"deep": [spelling]}}),
+               ("mcp lines", "mcp__fs__read_file", {"paths": "nothing\n" + spelling}),
+               ("mcp NUL", "mcp__fs__read_file", {"path": spelling + "\0x"}),
+               ("mcp after a long line", "mcp__fs__read_file", {"paths": "x" * 5000 + "\n" + spelling}),
+               ("ReadMcpResourceTool", "ReadMcpResourceTool", {"server": "fs", "uri": spelling})]
+        return [(f"{label} {spelling}", tool, ti) for label, tool, ti in out]
+
+    def test_the_prefilter_passes_every_spelling_of_a_credential_through_every_tool(self):
+        refused = 0
+        for t, is_dir, rel, name in self.targets():
+            for how, spelling in self.spellings(rel).items():
+                for label, tool, ti in self.calls(spelling, rel):
+                    got = g.check(tool, dict({"pattern": "x"}, **ti) if tool == "Grep" else ti, self.ctx())
+                    if got is None:
+                        continue  # allowed by the guard: the prefilter may pass it or stop it
+                    refused += 1
+                    with self.subTest(call=f"{how}: {label}"):
+                        self.assertTrue(self.pre(tool, ti), f"the guard refuses it: {got.category}")
+        self.assertGreater(refused, 500)  # the table is not vacuous
+
+    def test_a_search_in_a_folder_written_with_a_tilde_or_a_variable_follows_a_link_there(self):
+        """The bug: the roots a link walk starts from were built from the path as written (~/x), not as expanded."""
+        rel = g._CRED_FILES[0]
+        for how, folder in (("~", "~/lroot"), ("$HOME", "$HOME/lroot"), ("${HOME}", "${HOME}/lroot"),
+                            ("upper", (self.home + "/lroot").upper()), ("encoded", self.enc(self.home + "/lroot")),
+                            ("uri", "file://" + self.home + "/lroot"), ("dotted", self.home + "/./x/../lroot"),
+                            ("absolute", self.home + "/lroot"), ("from the project", os.path.relpath(self.home, self.repo) + "/lroot")):
+            for tool, ti in (("Glob", {"pattern": "hl/" + rel, "path": folder}),  # a literal front that is a link: a root
+                             ("Glob", {"pattern": "hl/*/" + rel, "path": folder}),
+                             ("Grep", {"pattern": "x", "path": folder, "glob": "hl/" + rel}),
+                             ("mcp__fs__search_files", {"path": folder, "pattern": "*/" + rel}),
+                             ("mcp__fs__search_files", {"path": folder, "pattern": "**/" + rel}),
+                             ("mcp__fs__search_files", {"path": folder, "pattern": "**/*"}),
+                             ("mcp__fs__directory_tree", {"path": folder}),
+                             ("mcp__fs__search_files", {"path": folder, "patterns": ["x", "*/" + rel]}),
+                             ("mcp__fs__search_files", {"path": folder, "options": {"include": ["*/" + rel]}}),
+                             ("mcp__fs__search_files", {"path": folder, "pattern": "x\n*/" + rel})):
+                if tool == "Glob" and how in ("uri", "encoded"):
+                    continue  # a Glob's path is a folder, not a URI
+                with self.subTest(call=f"{how}: {tool} {ti}"):
+                    want = g.check(tool, dict({"pattern": "x"}, **ti) if tool == "Grep" else ti, self.ctx())
+                    # every spelling is read by the guard but the upper-case one (a folder that is not there), and a Grep or
+                    # Glob folder is not decoded or read as a URI
+                    reads = how != "upper" and (tool.startswith("mcp__") or how in ("~", "$HOME", "${HOME}", "absolute", "dotted", "from the project"))
+                    if reads:
+                        self.assertIsNotNone(want, "the guard follows the link")
+                    if want is not None:
+                        self.assertTrue(self.pre(tool, ti), "so does the prefilter")
+
+    def test_a_search_of_a_folder_with_no_glob_is_walked_for_links_too(self):
+        """The guard runs an MCP search with no glob at every depth: a link anywhere below the folder is read. Grep and
+        Glob (ripgrep, no --follow) are not walked: both the guard and the prefilter let a link below their folder be."""
+        lroot = "~/lroot"
+        for tool, ti in (("mcp__fs__directory_tree", {"path": lroot}), ("mcp__fs__search_files", {"path": lroot, "pattern": "x"})):
+            with self.subTest(call=f"{tool} {ti}"):
+                self.assertIsNotNone(g.check(tool, ti, self.ctx()))
+                self.assertTrue(self.pre(tool, ti))
+        for tool, ti in (("Grep", {"pattern": "x", "path": lroot}), ("Glob", {"pattern": "*", "path": lroot}),
+                         ("Glob", {"pattern": "**", "path": lroot}), ("Grep", {"pattern": "x", "path": lroot, "glob": "*/*"})):
+            with self.subTest(call=f"{tool} {ti}"):
+                self.assertIsNone(g.check(tool, ti, self.ctx()))
+                self.assertFalse(self.pre(tool, ti))
+
+    def test_a_grep_or_glob_over_a_big_tree_is_decided_at_once_without_a_walk(self):
+        """The blocker: `find .` of the repo is a million entries. The prefilter reads no folder for Grep or Glob (a scan of
+        the root would fail here), and answers in well under 20 ms."""
+        import time
+        root = os.path.join(os.path.dirname(self.home), "caps-big")
+        shutil.rmtree(root, ignore_errors=True)
+        self.addCleanup(shutil.rmtree, root, True)
+        os.makedirs(os.path.join(root, "state", "ignored"))
+        os.symlink(os.path.join(root, "state"), os.path.join(root, "state", "ignored", "loop"))
+        with open(os.path.join(root, ".gitignore"), "w") as f:
+            f.write("state/\n")
+
+        def no_scan(p, *a):
+            raise AssertionError(f"scandir of {p}")
+        calls = [("Grep", {"pattern": "x", "path": root}), ("Grep", {"pattern": "x"}),
+                 ("Grep", {"pattern": "x", "path": root, "glob": "**/*.py"}), ("Glob", {"pattern": "**/*.py", "path": root}),
+                 ("Glob", {"pattern": "*/*/*.md"}), ("Glob", {"pattern": "src/**"})]
+        with mock.patch.object(self.hooks.os, "scandir", no_scan), mock.patch.object(self.hooks, "_PREFILTER_SCAN", 1):
+            for tool, ti in calls:
+                with self.subTest(call=f"{tool} {ti}"):
+                    best = 1.0
+                    for _ in range(5):
+                        t0 = time.perf_counter()
+                        got = self.pre(tool, ti, cwd=root)
+                        best = min(best, time.perf_counter() - t0)
+                    self.assertFalse(got)
+                    self.assertLess(best, 0.02)
+
+    def test_an_mcp_search_escalates_on_a_link_to_a_folder_and_not_on_a_link_to_a_file(self):
+        """The guard follows what is under a link to a folder (a chain), so the prefilter must hand any such tree over."""
+        root = os.path.join(os.path.dirname(self.home), "caps-folderlink")
+        shutil.rmtree(root, ignore_errors=True)
+        self.addCleanup(shutil.rmtree, root, True)
+        os.makedirs(os.path.join(root, "files"))
+        os.makedirs(os.path.join(root, "elsewhere"))
+        open(os.path.join(root, "elsewhere", "plain.txt"), "w").close()
+        os.symlink(os.path.join(root, "elsewhere", "plain.txt"), os.path.join(root, "files", "to-file"))
+        ti = {"path": os.path.join(root, "files"), "pattern": "**/*"}
+        self.assertFalse(self.pre("mcp__fs__search_files", ti))
+        self.assertIsNone(g.check("mcp__fs__search_files", ti, self.ctx()))
+        os.symlink(os.path.join(root, "elsewhere"), os.path.join(root, "files", "to-dir"))
+        self.assertTrue(self.pre("mcp__fs__search_files", ti))
+        self.assertIsNone(g.check("mcp__fs__search_files", ti, self.ctx()), "the guard follows it, and finds nothing there")
+        os.symlink(self.home, os.path.join(root, "elsewhere", "to-home"))  # a link under the link: a chain
+        self.assertTrue(self.pre("mcp__fs__search_files", ti))
+        self.assertBlocked(g.check("mcp__fs__search_files", ti, self.ctx()), "credentials")
+
+    def test_a_search_that_the_guard_allows_is_one_the_prefilter_may_pass_or_stop(self):
+        """Every row the prefilter lets by (False) is one the guard allows: no call is waved through unread."""
+        rows = [("Grep", {"pattern": "x", "path": self.repo}), ("Grep", {"pattern": "x", "glob": "*.py"}),
+                ("Glob", {"pattern": "**/*.py"}), ("Glob", {"pattern": "src/*.rs", "path": self.repo}),
+                ("Glob", {"pattern": "*/*.md", "path": self.repo}), ("mcp__fs__read_file", {"path": "src/main.rs"}),
+                ("mcp__fs__search_files", {"path": self.repo, "pattern": "*.py"}),
+                ("mcp__fs__list_directory", {"path": self.repo}), ("LS", {"path": self.repo}),
+                ("Grep", {"pattern": "x", "path": os.path.join(self.home, "proj"), "glob": "*.md"})]
+        for tool, ti in rows:
+            with self.subTest(call=f"{tool} {ti}"):
+                if not self.pre(tool, ti):
+                    self.assertIsNone(g.check(tool, dict({"pattern": "x"}, **ti) if tool == "Grep" else ti, self.ctx()))
+
+    def test_the_prefilter_passes_a_call_at_each_cap_of_the_guard(self):
+        for label, tool, ti in self.cap_rows():
+            with self.subTest(cap=label):
+                self.assertTrue(self.pre(tool, ti))
+
+    def test_the_prefilter_stops_where_the_guard_stops_for_a_link_walk(self):
+        root = os.path.join(os.path.dirname(self.home), "caps-parity")
+        shutil.rmtree(root, ignore_errors=True)
+        self.addCleanup(shutil.rmtree, root, True)
+        os.makedirs(os.path.join(root, "harmless"))
+        for i in range(10):
+            os.makedirs(os.path.join(root, "many", f"d{i}"))
+            for j in range(5):
+                open(os.path.join(root, "many", f"d{i}", f"f{j}"), "w").close()
+        os.makedirs(os.path.join(root, "deep", "a", "b", "c"))
+        open(os.path.join(root, "harmless", "leaf"), "w").close()
+        os.symlink(os.path.join(root, "harmless", "leaf"), os.path.join(root, "many", "d9", "ln"))  # a link to a file
+        tool, ti = "mcp__fs__search_files", {"pattern": "*/*/x", "path": root}
+        self.assertFalse(self.pre(tool, ti), "a tree it has read to the end, with a link to nothing credential-like")
+        for guard_const, hook_const, value, call in (("_LINK_SCAN", "_PREFILTER_SCAN", 20, ti),
+                                                     ("_LINK_DEPTH", "_LINK_DEPTH", 2, {"pattern": "**/x", "path": root})):
+            with self.subTest(cap=guard_const):
+                with mock.patch.object(g, guard_const, value), mock.patch.object(self.hooks, hook_const, value):
+                    self.assertTrue(self.pre(tool, call))
+                    self.assertBlocked(g.check(tool, call, self.ctx()), "system")
+        with mock.patch.object(g, "_LINK_SCAN", 20), mock.patch.object(self.hooks, "_PREFILTER_SCAN", 20):
+            for t, c in (("Glob", {"pattern": "*/*/x", "path": root}), ("Grep", {"pattern": "x", "path": root})):
+                self.assertFalse(self.pre(t, c), "Grep and Glob are not walked: no budget to spend")
+                self.assertIsNone(g.check(t, c, self.ctx()))
+
+    def test_a_tree_over_the_prefilters_own_walk_is_handed_to_the_guard_at_once(self):
+        """The prefilter reads _PREFILTER_SCAN entries, never the guard's _LINK_SCAN: a big tree under an MCP search is the
+        guard's to read, and the prefilter stays cheap (T-6019: it runs in a 5 s hook, twice a call)."""
+        root = os.path.join(os.path.dirname(self.home), "caps-prebig")
+        shutil.rmtree(root, ignore_errors=True)
+        self.addCleanup(shutil.rmtree, root, True)
+        os.makedirs(os.path.join(root, "plain"))
+        for i in range(40):
+            open(os.path.join(root, "plain", f"f{i}"), "w").close()
+        ti = {"path": root, "pattern": "**/*"}
+        self.assertFalse(self.pre("mcp__fs__search_files", ti), "a tree it reads to the end, with no link")
+        read = []
+        real = os.scandir
+
+        def counting(p, *a):
+            read.append(os.fspath(p))
+            return real(p, *a)
+        with mock.patch.object(self.hooks, "_PREFILTER_SCAN", 10), mock.patch.object(self.hooks.os, "scandir", counting):
+            self.assertTrue(self.pre("mcp__fs__search_files", ti), "past the budget: the guard decides")
+        self.assertLessEqual(len([r for r in read if r.startswith(root)]), 3, "and it stopped reading when the budget was spent")
+        best = 1.0
+        for _ in range(5):  # (the best of five: a loaded machine slows one run)
+            t0 = time.perf_counter()
+            self.pre("mcp__fs__search_files", ti)
+            best = min(best, time.perf_counter() - t0)
+        self.assertLess(best, 0.05)
+
+    def test_a_folder_the_prefilter_cannot_list_goes_to_the_guard(self):
+        root = os.path.join(os.path.dirname(self.home), "caps-prenolist")
+        shutil.rmtree(root, ignore_errors=True)
+        self.addCleanup(shutil.rmtree, root, True)
+        os.makedirs(os.path.join(root, "locked"))
+        ti = {"path": root, "pattern": "**/*"}
+        self.assertFalse(self.pre("mcp__fs__search_files", ti))
+        real = os.scandir
+
+        def scandir(p, *a):
+            if os.fspath(p) == os.path.join(os.path.realpath(root), "locked"):
+                raise PermissionError(13, "denied")
+            return real(p, *a)
+        with mock.patch.object(self.hooks.os, "scandir", scandir):
+            self.assertTrue(self.pre("mcp__fs__search_files", ti))
+
+    def test_a_relative_wildcard_search_with_a_link_under_the_home_goes_to_the_guard(self):
+        """T-6019 review: the prefilter walks a relative path from every base the guard does (the session's folder, the
+        home, /): a link below the home, to a credential folder, escalates the call, and so does a base too big to read."""
+        home_sub = os.path.join(self.home, "relsub")
+        shutil.rmtree(home_sub, ignore_errors=True)
+        self.addCleanup(shutil.rmtree, home_sub, True)
+        os.makedirs(home_sub)
+        cred = os.path.join(self.home, g._CRED_DIRS[0])
+        os.makedirs(cred, exist_ok=True)
+        os.makedirs(os.path.join(self.repo, "relsub"), exist_ok=True)
+        os.symlink(cred, os.path.join(home_sub, "cl"))
+        for ti in ({"path": "relsub", "pattern": "**/*"}, {"path": "relsub", "pattern": "*/*"}, {"path": "relsub"}):
+            with self.subTest(call=str(ti)):
+                self.assertTrue(self.pre("mcp__fs__search_files", ti))
+                self.assertBlocked(g.check("mcp__fs__search_files", ti, self.ctx()), "credentials")
+        read = []
+        real = os.scandir
+
+        def counting(p, *a):
+            read.append(os.path.realpath(os.fspath(p)))
+            return real(p, *a)
+        os.remove(os.path.join(home_sub, "cl"))
+        with mock.patch.object(self.hooks.os, "scandir", counting):
+            self.pre("mcp__fs__search_files", {"path": "relsub", "pattern": "**/*"})
+        self.assertIn(os.path.realpath(home_sub), read)
+
+    def test_the_hooks_glob_expansion_is_the_guards_over_a_table_and_at_each_cap(self):
+        """hooks._glob_alts is a port of fmguard._glob_forms / _braces (the prefilter may not read a glob less than the
+        guard does): the same patterns, and a None exactly where the guard raises _Unreadable."""
+        alts = ",".join(f"a{i}" for i in range(256))
+        corpus = ["*.py", "", "  ", "!x", "*.py !x", "*.py,*.md", "a, b", "{a,b}", "{a,{b,c}}d", "{a", "a}", "{a,b}{c,d}", "{a,b}/{c,d}",
+                  "x{", "{}", "{,}", "{a\\,b,c}", "\\{a,b}", "{a,b\\}", "{{a,b},{c,d}}", "src/{a,b}/*.rs", "a b,c {d,e}", "{a,b} {c,d}",
+                  "**/{x,y}/**", "!{a,b}", "{a,!b}", "../x", "*/../x", "a/", "/", "./a", "a//b", "x,y,z,{u,v}", ",,", "{a,b},c",
+                  "{" + alts + "}", "{" + alts + ",z}", "{" + alts + "} {" + alts + "}", "{" + alts + "} {" + alts + "} q",
+                  "a" * 512, "a" * 513, "a " * 255 + "a", "a " * 256 + "a",
+                  ",".join(f"w{i}" for i in range(512)), ",".join(f"w{i}" for i in range(513)),
+                  "{a,b}" * 8, "{a,b}" * 9, "{a,b,c,d}" * 4, "{a,b,c,d}" * 5, "{a,b}" * 8 + " x", "{" * 30 + "a" + "}" * 30]
+        ctx = self.ctx()
+        for glob in corpus:
+            with self.subTest(glob=glob[:40] + f" ({len(glob)} chars)"):
+                theirs = self.hooks._glob_alts(glob)
+                try:
+                    forms = g._glob_forms([glob], ctx)
+                except g._Unreadable:
+                    self.assertIsNone(theirs, "the guard can't read it: the prefilter hands it over")
+                    continue
+                self.assertIsNotNone(theirs, "the guard reads it: so does the prefilter")
+                mine = []
+                for alt in theirs:  # the guard's own segmenting of an alternative, over hooks's alternatives
+                    segs = [s for s in alt.split("/") if s not in ("", ".")]
+                    if "/" not in alt.rstrip("/") and ".." not in segs:
+                        segs.insert(0, "**")
+                    mine.append((tuple(segs), alt.startswith("/")))
+                self.assertEqual(list(dict.fromkeys(mine)) or [(("**",), False)], forms)
+        self.assertIsNone(self.hooks._brace_alts("{" + ",".join("a" * 1 for _ in range(257)) + "}"))
+        self.assertEqual(len(self.hooks._brace_alts("{" + ",".join("a" * 1 for _ in range(256)) + "}")), 256)
+
+    def test_every_constant_the_hooks_prefilter_mirrors_is_pinned(self):
+        h = self.hooks
+        self.assertEqual((h._BRACE_CAP, h._GLOB_CAP, h._FORM_CAP, h._STRING_CAP, h._PATH_CAP, h._NEST_CAP, h._STAR_CAP, h._LINK_DEPTH),
+                         (256, 512, 512, 2000, 4096, 6, 8, 32))
+        self.assertEqual((h._PREFILTER_SCAN, h._PRODUCT_CAP), (5_000, 256))
+
+    def test_the_hooks_constants_are_the_guards(self):
+        h = self.hooks
+        self.assertEqual(h._LINK_DEPTH, g._LINK_DEPTH)
+        for name in ("_BRACE_CAP", "_GLOB_CAP", "_FORM_CAP", "_STRING_CAP", "_PATH_CAP", "_NEST_CAP", "_STAR_CAP"):
+            self.assertEqual(getattr(h, name), getattr(g, name), name)
+        self.assertEqual(h._MCP_GLOB_KEYS, g._MCP_GLOB_KEYS)
+        self.assertEqual((h._MCP_SEARCH_RX.pattern, h._MCP_SEARCH_RX.flags), (g._MCP_SEARCH._args[0], g._MCP_SEARCH._args[1] | 32))
+        self.assertEqual((set(h._CRED_DIRS), set(h._CRED_FILES)), (set(g._CRED_DIRS), set(g._CRED_FILES)))
 
 
 class CredentialToolsHook(ForemanTestCase):
