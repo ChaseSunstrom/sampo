@@ -5330,6 +5330,8 @@ def task_step(p, args):
 
 
 def task_ac(p, args):
+    if args.rest and args.action != "edit":  # T-6027: only edit takes text after the number; add takes its text as one arg
+        raise UsageError(f"sampo task ac ID {args.action} takes one argument, got extra {' '.join(args.rest)!r}: quote the text")
     if args.action == "list":  # T-3372
         if args.arg:  # `ac T-1 show login` is a criterion's text, not a list
             raise UsageError(f"ac list takes no argument, got {args.arg!r}; to add a criterion: sampo task ac ID add \"<text>\"")
@@ -5362,9 +5364,13 @@ def task_ac(p, args):
             raise UsageError(str(e).strip("'\""))
         return out(args, c.brief_summary(c.find_brief(p, b.id) or b), f"{b.id}: criterion {n} removed; later ones renumbered.")
     if args.action == "edit":
-        if args.verify is None and not args.text:
-            raise UsageError("sampo task ac ID edit N needs --verify CMD and/or --text TEXT")
-        text, verify = args.text, args.verify
+        if args.rest and args.text is not None:
+            raise UsageError("sampo task ac ID edit N takes its new text once: after N, or as --text, not both")
+        # T-6027: the text comes after N as ac add's does (its words rejoin: the shell splits them), or as --text
+        text = args.text if args.text is not None else (" ".join(args.rest) if args.rest else None)
+        if args.verify is None and not text:
+            raise UsageError("sampo task ac ID edit N needs the new text (after N, or --text TEXT) and/or --verify CMD")
+        verify = args.verify
         if text:  # T-2786: 'TEXT :: CMD' or 'TEXT — verify with `CMD`' carries the verify; --verify wins
             text, found = c.split_verify(text)
             verify = verify if verify is not None else found
@@ -10334,6 +10340,7 @@ def _build_parser(only=None):
     t.add_argument("id")
     t.add_argument("action", choices=["add", "check", "edit", "rm", "list"])
     t.add_argument("arg", nargs="?", help="add: the criterion's text; check, edit, rm: its number; list: none")
+    t.add_argument("rest", nargs="*", help="edit: the criterion's new text after its number, as --text takes it (T-6027)")
     t.add_argument("--verify")
     t.add_argument("--text", help="edit: the criterion's new text (its verify command stays unless --verify)")
     t.add_argument("--evidence", nargs=2, metavar=("CMD", "RESULT"))

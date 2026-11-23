@@ -1045,6 +1045,53 @@ class EditCriterion(ForemanTestCase):
         self.assertIn("grep -q x README", c.find_brief(c.find_project(self.repo), "T-0001").section("Acceptance criteria"))
 
 
+class AcEdit(ForemanTestCase):  # T-6027: `ac ID edit N "new text"` takes the text after N, as `ac add` takes its text
+    def _task(self):
+        self.fm("task", "new", "A", "--type", "FIX", "--tier", "S", "--ac", "typo gone", "--ac", "old :: false")
+
+    def _brief(self):
+        return c.find_brief(c.find_project(self.repo), "T-0001")
+
+    def test_positional_text_after_the_number_edits_the_text_and_keeps_the_verify(self):
+        self._task()
+        self.fm("task", "ac", "T-0001", "edit", "2", "README says x")
+        self.assertIn("README says x", self._brief().section("Acceptance criteria"))
+        self.assertNotIn("old", self._brief().section("Acceptance criteria"))
+        self.assertEqual(self._brief().verify_cmds(), [(1, None), (2, "false")])
+
+    def test_positional_text_with_a_double_colon_sets_the_verify_too(self):
+        self._task()
+        self.fm("task", "ac", "T-0001", "edit", "1", "README says x :: grep -q x README")
+        self.assertIn("README says x", self._brief().section("Acceptance criteria"))
+        self.assertEqual(self._brief().verify_cmds(), [(1, "grep -q x README"), (2, "false")])
+        # unquoted words the shell splits rejoin into 'TEXT :: CMD' as ac add reads it (no word starts with a dash)
+        self.fm("task", "ac", "T-0001", "edit", "2", "kept", "::", "true")
+        self.assertIn("kept", self._brief().section("Acceptance criteria"))
+        self.assertEqual(self._brief().verify_cmds(), [(1, "grep -q x README"), (2, "true")])  # verify_cmds lists every criterion
+
+    def test_the_text_and_verify_flags_still_edit(self):
+        self._task()
+        self.fm("task", "ac", "T-0001", "edit", "2", "--text", "kept", "--verify", "true")
+        self.assertIn("kept", self._brief().section("Acceptance criteria"))
+        self.assertEqual(self._brief().verify_cmds(), [(1, None), (2, "true")])
+        self.fm("task", "ac", "T-0001", "edit", "1", "--text", "flag text :: true")
+        self.assertIn("flag text", self._brief().section("Acceptance criteria"))
+        self.assertEqual(self._brief().verify_cmds(), [(1, "true"), (2, "true")])
+
+    def test_positional_text_and_the_text_flag_together_are_refused(self):
+        self._task()
+        p = self.fm("task", "ac", "T-0001", "edit", "1", "words", "--text", "flag", check=False)
+        self.assertNotEqual(p.returncode, 0)
+        self.assertNotIn("words", self._brief().section("Acceptance criteria"))
+        self.assertNotIn("flag", self._brief().section("Acceptance criteria"))
+
+    def test_extra_words_after_the_number_are_refused_outside_edit(self):
+        self._task()
+        self.assertNotEqual(self.fm("task", "ac", "T-0001", "check", "1", "extra", check=False).returncode, 0)
+        self.assertNotEqual(self.fm("task", "ac", "T-0001", "add", "one", "two", check=False).returncode, 0)
+        self.assertNotIn("two", self._brief().section("Acceptance criteria"))
+
+
 class Checks(ForemanTestCase):
     def test_affected_template_needs_a_placeholder_and_is_logged(self):
         # T-3416: `sampo check affected FILES` once replaced the template with the file names; every lane's run broke
