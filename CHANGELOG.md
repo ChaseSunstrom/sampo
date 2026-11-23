@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- The ship's push hold records each direct trunk commit's self-gate pass by sha and gate key, skips recorded ones in later holds, and judges the rest four at a time in separate scratch worktrees (T-6031).
 - sampo cost --vs-native prints dollars per landed lane by role (each token kind at its model family's price, a local model at zero) against the plain Claude Code reference with the ratio and the 10x line, and the Board's models panel draws the ratio's 14-day trend (T-6060).
 - sampo gates --evidence prints per gate the ledger's refusals, those followed by a change, later reds and a removal-candidate mark, and counts refusals with no gate id as unmeasured; close refusals now log their gate id (T-6049).
 - A ship's full-suite result on a sha now settles the pending post-merge verify records in its history (green covers them, red notes its classes for the verify's narrowed bisect, partial or cut runs cover nothing), and at most one lane verify runner lives per project (T-6012).
