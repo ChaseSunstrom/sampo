@@ -315,6 +315,9 @@ class KalevalaStep(ForemanTestCase):
         idle = mock.patch.object(kalevala, "IDLE_S", 0)  # T-3265 round 3: a round that spends nothing doesn't sleep here
         idle.start()
         self.addCleanup(idle.stop)
+        gate = mock.patch("sampo.models.open_here", lambda: True)  # T-6086: the host's claude_bench switch must not decide
+        gate.start()
+        self.addCleanup(gate.stop)
 
     def write(self, name, text):
         path = os.path.join(self.tmp, name)
@@ -563,6 +566,11 @@ class KalevalaStep(ForemanTestCase):
         with mock.patch.object(kalevala, "_stage", lambda p, n: self.SEED1):
             res = kalevala.step(self.project(), k=1, runner=lambda argv, cwd, env: (1, "no"))
         self.assertTrue(all(r.get("gen") == 1 for r in res["results"] if r["status"] == "failed"), res)
+
+    def test_a_session_argv_is_none_while_the_claude_bench_gate_is_off(self):
+        from sampo import kalevala
+        with mock.patch.object(kalevala.models, "open_here", lambda: False):
+            self.assertIsNone(kalevala.session_argv("memory", self.MISSION))
 
     def test_a_session_prompt_does_one_step_and_its_cost_is_kalevalas(self):
         from sampo import budget, kalevala
