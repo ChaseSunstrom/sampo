@@ -651,6 +651,243 @@ class PushHold(ForemanTestCase):
         why, judged = self.push()
         self.assertEqual((why, judged), ("", 0))
 
+    def hold(self, shas, gate=None):
+        """release._push_hold over these commits with the guard judge faked to agree (a plain pass); (the gate's call
+        refs, the refusal text or '')."""
+        from unittest import mock
+
+        from sampo import cli, release, selfgate
+        seen = []
+        real = gate or selfgate.gate
+
+        def counted(p, b, main, ref, files, *a, **kw):
+            seen.append(ref)
+            return real(p, b, main, ref, files, *a, **kw)
+        b = c.find_brief(self.p, self.tid)
+        with mock.patch.object(selfgate, "_verdicts", lambda tree, cmds: ["allow" if cmd == "ls" else "destructive" for cmd, _ in cmds]), \
+                mock.patch.object(selfgate, "_bench", lambda t: ({"Stop": {"p95": 100.0, "budget": 500}}, {"SessionStart": 2000})), \
+                mock.patch.object(selfgate, "_corpus", lambda: []), mock.patch.object(selfgate, "gate", counted):
+            try:
+                release._push_hold(self.p, b, self.repo, shas, "fm ship")
+                return seen, ""
+            except cli.UsageError as e:
+                return seen, str(e)
+
+    def test_a_commit_the_gate_passed_is_not_judged_again_until_the_gate_changes(self):
+        """T-6031: every ship judged the same direct commits again (66 minutes of hook bench): a pass is a self_change_passed
+        record keyed by the sha and the gate's inputs, and a later hold skips it."""
+        from unittest import mock
+
+        from sampo import selfgate
+        a = self.commit({"plugin/lib/fmguard.py": "x = 2\n"}, "one")
+        z = self.commit({"plugin/lib/fmguard.py": "x = 3\n"}, "two")
+        seen, why = self.hold([a, z])
+        self.assertEqual((sorted(seen), why), (sorted([a, z]), ""))
+        done = [e["data"] for e in c.ledger_events(self.p, ("self_change_passed",))]
+        self.assertEqual(sorted(d["sha"] for d in done), sorted([a, z]))
+        self.assertEqual({d["key"] for d in done}, {selfgate.gate_key()})
+        seen, why = self.hold([a, z])
+        self.assertEqual((seen, why), ([], ""), "the second hold judged nothing")
+        ran = [e["data"] for e in c.ledger_events(self.p, ("push_hold_judged",))]
+        self.assertEqual([(d["judged"], d["skipped"]) for d in ran], [(2, 0), (0, 2)])
+        self.assertTrue(all(isinstance(d["seconds"], (int, float)) for d in ran))
+        with mock.patch.object(selfgate, "gate_key", lambda: "another gate"):
+            seen, why = self.hold([a, z])
+        self.assertEqual((sorted(seen), why), (sorted([a, z]), ""), "a changed gate judges them again")
+
+    def test_a_refused_commit_is_judged_again_by_every_hold(self):
+        """T-6031: only a pass is remembered; a refusal is held each time until the user's yes."""
+        from unittest import mock
+
+        from sampo import cli, release, selfgate
+        sha = self.commit({"plugin/lib/fmguard.py": "x = 2\n"}, "loosen the guard")
+
+        def loose(tree, cmds):  # the branch's tree allows what the base's blocks (the base half may come from its cache)
+            loosened = "x = 2" in read_text(os.path.join(tree, "lib", "fmguard.py"))
+            return ["allow" if cmd == "ls" or loosened else "destructive" for cmd, _ in cmds]
+        for _ in range(2):
+            with mock.patch.object(selfgate, "_verdicts", loose), \
+                    mock.patch.object(selfgate, "_bench", lambda t: ({"Stop": {"p95": 100.0, "budget": 500}}, {})), \
+                    mock.patch.object(selfgate, "_corpus", lambda: []):
+                with self.assertRaises(cli.UsageError) as got:
+                    release._push_hold(self.p, c.find_brief(self.p, self.tid), self.repo, [sha], "fm ship")
+            self.assertIn("rm -rf ~", str(got.exception))
+        self.assertEqual(list(c.ledger_events(self.p, ("self_change_passed",))), [])
+
+    def test_the_hold_judges_four_commits_at_once_each_in_its_own_worktree(self):
+        """T-6031: a stub gate that waits for three others (a serial hold times the barrier out and is held)."""
+        import threading
+
+        shas = [self.commit({"plugin/lib/fmguard.py": f"x = {i + 2}\n"}, f"commit {i}") for i in range(6)]
+        lock, state = threading.Lock(), {"active": 0, "peak": 0, "calls": 0, "trees": [], "caches": [], "bad": []}
+        barrier = threading.Barrier(4, timeout=20)
+
+        def gate(p, b, main, ref, files, cache_name="", timing=True, **kw):
+            with lock:
+                state["calls"] += 1
+                first = state["calls"] <= 4
+                state["active"] += 1
+                state["peak"] = max(state["peak"], state["active"])
+                state["trees"].append(main)
+                state["caches"].append(cache_name)
+            try:
+                if first:
+                    barrier.wait()
+                head = sh(main, "rev-parse", "HEAD").strip()
+                if head != sh(main, "rev-parse", f"{ref}^1").strip():
+                    state["bad"].append(ref)
+                return []
+            finally:
+                with lock:
+                    state["active"] -= 1
+        seen, why = self.hold(shas, gate)
+        self.assertEqual((sorted(seen), why), (sorted(shas), ""))
+        self.assertEqual(state["peak"], 4, "four at once, never more")
+        self.assertEqual(state["bad"], [], "each tree stood at its commit's parent while it was judged")
+        self.assertEqual(len(set(state["trees"][:4])), 4, "four trees at the same time")
+        import glob
+
+        from sampo import release
+        self.assertEqual(set(state["caches"]), {release.PUSH_CACHE}, "one base cache file, not a file a worker")
+        self.assertEqual(sorted(os.path.basename(f) for f in glob.glob(os.path.join(self.p.dir, "selfgate-base*"))
+                                ), [], "the stub gate saved nothing, and no worker left a file behind")
+
+    def test_the_trains_own_knob_sets_how_many_commits_are_judged_at_once(self):
+        """T-6031: SAMPO_HOLD_JOBS (train.hold_jobs), not a second knob of the push hold's."""
+        import threading
+        from unittest import mock
+
+        shas = [self.commit({"plugin/lib/fmguard.py": f"x = {i + 2}\n"}, f"commit {i}") for i in range(5)]
+        lock, state = threading.Lock(), {"active": 0, "peak": 0}
+
+        def gate(p, b, main, ref, files, *a, **kw):
+            with lock:
+                state["active"] += 1
+                state["peak"] = max(state["peak"], state["active"])
+            time.sleep(0.2)
+            with lock:
+                state["active"] -= 1
+            return []
+        with mock.patch.dict(os.environ, {"SAMPO_HOLD_JOBS": "2"}):
+            seen, why = self.hold(shas, gate)
+        self.assertEqual((sorted(seen), why, state["peak"]), (sorted(shas), "", 2))
+
+    def test_no_replay_runs_while_a_hook_bench_is_timing(self):
+        """T-6031 review: four workers judge at once, but a bench's timings are skewed by another worker's replay on the same
+        CPUs: the real gate over five commits never replays (in any worker) while any bench is running."""
+        import threading
+        from unittest import mock
+
+        from sampo import cli, release, selfgate
+        shas = [self.commit({"plugin/lib/fmguard.py": f"x = {i + 2}\n"}, f"commit {i}") for i in range(5)]
+        lock, state = threading.Lock(), {"replays": 0, "benches": 0, "overlap": 0, "ran": 0, "peak": 0}
+
+        def enter(kind, other):
+            with lock:
+                state[kind] += 1
+                state["ran"] += kind == "benches"
+                state["peak"] = max(state["peak"], state["replays"] + state["benches"])
+                if state[other]:
+                    state["overlap"] += 1
+
+        def leave(kind):
+            with lock:
+                state[kind] -= 1
+
+        def verdicts(tree, cmds):
+            enter("replays", "benches")
+            time.sleep(0.05)
+            leave("replays")
+            return ["allow" if cmd == "ls" else "destructive" for cmd, _ in cmds]
+
+        def bench(tree):
+            enter("benches", "replays")
+            time.sleep(0.05)
+            leave("benches")
+            return {"Stop": {"p95": 100.0, "budget": 500}}, {"SessionStart": 2000}
+        with mock.patch.object(selfgate, "_verdicts", verdicts), mock.patch.object(selfgate, "_bench", bench), \
+                mock.patch.object(selfgate, "_corpus", lambda: []):
+            release._push_hold(self.p, c.find_brief(self.p, self.tid), self.repo, shas, "fm ship")
+        self.assertGreater(state["ran"], 0, "the benches ran")
+        self.assertEqual(state["overlap"], 0, "a replay and a bench ran at the same time")
+
+    def test_a_pass_the_user_or_the_standing_yes_gave_is_remembered_and_revoking_standing_judges_again(self):
+        """T-6031: a commit a yes passed was judged by every ship (the standing yes passes it each time): its pass is
+        recorded with the kind of yes, and a standing pass is only read while the standing yes stands."""
+        sha = self.commit({"plugin/lib/sampo/cli.py": 'add("brandnew")\n'}, "a verb with none removed")
+        seen, why = self.hold([sha])
+        self.assertIn("verbs", why, "the quality row holds without a standing yes")
+        self.assertEqual(list(c.ledger_events(self.p, ("self_change_passed",))), [])
+        c.update_meta(self.p, standing={"core": {"at": c.now(), "task": self.tid, "why": "test"}})
+        self.assertEqual(self.hold([sha]), ([sha], ""), "the standing yes passes it")
+        self.assertEqual(self.hold([sha]), ([], ""), "and the next hold does not judge it again")
+        c.update_meta(self.p, standing={})
+        seen, why = self.hold([sha])
+        self.assertEqual(seen, [sha], "revoked: judged again")
+        self.assertIn("verbs", why)
+        c.log_event(self.p, "approval_granted", task=self.tid, data={"allow": ["core"], "via": "prompt"})
+        self.assertEqual(self.hold([sha]), ([sha], ""), "the user's yes after the refusal passes it")
+        c.update_meta(self.p, standing={})
+        self.assertEqual(self.hold([sha]), ([], ""), "a yes is kept when no standing yes is set")
+
+    def test_a_pass_line_with_no_valid_signature_is_not_read(self):
+        """T-6031: a line an agent appends to the ledger (or edits to name another commit, key or task) skips nothing."""
+        from sampo import selfgate
+        sha = self.commit({"plugin/lib/fmguard.py": "x = 2\n"}, "one")
+        b = c.find_brief(self.p, self.tid)
+        c.log_event(self.p, "self_change_passed", task=self.tid, data={"sha": sha, "key": selfgate.gate_key()})
+        c.log_event(self.p, "self_change_passed", task=self.tid, data={"sha": sha, "key": selfgate.gate_key(), "mac": "0" * 64})
+        self.assertEqual(self.hold([sha])[0], [sha], "unsigned and wrongly signed lines skip nothing")
+        selfgate._log_pass(self.p, b, sha)
+        self.assertEqual(self.hold([sha])[0], [], "the signed one does")
+        sealed = [e for e in c.ledger_events(self.p, ("self_change_passed",)) if len(e["data"].get("mac", "")) == 64
+                  and e["data"]["mac"] != "0" * 64][-1]
+        other = self.commit({"plugin/lib/fmguard.py": "x = 3\n"}, "two")
+        forged = json.dumps(dict(sealed, data=dict(sealed["data"], sha=other)))  # the signature of another commit's pass
+        with open(os.path.join(self.p.dir, "ledger.jsonl"), "a", encoding="utf-8") as f:
+            f.write(forged + "\n")
+        self.assertEqual(self.hold([other])[0], [other], "a signature does not carry to another sha")
+
+    def test_the_gate_key_names_every_module_the_gate_imports_or_says_why_not(self):
+        """T-6031: a gate input left out of the key lets a changed judge's old passes stand. The imports of selfgate (any
+        depth) and doctor (module level) are each in KEY_MODULES or KEY_EXEMPT, and a change to a keyed module's file
+        changes the key."""
+        import ast
+        from unittest import mock
+
+        from sampo import selfgate
+        lib = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib", "sampo")
+        found = set()
+        for name, top in (("selfgate", False), ("doctor", True)):
+            with open(os.path.join(lib, name + ".py"), encoding="utf-8") as f:
+                tree = ast.parse(f.read())
+            for node in (tree.body if top else ast.walk(tree)):
+                if isinstance(node, ast.ImportFrom) and node.module == "sampo":
+                    found |= {a.name for a in node.names}
+        self.assertIn("replay", found, "the scan sees selfgate's lazy import")
+        self.assertIn("flake_forecast", found, "and doctor's")
+        left = found - set(selfgate.KEY_MODULES) - set(selfgate.KEY_EXEMPT) - {"selfgate", "doctor"}
+        self.assertEqual(left, set(), "a module the gate imports is in neither KEY_MODULES nor KEY_EXEMPT")
+        self.assertEqual(set(selfgate.KEY_MODULES) & set(selfgate.KEY_EXEMPT), set())
+        base = selfgate.gate_key()
+        self.assertEqual(selfgate.gate_key(), base)
+        real = selfgate._module_bytes
+        for name in selfgate.KEY_MODULES:
+            with mock.patch.object(selfgate, "_module_bytes", lambda n, name=name: (real(n) or b"") + b"\n# edit" if n == name else real(n)):
+                self.assertNotEqual(selfgate.gate_key(), base, f"a change to {name} leaves the key alone")
+        with mock.patch.object(selfgate, "_module_bytes", lambda n: None):
+            self.assertNotEqual(selfgate.gate_key(), selfgate.gate_key(), "an unreadable module proves nothing")
+
+    def test_a_refusal_among_concurrent_judgements_is_still_held_with_its_rows(self):
+        shas = [self.commit({"plugin/lib/fmguard.py": f"x = {i + 2}\n"}, f"commit {i}") for i in range(5)]
+
+        def gate(p, b, main, ref, files, *a, **kw):
+            return ["guard: rm -rf ~: base destructive, branch allow"] if ref == shas[3] else []
+        seen, why = self.hold(shas, gate)
+        self.assertIn(shas[3][:8], why)
+        self.assertNotIn(shas[2][:8], why)
+        self.assertIn("nothing was pushed", why)
+
     def test_lane_merge_records_the_range_from_the_merges_own_first_parent(self):
         """T-4805 review: pre_merge was read before the lock; a direct commit made in that window became the merge's first
         parent and the range pre_merge..merge covered it, so it skipped the judge. The range starts at merge^1."""

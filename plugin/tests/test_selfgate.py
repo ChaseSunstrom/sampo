@@ -447,6 +447,45 @@ class WhichDiffsAreTimed(unittest.TestCase):  # T-3139: time hooks only when the
         self.assertIn("Pre", third)
         self.assertTrue(os.path.isfile(os.path.join(p.dir, "hook-modules.json")))
 
+    def test_concurrent_holds_each_write_the_map_and_the_base_cache_through_a_temp_file_of_their_own(self):
+        """T-6031: the push hold judges four commits at once, each saving hook-modules.json and the base cache: one shared
+        ".tmp" name let a writer replace another's half-written file."""
+        import os
+        import tempfile
+        import threading
+        from types import SimpleNamespace
+        from sampo import selfgate as g
+        p = SimpleNamespace(dir=tempfile.mkdtemp())
+        real, moved, lock = os.replace, [], threading.Lock()
+        barrier = threading.Barrier(4, timeout=20)
+
+        def replace(src, dst):
+            with lock:
+                moved.append((src, dst))
+            return real(src, dst)
+
+        def meet(base):
+            barrier.wait()
+            return {}
+
+        def work(i):
+            g.hook_map(p, "m", f"s{i}", "base")
+            g._save(p, "key", {"verdicts": {str(i): "allow"}}, "base-cache.json")
+        with mock.patch.object(g.os, "replace", replace), mock.patch.object(g, "_secret", lambda: b"k" * 32), \
+                mock.patch.object(g, "_hook_modules", meet):
+            threads = [threading.Thread(target=work, args=(i,)) for i in range(4)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+        for name in ("hook-modules.json", "base-cache.json"):
+            tmps = [s for s, d in moved if os.path.basename(d) == name]
+            self.assertEqual(len(tmps), 4, name)
+            self.assertEqual(len(set(tmps)), 4, f"{name}: four writers, four temp files")
+            with open(os.path.join(p.dir, name), encoding="utf-8") as f:
+                json.load(f)
+        self.assertEqual([f for f in os.listdir(p.dir) if f.endswith(".tmp")], [], "no temp file is left behind")
+
     def test_a_failed_map_run_is_an_empty_map(self):
         import tempfile
         from types import SimpleNamespace

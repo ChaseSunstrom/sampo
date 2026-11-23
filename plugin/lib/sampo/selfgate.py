@@ -8,6 +8,7 @@ A refusal names the numbers. The user's yes to `fm ask ID core` given after a re
 never a decision, never a yes for an earlier commit. The user's standing core yes passes a hold made only of
 footprint, verb-count or hook-speed rows (T-3219), never one where the guard blocks less, a case was removed or the gate
 couldn't run. A gate that can't run refuses with the reason, and the per-commit yes passes that too."""
+import contextlib
 import hashlib
 import hmac
 import json
@@ -20,6 +21,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 from sampo import core as c
@@ -246,13 +248,15 @@ def _save(p, key, cache, name=CACHE_FILE):
     if secret is None:
         return
     body = dict(cache, key=key)
+    tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"  # T-6031: the push hold's workers save one file at once
     try:
-        fd = os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(dict(body, mac=_mac(secret, body)), f)
-        os.replace(path + ".tmp", path)
+        os.replace(tmp, path)
     except OSError:
-        pass
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
 
 
 def _base_verdicts(base, cmds, cache):
@@ -262,6 +266,53 @@ def _base_verdicts(base, cmds, cache):
     if miss:
         seen.update(zip(map(json.dumps, miss), _verdicts(base, miss)))
     return [seen[json.dumps(x)] for x in cmds]
+
+
+class _Quiet:
+    """T-6031: the push hold judges several commits at once in this process, and a hook bench's timings are skewed by
+    another worker's replay on the same CPUs. replay() (many at once) and timing() (one, alone) exclude each other; a
+    waiting bench holds new replays back so it isn't starved. A wait past WAIT_S is a RuntimeError, which the gate turns
+    into its own "couldn't run" hold. Only threads of this process meet here; the machine-wide bench lock covers the rest."""
+    WAIT_S = 3600
+
+    def __init__(self):
+        self.cv, self.replays, self.waiting, self.bench = threading.Condition(), 0, 0, False
+
+    def _wait(self, ready):
+        if not self.cv.wait_for(ready, timeout=self.WAIT_S):
+            raise RuntimeError("another judgement in this hold kept the machine busy for an hour")
+
+    @contextlib.contextmanager
+    def replay(self):
+        with self.cv:
+            self._wait(lambda: not self.bench and not self.waiting)
+            self.replays += 1
+        try:
+            yield
+        finally:
+            with self.cv:
+                self.replays -= 1
+                self.cv.notify_all()
+
+    @contextlib.contextmanager
+    def timing(self):
+        with self.cv:
+            self.waiting += 1
+            try:
+                self._wait(lambda: not self.bench and not self.replays)
+            finally:
+                self.waiting -= 1
+                self.cv.notify_all()
+            self.bench = True
+        try:
+            yield
+        finally:
+            with self.cv:
+                self.bench = False
+                self.cv.notify_all()
+
+
+QUIET = _Quiet()
 
 
 def _paired(base, new, cache=None, excused=None):
@@ -274,7 +325,7 @@ def _paired(base, new, cache=None, excused=None):
     # T-3119: a timing bench never runs beside another (parallel lane checks would skew each other's p95); every
     # other check runs at once. ponytail: one machine-wide lock, any process; a stuck holder times out after an hour
     try:
-        with c.lock(os.path.join(c.state_dir(), "bench"), timeout=3600):
+        with c.lock(os.path.join(c.state_dir(), "bench"), timeout=3600), QUIET.timing():
             if isinstance(old, list) and len(old) == PAIRS:
                 runs = [(a, _bench(new)) for a in old]
             else:
@@ -501,12 +552,14 @@ def hook_map(p, main, head, base):
         except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
             return {}
         got = {k: sorted(set(old.get(k, [])) | set(fresh.get(k, []))) for k in set(old) | set(fresh)}
+    tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"  # T-6031: concurrent holds each write their own
     try:
-        with open(path + ".tmp", "w", encoding="utf-8") as f:
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump({"sha": head, "map": got}, f)
-        os.replace(path + ".tmp", path)
+        os.replace(tmp, path)
     except OSError:
-        pass
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
     return got
 
 
@@ -556,17 +609,92 @@ def _benched(f):  # what a hook can run or read: any plugin file but tests and p
     return (f.startswith("plugin/") and not f.startswith("plugin/tests/") and not f.endswith(".md")) or f == "CHANGELOG.md"
 
 
-def gate(p, b, main, ref, files, cache_name=CACHE_FILE, timing=True):
+KEY_MODULES = ("selfgate", "doctor", "replay")  # T-6031: the modules whose code decides a verdict (hashed by content)
+# T-6031: the sampo modules the gate (or doctor's footprint) imports that are NOT in the key, and why; a test reads this
+# file's and doctor's imports and fails when one is in neither list, so a new input is a decision, not an omission
+KEY_EXEMPT = {
+    "core": "git, ledger and text plumbing: it moves and prints what the judge reads, it doesn't decide a row",
+    "serve": "doctor's own command pages; the footprint rules don't call it",
+    "setup": "doctor's own install checks; the footprint rules don't call it",
+    "flake_forecast": "doctor's own report; the footprint rules don't call it",
+    "py": "doctor's interpreter probe; the footprint rules don't call it",
+}
+# What else decides a verdict is the sha's own and so is in no key: the base's harness (replay.py, bench_hooks.py and its
+# payloads), the guard cases and the trees are read from the commit and its parent. The recent-command corpus
+# (selfgate._corpus) and the machine's load vary by the minute and are not inputs a pass is held to.
+
+
+def _module_bytes(name):
+    """The source bytes of sampo.<name>, or None when it can't be read."""
+    import importlib
+    try:
+        with open(importlib.import_module(f"sampo.{name}").__file__, "rb") as f:
+            return f.read()
+    except (OSError, TypeError, ImportError):
+        return None
+
+
+def gate_key():
+    """T-6031: what a recorded pass is true for besides the commit's sha (its parent, and so the base it was judged against,
+    are the sha's own): the content of each KEY_MODULES module and the bench's settings. A change to any makes an earlier
+    pass unproven, and the commit is judged again. An unreadable module gives a key no other call shares: nothing is skipped."""
+    h = hashlib.sha256(json.dumps([RUNS, PAIRS, HOLD, RISE, FLOOR_MS, CORPUS, list(KEY_MODULES)]).encode())
+    for name in KEY_MODULES:
+        got = _module_bytes(name)
+        h.update(name.encode() + b"\0" + (hashlib.sha256(got).digest() if got is not None else os.urandom(8)))
+    return h.hexdigest()
+
+
+def _pass_body(rec):
+    """What a self_change_passed record's MAC covers: its commit, key, task, project and time."""
+    d = rec.get("data") if isinstance(rec.get("data"), dict) else {}
+    return {"sha": d.get("sha"), "key": d.get("key"), "task": rec.get("task"), "project": rec.get("project"),
+            "ts": rec.get("ts")}
+
+
+def _log_pass(p, b, sha, via=""):
+    """T-6031: the push hold's memo of a pass. via names what passed it: "" the gate itself, ":yes" the user's yes to this
+    commit's refusal, ":standing" the standing core yes over quality rows (read again as the standing yes now stands).
+    Signed (the same account key as the cache and prompt events, c.prompt_sealer's way): a line an agent appends to the
+    ledger carries no valid MAC and is not read, so the memo is no weaker than the lane_landed record it sits beside; with
+    no usable key the line is unmarked and the hold judges the commit again."""
+    secret = _secret()
+    c.log_event(p, "self_change_passed", task=b.id, data={"sha": sha, "key": gate_key() + via},
+                seal=(lambda rec: _mac(secret, _pass_body(rec))) if secret else None)
+
+
+def passed(p, shas, since=""):
+    """T-6031: of shas, the ones with a signed self_change_passed record, at or after `since`, under today's gate_key: the
+    gate's own pass, a yes's, or the standing yes's while that still stands (revoked, the commit is judged again)."""
+    secret, key, want = _secret(), gate_key(), set(shas)
+    if secret is None or not want:
+        return set()
+    ok = {key, key + ":yes"} | ({key + ":standing"} if (c.read_meta(p).get("standing") or {}).get("core") else set())
+    out = set()
+    for e in c.ledger_events(p, ("self_change_passed",), since=since):
+        d = e.get("data") if isinstance(e.get("data"), dict) else {}
+        mac = d.get("mac")
+        if d.get("sha") in want and d.get("key") in ok and isinstance(mac, str) and hmac.compare_digest(
+                mac, _mac(secret, _pass_body(e))):
+            out.add(d["sha"])
+    return out
+
+
+def gate(p, b, main, ref, files, cache_name=CACHE_FILE, timing=True, record=False):
     """[refusal lines] for a commit that changes Sampo's own plugin/, [] when it holds, isn't one, or the user said yes
     after its last refusal of this same commit. Each refusal is a self_change_refused ledger event with the sha.
     cache_name is the file its base half is cached in (T-4805: the push hold's own, not the lane train's).
     timing=False (T-5446, a live train's per-lane hold) leaves out the hook timing bench; the train times the merged
-    batch once instead (train._live_timing)."""
+    batch once instead (train._live_timing).
+    record=True (T-6031, the push hold's) logs a signed self_change_passed {sha, key} when the commit passes: by the gate,
+    by the user's yes (key + ":yes") or by the standing core yes (key + ":standing"); passed() reads them back."""
     if not os.path.isfile(os.path.join(main, "plugin", "lib", "fmguard.py")) or not any(
             f.startswith("plugin/") for f in files):
         return []
     sha = _git(main, "rev-parse", "--verify", f"{ref}^{{commit}}", text=True).stdout.strip()
     if sha and approved(p, b, sha):
+        if record:  # T-6031: the user's yes to this commit's refusal is a pass the hold need not ask for again
+            _log_pass(p, b, sha, ":yes")
         return []
     out, tmp = [], tempfile.mkdtemp(prefix="fm-selfgate-")
     try:
@@ -587,7 +715,8 @@ def gate(p, b, main, ref, files, cache_name=CACHE_FILE, timing=True):
                 for (cmd, cwd), i in was.items() if (cmd, cwd) not in now]
         if any(_judged(f) for f in files) or was != now:
             cmds = list(dict.fromkeys(list(was) + list(now) + _corpus()))
-            v0, v1 = _base_verdicts(base, [list(x) for x in cmds], cache), _verdicts(new, [list(x) for x in cmds])
+            with QUIET.replay():  # T-6031: never beside another judgement's hook bench
+                v0, v1 = _base_verdicts(base, [list(x) for x in cmds], cache), _verdicts(new, [list(x) for x in cmds])
             for (cmd, _), a, z in zip(cmds, v0, v1):
                 broke = not isinstance(z, str) or (z.startswith("error:") and not str(a).startswith("error:"))
                 if (a != "allow" and z == "allow") or broke:
@@ -629,7 +758,11 @@ def gate(p, b, main, ref, files, cache_name=CACHE_FILE, timing=True):
     # of quality rows; a guard that blocks less, a removed case or a gate that couldn't run still needs their own yes
     if out and all(r.startswith(QUALITY_ROWS) for r in out) and (c.read_meta(p).get("standing") or {}).get("core"):
         c.log_event(p, "self_change_standing_pass", task=b.id, data={"sha": sha, "rows": out[:20]})
+        if record and sha:  # T-6031: kept only while that standing yes stands (passed() checks), so revoking it re-judges
+            _log_pass(p, b, sha, ":standing")
         return []
     if out:
         c.log_event(p, "self_change_refused", task=b.id, data={"sha": sha, "rows": out[:20]})
+    elif record and sha:  # T-6031: the gate's own pass: the hold skips this commit next time
+        _log_pass(p, b, sha)
     return out

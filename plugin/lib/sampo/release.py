@@ -387,14 +387,83 @@ def _before_records(root, commits):
     return set(_git(root, "rev-list", first[0], ok=True).split()) if first else set()
 
 
+def _passed(p, root, shas):
+    """T-6031: of shas, the ones with a signed self_change_passed record under today's gate key (selfgate.passed): a hold
+    judged them and the gate, the user's yes or the standing yes (while it stands) passed them. A refusal leaves no such
+    record, a changed gate matches none, and a line written without the user's key is not read. The window starts a day
+    before the oldest commit (a pass is recorded after its commit is made)."""
+    from sampo import selfgate
+    if not shas:
+        return set()
+    stamps = [int(x) for x in _git(root, "log", "--no-walk", "--format=%ct", *shas, ok=True).split() if x.isdigit()]
+    if not stamps:  # git can't date them: nothing is skipped
+        return set()
+    return selfgate.passed(p, shas, since=c.iso(min(stamps) - 86400))
+
+
+def _judge(p, b, root, todo):
+    """T-6031: [(sha, rows)] for the commits of todo (sha, parent, files) the gate holds, judged up to train.hold_jobs() at
+    a time (SAMPO_HOLD_JOBS, the lane train's knob): each worker has a scratch worktree of its own (checked out at a
+    commit's parent in turn) and all share the one PUSH_CACHE file (selfgate._save writes it atomically, a file per
+    thread). The hook bench inside a judgement is serialised machine-wide by selfgate._paired's lock and runs with no
+    other worker's replay beside it (selfgate.QUIET, so the timings aren't skewed); the rest overlaps.
+    A judge that can't run, a checkout that fails or a commit no worker reached is a hold, never a pass."""
+    import queue
+    import threading
+    from sampo import selfgate, train
+    if not todo:
+        return []
+    work, rows_of = queue.Queue(), {}
+    for t in todo:
+        work.put(t)
+
+    def worker(i, wt):
+        cache = PUSH_CACHE
+        while True:
+            try:
+                s, parent, files = work.get_nowait()
+            except queue.Empty:
+                return
+            try:
+                _git(wt, "checkout", "-q", "--detach", parent)
+                rows = selfgate.gate(p, b, wt, s, files, cache, record=True)
+            except Exception as e:  # noqa: BLE001 — a judge that can't run is a hold, never a pass
+                rows = [f"the self-change gate couldn't run ({type(e).__name__}: {c.fit(str(e), 160)})"]
+            rows_of[s] = rows
+    with c.scratch_dir("sampo-hold-", root) as tmp:  # T-4735: the owned scratch root
+        made = []
+        try:
+            for i in range(min(train.hold_jobs(), len(todo))):  # added one at a time: git's worktree admin is not for concurrent adds
+                wt = os.path.join(tmp, f"hold{i}")
+                _git(root, "worktree", "add", "-q", "--detach", wt, todo[i][1])
+                made.append(wt)
+            threads = [threading.Thread(target=worker, args=(i, wt), daemon=True) for i, wt in enumerate(made)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+        finally:
+            for wt in made:
+                _git(root, "worktree", "remove", "--force", wt, ok=True)
+    out = []
+    for s, _, _ in todo:
+        rows = rows_of.get(s, ["no judge reached it: held rather than passed"])
+        if rows:
+            out.append((s, rows))
+    return out
+
+
 def _push_hold(p, b, root, commits, by):
     """T-4805: refuse the push when a commit in it was made straight on the trunk (no recorded lane landing carried it)
     and touches a file the self-change gate judges: each such commit is judged against its first parent, as `fm lane
-    merge` judges a lane, in a scratch worktree at that parent. The same ask-and-yes passes it (fm ask ID core, after the
-    refusal of this commit; one yes covers every commit refused before it), the standing yes only quality rows. A gate that
-    can't run or a listing git can't give holds. A direct commit touching no judged file runs nothing; a lane-landed one
-    was judged when it landed, and one from before landings were recorded counts as judged. Nothing is pushed and the grant
-    is kept. The base half of the judge is cached in its own file (a different parent per commit would miss the train's)."""
+    merge` judges a lane, up to train.hold_jobs() at a time, each in a scratch worktree at its parent. The same ask-and-yes
+    passes it (fm ask ID core, after the refusal of this commit; one yes covers every commit refused before it), the
+    standing yes only quality rows. A gate that can't run or a listing git can't give holds. A direct commit touching no
+    judged file runs nothing; a lane-landed one was judged when it landed, and one from before landings were recorded
+    counts as judged. Nothing is pushed and the grant is kept. T-6031: a commit that passed (the gate's pass, a yes, or the
+    standing yes while it stands) under today's gate is recorded signed and not judged by a later hold: the hold's push_hold_judged
+    event says how many it judged and skipped and its seconds. The base half of the judge is cached in its own file (a
+    different parent per commit would miss the train's)."""
     from sampo import selfgate
     todo, held = [], []
     direct = _direct(p, root, commits)
@@ -407,21 +476,15 @@ def _push_hold(p, b, root, commits, by):
             held.append((s, ["couldn't list the files it changed (no first parent, or git failed): held rather than passed"]))
         elif any(selfgate._judged(f) or f in selfgate.CASES for f in got[1]):
             todo.append((s, got[0], got[1]))
-    if todo:
-        with c.scratch_dir("sampo-hold-", root) as tmp:  # T-4735: the owned scratch root
-            wt = os.path.join(tmp, "hold")
-            _git(root, "worktree", "add", "-q", "--detach", wt, todo[0][1])
-            try:
-                for s, parent, files in todo:
-                    _git(wt, "checkout", "-q", "--detach", parent)
-                    try:
-                        rows = selfgate.gate(p, b, wt, s, files, PUSH_CACHE)
-                    except Exception as e:  # noqa: BLE001 — a judge that can't run is a hold, never a pass
-                        rows = [f"the self-change gate couldn't run ({type(e).__name__}: {c.fit(str(e), 160)})"]
-                    if rows:
-                        held.append((s, rows))
-            finally:
-                _git(root, "worktree", "remove", "--force", wt, ok=True)
+    t0, skipped = time.monotonic(), 0
+    if todo:  # T-6031: a commit the gate passed under today's gate is not judged again
+        done = _passed(p, root, [s for s, _, _ in todo])
+        skipped = sum(s in done for s, _, _ in todo)
+        todo = [t for t in todo if t[0] not in done]
+        held += _judge(p, b, root, todo)
+    if direct:
+        c.log_event(p, "push_hold_judged", task=b.id, data={"by": by, "judged": len(todo), "skipped": skipped,
+                                                            "held": len(held), "seconds": round(time.monotonic() - t0, 1)})
     if held:
         what = "; ".join(f"{s[:8]} {c.fit(c.plain(_git(root, 'log', '-1', '--format=%s', s, ok=True).strip()), 60)}: "
                          + c.joinmore(rows, 3, "; ") for s, rows in held[:3])
