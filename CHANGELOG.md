@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- sampo gates --evidence prints per gate the ledger's refusals, those followed by a change, later reds and a removal-candidate mark, and counts refusals with no gate id as unmeasured; close refusals now log their gate id (T-6049).
 - A ship's full-suite result on a sha now settles the pending post-merge verify records in its history (green covers them, red notes its classes for the verify's narrowed bisect, partial or cut runs cover nothing), and at most one lane verify runner lives per project (T-6012).
 - Fixed the trunk-red test_child_launch ALLOWED entry (the launch site is pilotsig.py::words, not ::_stuck) and the clock-dependent give-up shape test, which now puts the lane on the main checkout's commit instead of relying on two init commits made in the same second (T-6081).
 - sampo lane brief runs each criterion's verify on trunk HEAD first: all green closes the task with those runs as evidence and no builder, a mix briefs only the red criteria, and a run that ran zero tests, matched no -k or timed out counts red (T-6063).
