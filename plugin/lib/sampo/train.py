@@ -633,14 +633,14 @@ def _unionable(files):
     return bool(files) and all(_MAP_FILE.fullmatch(f) or _py_file(f) for f in files)
 
 
-def _refused_clash(repo, a, b):
-    """T-5937: None when merging commit `b` into `a` (git merge-tree, no tree written to the work folder) does not conflict
-    or every conflict is one the train resolves itself: a map file, or a .py file whose three stages _insertion_union
-    unions. Else (the conflicted files, why): why is '' for a file the train never unions, else the words for a .py file
-    it would not (the same lines edited, a union that does not compile or repeats a name). So a clash the train would
-    park is known before any criteria or gate run, and a pure insertion is left to _merge_in."""
+def _clash(repo, a, b, timeout=None):
+    """T-5937: None when merging commit `b` into `a` (git merge-tree, no tree written to the work folder) does not conflict.
+    Else (the conflicted files, why): why is None when every conflict is one the train resolves itself (a map file, or a .py
+    file whose three stages _insertion_union unions), '' for a file the train never unions, else the words for a .py file it
+    would not (the same lines edited, a union that does not compile or repeats a name). `timeout` (seconds, T-6014) bounds
+    each git call: a caller in a detached process passes one; TimeoutExpired is the caller's to catch."""
     r = subprocess.run(["git", "-C", repo, "merge-tree", "--write-tree", "-z", "--no-messages", a, b],
-                       capture_output=True, text=True, errors="surrogateescape")
+                       capture_output=True, text=True, errors="surrogateescape", timeout=timeout)
     if r.returncode != 1:
         return None
     stages, parts = {}, r.stdout.split("\0")[1:]  # the first is the merged tree
@@ -661,13 +661,34 @@ def _refused_clash(repo, a, b):
         if sorted(got) != ["1", "2", "3"] or any(m not in ("100644", "100755") for m, _ in got.values()):
             return files, "a .py file deleted on one side or not a plain file"
         for n in ("2", "1", "3"):
-            out = subprocess.run(["git", "-C", repo, "cat-file", "blob", got[n][1]], capture_output=True)
+            out = subprocess.run(["git", "-C", repo, "cat-file", "blob", got[n][1]], capture_output=True, timeout=timeout)
             if out.returncode:
                 return files, "a .py file that could not be read"
             texts.append(out.stdout)
         if _insertion_union(*texts) is None:
             return files, "not a pure insertion on both sides that compiles with no repeated name"
-    return None
+    return files, None
+
+
+def _refused_clash(repo, a, b):
+    """T-5937: None when merging `b` into `a` does not conflict or every conflict is one the train resolves itself (_clash);
+    else (the conflicted files, why) as _clash gives them. So a clash the train would park is known before any criteria or
+    gate run, and a pure insertion is left to _merge_in."""
+    got = _clash(repo, a, b)
+    return None if got is None or got[1] is None else got
+
+
+def clash_shape(repo, a, b, timeout=None):
+    """T-6014: the shape of merging commit `b` into `a`, as the train reads it: '' (no conflict), union-able (the train's own
+    union takes it), non-python (a file the train never unions), same-line (a .py file edited on the same lines, or a union
+    that does not compile or repeats a name), other (a .py file deleted on one side, not a plain file, or unreadable)."""
+    got = _clash(repo, a, b, timeout)
+    if got is None:
+        return ""
+    why = got[1]
+    if why is None:
+        return "union-able"
+    return "non-python" if not why else "same-line" if why.startswith("not a pure insertion") else "other"
 
 
 def _union_proof(p, wt, before, files):
@@ -789,6 +810,35 @@ def _block(lines):
     return None if names is None else (low, names)
 
 
+def _top_imports(lines):
+    """{index: line without its newline} of the lines of `lines` (byte lines) that are one whole top-level one-line import
+    statement (`import x`, `from m import y`, no `;`), by the parse: an import-looking line in a string, an indented
+    import, a parenthesised or backslashed one are not. Empty when the lines are not utf-8 or do not parse on their own."""
+    try:
+        text = b"".join(lines).decode("utf-8")
+        body = ast.parse(text).body
+    except (UnicodeDecodeError, SyntaxError, ValueError):
+        return {}
+    rows = text.splitlines()
+    got = {}
+    for s in body:
+        if isinstance(s, (ast.Import, ast.ImportFrom)) and s.col_offset == 0 and s.lineno == s.end_lineno \
+                and s.lineno <= len(rows) and ";" not in rows[s.lineno - 1] and len(rows) == len(lines):
+            got[s.lineno - 1] = lines[s.lineno - 1].rstrip(b"\r\n")
+    return got
+
+
+def _without_repeated_imports(mine, other):
+    """T-6014: `other` (byte lines of one conflict hunk) less its top-level one-line imports that `mine` holds too, word for
+    word: two lanes that each add `import tempfile` beside a different import of their own are one import and a union, not
+    a shared name (T-5736, T-5859). A different import of the same name stays: the overlap check refuses it."""
+    have = set(_top_imports(mine).values())
+    if not have:
+        return other
+    drop = {i for i, ln in _top_imports(other).items() if ln in have}
+    return [ln for i, ln in enumerate(other) if i not in drop] if drop else other
+
+
 def _insertion_union(ours, base, theirs):
     """T-5824: the three versions (bytes) of one file merged with `git merge-file --diff3`; a conflict hunk whose base part
     is empty (both sides only added lines at that spot) becomes ours then theirs. The merged bytes, or None to leave the
@@ -796,7 +846,8 @@ def _insertion_union(ours, base, theirs):
     conflict this did not), a marker line already in an input, a merge-file that timed out, or a union that could change
     what a line means or shadow a name: the two inserted blocks start at different indents (a method added to the last
     class beside a class would join that class), or one starts deeper than the line before the hunk, or one does not
-    parse on its own, or both bind one name (a def, a class, an assignment target, an imported name), or the result
+    parse on its own, or both bind one name (a def, a class, an assignment target, an imported name; T-6014: an import
+    line both inserted word for word is kept once, not a shared name), or the result
     does not parse or binds a top-level name more times than either side does."""
     if any(_MARK_LINE.match(ln.rstrip(b"\r\n")) for t in (ours, base, theirs) for ln in t.splitlines()):
         return None
@@ -825,6 +876,7 @@ def _insertion_union(ours, base, theirs):
         elif state == 3 and bare.startswith(b">>>>>>> "):
             if old:
                 return None  # a base line sits in this hunk: someone changed it
+            other = _without_repeated_imports(mine, other)
             m1, m2 = _block(mine), _block(other)
             if m1 is None or m2 is None or set(m1[1]) & set(m2[1]):
                 return None

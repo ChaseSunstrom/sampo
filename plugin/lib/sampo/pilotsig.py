@@ -485,17 +485,21 @@ def _resolves(b):
 def _stuck(p, tid, why, what, tries):
     """The lead's one line when the pilot gives up on a lane (the cap, or no claude to run), said once per reason: the
     brief's resolve_reported names the reason already told. The claim is dropped when it is still this pilot's."""
-    if why == "claude":
-        text = f"{tid}: lane pilot cannot resolve the {what}: no claude to run ({(claude_cmd() or ['claude'])[0]})"
-    else:
-        text = (f"{tid}: lane pilot resolve gave up on the {what} after {tries} "
-                f"{'try' if tries == 1 else 'tries'}: the lane waits for a person")
+    def words(b):
+        if why == "claude":
+            return f"{tid}: lane pilot cannot resolve the {what}: no claude to run ({(claude_cmd() or ['claude'])[0]})"
+        return (f"{tid}: lane pilot resolve gave up on the {what} after {tries} {'try' if tries == 1 else 'tries'}"
+                f"{_why_words(b)}: the lane waits for a person")  # T-6014: each try's cause class, the conflict's shape
+
+    text = words(None)  # the one line of the lead's; mark() rewrites it from the brief it holds under the lock
 
     def mark():
+        nonlocal text
         with c.lock(p.dir, timeout=5.0):
             b = c.find_brief(p, tid)
             if b is None:
                 return False
+            text = words(b)
             mine = str(b.meta.get("pilot_pid")) == str(os.getpid())
             if mine:
                 b.meta.pop("pilot_pid", None)
@@ -614,6 +618,108 @@ def _unmerged(lane):
     """Whether the lane's index holds unmerged paths (a merge or rebase stopped on a conflict)."""
     from sampo import lanes
     return bool(lane and lanes._git(lane, "ls-files", "--unmerged", timeout=30).stdout.strip())
+
+
+class _Run:
+    """T-6014: what one headless run came to: `ended` is True when it ended inside its time, False when it was cut, None when
+    no run was started; `tail` is the last of its output. Truthy as `_headless` always was: it ended inside its time."""
+
+    def __init__(self, ended=None, tail=""):
+        self.ended, self.tail = ended, tail
+
+    def __bool__(self):
+        return self.ended is True
+
+
+CAUSES = ("no-start", "cut", "sensitive-file", "unmerged", "dirty-commit", "no-commit", "unknown")  # fixed words: no run text
+SHAPES = ("same-line", "non-python", "union-able", "other")  # the conflict's shape, as the train reads it (train.clash_shape)
+_REFUSED = re.compile(r"which is a sensitive file|refused as a sensitive file|\"sensitive file\" guard (?:blocks|refuses|blocked|refused)")
+
+
+def _cause(lane, before, run):
+    """T-6014: the cause class (one of CAUSES) of a resolver try that did not return the lane, read from what the run left:
+    no run started, a run cut at its time limit, an edit refused as a sensitive file (Claude Code's own phrase, T-5868, or the
+    agent's words for it: the phrase, not a bare mention of the words), paths still unmerged, a commit on a tree left dirty,
+    or a run that ended with no commit."""
+    if run.ended is None:
+        return "no-start"
+    if not run.ended:
+        return "cut"
+    if _REFUSED.search(run.tail.lower()):
+        return "sensitive-file"
+    if _unmerged(lane):
+        return "unmerged"
+    if _head(lane) != before:
+        return "dirty-commit"
+    return "no-commit"
+
+
+def _shape(p, b):
+    """T-6014: the shape of the conflict a lane was parked on (train.clash_shape of its park's tip against the main checkout's
+    HEAD; every git call bounded by 60 s). Read before the first run of a lane's resolver, so it is the conflict that run
+    faced, not what main became after. '' when the park's tip is not a commit of the main checkout, or no conflict."""
+    tip = str(b.meta.get("lane_stop_tip") or "")
+    if not re.fullmatch(r"[0-9a-f]{7,64}", tip):
+        return ""
+    main = c.main_worktree(p.root) or p.root
+    if subprocess.run(["git", "-C", main, "cat-file", "-e", f"{tip}^{{commit}}"], capture_output=True, timeout=30).returncode:
+        return ""
+    from sampo import train
+    return train.clash_shape(main, "HEAD", tip, timeout=60)
+
+
+def _note_try(p, tid, cause, shape):
+    """The brief's resolve_causes (one class per failed try) and resolve_shape (the conflict's, once): read by _stuck for the
+    lead's line, since the cap is told by a later pilot that never saw the runs."""
+    with c.lock(p.dir, timeout=5.0):
+        b = c.find_brief(p, tid)
+        if b is None:
+            return
+        got = b.meta.get("resolve_causes")
+        b.meta["resolve_causes"] = (got if isinstance(got, list) else []) + [cause]
+        if shape and not b.meta.get("resolve_shape"):
+            b.meta["resolve_shape"] = shape
+        c.save_brief(p, b)
+
+
+def _first_shape(p, b, plan_cause):
+    """The conflict's shape for a merge-conflict try that has none recorded yet, read before the try's run; '' otherwise, or
+    when it cannot be read (guarded: a shape is only a word for the lead's line, never a reason to stop the run)."""
+    try:
+        if plan_cause == "merge_conflict" and not b.meta.get("resolve_shape"):
+            return _shape(p, b)
+    except Exception:  # noqa: BLE001
+        traceback.print_exc()
+    return ""
+
+
+def _note_failed_try(p, tid, lane, before, run, shape):
+    """T-6014: record a failed try's cause class and the conflict's shape (read before the run, '' if none). Every step is
+    guarded: a cause that cannot be read says 'unknown', and one that cannot be saved is lost, never the run's report or
+    its claim's release (resolve_run goes on to its next try or to _stuck)."""
+    try:
+        cause = _cause(lane, before, run)
+    except Exception:  # noqa: BLE001
+        traceback.print_exc()
+        cause = "unknown"
+    try:
+        _locked(lambda: _note_try(p, tid, cause, shape))
+    except Exception:  # noqa: BLE001
+        traceback.print_exc()
+
+
+def _why_words(b):
+    """T-6014: ' (causes: a, b; conflict: shape)' from the brief's recorded tries, fixed words only (a brief's meta is data:
+    a word outside CAUSES and SHAPES is not said); '' when none was recorded. A try counted in `resolves` with no cause
+    recorded (its pilot died mid-run, or the cause could not be saved) reads 'unknown'."""
+    got = b.meta.get("resolve_causes") if b is not None else None
+    causes = [x for x in (got if isinstance(got, list) else []) if x in CAUSES]
+    if b is not None:
+        causes += ["unknown"] * (min(len(_resolves(b)), RESOLVE_TRIES) - len(causes))
+    causes = causes[-RESOLVE_TRIES:]
+    shape = b.meta.get("resolve_shape") if b is not None else None
+    parts = ([f"causes: {', '.join(causes)}"] if causes else []) + ([f"conflict: {shape}"] if shape in SHAPES else [])
+    return f" ({'; '.join(parts)})" if parts else ""
 
 
 def _claude_env(lane=None, agent=""):
@@ -737,7 +843,8 @@ def _headless(p, tid, lane, agent, prompt, left):
     """One `claude -p` run of `agent` on the lane's own worktree, cut (its process group killed) after `left` seconds. T-5970:
     its cwd is a fresh private scratch folder outside the repo and the lane is --add-dir: a lane lives inside the repo and
     a builder wrote its files, so a cwd in or under either would load a CLAUDE.md there (root or nested) into the run.
-    True when it ended inside the time; its output goes to pilot.log (stdout) as its last bytes. It reads only the user's
+    A _Run: true when it ended inside the time (T-6014: its `ended` and output tail also feed the try's cause class); its
+    output goes to pilot.log (stdout) as its last bytes. It reads only the user's
     settings and MCP servers (the lane's own .claude/settings.json and .mcp.json are repo-controlled, and `-p` trusts the
     folder without asking) and is bounded in turns and dollars. Its permission mode is _permission_mode's (T-5889): the
     resolver and the review pilot both run here, so both edit a lane under ~/.claude. In bypass it has no web or MCP tool.
@@ -745,7 +852,7 @@ def _headless(p, tid, lane, agent, prompt, left):
     plugin = _plugin_dir()
     if not os.path.isfile(os.path.join(plugin, ".claude-plugin", "plugin.json")):
         print(f"pilot resolve: no Sampo plugin at {plugin}; no claude is started")
-        return False
+        return _Run()
     mode = _permission_mode(lane, plugin, agent)
     lane = os.path.realpath(lane)
     prompt += (f"\n\nYour working directory is an empty scratch folder, not the worktree: the worktree is {lane}. Run every "
@@ -758,7 +865,7 @@ def _headless(p, tid, lane, agent, prompt, left):
         argv += ["--disallowedTools", "WebFetch,WebSearch,mcp__*"]  # nothing here needs the network, and the guard sees no URL
     if not _note_claude(p, tid, "starting"):
         print("pilot resolve: the start could not be recorded on the brief; no claude is started")
-        return False
+        return _Run()
     from sampo import ideas
     try:  # T-5706 round 6: the one hardened launcher's folder (fresh 0700 under a root whose every parent up to / is ours or
         with ideas.fresh_cwd("pilot") as scratch:  # root's and unwritable by others; no CLAUDE.md or .claude above) and env check
@@ -769,7 +876,7 @@ def _headless(p, tid, lane, agent, prompt, left):
     except OSError as e:
         _note_claude(p, tid, None)
         print(f"pilot resolve: no private scratch folder for claude: {e}")
-        return False
+        return _Run()
 
 
 def _run_headless(p, tid, lane, agent, argv, scratch, left):
@@ -780,7 +887,7 @@ def _run_headless(p, tid, lane, agent, argv, scratch, left):
         except OSError as e:
             _note_claude(p, tid, None)
             print(f"pilot resolve: claude could not start: {e}")
-            return False
+            return _Run()
         _note_claude(p, tid, proc.pid)
         try:
             proc.wait(timeout=max(left, 1.0))
@@ -791,8 +898,9 @@ def _run_headless(p, tid, lane, agent, argv, scratch, left):
             ended = False
         _kill_group(proc)
         _note_claude(p, tid, None)
-        print(f"pilot resolve: {agent} {'ended' if ended else 'cut'}: " + " ".join(_tail(out, ERR_MAX).split())[-WHY_MAX:])
-    return ended
+        said = " ".join(_tail(out, ERR_MAX).split())
+        print(f"pilot resolve: {agent} {'ended' if ended else 'cut'}: " + said[-WHY_MAX:])
+    return _Run(ended, said)
 
 
 def _returned(p, tid, what):
@@ -805,7 +913,7 @@ def _returned(p, tid, what):
             return
         if str(b.meta.get("pilot_pid")) == str(os.getpid()):
             b.meta.pop("pilot_pid", None)
-        for k in ("lane_stop", "lane_stop_tip", "resolve_reported"):
+        for k in ("lane_stop", "lane_stop_tip", "resolve_reported", "resolve_causes", "resolve_shape"):
             b.meta.pop(k, None)
         b.meta["builder_returned"] = c.now()
         b.append_log(f"lane pilot: a headless agent resolved the {what}; it returns to the review")
@@ -869,11 +977,13 @@ def resolve_run(p, tid):
         _locked(count)  # counted before the run: a pilot that dies mid-run still used its try
         lane = str(b.meta["lane"])
         before = _head(lane)
-        _headless(p, tid, lane, agent, prompt, deadline - time.monotonic())
+        shape = _first_shape(p, b, cause)  # before the run: the conflict it faces, read once
+        run = _headless(p, tid, lane, agent, prompt, deadline - time.monotonic())
         if _head(lane) != before and _clean(lane):
             _returned(p, tid, what)
             spawn(p, tid)
             return {"outcome": "returned", "why": ""}
+        _note_failed_try(p, tid, lane, before, run, shape)  # the try failed: its cause class, for the lead's line
     _release(p, tid)
     return {"outcome": "failed", "why": "no count"}
 

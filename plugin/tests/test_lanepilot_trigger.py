@@ -34,13 +34,20 @@ STUB = (  # the lane pilot verb, stubbed: a grandchild that outlives it (STUB_PI
     "sys.exit(int(os.environ.get('STUB_RC', '0')))\n"
 )
 CLAUDE_STUB = (  # T-5766: a headless `claude -p`, stubbed: it logs its argv, cwd and marker, and commits in its cwd when STUB_COMMIT is set
-    "import json, os, subprocess, sys\n"
+    "import json, os, subprocess, sys, time\n"
     "open(os.environ['STUB_CLAUDE_LOG'], 'a').write(json.dumps({'argv': sys.argv[1:], 'cwd': os.getcwd(), 'pid': os.getpid(),\n"
     "    'headless': os.environ.get('FOREMAN_PILOT_HEADLESS'), 'brief': open(os.environ['STUB_BRIEF']).read()\n"
     "    if os.environ.get('STUB_BRIEF') else ''}) + '\\n')\n"
     "if os.environ.get('STUB_COMMIT'):\n"
     "    lane = sys.argv[sys.argv.index('--add-dir') + 1]\n"  # T-5706: its cwd is a scratch folder, the lane is --add-dir
     "    subprocess.run(['git', '-C', lane, 'commit', '--allow-empty', '-qm', 'resolved'], check=True)\n"
+    "time.sleep(float(os.environ.get('STUB_SLEEP', '0')))\n"  # T-6014: a run the wall clock cuts
+    "once = os.environ.get('STUB_SAY_ONCE')\n"  # T-6014: what the agent said on its first run only
+    "if once and not os.path.exists(os.environ['STUB_CLAUDE_LOG'] + '.once'):\n"
+    "    open(os.environ['STUB_CLAUDE_LOG'] + '.once', 'w').write('1')\n"
+    "    print(once)\n"
+    "elif os.environ.get('STUB_SAY'):\n"  # T-6014: what the agent said last (its refusal), for the pilot's cause class
+    "    print(os.environ['STUB_SAY'])\n"
     "print('{\"result\": \"done\"}')\n"
 )
 
@@ -441,6 +448,8 @@ class LanePilot(ForemanTestCase):
         os.environ["STUB_CLAUDE_LOG"] = self.claude_log
         os.environ.pop("STUB_COMMIT", None)
         os.environ.pop("STUB_BRIEF", None)
+        for k in ("STUB_SAY", "STUB_SAY_ONCE", "STUB_SLEEP"):
+            os.environ.pop(k, None)
         if commit:
             os.environ["STUB_COMMIT"] = "1"
 
@@ -611,6 +620,166 @@ class LanePilot(ForemanTestCase):
             self.assertIsNone(pilotsig.resolve(self.p, TID))
         self.assertEqual(len(self.claude_calls()), 2)
         self.assertEqual(len([x for x in self.lines() if TID in x]), 1, "the report is said once, not on every park")
+
+    def give_up(self, say="", once="", outcome="failed", tip=False):
+        """T-6014: stub resolver runs that commit nothing (the agent said `say` on every run, `once` on the first), then the
+        lead's one line. tip: the lane's stop tip is the main checkout's HEAD, a commit the conflict shape can be read from."""
+        self.park()
+        self.claude(commit=False)
+        if say:
+            os.environ["STUB_SAY"] = say
+        if once:
+            os.environ["STUB_SAY_ONCE"] = once
+        if tip:
+            b = c.find_brief(self.p, TID)
+            b.meta["lane_stop_tip"] = subprocess.run(["git", "-C", self.repo, "rev-parse", "HEAD"], capture_output=True,
+                                                     text=True).stdout.strip()
+            c.save_brief(self.p, b)
+        self.claim(os.getpid(), served=RETURNED)
+        self.assertEqual(pilotsig.resolve_run(self.p, TID)["outcome"], outcome)
+        said = [x for x in self.lines() if TID in x]
+        self.assertEqual(len(said), 1, said)
+        return json.loads(said[0])["text"]
+
+    def test_Resolve_give_up_names_a_sensitive_file_refusal(self):
+        for say in ("Error: Claude requested permissions to edit pilotsig.py which is a sensitive file.",
+                    "plugin/lib/sampo/train.py is refused as a sensitive file for lane edits",
+                    'The "sensitive file" guard refuses ordinary merge edits to cli.py'):
+            with self.subTest(say=say[:40]):
+                self.setUp()
+                line = self.give_up(say)
+                self.assertIn("(causes: sensitive-file, sensitive-file", line)
+                self.assertIn("(causes: sensitive-file, sensitive-file", c.find_brief(self.p, TID).section("Log"))
+
+    def test_Resolve_a_bare_mention_of_a_sensitive_file_is_not_a_refusal(self):
+        self.assertIn("(causes: no-commit, no-commit", self.give_up("I added a note on what counts as a sensitive file."))
+
+    def test_Resolve_give_up_names_a_run_that_committed_nothing(self):
+        self.assertIn("(causes: no-commit, no-commit", self.give_up())
+
+    def test_Resolve_give_up_names_the_unmerged_paths_a_run_left(self):
+        with mock.patch.object(pilotsig, "_unmerged", return_value=True):
+            self.assertIn("(causes: unmerged, unmerged", self.give_up())
+
+    def test_Resolve_give_up_names_a_commit_on_a_dirty_tree(self):
+        self.park()
+        self.claude(commit=True)
+        self.claim(os.getpid(), served=RETURNED)
+        with mock.patch.object(pilotsig, "_clean", return_value=False), mock.patch.object(pilotsig, "spawn"):
+            # the lane moved (a commit), so the next pass has nothing to resolve and releases: the try's cause is on the brief
+            self.assertEqual(pilotsig.resolve_run(self.p, TID)["outcome"], "none")
+        self.assertEqual(self.meta("resolve_causes"), ["dirty-commit"])
+
+    def test_Resolve_give_up_names_a_run_cut_at_its_time_limit(self):
+        """The wall clock runs out inside the first run (a real stub claude, cut and its group killed): one try, one cause."""
+        self.park()
+        self.claude(commit=False)
+        os.environ["STUB_SLEEP"] = "30"
+        self.claim(os.getpid(), served=RETURNED)
+        with mock.patch.object(pilotsig, "VERB_WALL_S", 0.3):
+            self.assertEqual(pilotsig.resolve_run(self.p, TID)["outcome"], "failed")
+        self.assertIn("after 1 try (causes: cut)", json.loads([x for x in self.lines() if TID in x][0])["text"])
+
+    def test_Resolve_give_up_names_a_run_that_never_started(self):
+        with mock.patch.object(pilotsig, "_plugin_dir", return_value=self.tmp):  # no plugin.json: no claude is started
+            line = self.give_up()
+        self.assertIn("(causes: no-start, no-start", line)
+        self.assertEqual(self.claude_calls(), [])
+
+    def test_Resolve_give_up_names_each_try_s_cause_not_only_the_last(self):
+        self.assertIn("(causes: sensitive-file, no-commit", self.give_up(once="train.py is refused as a sensitive file"))
+
+    def test_Resolve_give_up_names_the_conflict_shape_where_it_is_known(self):
+        from sampo import train
+        for shape in ("same-line", "non-python", "union-able", "other"):
+            with self.subTest(shape=shape):
+                self.setUp()
+                with mock.patch.object(train, "clash_shape", return_value=shape) as clash:
+                    line = self.give_up(tip=True)
+                self.assertIn(f"; conflict: {shape}): the lane waits for a person", line)
+                self.assertEqual(clash.call_args[0][1], "HEAD")
+                self.assertEqual(clash.call_count, 1, "read once, not at every try")
+
+    def test_Resolve_the_conflict_shape_is_read_before_the_first_run_and_under_a_timeout(self):
+        """The shape is the conflict the resolver faced (main as it stood when the try began), and its git calls are bounded."""
+        from sampo import train
+        seen = []
+
+        def shape(*a, **k):
+            seen.append((len(self.claude_calls()), k.get("timeout")))
+            return "same-line"
+        with mock.patch.object(train, "clash_shape", side_effect=shape):
+            self.give_up(tip=True)
+        self.assertEqual(len(seen), 1, seen)
+        self.assertEqual(seen[0][0], 0, "no resolver had started yet")
+        self.assertTrue(seen[0][1], "git is bounded by a timeout")
+
+    def test_Resolve_a_try_counted_with_no_cause_recorded_reads_unknown(self):
+        self.park()
+        b = c.find_brief(self.p, TID)
+        b.meta["resolves"] = ["merge_conflict@2026-11-22T01:00:00Z", "merge_conflict@2026-11-22T02:00:00Z"]
+        b.meta["resolve_causes"] = ["no-commit"]  # its pilot died in the second try, before it noted a cause
+        c.save_brief(self.p, b)
+        self.claim(os.getpid(), served=RETURNED)
+        self.assertEqual(pilotsig.resolve_run(self.p, TID)["outcome"], "failed")
+        self.assertIn("(causes: no-commit, unknown)", [x for x in self.lines() if TID in x][0])
+
+    def test_Resolve_no_shape_is_named_for_a_tip_that_no_longer_conflicts(self):
+        line = self.give_up(tip=True)  # the tip is the main checkout's own HEAD: the merge is clean, there is no shape to name
+        self.assertNotIn("conflict:", line)
+
+    def test_Resolve_no_shape_is_named_for_a_tip_the_repo_lacks(self):
+        lane = self.park()
+        self.claude(commit=False)
+        subprocess.run(["git", "-C", lane, "commit", "--allow-empty", "-qm", "only in the lane"], check=True)
+        b = c.find_brief(self.p, TID)  # the lane's tip is a commit the main checkout does not hold
+        b.meta["lane_stop_tip"] = subprocess.run(["git", "-C", lane, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+        c.save_brief(self.p, b)
+        self.claim(os.getpid(), served=RETURNED)
+        from sampo import train
+        with mock.patch.object(train, "clash_shape", side_effect=AssertionError("asked of a tip it lacks")):
+            self.assertEqual(pilotsig.resolve_run(self.p, TID)["outcome"], "failed")
+        self.assertNotIn("conflict:", [x for x in self.lines() if TID in x][0])
+
+    def test_Resolve_a_cause_that_cannot_be_read_gives_unknown_and_the_run_still_reports_and_releases(self):
+        with mock.patch.object(pilotsig, "_unmerged", side_effect=RuntimeError("git went away")):
+            line = self.give_up()
+        self.assertIn("(causes: unknown, unknown", line)
+        self.assertIsNone(self.claimed(), "the claim is dropped")
+
+    def test_Resolve_a_cause_that_cannot_be_saved_still_reports_and_releases(self):
+        with mock.patch.object(pilotsig, "_note_try", side_effect=OSError("disk full")):
+            line = self.give_up()
+        self.assertIn("after 2 tries (causes: unknown, unknown)", line)  # no cause saved: each try reads unknown
+        self.assertIsNone(self.claimed(), "the claim is dropped")
+
+    def test_Resolve_a_shape_that_cannot_be_read_does_not_stop_the_run(self):
+        from sampo import train
+        with mock.patch.object(train, "clash_shape", side_effect=OSError("no git")):
+            line = self.give_up(tip=True)
+        self.assertNotIn("conflict:", line)
+        self.assertIn("(causes: no-commit, no-commit)", line)
+
+    def test_Resolve_give_up_is_told_again_by_the_cap_with_the_same_causes(self):
+        self.give_up("train.py is refused as a sensitive file")
+        b = c.find_brief(self.p, TID)
+        self.assertEqual(b.meta.get("resolve_causes"), ["sensitive-file", "sensitive-file"])
+        self.background()
+        with mock.patch.object(pilotsig, "_start", side_effect=AssertionError("a third resolver")):
+            self.assertIsNone(pilotsig.resolve(self.p, TID))
+        self.assertEqual(len([x for x in self.lines() if TID in x]), 1)
+
+    def test_Resolve_a_return_drops_the_causes_of_an_earlier_failed_try(self):
+        self.park()
+        self.claude(commit=True)
+        self.claim(os.getpid(), served=RETURNED)
+        b = c.find_brief(self.p, TID)
+        b.meta["resolve_causes"], b.meta["resolve_shape"] = ["no-commit"], "same-line"
+        c.save_brief(self.p, b)
+        with mock.patch.object(pilotsig, "spawn"):
+            self.assertEqual(pilotsig.resolve_run(self.p, TID)["outcome"], "returned")
+        self.assertIsNone(self.meta("resolve_causes"))
+        self.assertIsNone(self.meta("resolve_shape"))
 
     def test_resolve_cap_a_lane_with_two_recorded_attempts_is_reported_by_the_trigger(self):
         self.park()

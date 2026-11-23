@@ -693,6 +693,60 @@ class InsertionUnionLib(AffectedBase):
         self.assertIn("Lane one adds this. Lane two adds this.", self.read(mp))
         self.assertEqual(self.git("ls-files", "-u"), "")
 
+    def test_Resolve_two_lanes_that_each_add_the_same_import_beside_their_own_both_land(self):
+        """T-6014 (T-5736, T-5859): the conflict shape a resolver gave up on, through the train's own union."""
+        base = "import os\n\n\ndef old():\n    return 0\n"
+        self.based(self.LIB, base)
+        a = self.lane(1, self.LIB, base.replace("import os\n", "import os\nimport tempfile\nimport textwrap\n"))
+        b = self.lane(2, self.LIB, base.replace("import os\n", "import os\nimport tempfile\nimport time\n"))
+        r = self.train(a, b, check=False)
+        self.assertNotIn("left out", r.stdout + r.stderr)
+        for tid in (a, b):
+            self.assertTrue(self.meta(tid)["lane_stop"].startswith("merged"), r.stdout)
+        text = self.read(self.LIB)
+        for name in ("tempfile", "textwrap", "time"):
+            self.assertEqual(text.count(f"import {name}\n"), 1, text)
+        self.assertEqual(self.git("ls-files", "-u"), "")
+
+    def clashing_tip(self, name, theirs, mine):
+        """Lane 1's tip (`theirs` in `name`), the trunk having moved to `mine` there."""
+        self.based(name, self.BASE)
+        self.lane(1, name, theirs)
+        self.commit(name, mine)
+        return self.git("rev-parse", "foreman/lane1")
+
+    def shape_of(self, name, theirs, mine):
+        """T-6014: clash_shape of that tip against the trunk's HEAD."""
+        return train.clash_shape(self.repo, "HEAD", self.clashing_tip(name, theirs, mine))
+
+    def test_Resolve_clash_shape_names_the_four_shapes_of_a_conflict_and_a_clean_merge_as_none(self):
+        self.assertEqual(self.shape_of(self.LIB, self.BASE.replace("return 0", "return 1"),
+                                       self.BASE.replace("return 0", "return 2")), "same-line")
+
+    def test_Resolve_clash_shape_a_pure_insertion_on_both_sides_is_union_able(self):
+        self.assertEqual(self.shape_of(self.LIB, self.BASE + self.fn("one"), self.BASE + self.fn("two", "2")), "union-able")
+
+    def test_Resolve_clash_shape_a_file_the_train_never_unions_is_non_python(self):
+        self.assertEqual(self.shape_of("notes.txt", self.BASE + "one\n", self.BASE + "two\n"), "non-python")
+
+    def test_Resolve_clash_shape_a_merge_that_is_clean_has_no_shape(self):
+        self.based(self.LIB, self.BASE)
+        self.lane(1, "plugin/lib/other.py", "X = 1\n")
+        self.assertEqual(train.clash_shape(self.repo, "HEAD", self.git("rev-parse", "foreman/lane1")), "")
+
+    def test_Resolve_clash_shape_bounds_every_git_call_it_makes_by_the_timeout_it_is_given(self):
+        tip = self.clashing_tip(self.LIB, self.BASE + self.fn("one"), self.BASE + self.fn("two", "2"))
+        real, seen = subprocess.run, []
+
+        def run(cmd, *a, **k):
+            seen.append((cmd[3], k.get("timeout")))
+            return real(cmd, *a, **k)
+        with mock.patch.object(train.subprocess, "run", side_effect=run):
+            train.clash_shape(self.repo, "HEAD", tip, timeout=7)
+        calls = [x for x in seen if x[0] in ("merge-tree", "cat-file")]
+        self.assertGreaterEqual(len(calls), 4, seen)  # the merge-tree and a blob read per stage
+        self.assertEqual({t for _, t in calls}, {7}, calls)
+
     def test_a_same_line_edit_in_a_lib_file_still_parks(self):
         self.based()
         a = self.lane(1, self.LIB, self.BASE.replace("return 0", "return 1"))
@@ -939,6 +993,77 @@ class InsertionUnionLib(AffectedBase):
         p, base = c.find_project(self.repo), self.git("rev-parse", "HEAD")
         why = train._probe(p, self.repo, base, None, self.git("rev-parse", "foreman/lane1"), [], tests=False)
         self.assertIn(f"conflicts with the base: {self.LIB}", why)
+
+
+class ResolveUnionImports(unittest.TestCase):
+    """T-6014: two lanes that each add an import line at the same spot, one of them the same line, were refused as a
+    shared name (T-5736, T-5859 gave up on exactly that): the repeated import line is now kept once; a different import
+    of the same name, an indented import and a name any other statement binds twice still refuse."""
+
+    BASE = "import os\nimport sys\n\n\ndef f():\n    return 0\n"
+
+    def union(self, ours, theirs, base=None):
+        return train._insertion_union(ours.encode(), (base or self.BASE).encode(), theirs.encode())
+
+    def test_the_same_import_both_lanes_added_is_kept_once(self):
+        ours = self.BASE.replace("import sys\n", "import sys\nimport tempfile\nimport textwrap\n")
+        theirs = self.BASE.replace("import sys\n", "import sys\nimport tempfile\nimport time\n")
+        got = self.union(ours, theirs)
+        self.assertIsNotNone(got)
+        text = got.decode()
+        for name in ("tempfile", "textwrap", "time"):
+            self.assertEqual(text.count(f"import {name}\n"), 1, text)
+        self.assertIn("def f():", text)
+
+    def test_a_from_import_both_lanes_added_is_kept_once(self):
+        ours = self.BASE.replace("import sys\n", "import sys\nfrom a import b\n")
+        theirs = self.BASE.replace("import sys\n", "import sys\nfrom a import b\nfrom a import c\n")
+        got = self.union(ours, theirs)
+        self.assertIsNotNone(got)
+        self.assertEqual(got.decode().count("from a import b\n"), 1)
+        self.assertIn("from a import c\n", got.decode())
+
+    def test_a_lane_whose_only_added_import_the_other_also_added_leaves_an_empty_block(self):
+        """The dedupe empties one side's block (git still conflicts: one side added a second import beside it)."""
+        one = self.BASE.replace("import os\n", "import os\nimport tempfile\n")
+        two = self.BASE.replace("import os\n", "import os\nimport tempfile\nimport time\n")
+        for ours, theirs in ((two, one), (one, two)):
+            got = self.union(ours, theirs, self.BASE)
+            self.assertIsNotNone(got)
+            text = got.decode()
+            self.assertEqual((text.count("import tempfile\n"), text.count("import time\n")), (1, 1), text)
+            self.assertIn("def f():", text)
+
+    def test_the_repeated_import_filter_keeps_every_other_line_of_the_block(self):
+        mine = [b"import tempfile\n", b"import time\n"]
+        other = [b"import tempfile\n", b"X = 1\n", b"import tempfile  # again\n"]
+        self.assertEqual(train._without_repeated_imports(mine, other), [b"X = 1\n", b"import tempfile  # again\n"])
+        self.assertEqual(train._without_repeated_imports(mine, [b"import tempfile\n"]), [])
+        self.assertIs(train._without_repeated_imports([b"X = 1\n"], other), other)
+
+    def test_two_lanes_adding_only_the_same_import_still_merge_clean(self):
+        ours = self.BASE.replace("import sys\n", "import sys\nimport tempfile\n")
+        self.assertIsNone(self.union(ours, ours))  # git's own merge is clean: no conflict for the union to resolve
+
+    def test_a_different_import_of_the_same_name_still_refuses(self):
+        ours = self.BASE.replace("import sys\n", "import sys\nfrom a import b\n")
+        theirs = self.BASE.replace("import sys\n", "import sys\nfrom c import b\n")
+        self.assertIsNone(self.union(ours, theirs))
+
+    def test_an_import_line_inside_a_string_is_not_deduped(self):
+        base = 'import os\nDOC = """\n"""\n'
+        ours = 'import os\nDOC = """\n"""\nX = """\nimport tempfile\n"""\n'
+        theirs = 'import os\nDOC = """\n"""\nY = """\nimport tempfile\n"""\n'
+        got = self.union(ours, theirs, base)
+        if got is not None:  # both strings stay whole
+            self.assertEqual(got.decode().count("import tempfile\n"), 2)
+
+    def test_an_indented_import_both_lanes_added_still_refuses(self):
+        base = "def f():\n    pass\n"
+        ours = "def f():\n    pass\n    import tempfile\n"
+        theirs = "def f():\n    pass\n    import tempfile\n    import time\n"
+        self.assertIsNone(self.union(ours, theirs, base))
+
 
 class BehindBase(PmCase):
     """T-5936: the behind verify of a merged head ran the whole suite (13,000 tests, 100% of the CPU for hours) after every
