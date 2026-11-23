@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- The Stop hook no longer asks for a step's evidence while an agent, lane builder or background run started since the step began is still running (2 h bound); it asks once that work ended (T-6057).
 - A step or refusal that asks for surface evidence names sampo smoke only in a project with a smoke target, else sampo shot URL (or the project's own surface command), so a task can close where sampo smoke has nothing to check (T-6023).
 - `sampo task ac ID edit N "TEXT"` takes the new criterion text after its number, as `ac add` does, instead of failing with unrecognized arguments (T-6027).
 - sampo shot --height H sets the viewport's height and --full shoots the whole page below the fold (getLayoutMetrics + captureBeyondViewport, up to 16384 px) in the viewport shot, every frame and the poster (T-6029).
