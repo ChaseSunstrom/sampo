@@ -3321,6 +3321,81 @@ class LaneRecovery(ForemanTestCase):
         self.assertNotIn(f"fm lane recover {tid}", self.fm("next").stdout, "a blocked task is not recovered")
 
 
+class RecoverAfterStop(ForemanTestCase):
+    """T-6104: a Claude builder that returned (its SubagentStop stamp, builder_returned) while its launching session's
+    process is alive has stopped: its lane's stop cause and its recovery are read at once, with no 15-minute quiet wait.
+    A lane touched after the return, or whose stamp a resume cleared, is still left alone. Temporary repos only."""
+    git, stopped_builder = Lanes.git, Lanes.stopped_builder
+    mark, live_proc = LaneRecovery.mark, LaneRecovery.live_proc
+    RECOVER_ENV = {"FM_STALL_CACHE_S": "0"}
+
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+
+    def returned_builder(self, committed=False):
+        """A builder whose process is alive and that returned just now, after its lane's base commit (the test repo's, made
+        in setUp). Its files are five minutes old (and its commit is dated 2026-01-01), so its lane is quiet since the
+        return. `committed`: its work is one clean commit."""
+        import time
+        tid, path = self.stopped_builder(proc=self.live_proc())
+        p = c.find_project(self.repo)
+        b = c.find_brief(p, tid)
+        b.meta["builder"] = c.iso(time.time() - 600)
+        b.meta["builder_returned"] = c.iso(time.time())
+        c.save_brief(p, b)
+        if committed:
+            self.git("add", "-A", cwd=path)
+            subprocess.run(["git", "-C", path, "commit", "-qm", "built"], check=True,
+                           env={**os.environ, "GIT_AUTHOR_DATE": "2026-01-01T00:00:00",
+                                "GIT_COMMITTER_DATE": "2026-01-01T00:00:00"})
+        old = time.time() - 300
+        for root, _, names in os.walk(path):  # every file the lane holds (the lane's own setup too), not only wip.py
+            if ".git" not in root.split(os.sep):
+                for n in names:
+                    os.utime(os.path.join(root, n), (old, old))
+        return tid, path
+
+    def test_a_returned_live_builder_with_its_work_committed_names_no_report_at_once(self):
+        from sampo import lanes as slanes
+        p = c.find_project(self.repo)
+        tid, path = self.returned_builder(committed=True)
+        self.assertEqual(slanes.stop_causes(p, c.load_briefs(p), fresh=True).get(tid, ("",))[0], "no_report")
+        r = self.fm("lane", "recover", tid, check=False, env=self.RECOVER_ENV)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertNotIn("alive", r.stdout + r.stderr, "the stop is named, not refused as a live process")
+        self.assertIn(f"fm lane merge {tid}", r.stdout + r.stderr)
+
+    def test_a_returned_live_builder_with_uncommitted_work_is_recovered_at_once(self):
+        from sampo import lanes as slanes
+        p = c.find_project(self.repo)
+        tid, path = self.returned_builder()
+        self.assertEqual(slanes.stop_causes(p, c.load_briefs(p), fresh=True).get(tid, ("",))[0], "uncommitted")
+        self.fm("lane", "recover", tid, env=self.RECOVER_ENV)
+        ev = [e for e in c.ledger_events(p, ["lane_recover"]) if e.get("task") == tid]
+        self.assertEqual(ev[0]["data"]["cause"], "uncommitted", "recovered without waiting out the stall limit")
+
+    def test_a_lane_touched_after_the_return_or_whose_stamp_a_resume_cleared_is_left_alone(self):
+        from sampo import lanes as slanes
+        p = c.find_project(self.repo)
+        touched, tpath = self.returned_builder(committed=True)
+        import time
+        later = time.time() + 60
+        os.utime(os.path.join(tpath, "wip.py"), (later, later))  # written after the return: a resumed builder may be at work
+        resumed, rpath = self.returned_builder(committed=True)
+        b = c.find_brief(p, resumed)
+        b.meta.pop("builder_returned", None)  # a resume clears the stamp (hooks._mark_builder, returned False)
+        c.save_brief(p, b)
+        causes = slanes.stop_causes(p, c.load_briefs(p), fresh=True)
+        for tid, path in ((touched, tpath), (resumed, rpath)):
+            self.assertNotIn(tid, causes, tid)
+            r = self.fm("lane", "recover", tid, check=False, env=self.RECOVER_ENV)
+            self.assertNotEqual(r.returncode, 0, tid)
+            self.assertTrue(os.path.isdir(path), f"{tid}: a live builder's lane is left alone")
+            if tid == touched:
+                self.assertIn("the lane changed since", r.stdout + r.stderr, "named as a return the lane moved past")
+
+
 class RecoverPastBacklog(ForemanTestCase):
     """T-5933: recovering a lane that already has a branch is finishing work, not starting new: the land backlog bar and
     the unmerged cap hold new lanes only (sampo do sweep-lanes was refused T-5771 by 21 waiting lanes). Deliberate:

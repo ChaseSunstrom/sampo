@@ -1614,6 +1614,16 @@ def _reported_stop(p, b, kind, git, fresh=False):
     return _returned_park(p, b, kind, git, fresh) if kind == "conflict" else True
 
 
+def _returned_quiet(b, git):
+    """T-6104: a live process (builder_proc is the main session's, alive after a Claude builder returns) whose builder's
+    agent returned (_builder_returned) and whose lane has no file or commit newer than the return has stopped: it reads
+    as an ended one. A resume clears the stamp (hooks._mark_builder, returned False), so a resumed builder is never quiet
+    by this; a git that failed reads as newest (_newest: inf), so it is not quiet either."""
+    if not _builder_returned(b):
+        return False
+    return _newest(b.meta["lane"], git) <= c.parse_ts(b.meta["builder_returned"]).timestamp() + 2
+
+
 def stop_causes(p, briefs=None, fresh=False):
     """T-2354: {task id: (cause, detail)} for lanes whose builder came back without the work merged. A stopped process
     (this host) is proof it ended. A live one proves nothing (builder_proc is the main session's): it is a cause only
@@ -1625,6 +1635,8 @@ def stop_causes(p, briefs=None, fresh=False):
     nothing in the lane after the return (_returned_park: a returned builder resumed by SendMessage is not taken from).
     A guard refusal is a grant to ask for,
     whoever's process it is. Another host, no process record, a merged or blocked lane: no cause, nothing to recover.
+    T-6104: a live one whose agent returned and whose lane is quiet since the return (_returned_quiet) is read as ended, so
+    its commits wait on a merge or its uncommitted work is recovered at once, not after the stall limit.
     `fresh` re-reads the lanes instead of the 60 s stalled cache."""
     from sampo import bus
     if p.lane:
@@ -1650,10 +1662,11 @@ def stop_causes(p, briefs=None, fresh=False):
             continue
         if kind in _STOP_KINDS and _moved_past(b, at, git):
             kind = None  # T-5765: resolved in place after the park: the old stop is no cause, the normal path judges it
+        ended = state == "stopped" or (state == "alive" and kind not in _STOP_KINDS and _returned_quiet(b, git))  # T-6104
         if kind in _STOP_KINDS and (state == "stopped" or _reported_stop(p, b, kind, git, fresh) or (
                 (time.time() - at) / 60 >= _stall_limit() and _newest(b.meta["lane"], git) <= at + 2)):
             out[tid] = (_STOP_KINDS[kind], "")
-        elif state == "alive":
+        elif state == "alive" and not ended:
             idle = stalled(p, all_briefs if fresh else None) if idle is None else idle
             if tid in idle:
                 out[tid] = ("stalled", "")
@@ -1852,7 +1865,8 @@ def never_accepted_line(rows):
 
 def recover(p, b, main, args):
     """T-2354: the one recovery for the cause its lane stopped by (STOP_CAUSES), never over a builder that may be alive:
-    - a process that ended (this host) is proof: recover, as resume does;
+    - a process that ended (this host) is proof: recover, as resume does; so is a live process whose builder's agent
+      returned and whose lane is quiet since (T-6104, _returned_quiet: the stop is read at once);
     - a stalled live builder (builder_proc is the main session's, alive after its builder returns) is stopped through
       its own agent first; --agent-stopped says it was, and the lane must still be quiet when this runs;
     - a conflict or refused merge on a live process counts only when it is old and the lane shows no work since
@@ -1878,7 +1892,7 @@ def recover(p, b, main, args):
     if not got:
         raise c.PolicyError(f"{b.id} has no stop cause: " + (
             (f"its builder returned, but the lane changed since (a commit, or a file newer than its return), so a builder "
-             f"resumed after it may be working; left alone" if _stop(b)[0] == "conflict" and _builder_returned(b) else
+             f"resumed after it may be working; left alone" if _builder_returned(b) else
              f"its builder's process is alive and its lane is neither stalled nor quiet since a merge attempt that is "
              f"{_stall_limit():g}+ min old, so its builder may be working; left alone") if state == "alive"
             else f"its lane is merged (fm lane rm {b.id})"))
