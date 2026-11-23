@@ -12282,6 +12282,9 @@ def _build_parser(only=None):
                    "PAGE-W[-SCHEME]/ through the one browser (T-2758)")
     s.add_argument("--scheme", choices=["light", "dark", "both"], help="emulate prefers-color-scheme; both shoots "
                    "each view light then dark, into PAGE[-W]-SCHEME/")
+    s.add_argument("--height", metavar="H", help="the viewport's height (1 to 10000; default 800, or --profile's)")
+    s.add_argument("--full", action="store_true", help="shoot the whole page, below the fold (up to 16384 px tall), "
+                   "in the viewport shot, every frame and the poster (T-6029)")
     s.add_argument("--out", metavar="DIR", help="write into this folder (never a link) instead")
     s.add_argument("--diff", metavar="BASE", help="compare each viewport shot with BASE/<page>/viewport.png (an earlier "
                    "sampo shot --out BASE): exit 1 over the baseline's noise floor (the most its own frames differ) or "

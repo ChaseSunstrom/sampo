@@ -1,11 +1,14 @@
 """The UI snapshot harness (mods/sampo-ui/tools/shot.py) never leaks FOREMAN_* into a tmux server's global
 environment, where every later session would inherit it (T-0138: a leaked FOREMAN_STATE pointed the user's own
 Claude Code session at the demo state)."""
+import json
 import os
 import shutil
 import subprocess
 import sys
 import unittest
+
+from helpers import ForemanTestCase
 
 SHOT = os.path.join(os.path.dirname(__file__), "..", "..", "mods", "sampo-ui", "tools", "shot.py")
 
@@ -118,6 +121,114 @@ class OneOff(unittest.TestCase):
         self.assertIn("CLAUDE_CODE_TMUX_TRUECOLOR=1", args)
         self.assertEqual(args[args.index("CLAUDE_CODE_TMUX_TRUECOLOR=1") - 1], "-e")
 
+
+
+class FullPage(ForemanTestCase):
+    """T-6029: sampo shot --height H sets the viewport's height and --full captures the whole page, not the fold: a
+    live Board's 14 panels showed only 9 in the fixed 1280x800 viewport. A real Chromium, against a page taller than
+    it (the PNG's header says how tall each shot is)."""
+    TALL = 3000
+
+    def setUp(self):
+        super().setUp()
+        from helpers import headless_chrome
+        self.chrome = headless_chrome()
+        self.fm("init")
+        self.out = os.path.join(self.tmp, "shots")
+        self.tall = os.path.join(self.repo, "tall.html")
+        with open(self.tall, "w") as f:  # a stack of panels: the second half starts below the fold
+            f.write("<style>body{margin:0}div{height:1000px}</style>"
+                    "<div style='background:#c00'></div><div style='background:#0a0'></div>"
+                    "<div style='background:#00c'></div>")
+
+    def shoot(self, *args, page=None):
+        if not self.chrome:
+            self.skipTest("no headless Chromium")
+        data = json.loads(self.fm("shot", page or self.tall, "--out", self.out, "--json", *args).stdout)
+        return data["pages"]
+
+    def size(self, path):
+        from sampo import img
+        i = img.info(path)
+        return i["width"], i["height"]
+
+    def test_the_viewport_stops_at_the_fold_and_height_moves_the_fold(self):
+        [p] = self.shoot("--frames", "0")
+        self.assertEqual(self.size(p["shots"][0]), (1280, 800))
+        [p] = self.shoot("--frames", "0", "--height", "500")
+        self.assertEqual(self.size(p["shots"][0]), (1280, 500))
+        [p] = self.shoot("--frames", "0", "--height", "1500", "--width", "600")
+        self.assertEqual(self.size(p["shots"][0]), (600, 1500))
+
+    def test_full_is_the_whole_page_whatever_the_viewport(self):
+        for extra, want in (([], (1280, 3000)), (["--height", "500"], (1280, 3000)), (["--width", "400"], (400, 3000)),
+                            (["--height", "5000"], (1280, 5000))):  # a viewport taller than the page: the viewport
+            [p] = self.shoot("--frames", "0", "--full", *extra)
+            self.assertEqual(self.size(p["shots"][0]), want, extra)
+
+    def test_full_shoots_every_frame_the_poster_and_every_view_whole(self):
+        page = os.path.join(self.repo, "spin.html")
+        with open(page, "w") as f:
+            f.write("<style>@keyframes pulse{from{background:#c00}to{background:#00c}}body{margin:0}"
+                    "div{height:2400px;animation:pulse 1.2s linear infinite}</style><div></div>")  # width-proof
+        pages = self.shoot("--frames", "3", "--every", "200", "--full", "--width", "500,300", "--scheme", "both",
+                           page=page)
+        self.assertEqual([os.path.basename(p["folder"]) for p in pages],
+                         ["spin-500-light", "spin-500-dark", "spin-300-light", "spin-300-dark"])
+        for p in pages:
+            names = [os.path.basename(s) for s in p["shots"]]
+            self.assertEqual(names[:4], ["viewport.png", "frame-00.png", "frame-01.png", "frame-02.png"])
+            self.assertIn("poster.png", names, "the page moves")
+            for s in p["shots"]:
+                self.assertEqual(self.size(s), (p["width"], 2400), s)
+
+    def test_a_page_shorter_than_the_viewport_is_the_viewport_and_a_huge_one_is_cut_with_a_note(self):
+        short = os.path.join(self.repo, "short.html")
+        with open(short, "w") as f:
+            f.write("<p>hi</p>")
+        [p] = self.shoot("--frames", "0", "--full", page=short)
+        self.assertEqual(self.size(p["shots"][0]), (1280, 800))
+        huge = os.path.join(self.repo, "huge.html")
+        with open(huge, "w") as f:
+            f.write("<style>body{margin:0}div{height:40000px;background:#c00}</style><div></div>")
+        [p] = self.shoot("--frames", "0", "--full", "--width", "800", page=huge)
+        w, h = self.size(p["shots"][0])
+        self.assertEqual(w, 800)
+        self.assertEqual(h, 16384, "cut where one texture ends")
+        self.assertTrue(any("40000" in n and "16384" in n for n in p["notes"]), p["notes"])
+
+    def test_a_bad_height_is_refused_before_any_browser(self):
+        env = {"FOREMAN_CHROME": "none"}  # no browser: a good height is skipped, a bad one still fails
+        for bad in ("0", "-5", "10001", "tall", "", "500,600", "1e3", " "):
+            r = self.fm("shot", self.tall, "--height", bad, env=env, check=False)
+            self.assertNotEqual(r.returncode, 0, bad)
+            self.assertIn("--height", r.stderr + r.stdout, bad)
+        for good in ("1", "10000", " 800 "):
+            r = self.fm("shot", self.tall, "--height", good, env=env)
+            self.assertEqual(r.returncode, 0, good)
+            self.assertIn("skipped", r.stdout)
+        r = self.fm("shot", self.tall, "--full", env=env)
+        self.assertEqual(r.returncode, 0)
+
+    def test_a_browser_that_cant_say_how_tall_the_page_is_fails_that_page(self):
+        # a browser that answers getLayoutMetrics with nothing is a failed page, not a blank or a viewport-sized lie
+        import stat
+        stub = os.path.join(self.tmp, "chrome")
+        with open(stub, "w") as f:
+            f.write(f"#!{sys.executable}\n"
+                    "import json, os, sys\nbuf = b''\n"
+                    "while True:\n    c = os.read(3, 65536)\n    if not c: break\n    buf += c\n"
+                    "    while b'\\0' in buf:\n        l, buf = buf.split(b'\\0', 1)\n        m = json.loads(l)\n"
+                    "        r = {'targetId': 't'} if m['method'] == 'Target.createTarget' else "
+                    "{'sessionId': 's'} if m['method'] == 'Target.attachToTarget' else {}\n"
+                    "        os.write(4, json.dumps({'id': m['id'], 'result': r}).encode() + b'\\0')\n"
+                    "        if m['method'] == 'Page.navigate':\n"
+                    "            os.write(4, json.dumps({'method': 'Page.loadEventFired', 'params': {}}).encode() + b'\\0')\n")
+        os.chmod(stub, stat.S_IRWXU)
+        r = self.fm("shot", self.tall, "--out", self.out, "--full", "--frames", "0", "--json",
+                    env={"FOREMAN_CHROME": stub}, check=False)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("content size", json.loads(r.stdout)["failed"][0]["error"])
 
 
 class Trust(unittest.TestCase):

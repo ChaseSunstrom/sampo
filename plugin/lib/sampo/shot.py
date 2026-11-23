@@ -2,7 +2,8 @@
 PATH, or Playwright's download; nothing is ever installed). fm shot URL|FILE... [--frames N] [--every MS] [--frozen]
 [--out DIR] writes, per page, viewport.png once it has loaded, frame-00.png… N frames --every ms apart in real time
 (headless virtual time barely runs requestAnimationFrame) and, when the frames differ, poster.png: the frame with the
-most painted pixels (those off the frame's commonest colour). --frozen applies fm smoke's frozen profile first (the
+most painted pixels (those off the frame's commonest colour). --height H sets the viewport's height (1 to 10000) and
+--full shoots the whole page, below the fold, in every one of them (T-6029). --frozen applies fm smoke's frozen profile first (the
 clock fixed at 2026-01-15 10:00 UTC, CSS animations and transitions paused), so the frames should match. Shots go in
 <project state>/shots/<page>/ unless --out names a folder (never a link); a rerun replaces its own files. Without a
 browser it exits 0 and says why.
@@ -15,6 +16,7 @@ import collections
 import contextlib
 import glob
 import json
+import math
 import os
 import pathlib
 import re
@@ -33,6 +35,7 @@ from sampo import killsafe
 SIZE = (1280, 800)
 MAX_FRAMES, MIN_EVERY, MAX_EVERY = 60, 10, 10000
 MAX_WIDTH, MAX_VIEWS = 10000, 12  # --width: a viewport's width, and how many of them one run shoots per page
+MAX_HEIGHT, MAX_FULL = 10000, 16384  # --height: a viewport's height; --full: the tallest page shot, in css px
 LOAD_S, CALL_S, SETTLE_S = 30, 30, 0.5
 FONTS_S = 10  # the fonts check: its own 5 s wait plus the walk; a slow page leaves fonts unchecked, not the run hung
 NOISY = 0.05  # a baseline floor over this share of the page's pixels: an animated baseline, a loose pass line
@@ -146,6 +149,7 @@ class Browser:
         """env: the browser's environment (None: ours); args: more switches (sampo works: no network, T-3106)."""
         import fcntl
         self.pid, self.feed, self.out, fds = None, None, None, []
+        self.size, self.scale = tuple(size), scale  # the viewport last set (full() clips to its width)
         self.profile = tempfile.TemporaryDirectory(prefix="fm-shot-")
         self.log = os.path.join(self.profile.name, "fm-shot-stderr.log")
         self.buf, self.scan, self.n, self.events = bytearray(), 0, 0, set()
@@ -187,6 +191,7 @@ class Browser:
 
     def emulate(self, size, scale, scheme=None, reduced=False):
         """Another view in the same browser. setEmulatedMedia replaces the whole feature list: send all of it."""
+        self.size, self.scale = tuple(size), scale
         self.call("Emulation.setDeviceMetricsOverride", self.sid, width=size[0], height=size[1],
                   deviceScaleFactor=scale, mobile=False)
         feats = ([{"name": "prefers-color-scheme", "value": scheme}] if scheme else []) + \
@@ -265,6 +270,25 @@ class Browser:
 
     def png(self):
         return base64.b64decode(self.call("Page.captureScreenshot", self.sid, format="png")["data"])
+
+    def full(self):
+        """(png, note) of the whole page, not the viewport (T-6029): its content height from Page.getLayoutMetrics,
+        at least the viewport's and at most MAX_FULL css px (the pure-Python decoder's side and pixel caps, one
+        texture's height), captured beyond the viewport at the viewport's width. The note says when it was cut.
+        RuntimeError when the browser gives no content size."""
+        m = self.call("Page.getLayoutMetrics", self.sid)
+        tall = (m.get("cssContentSize") or m.get("contentSize") or {}).get("height")
+        if isinstance(tall, bool) or not isinstance(tall, (int, float)) or not tall > 0:
+            raise RuntimeError("Page.getLayoutMetrics gave no content size")
+        width, vh = self.size
+        tall = max(math.ceil(tall), vh)  # a fractional height rounds up: never a pixel cut off
+        dpr = max(1, math.ceil(self.scale))
+        cap = max(1, min(MAX_FULL, simg.MAX_SIDE // dpr, simg.MAX_PIXELS // (width * dpr * dpr)))
+        note = None if tall <= cap else (f"the page is {tall} px tall; --full shot its first {cap} px "
+                                         f"(at most {MAX_FULL}, and {simg.MAX_PIXELS >> 20} M pixels)")
+        data = self.call("Page.captureScreenshot", self.sid, format="png", captureBeyondViewport=True,
+                         clip={"x": 0, "y": 0, "width": width, "height": min(tall, cap), "scale": 1})["data"]
+        return base64.b64decode(data), note
 
     def close(self):
         if self.pid:
@@ -449,17 +473,28 @@ def load(b, url):
     return notes
 
 
-def shoot(b, url, folder, frames, every, frozen):
-    """One page: {url, folder, shots, animated, poster_of, fallback_fonts, notes}."""
+def shoot(b, url, folder, frames, every, frozen, full=False):
+    """One page: {url, folder, shots, animated, poster_of, fallback_fonts, notes}. full: every shot (the viewport
+    one, each frame, so the poster) is the whole page, not the viewport (T-6029). ponytail: the poster's decode is
+    pure Python, about a second a megapixel a frame: a 16,000 px page at 1280 wide is 20 s a frame."""
     notes = load(b, url)
     fell = fonts(b)
     if frozen:
         b.call("Runtime.evaluate", b.sid, expression=HOLD)
-    shots = [_write(folder, "viewport.png", b.png())]
+
+    def snap():
+        if not full:
+            return b.png()
+        data, note = b.full()
+        if note and note not in notes:
+            notes.append(note)
+        return data
+
+    shots = [_write(folder, "viewport.png", snap())]
     pngs, start = [], time.monotonic()
     for i in range(frames):
         time.sleep(max(0.0, start + i * every / 1000 - time.monotonic()))
-        pngs.append(b.png())
+        pngs.append(snap())
         shots.append(_write(folder, f"frame-{i:02d}.png", pngs[-1]))
     animated, poster_of = len(set(pngs)) > 1, None
     if animated:  # ponytail: pure-Python decode, about a second a megapixel per frame; fine at a viewport's size
@@ -474,11 +509,24 @@ def shoot(b, url, folder, frames, every, frozen):
             "fallback_fonts": fell, "notes": notes}
 
 
+def height(args):
+    """--height H as an int, or None without it. UsageError for anything but a whole number 1 to MAX_HEIGHT."""
+    from sampo import cli
+    raw = getattr(args, "height", None)
+    if raw is None:
+        return None
+    raw = str(raw).strip()
+    if not (raw.isascii() and raw.isdigit() and 1 <= int(raw) <= MAX_HEIGHT):
+        raise cli.UsageError(f"--height is one whole number 1 to {MAX_HEIGHT}: {_safe(args.height)!r}")
+    return int(raw)
+
+
 def view(args):
-    """(size, scale) for --profile (fm critique's table), else the default viewport."""
+    """(size, scale) for --profile (fm critique's table), else the default viewport; --height replaces its height."""
     from sampo import critique
     p = critique.PROFILES.get(getattr(args, "profile", None))
-    return ((p["width"], p["height"]), p["scale"]) if p else (SIZE, 1)
+    (w, h), scale = ((p["width"], p["height"]), p["scale"]) if p else (SIZE, 1)
+    return (w, height(args) or h), scale
 
 
 def views(args):
@@ -516,9 +564,12 @@ def _run(path, urls, base, args):
                 try:
                     if width or scheme:
                         b.emulate((width or size[0], size[1]), scale, scheme, getattr(args, "reduced_motion", False))
-                    pages.append(shoot(b, url, _folder(base, name), args.frames, args.every, args.frozen))
+                    full = bool(getattr(args, "full", False))
+                    pages.append(shoot(b, url, _folder(base, name), args.frames, args.every, args.frozen, full))
                     if width or scheme:
                         pages[-1].update(width=width or size[0], scheme=scheme)
+                    if full:
+                        pages[-1]["full"] = True
                     if args.diff is not None:
                         pages[-1]["diff"] = compare(pages[-1], args.diff)
                 except (OSError, RuntimeError, EOFError, ValueError) as e:
@@ -543,7 +594,8 @@ def cmd_shot(args):
         raise cli.UsageError(f"--frames is 0 to {MAX_FRAMES}")
     if not MIN_EVERY <= args.every <= MAX_EVERY:
         raise cli.UsageError(f"--every is {MIN_EVERY} to {MAX_EVERY} ms")
-    views(args)  # a bad --width is refused before anything starts
+    views(args)  # a bad --width or --height is refused before anything starts
+    height(args)
     urls = [_url(t) for t in args.targets]
     if args.out:
         base = os.path.abspath(args.out)
@@ -577,7 +629,7 @@ def cmd_shot(args):
         names = [os.path.basename(s) for s in pg["shots"]]
         frames = [n for n in names if n.startswith("frame-")]
         lines.append(f"fm shot: {_safe(pg['url'])} → {_safe(pg['folder'])}")
-        lines.append("  viewport.png")
+        lines.append("  viewport.png" + (" (the whole page)" if pg.get("full") else ""))
         if frames:
             lines.append(f"  {frames[0]}" + (f" … {frames[-1]}" if len(frames) > 1 else "")
                          + f" ({len(frames)} frames {args.every} ms apart, real time"
