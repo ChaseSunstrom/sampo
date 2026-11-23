@@ -8030,3 +8030,90 @@ class StepEvidenceInProgress(HookCase):
             reason = hooks._evidence_gate(self.project(), Act(), {"session_id": "sess-1",
                                           "last_assistant_message": "All done, the fix is implemented."}, {"evidence": []})
         self.assertIn("T-0001 task has no recorded verification evidence", reason)
+
+
+class ContextBudget(HookCase):
+    """T-6125: a whole Read (no offset, no limit) of a source file over the lead's 300 lines, or a subagent's 400, is denied
+    with the file's outline and the line ranges of the active task's named symbols; a ranged Read, a small file, a
+    non-source file and the native fast path's caps (sampo-fast's constants) agree with this."""
+
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        self.big = self.source("big.py", 2000, defs=20)
+
+    def source(self, name, n, defs=0):
+        """A source file of n lines: `defs` short functions first (four lines each), then padding."""
+        path = os.path.join(self.repo, name)
+        rows = [f"def function_number_{i}():\n    return {i}\n\n" for i in range(defs)]
+        rows = "".join(rows).splitlines()
+        with open(path, "w") as f:
+            f.write("\n".join((rows + ["# pad"] * n)[:n]) + "\n")
+        return path
+
+    def pre(self, path, agent=None, mode=None, **ti):
+        """The Pre hook's denial reason for a Read, or None when the read goes ahead."""
+        pl = {"tool_name": "Read", "tool_input": {"file_path": path, **ti}, "session_id": "s1"}
+        if agent:
+            pl["agent_id"], pl["agent_type"] = agent, "sampo:fm-builder"
+        if mode:
+            pl["permission_mode"] = mode
+        o = (parse(self.hook("PreToolUse", pl)) or {}).get("hookSpecificOutput") or {}
+        return o.get("permissionDecisionReason") if o.get("permissionDecision") == "deny" else None
+
+    def test_a_whole_read_of_a_2000_line_source_file_is_denied_with_its_outline(self):
+        reason = self.pre(self.big)
+        self.assertIsNotNone(reason, "the lead's whole read of 2000 lines is denied")
+        self.assertIn("function_number_0", reason, "the outline is in the denial")
+        self.assertIn("2000 lines", reason)
+        self.assertIn("limit: 100000", reason, "and the denial says how to read the whole file in one call")
+        self.assertLessEqual(len(reason), 3600, "the outline is capped at 3k characters, with the rest")
+        self.assertIsNotNone(self.pre(self.big), "asked again, it is denied again: the whole read is limit: 100000's")
+
+    def test_the_active_tasks_named_symbols_come_with_their_line_ranges(self):
+        tid = self.task("Split the big module", type_="FEATURE", tier="S")
+        self.fm("task", "set", tid, "--section", "Where things are", "--text",
+                "function_number_7 in big.py holds the retry loop")
+        reason = self.pre(self.big)
+        self.assertIn("function_number_7 lines 22-23", reason, "the touched symbol's range, from the outline (def at 22)")
+        self.assertNotIn("function_number_8 lines", reason, "only the symbols the brief names")
+
+    def test_a_ranged_read_passes(self):
+        for ti in ({"offset": 1, "limit": 50}, {"limit": 100000}, {"offset": 5}):
+            self.assertIsNone(self.pre(self.big, **ti), f"{ti} is a ranged read: it goes ahead")
+
+    def test_a_small_source_file_and_a_markdown_file_pass(self):
+        self.assertIsNone(self.pre(self.source("small.py", 200, defs=5)), "200 lines is under the cap")
+        self.assertIsNone(self.pre(self.source("notes.md", 2000, defs=0)), "a non-source file is not outlined")
+
+    def test_a_subagent_caps_at_400_lines_and_the_lead_at_300(self):
+        mid = self.source("mid.py", 350, defs=5)
+        self.assertIsNotNone(self.pre(mid), "350 lines: over the lead's cap")
+        self.assertIsNone(self.pre(mid, agent="a1"), "350 lines: under a subagent's 400")
+        self.assertIsNotNone(self.pre(self.source("over.py", 450, defs=5), agent="a1"), "450 lines: over a subagent's 400")
+
+    def test_bypass_mode_denies_the_same_read_and_does_not_rewrite_it(self):
+        reason = self.pre(self.big, mode="bypassPermissions")
+        self.assertIsNotNone(reason, "bypass answers the same denial, never a silent 250-line rewrite for the lead")
+
+    def test_the_native_fast_path_has_the_same_caps(self):
+        from sampo import hooks
+        with open(os.path.join(c.PLUGIN_ROOT, "native", "crates", "sampo-fast", "src", "main.rs")) as f:
+            src = f.read()
+        self.assertIn(f"const LEAD_READ_LINES: u64 = {hooks.LEAD_READ_LINES};", src)
+        self.assertIn(f"const SUB_READ_LINES: u64 = {hooks.SUB_READ_LINES};", src)
+
+
+class CompactResume(HookCase):
+    """T-6125: a compaction at any point resumes at the task boundary state: PreCompact checkpoints the active task, and the
+    compact SessionStart carries the next step (sampo next), so the lead picks up where the window was cut."""
+
+    def test_the_precompact_checkpoint_is_resumed_by_the_compact_session_start(self):
+        self.fm("init")
+        tid = self.task("Shrink the big module", type_="FEATURE", tier="S", steps=("split it", "test it"))
+        self.hook("PreCompact", {"session_id": "sess-1", "hook_event_name": "PreCompact", "trigger": "auto"})
+        out = parse(self.hook("SessionStart", {"session_id": "sess-1", "source": "compact"})) or {}
+        ctx = (out.get("hookSpecificOutput") or {}).get("additionalContext") or ""
+        self.assertIn(tid, ctx, "the active task is named after the compaction")
+        self.assertIn("split it", ctx, "and its current step is the resume point")
+        self.assertIn("sampo next", ctx, "the next step comes from sampo next")

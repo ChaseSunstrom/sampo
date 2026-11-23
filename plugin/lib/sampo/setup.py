@@ -33,6 +33,8 @@ OUTPUT_STYLES = (OUTPUT_STYLE, "foreman:Sampo", "foreman:Foreman")  # T-2946, T-
 WHY = {"CLAUDE_CODE_STOP_HOOK_BLOCK_CAP": "drive mode: long queues aren't cut at 8 continuations",
        "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "compact before long contexts degrade; Sampo state survives compaction",
        "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "every reply re-reads the whole context: a 200k window keeps it small"}
+WINDOW_KEY = "autoCompactWindow"  # T-6125: the lead's compaction window, a settings key (plugin agents set it too)
+LEAD_WINDOW = 120000  # T-6125: a task boundary past this checkpoints (PreCompact) and the compact resumes from sampo next
 BEGIN, END = "<!-- foreman:begin -->", "<!-- foreman:end -->"
 BLOCK = (f"{BEGIN}\n# Sampo\nSampo is installed. Operating rules: ~/.claude/rules/{c.RULES_OLD}. "
          f"System map: ~/.claude/foreman/MASTER.md.\n{END}\n")
@@ -173,6 +175,33 @@ def fix_model():
     return "; ".join(out)
 
 
+def cc_knows(key, binary=None):
+    """T-6125: whether the installed Claude Code knows a settings key: its bundle carries the name. The binary is read in
+    chunks (it is large) and no key is written when it is absent or unreadable."""
+    path = binary or shutil.which("claude")
+    if not path:
+        return False
+    needle = key.encode()
+    try:
+        with open(os.path.realpath(path), "rb") as f:
+            tail = b""
+            while chunk := f.read(1 << 20):
+                if needle in tail + chunk:
+                    return True
+                tail = chunk[-(len(needle) - 1):] if len(needle) > 1 else b""  # a name cut at a chunk's edge still counts
+    except OSError:
+        return False
+    return False
+
+
+def lead_window(settings, knows):
+    """T-6125: {WINDOW_KEY: LEAD_WINDOW} when the installed Claude Code knows the key and the settings have none; the
+    user's own value is never replaced, and an unknown key is never written."""
+    if not knows or WINDOW_KEY in settings:
+        return {}
+    return {WINDOW_KEY: LEAD_WINDOW}
+
+
 def plan_install(P):
     s = _load(P["settings"], None)
     m = _load(P["manifest"], {})
@@ -218,6 +247,11 @@ def plan_install(P):
             actions.append(f"env.{k}={v} ({WHY[k]})")
     if not env and not env_existed:
         new_s.pop("env")
+    win = lead_window(new_s, cc_knows(WINDOW_KEY))  # T-6125: a key this Claude Code doesn't know is never written
+    if win:
+        new_s.update(win)
+        new_m.setdefault("window_added", {}).update(win)
+        actions.append(f"{WINDOW_KEY}={LEAD_WINDOW} (the lead's window: a task boundary past it checkpoints and resumes)")
     wt = new_s.get("worktree") if isinstance(new_s.get("worktree"), dict) else None
     if not (wt or {}).get("baseRef"):  # T-0803: builder lanes start from the branch being worked, not origin's default
         new_m.setdefault("worktree_created", wt is None)
@@ -496,6 +530,9 @@ def cmd_uninstall(args):
                 env.pop(k)
         if not env and m.get("env_created"):
             new_s.pop("env")
+    for k, v in (m.get("window_added") or {}).items():  # T-6125: the lead's window, only while it is still ours
+        if new_s.get(k) == v:
+            new_s.pop(k)
     wt = new_s.get("worktree")
     if m.get("worktree_baseRef_set") and isinstance(wt, dict) and wt.get("baseRef") == "head":
         wt.pop("baseRef")

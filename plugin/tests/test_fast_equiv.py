@@ -336,8 +336,10 @@ class Reads(Base):
             ("home-relative", read(file_path="~/.bashrc"), False),
             ("file_path not a string", read(file_path=5), False),
             ("null byte", read(file_path=small + "\x00x"), False),
-            ("big file, odd session id", {"payload": {"tool_name": "Read", "tool_input": {"file_path": big},
-                                                      "session_id": "a/b"}}, True),
+            ("big file, odd session id: Python denies it, so sampo-fast defers", {"payload": {
+                "tool_name": "Read", "tool_input": {"file_path": big}, "session_id": "a/b"}}, False),
+            ("small file, odd session id", {"payload": {
+                "tool_name": "Read", "tool_input": {"file_path": small}, "session_id": "a/b"}}, True),
             ("big file, non-ASCII agent id", {"payload": {"tool_name": "Read", "tool_input": {"file_path": big},
                                                           "agent_id": "ägent"}}, False),
             ("subagent whole read, bypass, over 8 KB and 250 lines: Python rewrites it", {"payload": {

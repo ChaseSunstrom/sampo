@@ -65,6 +65,8 @@ const DOCS_TOOLS: [&str; 8] = [
 const OUTLINE_LINES: u64 = 600;
 const READ_SHOWN: u64 = 250; // T-5597: hooks.READ_SHOWN
 const SUB_READ_BYTES: u64 = 8192; // T-5597: hooks.SUB_READ_BYTES
+const LEAD_READ_LINES: u64 = 300; // T-6125: hooks.LEAD_READ_LINES
+const SUB_READ_LINES: u64 = 400; // T-6125: hooks.SUB_READ_LINES
 const SNAP_SPAN: f64 = 21600.0;
 const PACE_FLOOR: f64 = 75.0;
 const READ_STALE_S: f64 = 6.0 * 3600.0; // T-4669: budget.READ_STALE_S
@@ -74,10 +76,10 @@ const MS_EPOCH: f64 = 1e11; // T-4669: budget.MS_EPOCH
 const MIRRORS: [(&str, &str); 31] = [
     ("hooks.run", "e9a5910273f5"),
     ("hooks._run", "f17c9b9f44d8"),
-    ("hooks._pre_tool_use", "cd37211cb532"),
+    ("hooks._pre_tool_use", "a4942e13a1ec"),
     ("hooks._credential_like", "08fce2b10d8f"),
     ("hooks._credential_read", "6ed174ed2226"),
-    ("hooks._outline_first", "c2ddf4904e58"),
+    ("hooks._outline_first", "a2870fe5cde5"),
     ("hooks._outward_denial", "051bba6801d7"),
     ("hooks._event", "6440afe94c6e"),
     ("hooks._rev", "7ee872410ee6"),
@@ -290,16 +292,19 @@ fn read_ok(pl: &Obj, state: &Path) -> Option<()> {
     let sid = text_or(pl.get("session_id"), "")?;
     let who = text_or(pl.get("agent_id"), "main")?;
     match (word(sid), word(who)) {
-        (Some(false), _) | (_, Some(false)) => return Some(()),
-        (Some(true), Some(true)) => {}
+        // an id that isn't a word has no read store to repeat from, but the size gate below still judges the read:
+        // Python denies a whole Read over the cap whatever the session (T-6125, test_fast_equiv.Reads)
+        (Some(false), _) | (_, Some(false)) => {}
+        (Some(true), Some(true)) => {
+            if state
+                .join("sessions")
+                .join(format!("{sid}.readseen-{who}.json"))
+                .exists()
+            {
+                return None; // T-6064: a repeat of an earlier Read may be answered with a note
+            }
+        }
         _ => return None,
-    }
-    if state
-        .join("sessions")
-        .join(format!("{sid}.readseen-{who}.json"))
-        .exists()
-    {
-        return None; // T-6064: a repeat of an earlier Read may be answered with a note
     }
     if ["offset", "limit", "pages"]
         .iter()
@@ -313,8 +318,14 @@ fn read_ok(pl: &Obj, state: &Path) -> Option<()> {
     // T-5597: a subagent's whole Read over SUB_READ_BYTES may be Python's rewrite (a trailer, or a decline): defer it
     let sub = matches!(pl.get("agent_id"), Some(Value::String(s)) if !s.is_empty());
     let rewrite_due = sub && m.len() > SUB_READ_BYTES;
-    if m.len() < OUTLINE_LINES * 4 && !rewrite_due {
+    // T-6125: hooks._context_budget denies a whole Read over its cap (the lead's, a subagent's): a newline is a byte,
+    // so a file no bigger than the cap has no more lines than it. Any file this path can't count is Python's to deny.
+    let cap = if sub { SUB_READ_LINES } else { LEAD_READ_LINES };
+    if m.len() <= cap && !rewrite_due {
         return Some(());
+    }
+    if m.len() > 5_000_000 {
+        return None; // too long to count here: Python's gate counts it
     }
     let mut buf = Vec::new();
     match File::open(path).and_then(|f| f.take(5_000_000).read_to_end(&mut buf)) {
@@ -322,10 +333,10 @@ fn read_ok(pl: &Obj, state: &Path) -> Option<()> {
             let n = newlines(&buf) as u64;
             if rewrite_due && n > READ_SHOWN {
                 None // Python's rewrite decides (it may answer with 250 lines and a trailer)
-            } else if n < OUTLINE_LINES {
+            } else if n <= cap {
                 Some(())
             } else {
-                None // its outline is due: Python's (state, the outline, a deny)
+                None // over the cap: Python's deny (the outline, the touched ranges)
             }
         }
         Err(_) => Some(()),

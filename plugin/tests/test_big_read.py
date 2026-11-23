@@ -36,30 +36,25 @@ class BigRead(ForemanTestCase):
         p = self.hook("PreToolUse", dict({"tool_name": "Read", "tool_input": tool_input, "permission_mode": mode}, **extra))
         return json.loads(p.stdout or "{}").get("hookSpecificOutput") or {}
 
-    def test_whole_read_is_rewritten_to_250_lines(self):
+    def test_the_lead_whole_read_of_a_big_file_is_denied_in_bypass_not_rewritten(self):  # T-6125: the lead's gate, not T-5597's
+        # the lead's whole read of 1100 lines is refused with the outline in every mode, bypass included: never a 250-line rewrite
         self.assertGreater(os.path.getsize(self.big), 8192)
         out = self.pre({"file_path": self.big})
-        self.assertEqual(out.get("permissionDecision"), "allow")
-        self.assertEqual(out.get("updatedInput"), {"file_path": self.big, "limit": 250})
-        trailer = out.get("additionalContext", "")
-        self.assertIn(f"Sampo: {BIG_LINES} lines, showing 1-250", trailer)
-        self.assertIn(f"sampo outline {self.big}", trailer)
-        self.assertIn("next offset=251", trailer)
-        self.assertIn("allow_large: true", trailer)
-        self.assertEqual(len(trailer.splitlines()), 1, "one short line")
-        self.assertEqual(self.pre({"file_path": self.big}), {}, "asked again: it reads whole")
+        self.assertEqual(out.get("permissionDecision"), "deny")
+        self.assertNotIn("updatedInput", out)
+        self.assertIn("read a range", out.get("permissionDecisionReason", ""))
+        self.assertEqual(self.pre({"file_path": self.big}).get("permissionDecision"), "deny", "asked again: denied again")
 
     def test_subagent_whole_read_over_8kb_is_rewritten(self):
+        # T-5597 for a subagent's whole read of 250 to 400 lines over 8 KB (T-6125 denies a subagent's read over 400 lines)
         for _ in range(2):  # every time, not only the first
-            out = self.pre({"file_path": self.big}, agent_id="sub-1")
-            self.assertEqual(out.get("updatedInput"), {"file_path": self.big, "limit": 250})
+            out = self.pre({"file_path": self.wide}, agent_id="sub-1")
+            self.assertEqual(out.get("updatedInput"), {"file_path": self.wide, "limit": 250})
             self.assertIn("sampo outline", out.get("additionalContext", ""))
-        self.assertEqual(self.pre({"file_path": self.big}, agent_id="sub-2").get("updatedInput"),
-                         {"file_path": self.big, "limit": 250}, "each subagent has its own context")
-        self.assertEqual(self.pre({"file_path": self.wide}, agent_id="sub-1").get("updatedInput"),
-                         {"file_path": self.wide, "limit": 250}, "over 250 lines and over 8 KB, though under 600")
-        self.assertEqual(self.pre({"file_path": self.big}).get("updatedInput"),
-                         {"file_path": self.big, "limit": 250}, "the subagents' reads do not spend the lead's first read")
+        self.assertEqual(self.pre({"file_path": self.wide}, agent_id="sub-2").get("updatedInput"),
+                         {"file_path": self.wide, "limit": 250}, "each subagent has its own context")
+        self.assertEqual(self.pre({"file_path": self.big}, agent_id="sub-1").get("permissionDecision"), "deny",
+                         "over a subagent's 400 lines: denied with the outline, not rewritten")
 
     def test_no_rewrite_elsewhere(self):
         self.assertEqual(self.pre({"file_path": self.big, "allow_large": True}), {})
@@ -67,7 +62,7 @@ class BigRead(ForemanTestCase):
         self.assertEqual(self.pre({"file_path": self.big, "limit": 100}), {})
         self.assertEqual(self.pre({"file_path": self.big, "pages": "1-2"}), {})
         self.assertEqual(self.pre({"file_path": self.small}), {}, "a small file reads whole")
-        self.assertEqual(self.pre({"file_path": self.wide}), {}, "the lead's refusal needs 600 lines")
+        self.assertEqual(self.pre({"file_path": self.wide}), {}, "300 lines is the lead's cap, not over it (T-6125)")
         self.assertEqual(self.pre({"file_path": self.mid}, agent_id="sub-1"), {}, "250 lines or fewer: no rewrite")
         self.assertEqual(self.pre({"file_path": self.light}, agent_id="sub-1"), {}, "under 8 KB: no rewrite")
         self.assertEqual(self.pre({"file_path": self.wide, "allow_large": True}, agent_id="sub-1"), {})
@@ -111,7 +106,8 @@ class BigRead(ForemanTestCase):
         self.assertIn("read a range", out.get("permissionDecisionReason", ""))
 
     def test_the_trailer_quotes_the_path(self):
-        spaced = self.write("big notes.py", [f"def h_{i}(x):\n    return x\n\n\n" for i in range(300)])
+        # 360 lines (a subagent's 400 is the cap, T-6125) and over 8 KB: the T-5597 rewrite, with a path that needs quoting
+        spaced = self.write("big notes.py", [f"def h_{i}(x):\n    return x  {'p' * 70}\n\n\n" for i in range(90)])
         self.assertGreater(os.path.getsize(spaced), 8192)
         out = self.pre({"file_path": spaced}, agent_id="sub-1")
         trailer = out.get("additionalContext", "")

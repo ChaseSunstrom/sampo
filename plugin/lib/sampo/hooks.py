@@ -1185,6 +1185,9 @@ def session_start(pl):
         if routines := macros.start_line():
             out["additionalContext"] += "\n\n" + routines
     if pl.get("source") == "compact":
+        if sd["active"]:  # T-6125: a compaction at a task boundary resumes from sampo next, not from the summary alone
+            out["additionalContext"] += ("\n\nResume: the Active line above is where the window was cut; sampo next "
+                                         "gives the step to take from there.")
         try:
             note = _requests_note(p, sid, cap=min(REQUEST_TEXT_CAP, 9000 - len(out["additionalContext"])))
             if note:
@@ -4202,6 +4205,11 @@ def _pre_tool_use(raw):
                 log_error("PreToolUse", _tb())
                 d = ("Ward: the credential-read check failed (sampo doctor shows the error), so this read is "
                      "refused until that check works again.")
+            if not d:  # T-6125: before the bypass rewrite, so bypass gets the same denial as the lead
+                try:
+                    d = _context_budget(pl)
+                except Exception:
+                    log_error("PreToolUse", _tb())
             if not d and pl.get("permission_mode") == "bypassPermissions":  # T-5597: answered in bypass, not refused
                 try:
                     rw = _big_read_rewrite(pl)
@@ -5598,6 +5606,10 @@ def _stdin_hang(pl):
 
 OUTLINE_LINES, OUTLINE_ROWS = 600, 6  # rows: packed name lines (header + 6 + "… N more" = 8 lines)
 READ_SHOWN, SUB_READ_BYTES = 250, 8192  # T-5597: a bypass-mode whole Read is answered with its first READ_SHOWN lines
+LEAD_READ_LINES, SUB_READ_LINES = 300, 400  # T-6125: a whole Read over these lines (the lead's, a subagent's) is outlined
+LEAD_WHOLE_LIMIT, CONTEXT_OUTLINE_CHARS = 100000, 2800  # the limit that reads a whole file in one call; the outline's cap
+_SOURCE_EXT = (".py", ".pyi", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".rs", ".go", ".java", ".kt", ".swift", ".c",
+               ".h", ".cc", ".cpp", ".hpp", ".cs", ".rb", ".php", ".scala", ".lua", ".sh", ".ex", ".exs", ".hs", ".ml")
 
 
 def _outline_seen(sid, who):
@@ -5610,6 +5622,58 @@ def _outline_seen(sid, who):
         return seen_at, []
 
 
+def _context_budget(pl):
+    """T-6125: a whole Read (no offset, limit or pages) of a source file over LEAD_READ_LINES lines (the lead) or
+    SUB_READ_LINES (a subagent) is denied, every time, with the file's outline (capped at CONTEXT_OUTLINE_CHARS) and the
+    line ranges of the symbols the active task names; a range, limit: LEAD_WHOLE_LIMIT (the whole file in one call),
+    allow_large, a non-source file or a file within its cap goes ahead. None when the read goes ahead."""
+    ti = pl.get("tool_input") if isinstance(pl.get("tool_input"), dict) else {}
+    path = ti.get("file_path")
+    if not isinstance(path, str) or not path.lower().endswith(_SOURCE_EXT) or ti.get("allow_large") is True or any(
+            ti.get(k) is not None for k in ("offset", "limit", "pages")):
+        return None
+    agent = bool(pl.get("agent_id"))
+    cap = SUB_READ_LINES if agent else LEAD_READ_LINES
+    try:
+        if os.path.getsize(path) <= cap:  # a newline is a byte: no more than cap of them
+            return None
+        n = 0
+        with open(path, "rb") as f:  # count to cap + 1 and stop: a long file is never read whole to decide
+            while chunk := f.read(1 << 16):
+                n += chunk.count(b"\n")
+                if n > cap:
+                    break
+    except OSError:
+        return None
+    if n <= cap:
+        return None
+    from sampo import map as smap
+    defs, total = smap.outline(path)
+    names = set()
+    try:
+        p = c.find_project(_project_cwd(pl))
+        act = c.active_brief_fast(p, getattr(p, "lane", None)) if p else None
+        if act:
+            names = set(re.findall(r"[A-Za-z_]\w*", " ".join(act.section(h) for h in (
+                "Where things are", "Callers of the named functions"))))
+    except Exception:
+        log_error("PreToolUse", _tb())
+    touched = [f"{name.split()[-1]} lines {a}-{b}" for a, b, d, name in defs if name.split()[-1] in names][:8]
+    cells = [f"{a} {re.sub(r'^(def|class|function|func|fn|async) ', '', name)}"[:60] for a, b, d, name in defs]
+    body, k = "", 0
+    for cell in cells:
+        piece = (" · " if body else "") + cell
+        if len(body) + len(piece) > CONTEXT_OUTLINE_CHARS:
+            break
+        body, k = body + piece, k + 1
+    more = f"\n… {len(cells) - k} more" if k < len(cells) else ""
+    who = "a subagent" if agent else "the lead"
+    head = (f"Sampo: {os.path.basename(path)} is {total} lines, over the {cap}-line whole-read cap for {who}; read a range "
+            f"(offset, limit; names below start at their line), or the whole file in one call with limit: {LEAD_WHOLE_LIMIT}.")
+    tline = ("\nTouched by this task: " + ", ".join(touched)) if touched else ""
+    return head + tline + "\n" + c.plain_lines(body) + more
+
+
 def _outline_first(pl):
     """T-0724: the first full Read of a big file (per agent, between compactions) gets its outline and a pointer to
     read a range; asked again, it reads whole. None (the Read goes ahead) for a range, a small or unreadable file, or
@@ -5619,7 +5683,8 @@ def _outline_first(pl):
     who = str(pl.get("agent_id") or "main")
     if not isinstance(path, str) or ti.get("allow_large") is True or any(
             ti.get(k) is not None for k in ("offset", "limit", "pages")) or not (
-            re.fullmatch(r"[\w-]{1,100}", sid) and re.fullmatch(r"[\w-]{1,100}", who)):
+            re.fullmatch(r"[\w-]{1,100}", sid) and re.fullmatch(r"[\w-]{1,100}", who)) or path.lower().endswith(
+            (".md", ".markdown")):  # T-6125: a Markdown file is read whole (its headings: sampo outline), never refused
         return None
     try:
         if os.path.getsize(path) < OUTLINE_LINES * 4:  # fewer bytes than that can't be that many real lines

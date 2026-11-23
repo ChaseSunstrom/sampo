@@ -1169,6 +1169,47 @@ class RepeatReads(HookCase):
         self.assertEqual((got["repeat_bytes"], got["avoided_bytes"], got["sessions"]), (0, 0, []))
 
 
+class LeadContext(HookCase):
+    """T-6125: the lead's compaction window is an autoCompactWindow setting only when the installed Claude Code knows the
+    key (its bundle carries the name), and sampo cost reads the lead's cache reads per turn before and after the first
+    compact, the median of each day's turns."""
+
+    def test_the_window_key_is_written_only_when_the_installed_claude_knows_it(self):
+        from sampo import setup
+        fake = os.path.join(self.tmp, "claude-bin")
+        with open(fake, "wb") as f:
+            f.write(b"\x7fELF\x00junk\x00autoCompactWindow\x00more")
+        self.assertTrue(setup.cc_knows("autoCompactWindow", binary=fake))
+        with open(fake, "wb") as f:
+            f.write(b"\x7fELF\x00 no such settings key in this build \x00")
+        self.assertFalse(setup.cc_knows("autoCompactWindow", binary=fake), "an older build: the key is not written")
+        self.assertFalse(setup.cc_knows("autoCompactWindow", binary=os.path.join(self.tmp, "absent")), "no binary: no key")
+        self.assertEqual(setup.lead_window({}, knows=True), {"autoCompactWindow": 120000})
+        self.assertEqual(setup.lead_window({}, knows=False), {}, "an unknown key is never written")
+        self.assertEqual(setup.lead_window({"autoCompactWindow": 90000}, knows=True), {}, "the user's own value stays")
+
+    def test_lead_cache_read_per_turn_before_and_after_the_first_compact(self):
+        import datetime
+        from sampo import cost
+        folder = os.path.join(self.tmp, "transcripts")
+        os.makedirs(folder)
+        # the keeper's first compact, a day before the wall clock: _entries skips a file not written since the cutoff,
+        # so a fixture dated in the future would read as no turns at all
+        first = int(datetime.datetime.now(datetime.timezone.utc).timestamp()) - 86400 - 3600 * 5
+        def turn(t, cache, i):
+            ts = datetime.datetime.fromtimestamp(t, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+            return {"type": "assistant", "timestamp": ts, "sessionId": "s1", "message": {
+                "id": f"m{i}", "usage": {"input_tokens": 5, "output_tokens": 5, "cache_read_input_tokens": cache,
+                                         "cache_creation_input_tokens": 100}, "content": []}}
+        rows = [turn(first - 3600 * k, 100_000, k) for k in range(1, 4)] + [turn(first + 3600 * k, 50_000, 10 + k) for k in range(1, 4)]
+        with open(os.path.join(folder, "s1.jsonl"), "w") as f:
+            f.write("\n".join(json.dumps(r) for r in rows) + "\n")
+        r = cost.lead_cache_read(folder, first=first, now=first + 2 * 86400)
+        self.assertEqual((r["before"]["median_cache_read"], r["before"]["turns"]), (100_000, 3))
+        self.assertEqual((r["after"]["median_cache_read"], r["after"]["turns"]), (50_000, 3))
+        self.assertLess(r["change_pct"], 0, "the lead's cache reads per turn fell after the compact")
+
+
 if __name__ == "__main__":
     import unittest
     unittest.main()
