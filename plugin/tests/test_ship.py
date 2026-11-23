@@ -705,7 +705,7 @@ class Ship(ForemanTestCase):
         self.assertIn("the test failed in the scratch tree", r.stderr + r.stdout)
         self.assertFalse(self.base())
 
-    def rerun_ship(self, alone, affected=None):
+    def rerun_ship(self, alone, affected=None, more=None):
         # T-3435: a red class is rerun alone (FM_POSTMERGE_RERUN is the seam); green alone is a flake
         self.grant()
         if affected:
@@ -716,7 +716,7 @@ class Ship(ForemanTestCase):
             self.fm("check", "affected", "--literal", affected)  # T-3416: a stub with no {tests} needs --literal
         red = "sh -c 'echo \"FAIL: test_x (test_mod.Cls.test_x)\"; exit 1'"
         return self.fm("ship", "--remote", "origin", "--test", red, check=False,
-                       env={"FM_POSTMERGE_RERUN": alone, "FOREMAN_LOAD_GATE": "0"})
+                       env={"FM_POSTMERGE_RERUN": alone, "FOREMAN_LOAD_GATE": "0", **(more or {})})
 
     def test_a_class_red_in_the_suite_but_green_alone_is_a_flake_that_ships(self):  # T-3435
         r = self.rerun_ship("true")
@@ -725,6 +725,39 @@ class Ship(ForemanTestCase):
         self.assertIn("test_mod.Cls", r.stdout + r.stderr)
         self.assertIn("add a", self.main_log())
         self.assertFalse(self.base())  # the verdict is the rerun's: no baseline task
+
+    def pending_verify(self, cmd):
+        """T-6012: the post-merge verify holds the commit under the pushed one as pending (its suite command `cmd`)."""
+        from unittest import mock
+
+        from sampo import lanes
+        p = c.find_project(self.repo)
+        sha = sh(self.repo, "rev-parse", "HEAD~1").strip()
+        with mock.patch.dict(os.environ, {"FM_POSTMERGE_CMD": cmd}):
+            lanes.pm_record(p, sha, self.tid, self.repo, spawn=False)
+        return p, sha
+
+    def test_the_ships_full_suite_settles_the_pending_verify_behind_it(self):  # T-6012
+        self.grant()
+        p, sha = self.pending_verify("true")
+        r = self.fm("ship", "--remote", "origin", "--test", "true", check=False, env={"FM_POSTMERGE_CMD": "true"})
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        from sampo import lanes
+        rec = lanes.pm_records(p)[sha]
+        self.assertEqual(rec["state"], "green", r.stdout + r.stderr)
+        self.assertEqual(rec["covered_by"], sh(self.repo, "rev-parse", "HEAD").strip())
+        self.assertIn("covered by this run", r.stdout)
+
+    def test_a_flaky_ship_run_covers_nothing_and_notes_its_red_class(self):  # T-6012: red in the suite, green alone
+        from sampo import lanes
+        red = "sh -c 'echo \"FAIL: test_x (test_mod.Cls.test_x)\"; exit 1'"
+        p, sha = self.pending_verify(red)
+        r = self.rerun_ship("true", more={"FM_POSTMERGE_CMD": red})
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("flaky", r.stdout + r.stderr)
+        rec = lanes.pm_records(p)[sha]
+        self.assertEqual(rec["state"], "pending", "a flake's green rerun is no full green run")
+        self.assertEqual(rec["ship_red"]["classes"], ["test_mod.Cls"])
 
     def test_a_class_red_alone_too_still_refuses(self):  # T-3435
         r = self.rerun_ship("false")

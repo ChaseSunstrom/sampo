@@ -466,3 +466,276 @@ class PmSemanticRed(PmCase):
         fid, why = self.fix_and_refusal()
         self.assertTrue(train._fix_wait(self.p, self.repo, self.a, why))
         self.assertEqual(train._fix_waiting(self.p, self.repo, [self.a, self.b]), {self.a: fid})
+
+
+class PmShipCovers(PmCase):
+    """T-6012: 266 landed merges sat unverified past 30 min: the verify yields to every ship, and a ship's own full suite
+    on trunk was never credited to the pending records, so the same suite ran twice. A ship's full, uncut green suite on
+    sha X now settles the pending merges in X's history; a red one leaves them pending with its red classes, which the
+    verify's bisect uses alone (no full suite at HEAD first)."""
+
+    def setUp(self):
+        super().setUp()
+        self.env(FM_POSTMERGE_CMD="exit 0")
+        self.shas = []
+        for name in ("a.txt", "b.txt", "c.txt"):
+            self.lane(name)
+            self.shas.append(self.merge(name, self.task(name)))
+        self.a, self.b, self.c = self.shas
+
+    def states(self):
+        return [self.rec(s)["state"] for s in self.shas]
+
+    def test_ship_covers_a_full_green_run_covers_every_pending_ancestor_and_none_after_it(self):
+        slanes.pm_ship_settle(self.p, self.repo, self.b, 0, "")
+        self.assertEqual(self.states(), ["green", "green", "pending"])
+        for s in (self.a, self.b):
+            self.assertEqual(self.rec(s)["covered_by"], self.b)
+            self.assertFalse(self.rec(s)["narrowed"], "the full suite ran on that tree: no narrowing to say")
+            self.assertFalse(self.rec(s)["partial"])
+        said = c.find_brief(self.p, self.rec(self.a)["task"]).section("Log")
+        self.assertIn("ship", said, "how names the ship run")
+        self.assertIn(self.b[:9], said)
+
+    def test_ship_covers_a_merge_not_in_the_run_s_history_stays_pending(self):
+        slanes.pm_ship_settle(self.p, self.repo, self.a, 0, "")
+        self.assertEqual(self.states(), ["green", "pending", "pending"])
+
+    def test_ship_covers_a_partial_run_covers_nothing(self):
+        slanes.pm_ship_settle(self.p, self.repo, self.c, 0, "", full=False)
+        self.assertEqual(self.states(), ["pending"] * 3)
+
+    def test_ship_covers_a_run_cut_at_its_limit_covers_nothing_and_names_no_red(self):
+        slanes.pm_ship_settle(self.p, self.repo, self.c, 124, "not run class: m.B\n")
+        self.assertEqual(self.states(), ["pending"] * 3)
+        self.assertTrue(all("ship_red" not in self.rec(s) for s in self.shas))
+
+    def test_ship_covers_a_red_run_leaves_them_pending_with_its_red_classes(self):
+        slanes.pm_ship_settle(self.p, self.repo, self.b, 1, "FAIL: test_t (m.B.test_t)\n")
+        self.assertEqual(self.states(), ["pending"] * 3)
+        for s in (self.a, self.b):
+            self.assertEqual(self.rec(s)["ship_red"], {"sha": self.b, "classes": ["m.B"]})
+        self.assertNotIn("ship_red", self.rec(self.c), "not in the red run's history")
+
+    def test_ship_covers_a_red_that_names_no_class_is_no_narrowing(self):
+        slanes.pm_ship_settle(self.p, self.repo, self.b, 2, "Traceback: boom\n")
+        self.assertTrue(all("ship_red" not in self.rec(s) for s in self.shas))
+
+    def test_ship_covers_a_live_runner_s_record_is_left_alone(self):
+        slanes.pm_set(self.p, self.a, state="running", pid=os.getpid(), ticks=c.proc_ticks(os.getpid()))
+        slanes.pm_ship_settle(self.p, self.repo, self.b, 0, "")
+        self.assertEqual(self.states(), ["running", "green", "pending"])
+
+    def test_ship_covers_the_verify_bisects_a_ship_red_with_its_classes_alone(self):
+        self.env(FM_POSTMERGE_CMD=f"echo full >> {self.mark}; exit 0",
+                 FM_POSTMERGE_RERUN=f"echo rerun {{classes}} >> {self.mark}; [ -f b.txt ] && exit 1; exit 0")
+        slanes.pm_ship_settle(self.p, self.repo, self.c, 1, "FAIL: test_t (m.B.test_t)\n")
+        with unittest.mock.patch.object(slanes, "ship_yield", return_value=0), \
+                unittest.mock.patch.object(slanes, "_pm_revert", return_value=False):
+            slanes.pm_run(self.p, self.repo)
+        ran = self.ran()
+        self.assertEqual(ran[:2], ["rerun", "m.B"], "the classes alone first: no full suite at HEAD")
+        self.assertEqual(ran.count("full"), 1, "then one full suite for the rest, not one per merge")
+        self.assertGreater(ran.index("full"), max(i for i, w in enumerate(ran) if w == "rerun"))
+        self.assertEqual(self.rec(self.a)["state"], "green", "green on the classes, the rest of the ship's suite green")
+        self.assertEqual(self.rec(self.a)["covered_by"], self.a)
+        self.assertTrue(self.rec(self.a)["narrowed"])
+        self.assertIn("ship", c.find_brief(self.p, self.rec(self.a)["task"]).section("Log"))
+        self.assertIsNone(self.rec(self.b).get("ship_red"), "the note is used once")
+
+    def test_ship_covers_release_covers_only_the_tree_it_ran_on_with_the_projects_own_suite(self):
+        from sampo import release
+        tree = self.git("rev-parse", f"{self.b}^{{tree}}")
+        settle = lambda t, test, hit=None, code=0: release._settle_verify(  # noqa: E731
+            self.p, self.repo, self.b, t, test, hit, code, "")
+        settle(self.git("rev-parse", f"{self.a}^{{tree}}"), ["exit", "0"])
+        self.assertEqual(self.states(), ["pending"] * 3, "the ship's tree is not X's: it proves nothing of X")
+        settle(tree, ["make", "check"])
+        self.assertEqual(self.states(), ["pending"] * 3, "not the project's full suite command")
+        settle(tree, ["exit", "0"], hit="the gates' pass")
+        self.assertEqual(self.states(), ["pending"] * 3, "a reuse ran no suite")
+        settle(tree, ["exit", "0"], code=0)
+        self.assertEqual(self.states(), ["green", "green", "pending"])
+
+    def test_ship_covers_a_run_that_is_not_a_test_failure_exit_covers_nothing_and_notes_nothing(self):
+        for code in (2, 137, 124):  # a crash, a kill, a cut: even with a FAIL line in the output
+            slanes.pm_ship_settle(self.p, self.repo, self.b, code, "FAIL: test_t (m.B.test_t)\n")
+        self.assertEqual(self.states(), ["pending"] * 3)
+        self.assertTrue(all("ship_red" not in self.rec(s) for s in self.shas))
+
+    def test_ship_covers_a_run_cut_at_its_deadline_with_one_red_class_covers_nothing_and_notes_nothing(self):
+        cut = ("FAIL: test_t (m.B.test_t)\n\n  failed class: m.B\n\nRan 90 tests in 5.0s\n\nFAILED (1 classes: m.B)\n"
+               "not run (deadline): 1\n  not run class: m.C\n")  # run.py's own report of a run it stopped: exit 1
+        slanes.pm_ship_settle(self.p, self.repo, self.b, 1, cut)
+        self.assertEqual(self.states(), ["pending"] * 3)
+        self.assertTrue(all("ship_red" not in self.rec(s) for s in self.shas), "no class set is the whole red")
+        slanes.pm_ship_settle(self.p, self.repo, self.b, 0, "Ran 9 tests\n\nINCOMPLETE (stopped at its deadline)\n")
+        self.assertEqual(self.states(), ["pending"] * 3, "and no green of a cut run is a whole green, whatever its exit")
+
+    def test_ship_covers_a_red_note_names_every_class_the_closing_block_lists_too(self):
+        out = "FAIL: test_t (m.B.test_t)\n  failed class: m.A\n  failed class: m.B\n"  # m.A's FAIL line fell off a 1 MB tail
+        slanes.pm_ship_settle(self.p, self.repo, self.b, 1, out)
+        self.assertEqual(self.rec(self.a)["ship_red"]["classes"], ["m.A", "m.B"])
+
+    def test_ship_covers_a_bisect_that_is_not_taken_up_keeps_its_note_for_the_next_look(self):
+        self.env(FM_POSTMERGE_RERUN=f"echo rerun {{classes}} >> {self.mark}; exit 0")
+        slanes.pm_ship_settle(self.p, self.repo, self.b, 1, "FAIL: test_t (m.B.test_t)\n")
+        recs = slanes.pm_records(self.p)
+        with unittest.mock.patch.object(slanes, "_pm_claim", return_value=None):
+            self.assertFalse(slanes._pm_ship_bisect(self.p, self.repo, [self.a, self.b, self.c], recs, set()))
+        self.assertEqual(self.rec(self.a)["ship_red"]["classes"], ["m.B"], "not claimed: the note is not spent")
+        self.assertEqual(self.ran(), [])
+
+
+class PmOneRunner(PmCase):
+    """T-6012: four `lane verify` runners were found sleeping in ship_yield at once. One lives per project: pm_spawn
+    starts none while a live one holds the claim, and a runner that finds another live one exits at once."""
+
+    def setUp(self):
+        super().setUp()
+        self.env(FM_POSTMERGE_CMD=f"echo full >> {self.mark}; exit 0")
+        self.lane("a.txt")
+        self.sha = self.merge("a.txt", self.task())
+        os.environ.pop("FOREMAN_NO_BACKGROUND", None)
+        self.other = subprocess.Popen(["sleep", "120"])  # a real process: another runner's stand-in
+        self.addCleanup(self.other.wait)
+        self.addCleanup(self.other.kill)
+
+    def spawn(self):
+        with unittest.mock.patch.object(slanes.subprocess, "Popen") as popen:  # its pid never reaches a signal
+            slanes.pm_spawn(self.p, self.repo)
+        return popen.call_count
+
+    def test_one_runner_spawn_starts_none_while_a_live_runner_holds_the_claim(self):
+        self.assertTrue(slanes._pm_runner_claim(self.p, self.other.pid))
+        self.assertEqual(self.spawn(), 0)
+
+    def test_one_runner_spawn_starts_one_with_no_claim_or_a_dead_one(self):
+        self.assertEqual(self.spawn(), 1)
+        slanes._pm_runner_claim(self.p, self.other.pid)
+        self.other.kill()
+        self.other.wait()
+        self.assertEqual(self.spawn(), 1, "the claim's process is gone")
+
+    def test_one_runner_a_reused_pid_with_another_start_time_holds_nothing(self):
+        slanes._pm_runner_claim(self.p, self.other.pid)
+        path = os.path.join(slanes._pm_dir(self.p), ".runner")
+        with open(path) as f:
+            row = json.load(f)
+        row["ticks"] += 7
+        with open(path, "w") as f:
+            json.dump(row, f)
+        self.assertEqual(self.spawn(), 1)
+
+    def test_one_runner_a_runner_that_finds_another_live_one_exits_at_once(self):
+        slanes._pm_runner_claim(self.p, self.other.pid)
+        slanes.pm_run(self.p, self.repo)
+        self.assertEqual(self.ran(), [], "it verified nothing")
+        self.assertEqual(self.rec(self.sha)["state"], "pending")
+        self.assertTrue(slanes._pm_runner_live(self.p), "and the live runner's claim stands")
+
+    def test_one_runner_a_runner_takes_the_claim_for_its_pass_and_gives_it_back(self):
+        seen = []
+        real = slanes._pm_pass
+        with unittest.mock.patch.object(slanes, "ship_yield", return_value=0), \
+                unittest.mock.patch.object(slanes, "_pm_pass",
+                                           lambda *a: seen.append(slanes._pm_runner_live(self.p)) or real(*a)):
+            slanes.pm_run(self.p, self.repo)
+        self.assertEqual(seen, [True])
+        self.assertFalse(slanes._pm_runner_live(self.p))
+        self.assertEqual(self.rec(self.sha)["state"], "green")
+
+    def test_one_runner_a_merge_recorded_during_the_pass_is_taken_by_the_same_runner(self):
+        self.lane("b.txt")
+        real = slanes._pm_pass
+        calls = []
+
+        def pass_(*a):
+            calls.append(1)
+            out = real(*a)
+            if len(calls) == 1:  # lands as the pass ends, claim still held: its pm_spawn found the runner live, started none
+                self.second = self.merge("b.txt", self.task("B"))
+            return out
+        with unittest.mock.patch.object(slanes, "ship_yield", return_value=0), \
+                unittest.mock.patch.object(slanes, "_pm_pass", pass_):
+            slanes.pm_run(self.p, self.repo)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(self.rec(self.second)["state"], "green")
+
+    def test_one_runner_a_claim_its_owner_stopped_refreshing_is_nobody_s_though_the_process_lives(self):
+        slanes._pm_runner_claim(self.p, self.other.pid)
+        path = os.path.join(slanes._pm_dir(self.p), ".runner")
+        with open(path) as f:
+            row = json.load(f)
+        row["t"] -= slanes.PM_RUNNER_STALE_S + 5  # a wedged runner: alive, silent
+        with open(path, "w") as f:
+            json.dump(row, f)
+        self.assertFalse(slanes._pm_runner_live(self.p))
+        self.assertEqual(self.spawn(), 1)
+
+    def test_one_runner_a_long_pass_keeps_its_claim_fresh_past_the_stale_bound(self):
+        stamps = []
+
+        def pass_(*a):
+            path = os.path.join(slanes._pm_dir(self.p), ".runner")
+            for _ in range(3):
+                with open(path) as f:
+                    stamps.append(json.load(f)["t"])
+                time.sleep(0.15)
+        with unittest.mock.patch.object(slanes, "PM_RUNNER_BEAT_S", 0.05), \
+                unittest.mock.patch.object(slanes, "_pm_pass", pass_):
+            slanes.pm_run(self.p, self.repo)
+        self.assertGreater(stamps[-1], stamps[0], "the owner refreshed the claim while the pass ran")
+        self.assertFalse(slanes._pm_runner_live(self.p), "and gave it back after")
+
+    def test_one_runner_a_spawn_that_finds_a_live_runner_leaves_a_trace(self):
+        slanes._pm_runner_claim(self.p, self.other.pid)
+        self.spawn()
+        with open(os.path.join(self.p.dir, "ledger.jsonl")) as f:
+            events = [json.loads(ln).get("event") for ln in f if ln.strip()]
+        self.assertIn("postmerge_spawn_held", events)
+
+    def test_one_runner_after_its_passes_a_merge_still_waiting_gets_a_fresh_runner(self):
+        spawned = []
+
+        def pass_(*a):
+            self.merge_n = getattr(self, "merge_n", 0) + 1
+            self.lane(f"n{self.merge_n}.txt")
+            self.merge(f"n{self.merge_n}.txt", self.task(f"N{self.merge_n}"))  # one lands in every pass
+        with unittest.mock.patch.object(slanes, "_pm_pass", pass_), \
+                unittest.mock.patch.object(slanes, "pm_spawn", lambda p, m: spawned.append(1)):
+            slanes.pm_run(self.p, self.repo)
+        self.assertEqual(self.merge_n, slanes.PM_RUNNER_PASSES, "the passes are bounded")
+        self.assertEqual(spawned, [1], "and the last one's merge is handed to a new runner")
+        self.assertFalse(slanes._pm_runner_live(self.p), "the claim was given back first, so that runner may start")
+
+    def test_one_runner_a_runner_that_raises_hands_the_merges_held_for_it_to_a_new_one(self):
+        spawned = []
+
+        def pass_(*a):
+            self.lane("late.txt")
+            self.merge("late.txt", self.task("Late"))  # lands while the claim is held: its pm_spawn started none
+            raise RuntimeError("boom")
+        with unittest.mock.patch.object(slanes, "_pm_pass", pass_), \
+                unittest.mock.patch.object(slanes, "pm_spawn", lambda p, m: spawned.append(slanes._pm_runner_live(p))):
+            with self.assertRaises(RuntimeError):
+                slanes.pm_run(self.p, self.repo)
+        self.assertEqual(spawned, [False], "one new runner, started after the claim was given back")
+
+    def test_one_runner_a_runner_that_raises_with_nothing_held_spawns_none(self):
+        spawned = []
+
+        def pass_(*a):
+            raise RuntimeError("boom")
+        with unittest.mock.patch.object(slanes, "_pm_pass", pass_), \
+                unittest.mock.patch.object(slanes, "pm_spawn", lambda p, m: spawned.append(1)):
+            with self.assertRaises(RuntimeError):
+                slanes.pm_run(self.p, self.repo)
+        self.assertEqual(spawned, [], "a crash that no merge waited behind is not retried in a loop")
+
+    def test_one_runner_with_no_project_the_pass_runs_bare_once(self):
+        with unittest.mock.patch.object(slanes, "_pm_pass") as pass_, \
+                unittest.mock.patch.object(slanes, "_pm_runner_claim") as claim:
+            slanes.pm_run(None, self.repo)
+        self.assertEqual(pass_.call_count, 1)
+        claim.assert_not_called()

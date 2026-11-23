@@ -767,6 +767,27 @@ def _verified(p, root, said, base, last, at="HEAD"):
     return None, None
 
 
+def _settle_verify(p, root, target, tested, test, hit, code, tail):
+    """T-6012: the ship's own suite, run on `tested` (the tree it ran on), settles the post-merge verify's pending records
+    (lanes.pm_ship_settle) when it is a full run on the very tree of `target`: the project's own suite command (not the gates'
+    fm check), no reuse (`hit`: it ran nothing), the tree equal to target's (the ship tests main's tree plus the picks: when
+    main holds more, the run says nothing of target). `code` is the run's final exit. Returns the shas covered; never
+    raises: the ship stands, the verify runs what is left."""
+    from sampo import lanes
+    try:
+        if hit or not test:
+            return []
+        import shlex
+        if _suite(shlex.join(test)) != _suite(lanes.pm_cmd(root, uncached=True, p=p)):
+            return []
+        if not tested or _git(root, "rev-parse", f"{target}^{{tree}}", ok=True).strip() != tested:
+            return []
+        return lanes.pm_ship_settle(p, root, target, code, tail)
+    except Exception as e:  # a convenience
+        print(f"post-merge verify settle skipped: {c.fit(c.plain(str(e)), 120)}", flush=True)
+        return []
+
+
 def _gated_pass(p, root, wt, base, said, target="HEAD", full=None):
     """T-3468: the gates' pass (a train's or a full fm check's) that already covers the tree about to be pushed, or
     None. It holds when the ship's test is the gates' own (the default fm check, or one of the configured checks),
@@ -1657,8 +1678,13 @@ def ship(p, args):
             rerun = []  # T-4739: what the rerun alone did, for the refusal
             if failed:
                 _phase(args, "rerun")  # T-5985: a load wait and the red classes alone: their own bound, not the suite's
+            ran = failed  # T-6012: what the full suite itself said; a flake's green rerun is no full green
             if failed and _rerun_red(wt, tail, failed, env, rerun) is not None:
                 failed = 0  # T-3435: green alone is a flake; the baseline capture and the verdict get the rerun's
+            covered = _settle_verify(p, root, target, tested, test, hit, ran, tail)  # T-6012: the suite is not run twice
+            if covered:
+                print(f"the post-merge verify's {len(covered)} pending merge{'s' if len(covered) > 1 else ''} in {target[:9]}'s "
+                      "history are covered by this run", flush=True)
             _phase(args, "finish")  # the baseline, the footprint's hook bench, the push
             from sampo import cli  # the shipped tree is vouchable, so the run files (or clears) what fm check would
             try:

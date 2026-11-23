@@ -6405,11 +6405,21 @@ def pm_set(p, sha, **kv):
     if kv.get("state") in ("red", "conflict"):
         kv.setdefault("red_at", c.now())  # T-5518: when it began to hold the lands: what pm_stuck_line ages
     with c.lock(_pm_dir(p)):
-        r = pm_records(p).get(sha)
+        r = _pm_rec(p, sha)
         if r:
             r.update(kv)
             c.write_atomic(os.path.join(_pm_dir(p), f"{sha}.json"), json.dumps(r))
         return r
+
+
+def _pm_rec(p, sha):
+    """T-6012: one record, from its own file (pm_records reads them all: a loop over 300 records read 90 000 files)."""
+    try:
+        with open(os.path.join(_pm_dir(p), f"{sha}.json")) as f:
+            row = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return row if isinstance(row, dict) and row.get("sha") == sha else None
 
 
 def pm_cmd(main, uncached=False, p=None):
@@ -6727,6 +6737,9 @@ def pm_spawn(p, main):
     if os.environ.get("FOREMAN_NO_BACKGROUND"):
         c.log_event(p, "postmerge_skipped", data={"why": "FOREMAN_NO_BACKGROUND is set: the merge stays pending"})
         return
+    if _pm_runner_live(p):  # T-6012: one runner per project: it takes this merge on its next look at the records
+        c.log_event(p, "postmerge_spawn_held", data={"why": "a verify runner of the project lives and takes this merge next"})
+        return
     bin_ = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "bin", "sampo")
     try:
         with open(os.path.join(_pm_dir(p), "runner.err"), "ab") as err:
@@ -6737,7 +6750,8 @@ def pm_spawn(p, main):
 
 
 def _pm_reverted(main, sha):
-    return bool(_git(main, "log", "-1", "--format=%H", f"--grep=This reverts commit {sha}", "HEAD").stdout.strip())
+    # T-6012: a revert is newer than its merge: only sha..HEAD is read, not the whole history (300 records, 15 s at a ship's cover)
+    return bool(_git(main, "log", "-1", "--format=%H", f"--grep=This reverts commit {sha}", f"{sha}..HEAD").stdout.strip())
 
 
 def _pm_anc(main, a, b):
@@ -7521,7 +7535,135 @@ def ship_yield(p, cap=None):
     return max(round(time.monotonic() - t0, 2), 0.01) if waited else 0.0
 
 
+PM_RUNNER_STALE_S = 600  # T-6012: a runner claim its owner has not refreshed in this long is nobody's (a wedged runner)
+PM_RUNNER_BEAT_S = 30  # the owner refreshes it this often, from a thread, however long its pass runs
+PM_RUNNER_PASSES = 5  # the passes one runner makes for merges that landed while it held the claim; then it hands over
+
+
+def _pm_runner_path(p):
+    return os.path.join(_pm_dir(p), ".runner")
+
+
+def _pm_runner_live(p):
+    """T-6012: a `lane verify` runner of the project lives: the claim file names a process that began at the recorded start
+    time (pid AND ticks, never a process name) and refreshed the claim within PM_RUNNER_STALE_S (it does every
+    PM_RUNNER_BEAT_S while it runs, so a long pass keeps it and a wedged runner loses it). Never raises: no readable claim, none."""
+    try:
+        with open(_pm_runner_path(p)) as f:
+            g = json.load(f)
+        pid, ticks = g.get("pid"), g.get("ticks") or 0
+        return time.time() - float(g.get("t") or 0) < PM_RUNNER_STALE_S and c.same_process(pid, ticks)
+    except (OSError, ValueError, TypeError, AttributeError):
+        return False
+
+
+def _pm_runner_claim(p, pid=None):
+    """T-6012: take the project's one runner claim for `pid` (default this process), under the records' lock. False when
+    another live process holds it (this process's own claim, or a dead one, is taken over)."""
+    pid = pid or os.getpid()
+    os.makedirs(_pm_dir(p), exist_ok=True)
+    with c.lock(_pm_dir(p)):
+        try:
+            with open(_pm_runner_path(p)) as f:
+                held = json.load(f)
+        except (OSError, ValueError):
+            held = {}
+        if isinstance(held, dict) and held.get("pid") not in (None, pid) and _pm_runner_live(p):
+            return False
+        c.write_atomic(_pm_runner_path(p), json.dumps({"pid": pid, "ticks": c.proc_ticks(pid), "t": time.time()}))
+        return True
+
+
+def _pm_runner_release(p):
+    with c.lock(_pm_dir(p)):
+        try:
+            with open(_pm_runner_path(p)) as f:
+                mine = (json.load(f) or {}).get("pid") == os.getpid()
+        except (OSError, ValueError, AttributeError):
+            return
+        if mine:
+            with contextlib.suppress(OSError):
+                os.remove(_pm_runner_path(p))
+
+
 def pm_run(p, main):
+    """T-6012: one runner per project. A `lane verify` that finds another live one exits at once (four sat in ship_yield at
+    once, each to run the same pass); the claim is held for the whole pass and given back, and a merge that landed while it
+    was held (its pm_spawn found a live runner and started none) is taken by one more pass of this runner, at most
+    PM_RUNNER_PASSES: when one is still waiting after the last, a fresh runner is spawned for it (pm_spawn: the claim is
+    given back by then, so a merge that lands after this look starts its own). The claim is refreshed from a thread while
+    a pass runs. p None: no project to claim in (a test's stand-in), the pass runs bare."""
+    if p is None:
+        return _pm_pass(p, main)
+    for _ in range(PM_RUNNER_PASSES):
+        if not _pm_runner_claim(p):
+            c.log_event(p, "postmerge_runner_dup", data={"pid": os.getpid()})
+            return
+        t0 = time.time_ns()
+        stop = threading.Event()
+        beat = threading.Thread(target=_pm_runner_beat, args=(p, stop), daemon=True)
+        beat.start()
+        done = False
+        try:
+            _pm_pass(p, main)
+            done = True
+        finally:
+            stop.set()
+            beat.join(timeout=30)  # a refresh in flight ends before the claim is given back, never after it
+            _pm_runner_release(p)
+            if not done and _pm_held_since(p, t0):  # this runner raised: the merges its pm_spawn calls held for are not lost
+                with contextlib.suppress(Exception):
+                    pm_spawn(p, main)
+        if not _pm_held_since(p, t0):
+            return
+    pm_spawn(p, main)  # the passes are used up and a merge landed in the last one: a new runner takes it
+
+
+def _pm_held_since(p, t0):
+    """T-6012: a merge was recorded pending after `t0` (time_ns): the ones a runner's pm_spawn calls found it live for."""
+    return any(r["state"] == "pending" and r.get("n", 0) > t0 for r in pm_records(p).values())
+
+
+def _pm_runner_beat(p, stop):
+    """T-6012: refresh this process's runner claim until `stop` is set (a failed refresh is tried again at the next beat)."""
+    while not stop.wait(PM_RUNNER_BEAT_S):
+        with contextlib.suppress(Exception):
+            _pm_runner_claim(p)
+
+
+def _pm_ship_bisect(p, main, todo, recs, probed):
+    """T-6012: a ship's full suite on sha X was red in some classes (pm_ship_settle noted them on the pending merges in X's
+    history): they run alone on those merges to the first one they fail on, as a red HEAD run is narrowed (T-3800), instead
+    of a full suite at HEAD first. The merges before it passed those classes, and the rest of the ship's suite was green on
+    X: covered. True when it covered any. The note is used once: it is cleared once the bisect is taken up (or is of no
+    use), and the normal pass goes on (the classes green alone: a flake or a fix since; the oldest red: its own verify judges it)."""
+    marks = {s: recs[s].get("ship_red") for s in todo if isinstance(recs[s].get("ship_red"), dict)}
+    if not marks:
+        return False
+    x = recs[next(iter(marks))]["ship_red"]
+    sub = [s for s in marks if marks[s] == x]
+    again = pm_rerun_cmd(main, x.get("classes") or [])
+    if not again or ("ship", x.get("sha")) in probed:  # no use in it: cleared
+        for s in sub:
+            pm_set(p, s, ship_red=None)
+        return False
+    if not _pm_claim(p, todo[0]):  # not taken now (another runner's record, an older one first): the note stays for the next look
+        return False
+    for s in sub:
+        pm_set(p, s, ship_red=None)
+    probed.add(("ship", x.get("sha")))
+    try:
+        cut = _pm_first_red(main, sub, again)
+    finally:
+        pm_set(p, todo[0], state="pending")
+    if not cut:
+        return False
+    _pm_cover(p, main, sub[:cut], sub[cut - 1], how=f"{', '.join(x['classes'])} green there, the rest of the ship's "
+                                                    f"full suite green on {str(x.get('sha'))[:9]}")
+    return True
+
+
+def _pm_pass(p, main):
     """Settle every red merge, then verify every pending one, oldest first (the detached process's whole job). T-3446:
     with several pending, one suite run on main as it stands goes first; green there stands for every one in its history.
     T-3456: main's HEAD, not the newest merge: its tree has every revert in it, so a merge requeued after one (whose
@@ -7550,6 +7692,8 @@ def pm_run(p, main):
         if todo and (waited := ship_yield(p, patience) or 0):  # T-4718: the suite runs wait while a ship runs
             patience -= waited
             continue  # the records, and what main holds, may have moved meanwhile
+        if todo and _pm_ship_bisect(p, main, todo, recs, probed):  # T-6012: a ship's red classes narrow the walk
+            continue
         newest = todo[-1] if todo else None
         head = _git(main, "rev-parse", "HEAD").stdout.strip() if len(todo) > 1 else ""
         # once per (newest merge, HEAD): a red probe isn't rerun until one lands, but a revert moves HEAD (T-4570: the
@@ -7696,27 +7840,62 @@ def _pm_first_red(main, todo, cmd):
     return hi
 
 
-def _pm_cover(p, main, todo, newest, how=None, partial=False):
+_CUT_RUN = re.compile(r"(?m)^(?:INCOMPLETE \(|not run \(|  not run class: |run\.py: stopped at its deadline)")  # run.py's closing words for a cut run
+
+
+def pm_ship_settle(p, main, sha, code, out, full=True):
+    """T-6012: a ship's suite run on sha's tree (exit `code`, output `out`) settles the pending verify records whose merge
+    is in sha's history, so the same suite is not run again behind it. Only a `full` run counts (the project's whole suite,
+    not a reuse or the affected classes). Green: they are covered, as a verify's own green probe covers them (how names
+    the ship). Red: they stay pending, each noting the red classes (`ship_red`) so the verify's bisect runs those alone
+    (pm_run); a cut run (exit 124: a limit, no class failed) and a red that names no class note and cover nothing.
+    Returns the shas covered. A record a live runner holds is never touched."""
+    if not full or not sha or not isinstance(code, int):
+        return []
+    if _CUT_RUN.search(out or ""):  # run.py ended at its deadline or from outside, and says so: whatever its exit (1 with a red
+        return []  # class among the unrun ones), no class set is the whole red and no green a whole green: only a complete run counts
+    if code == 0:
+        todo = [s for s, r in pm_records(p).items() if r["state"] == "pending" or (r["state"] == "running" and _pm_dead(r))]
+        _pm_cover(p, main, todo, sha, how="the ship's full suite passed", narrowed=False)
+        now = pm_records(p)
+        return [s for s in todo if (now.get(s) or {}).get("covered_by") == sha]
+    if code != 1:  # 124 a cut run, 137 a kill, 2 a crash: no class failed, or none can be trusted to be the whole red
+        return []
+    # the classes the FAIL lines name, and run.py's closing `failed class:` block (it survives a 1 MB tail that lost the
+    # first FAIL lines): all of them, since the merges before the first red one are covered on "the rest of the suite is green"
+    named = set(re.findall(r"(?m)^  failed class: ([\w.]+)\s*$", out or ""))
+    classes = sorted(named | {k for k in pm_classes(out or "", code) if not k.startswith("suite exit")})
+    if not classes:
+        return []
+    for s, r in pm_records(p).items():
+        if r["state"] == "pending" and _pm_anc(main, s, sha) is True:
+            pm_set(p, s, ship_red={"sha": sha, "classes": classes})
+    return []
+
+
+def _pm_cover(p, main, todo, newest, how=None, partial=False, narrowed=None):
     """T-3446: a green suite on newest verifies every pending merge in its history: not one a live runner took
     meanwhile, nor one reverted by hand (its effect isn't in newest's tree). T-3800: `how` says what stood for the
     full suite when a red at HEAD was narrowed past these merges. T-5936: `partial`, the run was the heads' affected
-    classes (not the suite): the records say so, and none of them proves a full run."""
+    classes (not the suite): the records say so, and none of them proves a full run. T-6012: `narrowed` says it outright
+    when `how` is no narrowing (a ship's full suite on newest)."""
     from sampo import cli
     for s in todo:
         if s != newest and _pm_anc(main, s, newest) is not True:  # not in newest's history, or git could not say: left as it is
             continue
         if s != newest and _pm_reverted(main, s):  # T-5981: taken off trunk by hand before its verify: settled, task reopened
-            rs = pm_records(p).get(s) or {}
+            rs = _pm_rec(p, s) or {}
             if rs.get("state") == "pending" or (rs.get("state") == "running" and _pm_dead(rs)):
                 if _pm_off_trunk(main, s):
                     _pm_off_settle(p, main, s, "reverted by hand")  # the task reopens first, then the record settles
                 else:
                     pm_set(p, s, state="reverted", note="reverted by hand")
             continue
-        r = pm_records(p).get(s)
+        r = _pm_rec(p, s)
         if not r or not (r["state"] == "pending" or (r["state"] == "running" and _pm_dead(r))):
             continue
-        pm_set(p, s, state="green", covered_by=newest, narrowed=bool(how), partial=partial)  # T-5368: no full suite on its tree
+        pm_set(p, s, state="green", covered_by=newest, narrowed=bool(how) if narrowed is None else narrowed,
+               partial=partial)  # T-5368: no full suite on its tree
         if partial:
             said = (f"verified: the shape modules and the affected test files of the heads are green on {newest[:9]}, "
                     f"which contains {s[:9]} (a partial verify: the full suite runs every {PM_SWEEP_EVERY} heads or "
