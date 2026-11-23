@@ -3255,9 +3255,12 @@ def _ship_end(p, tid, head, rc, out, t0, t1):
     line = ((out.strip().splitlines() or ["shipped"])[-1] if not rc else
             "refused: " + why + (f"; failing {c.joinmore(red, 8)}" if red and not any(k in why for k in red) else ""))
     data = {"head": head, "sha": sha, "seconds": round(t1 - t0, 1), "exit": rc, "start": round(t0, 1),
-            "end": round(t1, 1), "red": red[:20]}
+            "end": round(t1, 1), "red": red[:20],
+            "outcome": "exception" if rc else "ok", "why": why if rc else ""}  # T-6180: a refusal's reason, counted by repeat_check
     try:
         c.log_event(p, "ship_done", task=tid, data=data)
+        if rc:
+            c.repeat_check(p, "ship")
         c.write_atomic(os.path.join(p.dir, "ship-last.json"), json.dumps({**data, "grant": tid, "seen": False,
                                                                            "line": c.fit(c.plain(line), REFUSAL_LINE)}))
     except Exception:  # noqa: BLE001 — a record that can't be written never undoes a ship

@@ -1469,5 +1469,90 @@ class LocalReviewParity(LocalReviewCase):
         self.assertIn("routed back", out)
 
 
+class RepeatedException(PilotCase):
+    """T-6180: 3 pilot outcomes in a row with one exception reason raise one urgent andon in sampo next and file one
+    discovered task, once per reason per day; the reasons are compared by their first clause."""
+    DRIVER = "a git attributes file names a driver"
+
+    KINDS = {"pilot": "pilot_done", "resolve": "resolve_done", "verify": "pm_done", "ship": "ship_done"}
+
+    def seed(self, source, outcome="exception", why=""):
+        c.log_event(c.find_project(self.repo), self.KINDS[source], task=self.tid,
+                    data={"outcome": outcome, "rounds": 0, "why": why, "seconds": 1.0})
+
+    def check(self, source):
+        return c.repeat_check(c.find_project(self.repo), source)
+
+    def repeats(self):
+        return [b for b in c.load_briefs(c.find_project(self.repo)) if b.title.startswith("Repeated exception")]
+
+    def andon_lines(self):
+        return [ln for ln in self.fm("next").stdout.splitlines() if "urgent andon" in ln]
+
+    def three_in_a_row(self, source, why):
+        for tail in ("x", "y", "z"):
+            self.seed(source, why=f"{why}: {tail}")
+            self.check(source)
+        lines = self.andon_lines()
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn(why, lines[0])
+        self.assertIn(f"[{source}]", lines[0])
+        self.assertEqual(len(self.repeats()), 1)
+        self.assertEqual(self.repeats()[0].meta.get("source"), "discovered")
+
+    def test_three_pilot_exceptions_in_a_row_raise_one_andon_and_one_task(self):
+        self.three_in_a_row("pilot", self.DRIVER)
+
+    def test_three_resolver_failures_in_a_row_raise_one_andon_and_one_task(self):
+        self.three_in_a_row("resolve", "resolver failed")
+
+    def test_three_verify_reds_in_a_row_raise_one_andon_and_one_task(self):
+        self.three_in_a_row("verify", "the full suite is red")
+
+    def test_three_ship_refusals_in_a_row_raise_one_andon_and_one_task(self):
+        self.three_in_a_row("ship", "the lane's check is red")
+
+    def test_two_exceptions_raise_nothing(self):
+        for source in self.KINDS:
+            for _ in range(2):
+                self.seed(source, why=self.DRIVER)
+                self.check(source)
+        self.assertEqual(self.andon_lines(), [])
+        self.assertEqual(self.repeats(), [])
+
+    def test_a_success_or_another_reason_breaks_the_streak(self):
+        self.seed("ship", why=self.DRIVER)
+        self.seed("ship", why=self.DRIVER)
+        self.seed("ship", outcome="ok")
+        self.seed("ship", why=self.DRIVER)
+        self.check("ship")
+        self.seed("ship", why="contract over: the contract ended")
+        self.check("ship")
+        self.assertEqual(self.andon_lines(), [])
+        self.assertEqual(self.repeats(), [])
+
+    def test_one_andon_and_one_task_per_source_and_reason_per_day(self):
+        for _ in range(5):
+            self.seed("pilot", why=self.DRIVER)
+            self.check("pilot")
+        self.assertEqual(len(self.andon_lines()), 1)
+        self.assertEqual(len(self.repeats()), 1)
+
+    def test_the_same_reason_from_another_source_is_its_own_andon(self):
+        for source in ("pilot", "ship"):
+            for tail in ("x", "y", "z"):
+                self.seed(source, why=f"{self.DRIVER}: {tail}")
+                self.check(source)
+        self.assertEqual(len(c.repeat_andons(c.find_project(self.repo))), 2)
+        self.assertEqual(len(self.repeats()), 2)
+        self.assertIn("1 more", self.andon_lines()[0])
+
+    def test_a_pilot_exception_is_recorded_through_the_same_check(self):
+        self.expire_contract()
+        self.assertEqual(self.pilot()["outcome"], "exception")
+        self.assertEqual(self.repeats(), [])  # one exception is no streak
+        self.assertEqual(self.andon_lines(), [])
+
+
 if __name__ == "__main__":
     unittest.main()

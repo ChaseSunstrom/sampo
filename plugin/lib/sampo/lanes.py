@@ -7071,7 +7071,15 @@ def pm_set(p, sha, **kv):
         if r:
             r.update(kv)
             c.write_atomic(os.path.join(_pm_dir(p), f"{sha}.json"), json.dumps(r))
-        return r
+    if r and kv.get("state") in ("green", "red", "conflict"):  # T-6180: a verify pass's outcome, counted by repeat_check
+        red = kv.get("state") != "green"
+        why = (f"the full suite is red: {c.joinmore(kv.get('classes') or [], 8)}" if kv.get("state") == "red"
+               else f"the verify conflicts: {kv.get('note') or ''}" if red else "")
+        c.log_event(p, "pm_done", task=r.get("task"), data={"sha": sha[:12], "outcome": "exception" if red else "green",
+                                                            "why": why[:300]})
+        if red:
+            c.repeat_check(p, "verify")
+    return r
 
 
 def _pm_rec(p, sha):

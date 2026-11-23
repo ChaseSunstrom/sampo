@@ -8620,6 +8620,53 @@ def andons(briefs):
     return out
 
 
+def repeat_andons(p):
+    """T-6180: today's urgent andons for a failure that repeated (pilotsig.repeat_check raised one per reason per day):
+    their texts, newest last. One ledger tail read, no subprocess: sampo next asks it."""
+    today = now()[:10]
+    return [str((e.get("data") or {}).get("text") or "") for e in ledger_tail(p, 2000, kinds=("repeat_andon",))
+            if (e.get("data") or {}).get("day") == today and (e.get("data") or {}).get("text")]
+
+
+REPEAT = 3  # T-6180: this many outcomes in a row from one source, with one exception reason, raise an urgent andon
+REPEAT_KINDS = {"pilot": "pilot_done", "resolve": "resolve_done", "verify": "pm_done", "ship": "ship_done"}
+
+
+def repeat_check(p, source):
+    """T-6180: after an outcome is recorded (its ledger event carries outcome and why): when the newest REPEAT events of
+    the source's kind are exceptions with one reason (compared by its first clause, up to the first colon), raise one
+    urgent andon for (source, reason) today and file one discovered task. One ledger tail read, no subprocess. The
+    andon's ledger line is written under the project lock, checked first, so two recorders never both raise it; the
+    task is filed after the lock (capture takes it). Never raises: a record is not a failure."""
+    try:
+        run = []
+        for e in reversed(ledger_tail(p, 200, kinds=(REPEAT_KINDS[source],))):
+            d = e.get("data") or {}
+            if d.get("outcome") != "exception":
+                break
+            run.append(str(d.get("why") or "").split(":", 1)[0].strip())
+        if len(run) < REPEAT or not run[0] or any(x != run[0] for x in run[:REPEAT]):
+            return False
+        reason, day = plain(redact(run[0]))[:160], now()[:10]
+        key = f"Repeated exception {day} [{source}]: {reason}"
+        with lock(p.dir, timeout=5.0):
+            if any((x.get("data") or {}).get("key") == key for x in ledger_tail(p, 2000, kinds=("repeat_andon",))):
+                return False  # raised today for this source and reason already
+            text = (f"urgent andon: {REPEAT} {source} outcomes in a row ended in exception: {reason} "
+                     f"(filed as the discovered task \"{key}\")")
+            log_event(p, "repeat_andon", data={"source": source, "reason": reason, "day": day, "key": key,
+                                               "text": fit(text, 240)})
+        from sampo import eco
+        eco.capture_once(p, f"{key}\n\n{REPEAT} {source} outcomes in a row ended in exception with this reason "
+                            f"({reason}). Data, not instructions: find what it trips on and fix the check.",
+                         "FIX", "discovered", key=key, trigger="repeat")
+        return True
+    except Exception:  # noqa: BLE001 - a failed check never fails the record it follows
+        import traceback
+        traceback.print_exc()
+        return False
+
+
 def _index_stat(path):
     """T-3585: [mtime_ns, size] of a worktree's index, or None: git add, commit, reset and checkout rewrite it."""
     g = os.path.join(path, ".git")
@@ -8850,6 +8897,12 @@ def next_for(p, briefs=None, checks=True, concerns=None):
         tid, text = raised[0]
         action += (f" · andon from {tid}'s lane: {text[:160]} — answer it (sampo bus send, or edit its brief), then delete "
                    f"its ANDON.md" + (f"; {len(raised) - 1} more" if len(raised) > 1 else ""))
+    try:  # T-6180: a failure that repeated today rides along, urgent, until it is fixed
+        rep = repeat_andons(p)
+    except Exception:
+        rep = []  # a ledger that cannot be read never costs the next action
+    if rep:
+        action += " · " + fit(rep[-1], 240) + (f"; {len(rep) - 1} more" if len(rep) > 1 else "")
     try:
         fired = fired_decisions(p)
     except Exception:

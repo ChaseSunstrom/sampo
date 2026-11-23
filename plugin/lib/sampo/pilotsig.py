@@ -339,6 +339,7 @@ def _settle(p, tid, res, served):
         c.log_event(p, "pilot_done", task=tid, data={"outcome": res["outcome"], "rounds": res["rounds"],
                                                       "why": res["why"], "seconds": res["seconds"]},
                     session=session(tid))
+    c.repeat_check(p, "pilot")  # T-6180: after the lock (the check takes its own); one ledger tail read, no subprocess
     return True
 
 
@@ -1000,6 +1001,19 @@ def _then_tick(fn):
 
 @_then_tick
 def resolve_run(p, tid):
+    """T-6180: the resolver's run and its outcome: a returned lane is ok, a failed one an exception with its reason;
+    a 'none' (the claim was not ours, nothing to resolve) is no outcome and counts for nothing."""
+    res = _resolve_run(p, tid)
+    if res.get("outcome") in ("returned", "failed"):
+        failed = res["outcome"] == "failed"
+        c.log_event(p, "resolve_done", task=tid, data={"outcome": "exception" if failed else "returned",
+                                                       "why": f"resolver failed: {res.get('why') or ''}" if failed else ""})
+        if failed:
+            c.repeat_check(p, "resolve")
+    return res
+
+
+def _resolve_run(p, tid):
     """The detached resolver pilot: up to RESOLVE_TRIES headless runs for the lane (counted on its brief across parks),
     within VERB_WALL_S in all. A run that moved the lane (a new commit on a clean tree) is a builder return: _returned,
     then the review pilot. Otherwise the lane is reported and left. Returns {outcome: returned | failed | none}."""
