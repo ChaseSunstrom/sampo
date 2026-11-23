@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- sampo task audit ID --from-review FILE records one audit per reviewer lens section, its How from What I tried and its Result from the findings or clean (T-5954).
 - An audit reviewer reply carrying its verdict header more than once now gets the most severe verdict instead of none, and the closing prompt line asks for the header once, where the format puts it, not again at the end (T-6028).
 - A big close no longer carries a commit as reviewed by a base guess, a stale lane cut or a re-indented line: patch ids keep whitespace, every hand-out records its lane cut, and a child with no cut counts none (T-6025).
 - A lane no longer reaches trunk before its review: the live land, the gated train, --first, lane merge, lane pick and fm serve's integrate hold a lane with no review at its tip as 'held: not reviewed at this tip', and the live land asks the pilot to review it (T-5968).
