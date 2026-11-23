@@ -3187,6 +3187,7 @@ def _sampo(argv, env=None, timeout=None):
     return r.returncode, r.stdout, r.stderr
 
 
+SHIP_TERM_GRACE_S = 30  # T-6097: a ship at its phase cap gets SIGTERM and this long to keep what its suite left, then SIGKILL
 REFUSAL_ROOM = 600  # T-5046: the width of a ship's refusal (release._full_refusal fits its clauses to it)
 REFUSAL_LINE = REFUSAL_ROOM + 100  # and of the line that carries it wherever it is kept or shown: room for "refused: " and a "; failing …" tail
 SHIPPED_AT = re.compile(r"\bmain at ([0-9a-f]{40})\b")  # release.ship's closing line: the commit it pushed
@@ -3520,9 +3521,17 @@ def _ship_run(main, grant, head, argv=None):
                             print(f"{_hms()} ship phase {phase}: at most {caps[phase]:g}s", flush=True)
                         elif time.monotonic() >= deadline:
                             capped = f"{caps[phase]:g}s in its {phase} phase"
+                            # T-6097: SIGTERM first: the ship's suite names the classes it never ran (run.py ends as its
+                            # deadline does) and the ship keeps them for the next ship; what is left after the grace is killed
+                            with contextlib.suppress(OSError):
+                                killsafe.killpg(proc.pid, signal.SIGTERM)
+                            try:
+                                rc = proc.wait(timeout=SHIP_TERM_GRACE_S)
+                            except subprocess.TimeoutExpired:
+                                rc = None
                             with contextlib.suppress(OSError):
                                 killsafe.killpg(proc.pid, signal.SIGKILL)
-                            rc = proc.wait()
+                            rc = proc.wait() if rc is None else rc
                     drain()
                 drain(last=True)
             except BaseException as e:  # T-5938: this process is being ended (SIGTERM), or the loop broke: the ship it

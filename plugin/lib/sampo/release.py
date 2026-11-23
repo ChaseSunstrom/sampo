@@ -826,25 +826,87 @@ def _suite(cmd):
     return shlex.join(out)
 
 
-def _verified(p, root, said, base, last, at="HEAD"):
-    """T-3666: the newest commit on HEAD's first-parent line that main and the last ship lack, whose tree the post-merge
-    verify passed in full (lanes.pm_full_pass) with this ship's suite, in this environment, within the run cache's
-    window: (sha, how to say the pass) or (None, None). The default fm check runs lint gates too: never the suite."""
-    from sampo import cli, lanes
+RED_HOLDS = ("red", "conflict", "semantic")  # T-6097: a verify record in these states holds its merge and the commits after it
+RECORD_WAIT_S = 5400  # T-6097: the longest the ship waits for a verify running on the very tree it is about to test
+LINE_MAX = 2000  # T-6097: first-parent commits the picker reads: a head that ran 576 ahead of main is one call, not a loop
+
+
+def _fresh(at):
+    from sampo import cli
+    d = c.age_days(str(at))
+    return d is not None and d < cli.CACHE_DAYS
+
+
+def _proves(r):
+    """T-6097: a verify record that shows the whole suite green on its tree (as cli._pm_green_rec reads one): green, no
+    revert after it, not a partial run (the affected classes), not narrowed to red classes alone, no class excused as unrelated."""
+    return (r.get("state") == "green" and not (r.get("after_reverts") or r.get("partial") or r.get("narrowed")
+                                               or r.get("unrelated")) and _fresh(r.get("at")))
+
+
+def _proof_trees(p, root, said, recs, trees=None):
+    """T-6097: {tree: how to say the pass} for the trees the verify's records show the whole suite green on, with this ship's
+    suite: the full passes (lanes.pm_full_passes, this environment) and the records (lanes.pm_records: green, `proves`),
+    each read at the tree of `covered_by or sha` (a merge a later full run covered). `trees` = {sha: tree} already known."""
+    from sampo import lanes
+    out = {}
+    for x in lanes.pm_full_passes(p):
+        if _suite(x.get("cmd")) == _suite(said) and x.get("env") == c.env_id() and _fresh(x.get("at")):
+            out[str(x.get("tree"))] = f"the post-merge verify's full run on {str(x.get('sha'))[:9]} ({x.get('at')})"
+    suite = lanes.pm_cmd(root, uncached=True, p=p)  # a record carries no command: it ran the project's own suite
+    if suite and _suite(suite) == _suite(said):
+        for sha, r in recs.items():
+            if not _proves(r):
+                continue
+            of = str(r.get("covered_by") or sha)
+            tree = (trees or {}).get(of) or _git(root, "rev-parse", "--verify", "-q", f"{of}^{{tree}}", ok=True).strip()
+            if tree:
+                out.setdefault(tree, f"the post-merge verify's full run (record on {sha[:9]}, green, {r.get('at')})")
+    return out
+
+
+def _verified(p, root, said, base, last, at="HEAD", pin=""):
+    """T-3666, T-6097: what the verify's records say of HEAD's first-parent line that main and the last ship lack:
+    (target, how, held, pin). `target` is the newest commit whose tree the verify passed in full (a full pass or a green
+    record: _proof_trees) with this ship's suite, `how` says which; None when none did. `held` is (the commit below the
+    oldest red record, that record's merge) when a red record holds a merge: it and every commit after it stay off the
+    ship (the commit below is "" when the red merge is the oldest one unshipped). `pin` is the stored cut run's target
+    when it is still on the line below the red. The default fm check runs lint gates too: never the suite."""
     if not said:
-        return None, None
-    fresh = lambda at: (lambda d: d is not None and d < cli.CACHE_DAYS)(c.age_days(str(at)))  # noqa: E731
-    passes = {str(x.get("tree")): x for x in lanes.pm_full_passes(p)
-              if _suite(x.get("cmd")) == _suite(said) and x.get("env") == c.env_id() and fresh(x.get("at"))}
-    if not passes:
-        return None, None
-    line = _git(root, "log", "--first-parent", "-n", "500", "--format=%H %T", at, f"^{base}",
+        return None, None, None, ""
+    from sampo import lanes
+    line = _git(root, "log", "--first-parent", "-n", str(LINE_MAX), "--format=%H %T", at, f"^{base}",
                 *([f"^{last}"] if last else []), ok=True).split()
-    for sha, tree in zip(line[::2], line[1::2]):
-        x = passes.get(tree)
-        if x and not (last and c._git(root, "merge-base", "--is-ancestor", last, sha, timeout=60, proc=True).returncode):
-            return sha, f"the post-merge verify's full run on {str(x.get('sha'))[:9]} ({x.get('at')})"
-    return None, None
+    shas, trees = line[::2], line[1::2]
+    recs = lanes.pm_records(p)
+    red = [i for i, s in enumerate(shas) if (recs.get(s) or {}).get("state") in RED_HOLDS]
+    top = max(red) + 1 if red else 0
+    held = (shas[top] if top < len(shas) else "", shas[max(red)]) if red else None
+    proof = _proof_trees(p, root, said, recs, dict(zip(shas, trees)))
+    for sha, tree in zip(shas[top:], trees[top:]):
+        if tree in proof and not (last and c._git(root, "merge-base", "--is-ancestor", last, sha, timeout=60, proc=True).returncode):
+            return sha, proof[tree], held, ""
+    return None, None, held, pin if pin in shas[top:] else ""
+
+
+def _verify_on_tree(p, root, said, tested):
+    """T-6097: the pass a verify running on `tested`'s tree leaves: the ship waits for it (at most RECORD_WAIT_S) instead
+    of running the same suite beside it, then reads the records again. How to say the pass, or None (none running, it ended
+    red or gone: the suite runs). Reads only the records of merges a verify is running now."""
+    from sampo import lanes
+    if not said or not tested:
+        return None
+
+    def running():
+        return [s for s, r in lanes.pm_records(p).items() if r.get("state") == "running" and not lanes._pm_dead(r)
+                and _git(root, "rev-parse", "--verify", "-q", f"{r.get('run_at') or s}^{{tree}}", ok=True).strip() == tested]
+    mine = running()
+    if mine:
+        c.wait_while(lambda: any(((lanes._pm_rec(p, s) or {}).get("state") == "running"
+                                  and not lanes._pm_dead(lanes._pm_rec(p, s) or {})) for s in mine),
+                     f"the post-merge verify running on {mine[0][:9]}", "fm ship", limit=RECORD_WAIT_S, out=sys.stdout)
+    recs = lanes.pm_records(p)
+    return _proof_trees(p, root, said, recs).get(tested)
 
 
 def _settle_verify(p, root, target, tested, test, hit, code, tail):
@@ -913,14 +975,28 @@ def _run_test(p, wt, base, env, test, log, run_id=None):
         except OSError as e:
             _err(f"--test {test[0]!r} couldn't run ({e.strerror}); nothing was pushed")
         dec = codecs.getincrementaldecoder("utf-8")(errors="replace")
-        while True:
-            done = proc.poll() is not None
-            chunk = rd.read()
-            if chunk:
-                print(dec.decode(chunk), end="", flush=True)
-            if done:
-                break
-            time.sleep(0.1)
+        ended, armed = [], False  # T-6097: a SIGTERM (the land's cap) ends the run the way its deadline does, not the ship at once
+        try:
+            old = signal.signal(signal.SIGTERM, lambda signum, frame: ended.append(signum))
+            armed = True
+        except ValueError:  # not the main thread: the default stands
+            old = None
+        try:
+            while True:
+                done = proc.poll() is not None
+                chunk = rd.read()
+                if chunk:
+                    print(dec.decode(chunk), end="", flush=True)
+                if done:
+                    break
+                if ended:  # the suite names the classes it never ran, and the ship keeps them for the next ship
+                    ended.clear()
+                    with contextlib.suppress(OSError):
+                        killsafe.kill(proc.pid, signal.SIGTERM)
+                time.sleep(0.1)
+        finally:
+            if armed:
+                signal.signal(signal.SIGTERM, signal.SIG_DFL if old is None else old)
         rd.seek(max(0, os.path.getsize(log) - 1_000_000))  # the last 1 MB, for the baseline capture
         return proc.returncode, rd.read().decode("utf-8", errors="replace")
 
@@ -943,7 +1019,7 @@ def _rerun_red(wt, out, code, env, said=None):
     T-4739: `said` (a list) gets what happened to the rerun, for the refusal that follows a None."""
     from sampo import lanes
     said = [] if said is None else said
-    if code == 124:
+    if code in (124, 143):  # T-6097: 143, a run the land ended with SIGTERM, is a cut like its deadline
         said.append("the run timed out, so it was not rerun alone")
         return None
     classes = lanes.pm_classes(out, code)
@@ -958,6 +1034,66 @@ def _rerun_red(wt, out, code, env, said=None):
         return None
     print(f"flaky (red in the full run, green alone): {', '.join(classes)}", flush=True)
     return classes
+
+
+RESUME_MAX = 1500  # T-6097: classes a cut run may leave for the next ship to run alone: more is a whole run's work
+
+
+def _resume_classes(code, out):
+    """T-6097: the classes a ship's suite never ran when a deadline or a SIGTERM cut it (exit 124 or 143) and nothing else
+    happened: no red, no class killed while it ran. [] otherwise (and over RESUME_MAX: a list cut short would skip classes)."""
+    if code not in (124, 143) or _TEST_RED.search(out or "") or _hung(out or ""):
+        return []
+    names = _NOT_RUN.findall(out or "")
+    return names if len(names) <= RESUME_MAX else []
+
+
+def _suite_is_verify(p, root, said):
+    from sampo import lanes
+    return bool(said) and _suite(said) == _suite(lanes.pm_cmd(root, uncached=True, p=p))
+
+
+def _keep_resume(p, root, wt, target, tested, said, code, out):
+    """T-6097: a cut run's unrun classes, in the project's meta, on the tree it ran: the next ship on that tree runs only
+    them. Only the project's own suite (what lanes.pm_rerun_cmd can run by class). Never raises."""
+    try:
+        names = _resume_classes(code, out)
+        from sampo import lanes
+        if names and tested and _suite_is_verify(p, root, said) and lanes.pm_rerun_cmd(wt, names):
+            c.update_meta(p, ship_resume={"target": target, "tree": tested, "cmd": _suite(said), "env": c.env_id(),
+                                          "not_run": names, "at": c.now()})
+            print(f"the run was cut: its {len(names)} unrun class{'es' if len(names) > 1 else ''} are kept, "
+                  "so the next ship on this tree runs only them", flush=True)
+    except Exception as e:  # a convenience
+        print(f"cut run not kept: {c.fit(c.plain(str(e)), 120)}", flush=True)
+
+
+def _resume_cmd(p, root, wt, keep, tested, said):
+    """T-6097: the argv that runs only the classes a cut ship left, when `keep` (meta's ship_resume) is for this tree, this
+    suite and environment and is fresh; [] (the whole suite) otherwise."""
+    import shlex
+    from sampo import lanes
+    names = keep.get("not_run") if isinstance(keep, dict) else None
+    if (not names or not isinstance(names, list) or not all(isinstance(x, str) for x in names) or not tested
+            or keep.get("tree") != tested or keep.get("env") != c.env_id() or not _fresh(keep.get("at"))
+            or _suite(keep.get("cmd")) != _suite(said) or not _suite_is_verify(p, root, said)):
+        return []
+    try:
+        return shlex.split(lanes.pm_rerun_cmd(wt, names))
+    except ValueError:
+        return []
+
+
+def _record_pass(p, root, target, tested, said, test):
+    """T-6097: the ship's own green whole-suite run on `target`'s tree is a full pass, as the verify's own is: the next ship
+    reads it. Never raises."""
+    from sampo import lanes
+    try:
+        import shlex
+        if _suite_is_verify(p, root, said) and tested and _git(root, "rev-parse", f"{target}^{{tree}}", ok=True).strip() == tested:
+            lanes.pm_full_pass(p, root, target, shlex.join(test))
+    except Exception as e:  # a convenience
+        print(f"full pass not recorded: {c.fit(c.plain(str(e)), 120)}", flush=True)
 
 
 def _red_names(out):
@@ -1646,15 +1782,36 @@ def ship(p, args):
         return [ln[2:] for ln in _git(root, "cherry", base, upto, *([last] if last else [])).splitlines() if ln.startswith("+ ")]
     said = args.test or _git(root, "config", "--local", "--get", "foreman.shiptest", ok=True).strip()
     target, full = at, None
+    keep = c.read_meta(p).get("ship_resume")  # T-6097: what a cut ship left (a dict: its target, tree and unrun classes)
+    keep = keep if isinstance(keep, dict) else {}
     if not picks and not args.check and not getattr(args, "head", False):
-        # T-3666: the newest commit the post-merge verify ran the whole suite on, so the ship needn't run it (~80 CPU-min)
+        # T-3666, T-6097: the newest commit the verify's records show green in the whole suite, so the ship needn't run it
+        # (~80 CPU-min); else a cut run's pinned target; else the head, or the commit below a red record (which holds its merge
+        # and the commits after it)
         try:
-            target, full = _verified(p, root, said, base, last, at)
+            target, full, held, pinned = _verified(p, root, said, base, last, at, str(keep.get("target") or ""))
         except Exception as e:  # a convenience: HEAD ships, tested, as before
-            target, full = None, None
+            target, full, held, pinned = None, None, None, ""
             print(f"post-merge verify reuse skipped: {c.fit(c.plain(str(e)), 120)}", flush=True)
-        picks = _picks(target) if target else []
-        target, full = (target, full) if picks else (at, None)
+        tries = [(target, full)] if target else []
+        if pinned:
+            tries.append((pinned, None))
+        if not held:
+            tries.append((at, None))
+        elif held[0]:
+            tries.append((held[0], None))
+        target, full = at, None
+        for cand, how in tries:
+            picks = _picks(cand)
+            if picks:
+                target, full = cand, how
+                break
+        if not picks and held:
+            print(f"nothing to ship: the post-merge verify is red on {held[1][:9]}, which holds it and the commits after it "
+                  "(the commits before it are shipped or on main already)", flush=True)
+            return 0
+        if held and target != at:
+            print(f"the post-merge verify is red on {held[1][:9]}: it and the commits after it stay off this ship", flush=True)
     picks = picks or _picks(at)
     if not picks:
         print(f"nothing to ship: {remote} main already has HEAD's changes" + (f" after the last shipped commit {last[:8]}" if last else ""))
@@ -1673,7 +1830,7 @@ def ship(p, args):
     test = shlex.split(said) if said else [*FM, "check"]
     if full:
         k = int(_git(root, "rev-list", "--count", "--first-parent", f"{target}..{at}").strip() or 0)
-        print(f"shipping {target[:9]}, the newest commit the post-merge verify passed in full; " + (
+        print(f"shipping {target[:9]}, the newest commit the post-merge verify passed in full ({full}); " + (
             f"{k} newer commit{'s' if k > 1 else ''} on the branch wait{'' if k > 1 else 's'} for the next verified one"
             if k else "it is HEAD"), flush=True)
     files = sorted({f for s in picks for f in _git(root, "diff-tree", "--no-commit-id", "--name-only", "-r", "-m", s).splitlines() if f})
@@ -1733,13 +1890,18 @@ def ship(p, args):
             env.setdefault("PYTHONUNBUFFERED", "1")
             env[c.SLOT_PRIORITY] = env.get(c.SLOT_PRIORITY) or "1"  # T-3614: its runs take freed CPU slots first
             log = os.path.join(tmp, "test.log")  # T-2255: a file, not a pipe: a background process holding it can't hang the ship
-            failed, tail, hit, rest = 0, "", None, []
+            failed, tail, hit, rest, only = 0, "", None, [], []
             run_id = c.new_run_id(shlex.join(test))  # T-5046: the id its tests/run.py record carries, for the refusal
             try:  # a full fm check here waits for this run; the ship's own fm check (in wt) doesn't
                 try:
                     hit, rest = _gated_pass(p, root, wt, base, said, target, full)  # T-3468
                 except Exception as e:  # review: a check that can't run falls back to the suite
                     print(f"gates pass reuse skipped: {c.fit(c.plain(str(e)), 120)}", flush=True)
+                if not hit:  # T-6097: a verify running on this very tree is waited for, never run beside and again
+                    try:
+                        hit, rest = _verify_on_tree(p, root, said, tested), []
+                    except Exception as e:  # the suite runs
+                        print(f"verify wait skipped: {c.fit(c.plain(str(e)), 120)}", flush=True)
                 # T-3533: main moved files tests read (the tower's daily stats): only their tests run, red stops the ship
                 hit, ran = _reuse_after_affected(p, wt, base, env, hit, rest)
                 if hit:
@@ -1748,7 +1910,11 @@ def ship(p, args):
                     print(f"reusing {hit}: the pushed tree differs from it only in files its CI "
                           f"skips or the sync mirror{top}, so the suite isn't run again", flush=True)
                 else:
-                    failed, tail = _run_test(p, wt, base, env, test, log, run_id)
+                    only = _resume_cmd(p, root, wt, keep, tested, said)  # T-6097: a cut run's unrun classes alone
+                    if only:
+                        print(f"resuming the cut run on this tree: only the {len(keep['not_run'])} class"
+                              f"{'es' if len(keep['not_run']) > 1 else ''} it did not run ({c.joinmore(keep['not_run'], 4)})", flush=True)
+                    failed, tail = _run_test(p, wt, base, env, only or test, log, run_id)
             finally:
                 if (c.read_meta(p).get("ship_testing") or {}).get("pid") == os.getpid():
                     c.update_meta(p, ship_testing=None)
@@ -1759,9 +1925,13 @@ def ship(p, args):
             if failed:
                 _phase(args, "rerun")  # T-5985: a load wait and the red classes alone: their own bound, not the suite's
             ran = failed  # T-6012: what the full suite itself said; a flake's green rerun is no full green
+            if not hit:  # T-6097: a cut run's unrun classes are kept before anything else can end the ship
+                _keep_resume(p, root, wt, target, tested, said, failed, tail)
             if failed and _rerun_red(wt, tail, failed, env, rerun) is not None:
                 failed = 0  # T-3435: green alone is a flake; the baseline capture and the verdict get the rerun's
-            covered = _settle_verify(p, root, target, tested, test, hit, ran, tail)  # T-6012: the suite is not run twice
+            if not hit and not ran:  # T-6097: the ship's own green run of the whole suite is a record for the next ship
+                _record_pass(p, root, target, tested, said, test)
+            covered = _settle_verify(p, root, target, tested, test, hit or only, ran, tail)  # T-6012: the suite is not run twice
             if covered:
                 print(f"the post-merge verify's {len(covered)} pending merge{'s' if len(covered) > 1 else ''} in {target[:9]}'s "
                       "history are covered by this run", flush=True)
@@ -1817,6 +1987,9 @@ def ship(p, args):
                     if attempt == 2 or not _MOVED.search(str(e)):
                         raise
                     print(f"{remote} main moved before the push landed: fetching it again", flush=True)
+            if keep:  # T-6097: the pushed tree is whole: what a cut run left is spent
+                with contextlib.suppress(Exception):
+                    c.update_meta(p, ship_resume=None)
             if c._git(root, "update-ref", SHIPPED, picks[-1], timeout=60, proc=True).returncode:  # T-1951: main has them
                 print(f"warning: couldn't move {SHIPPED} to {picks[-1][:8]}; the next plain fm ship may offer these again")
             if c._git(root, "update-ref", SHIPPED_TIP, tip, timeout=60, proc=True).returncode:  # T-2527: --last-ship

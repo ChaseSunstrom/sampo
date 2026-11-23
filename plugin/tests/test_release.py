@@ -1088,3 +1088,201 @@ class PushHold(PushHoldBase):
         for must in ("release.py:ship", "release.py:_push", "release.py:_push_main", "rune.py", "pr.py:train"):
             self.assertTrue([k for k in found if k.startswith(must)], f"the scan no longer sees {must}: {sorted(found)}")
         self.assertEqual([k for k, ok in found.items() if not ok], [], "a push path with no hold and no T-4805 exemption")
+
+
+SUITE_STUB = '''import os, sys
+here = os.path.dirname(os.path.abspath(__file__))
+with open(os.path.join(here, "runs.log"), "a") as f:
+    f.write(("only " + " ".join(sys.argv[1:]) if sys.argv[1:] else "full") + "\\n")
+if not sys.argv[1:] and os.path.exists(os.path.join(here, "cut")):  # run.py's closing words for a run cut at its deadline
+    print("INCOMPLETE (stopped at its deadline)\\nnot run (deadline): 2\\n  not run class: test_x.A\\n  not run class: test_y.B")
+    sys.exit(124)
+'''
+
+
+class ShipRecordsCase(ForemanTestCase):
+    """T-6097: fm ship in a temp repo with a stub suite that counts its runs (no real suite, no real push): the commits are
+    a, b, c, d on a branch off main; the post-merge verify's records are written by hand."""
+
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        self.origin = os.path.join(self.tmp, "origin.git")
+        subprocess.run(["git", "init", "-q", "--bare", "-b", "main", self.origin], check=True)
+        sh(self.repo, "remote", "add", "origin", self.origin)
+        sh(self.repo, "push", "-q", "origin", "HEAD:main")
+        sh(self.repo, "checkout", "-q", "-b", "work")
+        for name in ("a", "b", "c", "d"):
+            self.commit(name)
+        self.tid = json.loads(self.fm("task", "new", "land", "--type", "FEATURE", "--tier", "S", "--json").stdout)["id"]
+        self.fm("task", "step", self.tid, "add", "land it")
+        self.fm("task", "ac", self.tid, "add", "landed", "--verify", "true")
+        self.fm("focus", self.tid)
+        p = c.find_project(self.repo)
+        b = c.find_brief(p, self.tid)
+        b.meta["allow"] = ["publish"]
+        c.save_brief(p, b)
+        self.stub = os.path.join(self.tmp, "suite.py")
+        with open(self.stub, "w") as f:
+            f.write(SUITE_STUB)
+        self.suite = f"python3 {self.stub}"
+        self.env = {"FM_POSTMERGE_CMD": self.suite, "FM_POSTMERGE_RERUN": f"python3 {self.stub} {{classes}}"}
+
+    def commit(self, name):
+        with open(os.path.join(self.repo, f"{name}.txt"), "w") as f:
+            f.write(name + "\n")
+        sh(self.repo, "add", f"{name}.txt")
+        sh(self.repo, "commit", "-qm", f"add {name}")
+
+    def rev(self, rev):
+        return sh(self.repo, "rev-parse", rev).strip()
+
+    def rec(self, rev, state="green", **kv):
+        """The post-merge verify's record on rev, as lanes.pm_record writes it, in `state`."""
+        sha = self.rev(rev)
+        d = os.path.join(c.find_project(self.repo).dir, "postmerge")
+        os.makedirs(d, exist_ok=True)
+        c.write_atomic(os.path.join(d, f"{sha}.json"), json.dumps(
+            {"sha": sha, "task": self.tid, "state": state, "run_at": sha, "n": time.time_ns(), "at": c.now(), **kv}))
+        return sha
+
+    def runs(self):
+        try:
+            with open(os.path.join(self.tmp, "runs.log")) as f:
+                return f.read().split("\n")[:-1]
+        except OSError:
+            return []
+
+    def main_log(self):
+        return sh(self.origin, "log", "--format=%s", "main").split("\n")
+
+    def ship(self, *a):
+        return self.fm("ship", "--remote", "origin", "--test", self.suite, *a, env=self.env, check=False, timeout=60)
+
+
+class ShipFromRecords(ShipRecordsCase):
+    """T-6097: the ship pushes the newest commit the verify records say passed the whole suite, running none itself."""
+
+    def test_a_green_record_on_a_commit_ships_it_with_no_suite_run(self):
+        sha = self.rec("HEAD~1")  # c: green; d, the head, has no record
+        r = self.ship()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.main_log()[:3], ["add c", "add b", "add a"])
+        self.assertNotIn("add d", self.main_log())
+        self.assertEqual(self.runs(), [], "the stub suite never ran")
+        self.assertIn(f"shipping {sha[:9]}", r.stdout)
+        self.assertIn(f"record on {sha[:9]}", r.stdout, "the ship log names the record it shipped on")
+        self.assertIn("1 newer commit", r.stdout)
+
+    def test_a_red_record_holds_its_merge_and_the_commits_after_it(self):
+        good = self.rec("HEAD~2")  # b: green
+        self.rec("HEAD~1", "red")  # c: red
+        self.rec("HEAD")  # d: green on its own tree, but after the red one
+        r = self.ship()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.main_log()[:2], ["add b", "add a"])
+        self.assertNotIn("add c", self.main_log())
+        self.assertEqual(self.runs(), [])
+        self.assertIn(f"record on {good[:9]}", r.stdout)
+
+    def test_a_red_record_with_no_green_before_it_runs_the_suite_once_below_it(self):
+        self.rec("HEAD~1", "red")  # c: red; nothing proven below it
+        r = self.ship()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.main_log()[:2], ["add b", "add a"], "the ship stops under the red merge")
+        self.assertNotIn("add c", self.main_log())
+        self.assertEqual(self.runs(), ["full"])
+
+    def test_a_ship_with_no_record_runs_the_suite_once_and_that_run_becomes_the_record(self):
+        from sampo import lanes
+        r = self.ship()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.runs(), ["full"])
+        self.assertEqual(self.main_log()[:4], ["add d", "add c", "add b", "add a"])
+        passes = lanes.pm_full_passes(c.find_project(self.repo))
+        self.assertEqual([x["sha"] for x in passes], [self.rev("HEAD")], "the ship's own green run is a full pass on the head")
+
+    def test_a_partial_a_narrowed_or_a_reverted_green_is_no_proof(self):
+        self.rec("HEAD", partial=True)
+        self.rec("HEAD~1", narrowed=True)
+        self.rec("HEAD~2", after_reverts=True)
+        r = self.ship()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.runs(), ["full"], "no record proves a whole run: the suite ran")
+        self.assertEqual(self.main_log()[:4], ["add d", "add c", "add b", "add a"])
+
+    def test_a_merge_covered_by_a_later_full_run_proves_that_commit(self):
+        self.rec("HEAD~2", covered_by=self.rev("HEAD~1"), narrowed=False, partial=False)  # b verified on c's tree
+        r = self.ship()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.main_log()[:3], ["add c", "add b", "add a"])
+        self.assertEqual(self.runs(), [])
+
+    def test_another_suite_command_is_no_proof(self):
+        self.rec("HEAD~1")
+        r = self.fm("ship", "--remote", "origin", "--test", self.suite, env={**self.env, "FM_POSTMERGE_CMD": "true"},
+                    check=False, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.runs(), ["full"], "the records ran another suite than this ship's: it runs its own")
+
+
+class ShipResume(ShipRecordsCase):
+    """T-6097: a ship cut at its deadline keeps the classes it never ran, and the next ship on the same tree runs only
+    those; a verify running on the tree the ship is about to test is waited for and reused."""
+
+    def cut(self):
+        open(os.path.join(self.tmp, "cut"), "w").close()
+
+    def test_a_deadline_cut_ship_records_what_it_left_and_the_next_ship_runs_only_that(self):
+        self.cut()
+        r = self.ship()
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("add a", self.main_log(), "a cut run pushes nothing")
+        keep = c.read_meta(c.find_project(self.repo)).get("ship_resume") or {}
+        self.assertEqual(keep.get("not_run"), ["test_x.A", "test_y.B"])
+        self.assertEqual(keep.get("target"), self.rev("HEAD"))
+        os.remove(os.path.join(self.tmp, "cut"))
+        self.commit("e")  # the head moved on: the next ship stays on the pinned commit
+        r = self.ship()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.runs(), ["full", "only test_x.A test_y.B"], "the second ship ran only the classes not run")
+        self.assertEqual(self.main_log()[:4], ["add d", "add c", "add b", "add a"])
+        self.assertNotIn("add e", self.main_log())
+        self.assertIn("resuming", r.stdout)
+        self.assertFalse(c.read_meta(c.find_project(self.repo)).get("ship_resume"), "spent with the push")
+
+    def test_a_resume_on_another_tree_runs_the_whole_suite(self):
+        self.cut()
+        self.assertNotEqual(self.ship().returncode, 0)
+        os.remove(os.path.join(self.tmp, "cut"))
+        p = c.find_project(self.repo)
+        keep = c.read_meta(p)["ship_resume"]
+        c.update_meta(p, ship_resume={**keep, "tree": "0" * 40})  # what was left belongs to another tree
+        r = self.ship()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.runs(), ["full", "full"])
+
+    def test_a_concurrent_verify_on_the_tree_is_waited_for_and_reused(self):
+        import threading
+        sleeper = subprocess.Popen(["sleep", "60"])  # a real process: the record's pid answers while it runs
+        self.addCleanup(sleeper.wait)
+        self.addCleanup(sleeper.kill)
+        sha = self.rec("HEAD", "running", pid=sleeper.pid, ticks=c.proc_ticks(sleeper.pid))
+
+        def finish():
+            from sampo import lanes
+            p = c.find_project(self.repo)
+            end = time.time() + 40
+            while not c.read_meta(p).get("ship_testing") and time.time() < end:  # the ship reached its suite phase
+                time.sleep(0.1)
+            time.sleep(1.5)  # long enough for its wait to start
+            lanes.pm_set(p, sha, state="green")
+            sleeper.terminate()
+        t = threading.Thread(target=finish, daemon=True)
+        t.start()
+        r = self.ship()
+        t.join()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("waiting for", r.stdout + r.stderr)
+        self.assertEqual(self.runs(), [], "the verify's result is reused: the ship ran nothing")
+        self.assertEqual(self.main_log()[:4], ["add d", "add c", "add b", "add a"])
