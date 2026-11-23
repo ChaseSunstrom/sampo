@@ -267,11 +267,12 @@ def sanitize_env(env, read_only=True):
 
 def child_env(read_only=True):
     """A headless child's environment: Sampo's own, with FOREMAN_NO_BACKGROUND (it starts no background reviews of its own)
-    and sanitize_env. OSError when CLAUDE_CONFIG_DIR names a folder that is not ours to trust (config_dir_problem)."""
+    and sanitize_env. PYTHONDONTWRITEBYTECODE is set too (T-6194: a reviewer that runs Python plants no .pyc in the lane).
+    OSError when CLAUDE_CONFIG_DIR names a folder that is not ours to trust (config_dir_problem)."""
     bad = config_dir_problem()
     if bad:
         raise OSError(f"CLAUDE_CONFIG_DIR {bad} can be written by someone else or is not ours: refusing to start")
-    return sanitize_env(dict(os.environ, FOREMAN_NO_BACKGROUND="1"), read_only)
+    return sanitize_env(dict(os.environ, FOREMAN_NO_BACKGROUND="1", PYTHONDONTWRITEBYTECODE="1"), read_only)
 
 
 def _registry(pid=""):

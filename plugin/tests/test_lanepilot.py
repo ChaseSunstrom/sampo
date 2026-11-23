@@ -8,8 +8,10 @@ import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
 from unittest import mock
@@ -1630,6 +1632,330 @@ class ReviewEffortGateRun(PilotCase):
         self.assertEqual(lanepilot.review_gate(p), {cls})
         self.assertEqual(len(c.ledger_events(p, ["review_effort_gate"])), 1, "logged once across runs")
         self.assertEqual(c.read_meta(p)["review_gate"]["lifted"], [cls])
+
+
+# T-6194: a lens reviewer that reads the lane's bad.txt (the finding goes when the fix session removes it), as
+# test_lanepilot_fix's stub does: test_audit_run's stub answers from STUB_BAD_LENS, which a fix cannot change.
+REVIEWER = r'''#!/usr/bin/env python3
+import json, os, sys
+stdin = sys.stdin.read()
+args = sys.argv[1:]
+lens = next(l for l in stdin.splitlines() if l.startswith("Review only the lens: "))[22:].strip()
+lane = args[args.index("--add-dir") + 1]
+with open(os.environ["STUB_LOG"], "a") as f:
+    f.write(json.dumps({"kind": "review", "lens": lens, "args": args, "cwd": os.getcwd(), "prompt": stdin}) + "\n")
+try:
+    bad = open(os.path.join(lane, "bad.txt")).read().split()
+except OSError:
+    bad = []
+if lens in bad:
+    print(f"## {lens}: changes needed\n- HIGH a.py:3 the thing breaks on empty input")
+else:
+    print(f"## {lens}: ok")
+'''
+
+# T-6194: the fix session's stub. With FOREMAN_DRIVE_TASK set it is the fix session: STUB_FIX says what it does to the lane
+# (fix: the finding goes; pycache: that and the bytecode Python writes; other: that and a git-ignored file that is not
+# bytecode; scratch: that and a nested git repo under .fm-scratch; pycache_git / pycache_git_link: that and a .git file /
+# link inside its __pycache__; pycache_file: that and a plain file named __pycache__; empty: nothing), and it records the
+# env bytecode switch;
+# it prints STUB_ANSWER as its final message. Otherwise
+# it is REVIEWER, run as is (exec keeps stdin).
+FIX_SESSION = r'''#!/usr/bin/env python3
+import json, os, sys
+args = sys.argv[1:]
+if not os.environ.get("FOREMAN_DRIVE_TASK"):
+    os.execv(sys.executable, [sys.executable, os.environ["STUB_REVIEWER"]] + args)
+lane = os.getcwd()
+with open(os.environ["STUB_LOG"], "a") as f:
+    f.write(json.dumps({"kind": "fix", "cwd": lane, "bytecode": os.environ.get("PYTHONDONTWRITEBYTECODE", "")}) + "\n")
+mode = os.environ.get("STUB_FIX", "")
+if mode in ("fix", "pycache", "other", "scratch", "pycache_git", "pycache_git_link", "pycache_file"):
+    os.remove(os.path.join(lane, "bad.txt"))
+if mode == "pycache":
+    os.makedirs(os.path.join(lane, "__pycache__"))
+    with open(os.path.join(lane, "__pycache__", "mod.cpython-312.pyc"), "wb") as f:
+        f.write(b"\0" * 16)
+elif mode == "pycache_git":
+    os.makedirs(os.path.join(lane, "__pycache__"))
+    with open(os.path.join(lane, "__pycache__", ".git"), "w") as f:
+        f.write("gitdir: /nowhere\n")
+elif mode == "pycache_git_link":
+    os.makedirs(os.path.join(lane, "__pycache__"))
+    os.symlink("/nowhere/gitdir", os.path.join(lane, "__pycache__", ".git"))
+elif mode == "pycache_file":
+    with open(os.path.join(lane, "__pycache__"), "w") as f:
+        f.write("not a folder\n")
+elif mode == "other":
+    with open(os.path.join(lane, "cache.out"), "w") as f:
+        f.write("x\n")
+elif mode == "scratch":
+    clone = os.path.join(lane, ".fm-scratch", "altprobe", "clone")
+    os.makedirs(os.path.join(clone, ".git"))
+    with open(os.path.join(clone, ".git", "config"), "w") as f:
+        f.write("[core]\n")
+print(json.dumps({"result": os.environ.get("STUB_ANSWER", "done"), "total_cost_usd": 0.4}))
+sys.exit(0)
+'''
+
+
+class FixSessionCase(PilotCase):
+    """T-6194: a lane with one finding (bad.txt names the edge lens) and a fix session that does what STUB_FIX says."""
+    tier = "M"
+    mode = ""
+    answer = "done"
+
+    def setUp(self):
+        super().setUp()
+        bindir = os.path.join(self.tmp, "bin")
+        self.reviewer = os.path.join(bindir, "reviewer.py")
+        with open(self.reviewer, "w") as f:
+            f.write(REVIEWER)
+        path = os.path.join(bindir, "claude")
+        with open(path, "w") as f:
+            f.write(FIX_SESSION)
+        os.chmod(path, 0o755)
+        env = mock.patch.dict(os.environ, {"STUB_FIX": self.mode, "STUB_ANSWER": self.answer,
+                                           "STUB_REVIEWER": self.reviewer, "SAMPO_REVIEW_DEPTH": "full"})
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop(lanepilot.FIX_ROUNDS_ENV, None)
+        self.lane_path = self.brief().meta["lane"]
+        with open(os.path.join(self.lane_path, ".gitignore"), "w") as f:
+            f.write("__pycache__\ncache.out\n")
+        with open(os.path.join(self.lane_path, "bad.txt"), "w") as f:
+            f.write("edge\n")
+        self.lgit("add", ".gitignore", "bad.txt")
+        self.lgit("commit", "-q", "-m", "a change the reviewers will object to")
+
+    def lgit(self, *a):
+        subprocess.run(["git", "-C", self.lane_path, "-c", "user.name=t", "-c", "user.email=t@t", *a], check=True,
+                       capture_output=True)
+        if "commit" in a:
+            self.returned()  # the builder's return is never older than the commit the test just made
+
+    def returned(self):
+        p = c.find_project(self.repo)
+        x = c.find_brief(p, self.tid)
+        x.meta["builder_returned"] = c.now()
+        c.save_brief(p, x)
+
+    def pilot(self):
+        """The pilot with `sampo lane accept` stubbed (it would run the lane's checks): a clean accept marks the brief."""
+        def accept(tid, main):
+            p = c.find_project(self.repo)
+            x = c.find_brief(p, tid)
+            x.meta["accepted_at"] = c.now()
+            c.save_brief(p, x)
+            return 0, "accepted"
+        with mock.patch.object(lanepilot, "_accept", accept):
+            return super().pilot()
+
+    def kinds(self, kind):
+        return [x for x in self.calls() if x["kind"] == kind]
+
+    def events(self, kind):
+        return list(c.ledger_events(c.find_project(self.repo), [kind]))
+
+
+class FixAnswerKept(FixSessionCase):
+    """T-6194: a fix session that exits 0 having edited nothing says why in its final message. That message is kept,
+    redacted and at most 2000 characters, on its pilot_fix event and in the hand-back reason: 'changed nothing' says why."""
+    answer = ("I left bad.txt alone: the edge finding is wrong, the input is checked on line 3 "
+              "(token sk-ant-api03-AAAAAAAAAAAAAAAAAAAA) " + "x" * 3000)
+
+    def test_the_answer_is_kept_redacted_and_bounded_on_the_event_and_the_reason(self):
+        r = self.pilot()
+        self.assertFalse(self.accepted(), r)
+        self.assertIn("made no commit", r["reason"])
+        self.assertIn("the edge finding is wrong", r["reason"], "the reason says why the session changed nothing")
+        self.assertNotIn("AAAAAAAA", r["reason"], "the token is redacted")
+        ev = self.events("pilot_fix")
+        self.assertEqual(len(ev), 1)
+        kept = ev[0]["data"].get("answer", "")
+        self.assertIn("the edge finding is wrong", kept, "the answer is on the pilot_fix event")
+        self.assertNotIn("AAAAAAAA", kept, "the token is redacted on the event too")
+        self.assertLessEqual(len(kept), 2000)
+
+
+class PycacheNotPlanted(FixSessionCase):
+    """T-6194: bytecode Python writes in the lane is lane scratch. The pilot deletes __pycache__ before the git-ignored
+    snapshot and after the session, the session runs with PYTHONDONTWRITEBYTECODE=1, and any other git-ignored file
+    still refuses the round. A symlinked __pycache__ is unlinked, never followed; a tracked one is the lane's own."""
+    mode = "pycache"
+
+    def test_bytecode_the_session_writes_never_refuses_the_round(self):
+        r = self.pilot()
+        self.assertTrue(self.accepted(), r)  # the session's commit was not refused, and the lane read clean
+        self.assertFalse(os.path.lexists(os.path.join(self.lane_path, "__pycache__")), "the pilot deleted the bytecode")
+        self.assertEqual([x["bytecode"] for x in self.kinds("fix")], ["1"], "the session runs without writing bytecode")
+
+    def test_any_other_git_ignored_file_still_refuses_the_round(self):
+        os.environ["STUB_FIX"] = "other"
+        r = self.pilot()
+        self.assertIn("git-ignored", r["reason"])
+        self.assertIn("cache.out", r["reason"])
+        self.assertEqual(len(self.kinds("fix")), 1, "the session ran; its commit was refused")
+
+    def test_a_symlinked_pycache_is_unlinked_and_its_target_never_touched(self):
+        os.environ["STUB_FIX"] = "fix"
+        outside = os.path.join(self.tmp, "outside")
+        os.makedirs(outside)
+        keep = os.path.join(outside, "keep.pyc")
+        with open(keep, "wb") as f:
+            f.write(b"outside bytes")
+        os.symlink(outside, os.path.join(self.lane_path, "__pycache__"))
+        r = self.pilot()
+        self.assertTrue(self.accepted(), r)
+        self.assertFalse(os.path.lexists(os.path.join(self.lane_path, "__pycache__")), "the link is gone")
+        with open(keep, "rb") as f:
+            self.assertEqual(f.read(), b"outside bytes", "the link's target is never read or changed")
+
+    def test_a_tracked_pycache_file_is_the_lanes_own_and_stays(self):
+        os.environ["STUB_FIX"] = "fix"
+        os.makedirs(os.path.join(self.lane_path, "__pycache__"))
+        with open(os.path.join(self.lane_path, "__pycache__", "keep.pyc"), "wb") as f:
+            f.write(b"tracked")
+        self.lgit("add", "-f", "__pycache__/keep.pyc")
+        self.lgit("commit", "-q", "-m", "a bytecode file committed on purpose")
+        r = self.pilot()
+        self.assertTrue(self.accepted(), r)
+        self.assertTrue(os.path.exists(os.path.join(self.lane_path, "__pycache__", "keep.pyc")))
+
+    def test_a_git_file_planted_in_bytecode_refuses_the_round_and_is_never_deleted(self):
+        """A `.git` file inside __pycache__ is a nested repo the pilot must see: it is not bytecode, so nothing deletes it."""
+        os.environ["STUB_FIX"] = "pycache_git"
+        r = self.pilot()
+        self.assertFalse(self.accepted(), r)
+        self.assertIn("not cleared", r["reason"])
+        self.assertTrue(os.path.isfile(os.path.join(self.lane_path, "__pycache__", ".git")), "the planted .git stays")
+
+    def test_a_git_link_planted_in_bytecode_refuses_the_round_and_is_never_deleted(self):
+        os.environ["STUB_FIX"] = "pycache_git_link"
+        r = self.pilot()
+        self.assertFalse(self.accepted(), r)
+        self.assertIn("not cleared", r["reason"])
+        self.assertTrue(os.path.islink(os.path.join(self.lane_path, "__pycache__", ".git")), "the planted link stays")
+
+    def test_a_plain_file_named_pycache_refuses_the_round_and_stays(self):
+        os.environ["STUB_FIX"] = "pycache_file"
+        r = self.pilot()
+        self.assertFalse(self.accepted(), r)
+        self.assertIn("not cleared", r["reason"])
+        self.assertTrue(os.path.isfile(os.path.join(self.lane_path, "__pycache__")), "a file is not bytecode: it stays")
+
+
+class JunkGuards(unittest.TestCase):
+    """T-6194: the clear pass unit by unit, on a plain git lane. Only a __pycache__ folder's files and a nested repo under
+    .fm-scratch are ever deleted; a `.git` anywhere else under __pycache__ refuses before anything is unlinked; an empty
+    lane path refuses rather than resolving against the working folder."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="junk-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.lane = os.path.join(self.tmp, "lane")
+        os.makedirs(self.lane)
+        subprocess.run(["git", "init", "-q", self.lane], check=True, capture_output=True)
+
+    def test_an_empty_lane_path_refuses_every_clear_and_deletes_nothing(self):
+        """An empty lane resolves .fm-scratch and __pycache__ against the working folder: refused, and the cwd's repo stays."""
+        here = os.getcwd()
+        self.addCleanup(os.chdir, here)
+        os.chdir(self.tmp)
+        clone = os.path.join(self.tmp, ".fm-scratch", "clone", ".git")
+        os.makedirs(clone)
+        with open(os.path.join(clone, "config"), "w") as f:
+            f.write("[core]\n")
+        for name, fn in [("junk", lanepilot._clear_junk), ("scratch", lanepilot._clear_scratch_repos),
+                         ("pycache", lanepilot._clear_pycache)]:
+            with self.subTest(name):
+                self.assertTrue(fn(""), "an empty lane path is refused")
+        self.assertTrue(os.path.isdir(clone), "nothing under the working folder was deleted")
+
+    def test_a_plain_file_named_pycache_refuses_and_stays(self):
+        path = os.path.join(self.lane, "__pycache__")
+        with open(path, "w") as f:
+            f.write("x\n")
+        self.assertIn("not cleared", lanepilot._clear_pycache(self.lane))
+        self.assertTrue(os.path.isfile(path), "a regular file is not bytecode: it stays and the round refuses")
+
+    def test_a_symlink_named_pycache_is_unlinked_and_its_target_is_kept(self):
+        target = os.path.join(self.tmp, "elsewhere")
+        os.makedirs(target)
+        with open(os.path.join(target, "mod.pyc"), "wb") as f:
+            f.write(b"outside")
+        os.symlink(target, os.path.join(self.lane, "__pycache__"))
+        self.assertEqual(lanepilot._clear_pycache(self.lane), "")
+        self.assertFalse(os.path.lexists(os.path.join(self.lane, "__pycache__")))
+        self.assertTrue(os.path.isfile(os.path.join(target, "mod.pyc")), "the link's target is never touched")
+
+    def test_a_git_entry_under_bytecode_refuses_before_anything_is_unlinked(self):
+        """A `.git` directory, file or link in a __pycache__ (at the top or in a package) refuses the whole pass: the
+        bytecode beside it is kept too, so nothing is half cleared."""
+        for kind in ("dir", "file", "link"):
+            for parent in ("__pycache__", os.path.join("pkg", "__pycache__")):
+                with self.subTest(kind=kind, parent=parent):
+                    folder = os.path.join(self.lane, parent)
+                    os.makedirs(folder, exist_ok=True)
+                    bytecode = os.path.join(folder, "mod.cpython-312.pyc")
+                    with open(bytecode, "wb") as f:
+                        f.write(b"\0")
+                    git = os.path.join(folder, ".git")
+                    if kind == "dir":
+                        os.makedirs(git)
+                    elif kind == "file":
+                        with open(git, "w") as f:
+                            f.write("gitdir: /nowhere\n")
+                    else:
+                        os.symlink("/nowhere/gitdir", git)
+                    self.assertIn("not cleared", lanepilot._clear_pycache(self.lane))
+                    self.assertTrue(os.path.lexists(git), "the .git entry is never deleted")
+                    self.assertTrue(os.path.isfile(bytecode), "nothing under the refused folder is deleted")
+                    shutil.rmtree(folder)  # a real folder in every case: the next kind starts clean
+
+
+class ScratchRepoNotPlanted(FixSessionCase):
+    """T-6194 criterion 3: a nested git repo under the lane's .fm-scratch folder (a builder's probe clone) is lane scratch:
+    it is deleted unread, before the pilot's snapshot and after the session. A nested repo outside .fm-scratch refuses."""
+    mode = "scratch"
+
+    def setUp(self):
+        super().setUp()
+        with open(os.path.join(self.lane_path, ".gitignore"), "a") as f:
+            f.write(".fm-scratch/\n")
+        self.lgit("add", ".gitignore")
+        self.lgit("commit", "-q", "-m", "the builder's scratch folder is git-ignored")
+
+    def test_a_nested_repo_the_session_plants_under_scratch_is_deleted(self):
+        r = self.pilot()
+        self.assertTrue(self.accepted(), r)
+        self.assertFalse(os.path.lexists(os.path.join(self.lane_path, ".fm-scratch", "altprobe", "clone")),
+                         "the probe clone is gone, its .git with it")
+
+    def test_nested_repos_already_under_scratch_are_deleted_before_the_session(self):
+        os.environ["STUB_FIX"] = "fix"
+        folder = os.path.join(self.lane_path, ".fm-scratch", "altprobe")
+        os.makedirs(os.path.join(folder, "clone2", ".git"))
+        with open(os.path.join(folder, "clone2", ".git", "config"), "w") as f:
+            f.write("[core]\n")
+        os.makedirs(os.path.join(folder, "clone3"))
+        with open(os.path.join(folder, "clone3", ".git"), "w") as f:
+            f.write("gitdir: /nowhere\n")
+        r = self.pilot()
+        self.assertTrue(self.accepted(), r)
+        self.assertEqual(len(self.kinds("fix")), 1, "the session ran: nothing refused the round")
+        self.assertFalse(os.path.lexists(os.path.join(folder, "clone2")), "the folder of a planted repo is gone")
+        self.assertFalse(os.path.lexists(os.path.join(folder, "clone3")), "a repo whose .git is a file is gone too")
+
+    def test_a_nested_repo_outside_scratch_still_refuses_before_the_session(self):
+        os.environ["STUB_FIX"] = "fix"
+        os.makedirs(os.path.join(self.lane_path, "sub", "clone", ".git"))
+        r = self.pilot()
+        self.assertFalse(self.accepted(), r)
+        self.assertIn("nested git repo", r["reason"])
+        self.assertTrue(os.path.isdir(os.path.join(self.lane_path, "sub", "clone", ".git")),
+                        "a nested repo outside .fm-scratch is not deleted")
+        self.assertEqual(self.kinds("fix"), [], "the pilot refuses before any session runs")
 
 
 if __name__ == "__main__":

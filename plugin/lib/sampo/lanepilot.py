@@ -634,6 +634,9 @@ FIX_ROUNDS_ENV = "FOREMAN_PILOT_FIX_ROUNDS"
 FIX_TIMEOUT = 20 * 60  # s: one fix session's wall limit (its whole process group is killed past it)
 FIX_USD = 1.0  # USD: what one fix session is assumed to cost until the ledger has a mean of its own
 FIX_FINDINGS, FIX_TEXT = 20, 300  # what the fix prompt carries: this many findings, each cut
+FIX_ANSWER = 2000  # T-6194: the fix session's final message the pilot keeps, redacted, at most this many characters
+PYCACHE = "__pycache__"  # T-6194: Python's bytecode folder: deleted under the lane, never read or opened
+SCRATCH_DIR = ".fm-scratch"  # T-6194: the builder's git-ignored scratch folder: a nested repo under it is a probe, deleted unread
 FIX_MODEL = "sonnet"
 FIX_AGENT = "sampo:fm-builder"
 
@@ -1041,7 +1044,144 @@ def _fix_problem(main, b, tip):
     return ""
 
 
-def _commit_fix(main, b, tip, ign0, links0, n):
+def _rel(lane, path):
+    """`path` under the lane with '/' separators: the form `git ls-files -z` prints."""
+    return os.path.relpath(path, lane).replace(os.sep, "/")
+
+
+def _clear_cache(lane, path, tracked, seen):
+    """T-6194: one real __pycache__ folder: the files inside that git does not track are unlinked, then the folder when
+    it is empty (a tracked file stays, and so does its folder). A folder inside it is not Python's layout: that refuses.
+    Nothing is opened or read; a symlink inside is unlinked itself, never followed. `seen` is the entries the walk has
+    counted so far: the entries here count against the same SCAN_LIMIT. Returns (why or '', the new count)."""
+    entries = []
+    with os.scandir(path) as it:
+        for e in it:
+            seen += 1
+            if seen > SCAN_LIMIT:
+                return "the lane holds more entries than the pilot checks: its bytecode could not be cleared", seen
+            entries.append(e)
+    sub = [e.name for e in entries if e.is_dir(follow_symlinks=False)]
+    if sub:
+        return c.plain(c.redact(f"the lane's bytecode folder {_rel(lane, path)} holds a folder ({sub[0]}): not cleared")), seen
+    if any(e.name == ".git" for e in entries):  # T-6194: a nested repo's .git is never bytecode, whatever its kind: refuse first
+        return c.plain(c.redact(f"the lane's bytecode folder {_rel(lane, path)} holds a git entry (.git): not cleared")), seen
+    for e in entries:
+        if _rel(lane, e.path) not in tracked:
+            os.unlink(e.path)
+    if not os.listdir(path):
+        os.rmdir(path)
+    return "", seen
+
+
+def _clear_pycache(lane):
+    """T-6194: Python's bytecode caches under the lane are disposable, and a planted one is loaded in place of its source
+    by a later import, so they are deleted, never read. Every `__pycache__` folder is cleared (_clear_cache), and one
+    that is a symlink is unlinked itself and never followed: os.walk does not descend a symlinked folder, and a cache is
+    pruned from the walk as it is cleared. `.git` is pruned too. The walk is bounded like _scan's (SCAN_LIMIT entries) and
+    an unreadable folder fails closed: the round is refused, not run on a lane it could not clean. Returns '' or why.
+    `git ls-files` reads the index only: it runs no clean filter and no driver."""
+    if not lane:  # T-6194: an empty lane path would walk the working folder: refused, nothing is cleared
+        return "the lane has no path: its bytecode is not cleared"
+    r = _g(lane, "ls-files", "-z", timeout=SENSITIVE_TIMEOUT, proc=True)
+    if r.returncode != 0:
+        return "the lane's tracked files could not be listed to clear its bytecode"
+    tracked, errs, seen = {x for x in r.stdout.split("\0") if x}, [], 0
+    try:
+        for top, dirs, files in os.walk(lane, followlinks=False, onerror=errs.append):
+            seen += len(dirs) + len(files) + 1
+            if seen > SCAN_LIMIT:
+                return "the lane holds more entries than the pilot checks: its bytecode could not be cleared"
+            dirs[:] = [x for x in dirs if x != ".git"]
+            for name in [x for x in dirs + files if x == PYCACHE]:
+                path = os.path.join(top, name)
+                if name in dirs:
+                    dirs.remove(name)
+                if os.path.isdir(path) and not os.path.islink(path):
+                    why, seen = _clear_cache(lane, path, tracked, seen)
+                    if why:
+                        return why
+                elif os.path.islink(path) and _rel(lane, path) not in tracked:
+                    os.unlink(path)  # a symlink, even a dangling one: the link itself goes, its target is never touched
+                elif _rel(lane, path) not in tracked:
+                    # T-6194: a plain file named __pycache__ is not Python's cache: refused like any other git-ignored file
+                    return c.plain(c.redact(f"the lane's {_rel(lane, path)} is a file, not a bytecode folder: not cleared"))
+    except OSError as e:
+        return f"the lane's bytecode could not be cleared ({type(e).__name__})"
+    if errs:
+        return "the lane's bytecode could not be cleared (a folder of the lane could not be read)"
+    return ""
+
+
+def _unlink_tree(path):
+    """T-6194: a real folder removed with everything in it, bottom-up. Files and links are unlinked; a link to a folder is
+    unlinked as a link (os.walk does not descend one); nothing is opened or read. An unreadable folder raises."""
+    def fail(e):
+        raise e
+    for d, subs, files in os.walk(path, topdown=False, followlinks=False, onerror=fail):
+        for name in files:
+            os.unlink(os.path.join(d, name))
+        for name in subs:
+            p = os.path.join(d, name)
+            if os.path.islink(p):
+                os.unlink(p)
+            else:
+                os.rmdir(p)
+    os.rmdir(path)
+
+
+def _clear_scratch_repos(lane):
+    """T-6194 (criterion 3): a nested git repo under the lane's .fm-scratch folder is a builder's probe clone, not the lane,
+    so it is deleted unread, the way __pycache__ is. The folder that holds its `.git` (a folder, a file or a link) goes
+    whole; a `.git` straight in .fm-scratch goes alone. A repo outside .fm-scratch is not touched here: _scan still reports
+    it and the pilot refuses. A tracked file under a target keeps it. The walk is bounded like _scan's (SCAN_LIMIT entries)
+    and an unreadable folder fails closed. Nothing is opened; a link is never followed. Returns '' or why."""
+    if not lane:  # T-6194: .fm-scratch under an empty lane path is the working folder's: refused, nothing is deleted
+        return "the lane has no path: its scratch folder is not cleared"
+    root = os.path.join(lane, SCRATCH_DIR)
+    if os.path.islink(root) or not os.path.isdir(root):
+        return ""  # no scratch folder, or a link: nothing is followed here, and _scan refuses a link out of the lane
+    r = _g(lane, "ls-files", "-z", timeout=SENSITIVE_TIMEOUT, proc=True)
+    if r.returncode != 0:
+        return "the lane's tracked files could not be listed to clear its scratch folder"
+    tracked, errs, seen, found = {x for x in r.stdout.split("\0") if x}, [], 0, []
+    try:
+        for top, dirs, files in os.walk(root, followlinks=False, onerror=errs.append):
+            seen += len(dirs) + len(files) + 1
+            if seen > SCAN_LIMIT:
+                return "the lane holds more entries than the pilot checks: its scratch folder could not be cleared"
+            found += [os.path.join(top, x) for x in dirs + files if x == ".git"]
+    except OSError as e:
+        return f"the lane's scratch folder could not be cleared ({type(e).__name__})"
+    if errs:
+        return "the lane's scratch folder could not be cleared (a folder of the lane could not be read)"
+    targets = sorted({g if os.path.dirname(g) == root else os.path.dirname(g) for g in found})
+    for t in targets:
+        rel = _rel(lane, t)
+        if any(x == rel or x.startswith(rel + "/") for x in tracked):
+            return c.plain(c.redact(f"the lane's scratch folder {rel} holds a tracked file: not cleared"))
+    try:
+        for t in targets:
+            if not os.path.lexists(t):
+                continue  # inside a target cleared already
+            if os.path.isdir(t) and not os.path.islink(t):
+                _unlink_tree(t)
+            else:
+                os.unlink(t)
+    except OSError as e:
+        return f"the lane's scratch repo could not be cleared ({type(e).__name__})"
+    return ""
+
+
+def _clear_junk(lane):
+    """T-6194: what the lane holds that is never the session's work, cleared before any snapshot or scan: a nested repo
+    under .fm-scratch, then the bytecode. An empty lane path refuses (T-6194). Returns '' or why."""
+    if not lane:
+        return "the lane has no path: nothing is cleared"
+    return _clear_scratch_repos(lane) or _clear_pycache(lane)
+
+
+def _commit_fix(main, b, tip, ign0, links0, n, answer=""):
     """After a fix session whose git guard still reads as before (round 2): the session has no shell, so the PILOT commits
     what it edited. Returns '' when the lane now holds one new commit on `tip`, else why not (the lead's to read, never an
     accept). In order, before any git call that could run a driver: no attributes file names a driver the config defines,
@@ -1050,6 +1190,9 @@ def _commit_fix(main, b, tip, ign0, links0, n):
     moved; something changed and no nested repo was planted; then a hardened `add -A` and `commit --no-verify` (no hook,
     no fsmonitor, no external diff, no pager: HARDEN_GIT)."""
     lane = b.meta.get("lane") or ""
+    bad = _clear_junk(lane)  # T-6194: the session's bytecode and probe repos are lane scratch: gone before the scan and the snapshot
+    if bad:
+        return bad
     scan = _scan(lane)
     bad = _driver_problem(lane, scan) or _links_problem(lane, scan, links0) or _gitlink_problem(lane) \
         or _config_problem(main, b, tip)
@@ -1073,7 +1216,7 @@ def _commit_fix(main, b, tip, ign0, links0, n):
         return "the lane's worktree could not be read after the fix session"
     rows = [x for x in st.stdout.split("\0") if x]
     if not rows:
-        return "the fix session made no commit (it changed nothing)"
+        return "the fix session made no commit (it changed nothing)" + (f": {answer}" if answer else "")
     nested = [x[3:] for x in rows if x.startswith("??") and x.endswith("/")]  # an untracked dir git sees as its own repo
     if nested:
         return c.plain(f"the fix session left a nested git repo ({nested[0]})")
@@ -1110,6 +1253,7 @@ def _fix_env(tid):
     for k in session._NESTED:
         env.pop(k, None)
     env["FOREMAN_DRIVE_TASK"] = tid
+    env["PYTHONDONTWRITEBYTECODE"] = "1"  # T-6194: the session writes no bytecode into the lane (a planted .pyc is loaded in its place)
     return env
 
 
@@ -1130,12 +1274,20 @@ def _run_claude(argv, cwd, env):
     return pr.returncode, so or "", se or ""
 
 
-def fix_round(p, b, found, n, spent=None):
+def _answer(text):
+    """T-6194: the fix session's final message as the pilot keeps it: redacted and defanged, at most FIX_ANSWER
+    characters. The redaction runs on a slice ten times that long first, so a token is never cut in half at the bound
+    and left unredacted."""
+    return c.defang(c.plain(c.redact((text or "")[:FIX_ANSWER * 10])))[:FIX_ANSWER]
+
+
+def fix_round(p, b, found, n, spent=None, kept=None):
     """T-5707: fix round n, a headless claude -p with the lane as its working directory, sent the MEDIUM-or-worse
     `found` lines. Returns '' when the session ran and exited 0, else why not (one cleaned line). Its cost is recorded in
     the budget ledger; it only edits files in the lane (see fix_argv); the pilot commits them (_commit_fix). `spent` is
     the lane's list of what its earlier rounds cost: this round's cap is one fix cap less their sum, and its own cost is
-    appended (the whole cap when the session reported none)."""
+    appended (the whole cap when the session reported none). `kept`, a list, receives the session's final message on
+    exit 0 (T-6194: _answer), so a session that changed nothing says why."""
     lane = b.meta.get("lane") or ""
     if not lane or not os.path.isdir(lane):
         return "its lane worktree is gone"
@@ -1163,6 +1315,8 @@ def fix_round(p, b, found, n, spent=None):
     if code:
         tail = " ".join((se or text or "").split())[-160:]
         return c.plain(c.redact(f"fix session exited {code}" + (f": {tail}" if tail else "")))
+    if kept is not None:
+        kept.append(_answer(text))
     return ""
 
 
@@ -1282,7 +1436,7 @@ def _accept(tid, main):
     """(exit code, the last line the accept printed) of `sampo lane accept` run in the main checkout."""
     try:
         r = subprocess.run([sys.executable, SAMPO, "lane", "accept", tid], cwd=main, capture_output=True, text=True,
-                           timeout=ACCEPT_TIMEOUT)
+                           timeout=ACCEPT_TIMEOUT, env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})  # T-6194: no bytecode
     except subprocess.TimeoutExpired:
         return 124, f"sampo lane accept ran past {ACCEPT_TIMEOUT} s"
     lines = [x.strip() for x in (r.stdout + r.stderr).splitlines() if x.strip()]
@@ -1308,9 +1462,10 @@ def pilot(p, tid, main):
 
     lane0 = b.meta.get("lane") or ""
     if lane0 and os.path.isdir(lane0):  # round 4: the gate's own `status` and the tree id run clean filters, so look first
-        scan = _scan(lane0)
-        why = Tainted(DRIVER_WHY + ": the lane's worktree could not be scanned for links and attributes") \
-            if scan is None else _driver_problem(lane0, scan)
+        why = _clear_scratch_repos(lane0)  # T-6194: a probe repo under .fm-scratch is lane scratch: gone before the scan reads it
+        scan = _scan(lane0) if not why else None
+        why = why or (Tainted(DRIVER_WHY + ": the lane's worktree could not be scanned for links and attributes")
+                      if scan is None else _driver_problem(lane0, scan))
         if why:
             return done("exception", why)
     why = _busy(gate, p, b, main)
@@ -1383,6 +1538,9 @@ def pilot(p, tid, main):
         stop = (f"{rounds} fix round{'s' * (rounds != 1)} spent" if fixes >= rounds else
                 "no MEDIUM or worse finding to fix" if not found else _fix_refusal(p, spent))
         if not stop:  # before the session: what the pilot compares the lane with after it
+            stop = _clear_junk(lane)  # T-6194: the bytecode Python wrote and any probe repo are lane scratch: gone before any snapshot
+            exc = bool(stop)
+        if not stop:
             guard0, scan0 = _git_guard(lane), _scan(lane)  # the lane's .git file, git config, hooks; its worktree's links
             stop = ("" if guard0 and scan0 is not None else
                     Tainted(f"{DRIVER_WHY}: the lane's git config, hooks and links could not be read before the session"))
@@ -1398,16 +1556,19 @@ def pilot(p, tid, main):
             exc = bool(stop)
         if not stop:
             fixes += 1
-            stop = fix_round(p, b, found, fixes, spent)
+            kept = []
+            stop = fix_round(p, b, found, fixes, spent, kept)
+            answer = kept[0] if kept else ""
             if _git_guard(lane) != guard0:  # on EVERY exit, before any other git call: a failed session may have planted it
                 stop = GUARD_WHY
             try:
-                _log(p, "pilot_fix", b.id, {"round": fixes, "findings": len(found), "ok": not stop, "why": stop[:200]})
+                _log(p, "pilot_fix", b.id, {"round": fixes, "findings": len(found), "ok": not stop, "why": stop[:200],
+                                            "answer": answer})
             except Exception:  # the ledger line is a record; its failure never ends the pilot after the paid session
                 pass
             exc = stop == GUARD_WHY
             if not stop:  # the session only edited files: the pilot checks the lane is untouched, then commits
-                stop = _commit_fix(main, b, before[0], ign0, links0, fixes) or _fix_problem(main, b, before[0])
+                stop = _commit_fix(main, b, before[0], ign0, links0, fixes, answer) or _fix_problem(main, b, before[0])
                 exc = bool(stop)
             if not stop:
                 note = rereview_note(main, before[0], _tip(main, b), found)  # the next round reads every lens at the new tip

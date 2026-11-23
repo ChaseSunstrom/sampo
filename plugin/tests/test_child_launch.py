@@ -208,6 +208,7 @@ class Env(ForemanTestCase):
         with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": mine}), mock.patch.object(ideas, "_unsafe_ancestor", return_value=""):
             self.assertEqual(ideas.config_dir_problem(), "")
             self.assertIn("FOREMAN_NO_BACKGROUND", ideas.child_env())
+            self.assertEqual(ideas.child_env()["PYTHONDONTWRITEBYTECODE"], "1", "a reviewer writes no bytecode into the lane")
             os.chmod(mine, 0o777)
             self.assertEqual(ideas.config_dir_problem(), mine, "others can write it")
             with self.assertRaises(OSError):
