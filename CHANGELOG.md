@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- Four test modules that put a Claude config folder under /tmp, which the hardened launcher refuses, now use safe_config_dir, and a test_suite_hygiene walker fails any test that sets CLAUDE_CONFIG_DIR without it unless it is listed with why no child starts (T-6020).
 - The land's insertion union keeps an import line both lanes added word for word once instead of refusing it as a shared name, and the lane pilot's give-up line names its cause class (sensitive-file refusal, unmerged paths left, no commit, cut, no start) instead of waiting unexplained (T-6014).
 - sampo lane brief now refuses a builder brief whose own sections pass 8000 chars, printing the measured reason (93% first-time landing at 8k or less against 48% over 16k) and a split of its criteria into chained lanes, and --why REASON briefs it anyway with the reason logged (T-6047).
 - The ship's push hold records each direct trunk commit's self-gate pass by sha and gate key, skips recorded ones in later holds, and judges the rest four at a time in separate scratch worktrees (T-6031).
