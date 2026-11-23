@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- The plan gate holds a step for a cold rival read only for a real one-way action (a ship, tag, publish or push command in a step or verify, a step opening with a release imperative, a dist or releases scope), no longer for 'merge' or 'publish' in prose (T-6058).
 - An idle sampo watch --web with a page open no longer rebuilds on its own cache/, lastcmd and lock writes, re-runs its four brief collectors only when the briefs or autonomy changed, and reads the autonomy once per build: about 5.4% down to 1.3-1.7% of a core on 2700 briefs, 0.07% with no page open (T-6013).
 - A ship's full suite waiting on the machine suite slot held by a low-priority verify suite now asks it to end (ended from outside, never red), takes the slot, and the verify leaves its merges pending to run again after the ship (T-6032).
 - The Stop hook no longer asks for a step's evidence while an agent, lane builder or background run started since the step began is still running (2 h bound); it asks once that work ended (T-6057).
