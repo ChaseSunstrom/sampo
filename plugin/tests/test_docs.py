@@ -3,8 +3,10 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 from e2e import sync_evals
 from helpers import PLUGIN, busy_factor, read_text, read_json, read_doc
@@ -1270,6 +1272,107 @@ class MapShards(unittest.TestCase):  # T-2915: MASTER.md opens whole in one Read
             for want in ("MASTER.md:3", "files-9.md", "ops-1.md"):
                 self.assertIn(want, bad)
         self.assertEqual(doctor.map_shape(self.root), [])
+
+
+BIG = "- `fmbig` (" + "w" * 1888 + ")"  # T-6103: a map bullet of 1900 characters
+
+
+class MapLineSplit(unittest.TestCase):
+    """T-6103: a map bullet near the 2000-character limit takes no more text. Two sides that each append a clause to it
+    write the lane's version as its own bullet (kept and counted for a read) instead of one line past the limit, and a
+    lane whose merge with current trunk breaks MapShards is refused at return (lane precheck), not at land."""
+
+    def git(self, wt, *args):
+        r = subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-C", wt, *args],
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout.strip()
+
+    def test_the_line_limit_is_one_number_for_doctor_and_the_merge(self):
+        from sampo import doctor, mapmerge
+        self.assertEqual(len(BIG), 1900)
+        self.assertEqual(mapmerge.LINE_CHARS, doctor.MAP_LINE_CHARS)
+
+    def test_a_clause_each_side_appends_to_a_bullet_near_the_limit_is_its_own_bullet(self):
+        from sampo import mapmerge
+        head = "# Sampo map\n\n"
+        base = head + BIG + "\n"
+        trunk = head + BIG[:-1] + " " + "t" * 60 + ")\n"  # trunk appends a clause: 1961 characters
+        lane = head + BIG[:-1] + " " + "l" * 60 + ")\n"  # the lane appends another at the same place
+        text, conflicts = mapmerge.merge(base, trunk, lane, keep_both=True)
+        lines = text.splitlines()
+        self.assertEqual([ln for ln in lines if len(ln) > 2000], [], "no line the Read cuts")
+        self.assertIn(trunk.splitlines()[-1], lines, "trunk's bullet kept")
+        self.assertIn(lane.splitlines()[-1], lines, "the lane's clause is its own bullet")
+        self.assertEqual(conflicts, 1, "counted, so the train asks for a read of the entry")
+        text, conflicts = mapmerge.merge(base, trunk, lane)  # the git driver: markers, never a line past the limit
+        self.assertEqual([ln for ln in text.splitlines() if len(ln) > 2000], [])
+        self.assertEqual(conflicts, 1)
+
+    def test_appending_a_module_to_a_bullet_near_the_limit_writes_a_new_bullet(self):
+        from sampo import train
+        text = "# H\n\n" + BIG + "\n</details>\n"
+        out = train._append_bullets(text, [("fmnew", ["- `fmnew` (new words)"])])
+        self.assertEqual(out, "# H\n\n" + BIG + "\n- `fmnew` (new words)\n</details>\n")
+        self.assertEqual([ln for ln in out.splitlines() if len(ln) > 2000], [])
+
+    def _lane_repo(self, lane_line):
+        """A repo: main with ops-1 holding one short bullet; the lane (branch lane) adds `lane_line` after it; main then
+        retitles the file's first line, a hunk apart, so the lane's merge with trunk is a clean git merge. (trunk's sha,
+        the lane worktree)"""
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        wt = os.path.join(self._tmp.name, "wt")
+        os.makedirs(os.path.join(wt, "docs", "map"))
+        self.git(wt, "init", "-q", "-b", "main")
+        ops = os.path.join(wt, "docs", "map", "ops-1.md")
+
+        def commit(text, msg):
+            with open(ops, "w", encoding="utf-8") as f:
+                f.write(text)
+            self.git(wt, "add", "-A")
+            self.git(wt, "commit", "-q", "-m", msg)
+
+        head = "# Sampo map\n\n"
+        commit(head + "- `fmold` (short)\n", "base")
+        self.git(wt, "checkout", "-q", "-b", "lane")
+        commit(head + "- `fmold` (short)\n" + lane_line + "\n", "lane")
+        self.git(wt, "checkout", "-q", "main")
+        commit("# Sampo map (trunk)\n\n- `fmold` (short)\n", "trunk")  # another hunk: the lane's merge with it is clean
+        return self.git(wt, "rev-parse", "main"), wt
+
+    def _fake_shape(self, seen):
+        def run(path, wall=None, classes=None):
+            seen.append((classes, os.path.isfile(os.path.join(path, "docs", "map", "ops-1.md"))))
+            with open(os.path.join(path, "docs", "map", "ops-1.md"), encoding="utf-8") as f:
+                text = f.read()
+            if "(trunk)" not in text:  # the scratch tree is the lane merged with trunk, not the lane alone
+                return "red", "scratch tree lacks trunk"
+            if any(len(ln) > 2000 for ln in text.splitlines()):
+                return "red", "test_docs.MapShards"
+            return "green", ""
+        return run
+
+    def test_a_lane_whose_merge_with_trunk_breaks_mapshards_is_refused_at_return(self):
+        from sampo import lanes, train
+        trunk, wt = self._lane_repo("- `fmlong` (" + "x" * 2100 + ")")
+        seen = []
+        before = self.git(wt, "rev-parse", "HEAD")
+        with mock.patch.object(train, "_shape_run", self._fake_shape(seen)):
+            why = lanes._return_shape(wt, "lane", trunk, "T-9")
+        self.assertIn("repo-shape", why)
+        self.assertIn("MapShards", why)
+        self.assertEqual(seen[0][0], "test_docs test_left_out", "only the two cheap repo-shape classes run at return")
+        self.assertEqual(self.git(wt, "rev-parse", "HEAD"), before, "the lane's worktree is left as it was")
+        self.assertEqual(self.git(wt, "status", "--porcelain"), "")
+
+    def test_a_lane_that_merges_green_with_trunk_passes_the_return_check(self):
+        from sampo import lanes, train
+        trunk, wt = self._lane_repo("- `fmnew` (a short module)")
+        seen = []
+        with mock.patch.object(train, "_shape_run", self._fake_shape(seen)):
+            self.assertEqual(lanes._return_shape(wt, "lane", trunk, "T-9"), "")
+        self.assertEqual(len(seen), 1)
 
 
 if __name__ == "__main__":

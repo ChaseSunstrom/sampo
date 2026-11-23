@@ -29,6 +29,7 @@ import subprocess
 import sys
 
 NAME = "sampo-map"
+LINE_CHARS = 2000  # T-6103: doctor.MAP_LINE_CHARS (the Read cuts a longer line; test_docs.MapShards pins it)
 _KEY = re.compile(r"- `([^`]+)`")
 _TOKEN = re.compile(r"\w+|\s+|[^\w\s]")
 
@@ -195,6 +196,8 @@ def _resolve(bs, os_, ts, keep_both):
             out.append(o)
         else:
             merged = _merge_line(b, o, t) if t is not None else None
+            if merged is not None and len(merged) > LINE_CHARS:  # T-6103: both clauses would pass the limit: two bullets
+                merged = None
             if merged is not None:
                 out.append(merged)
             elif not keep_both:
@@ -223,6 +226,8 @@ def _settle(out, keep_both, size, path):
             continue
         kin = [k for k in plain if name is not None and _key(out[k]) == name] if not same else []
         merged = _merge_line(m.base, out[kin[0]], m.theirs) if len(kin) == 1 else None
+        if merged is not None and len(merged) > LINE_CHARS:  # T-6103: a word merge past the limit is no merge
+            merged = None
         if merged is not None:
             out[kin[0]], out[at] = merged, None
             continue

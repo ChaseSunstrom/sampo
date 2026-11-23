@@ -1232,6 +1232,9 @@ def cmd_lane(args):
             raise c.PolicyError(f"{b.id}: every criterion is green, but nothing was recorded: the lane has tracked "
                                 "edits or isn't on its branch's tip, so a pass there isn't what merges (commit, then "
                                 "precheck)")
+        why = _return_shape(b.meta["lane"], b.meta.get("lane_branch") or branch, _git(main, "rev-parse", "HEAD").stdout.strip(), b.id)  # T-6103
+        if why:
+            raise c.PolicyError(why)
         return cli.out(args, {"id": b.id, "tree": tree}, f"{b.id}: every criterion is green in its lane; fm lane merge "
                        "reuses these passes while the lane's tree stays as it is")
     if args.action == "merge":
@@ -6185,6 +6188,39 @@ def _secretish(lane, rel):
         if len(out) >= 5:
             break
     return out
+
+
+_RETURN_SHAPE = ("test_docs", "test_left_out")  # T-6103: the repo-shape classes a lane's merge with trunk must keep green
+_RETURN_SHAPE_WALL_S = 300  # T-6103: a precheck's cap on those runs; a cut is no verdict (the land's gate runs them)
+
+
+def _return_shape(wt, branch, trunk, tid):
+    """T-6103: '' when the lane's merge with trunk keeps _RETURN_SHAPE green, or can't be judged here (a conflict the
+    merge refuses at land, no merge tree, a cut run); else the refusal naming the red classes. The merged tree is
+    archived into a scratch folder and run there, so the lane's own tree is never touched."""
+    from sampo import train
+    if not trunk or not branch:
+        return ""
+    m = _git(wt, "merge-tree", "--write-tree", "--no-messages", trunk, branch)
+    tree = m.stdout.split()[0] if m.returncode == 0 and m.stdout.split() else ""
+    if not tree:
+        return ""
+    git_env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    tmp = tempfile.mkdtemp(prefix="fm-return-")
+    try:
+        with subprocess.Popen(["git", "-C", wt, "archive", "--format=tar", tree], stdout=subprocess.PIPE,
+                              stderr=subprocess.DEVNULL, env=git_env) as pr, \
+                tarfile.open(fileobj=pr.stdout, mode="r|") as t:
+            t.extractall(tmp, filter="data")  # the data filter: no link or path leaves tmp
+        verdict, names = train._shape_run(tmp, _RETURN_SHAPE_WALL_S, " ".join(_RETURN_SHAPE))
+    except (OSError, tarfile.TarError):
+        return ""  # no tree to examine here: the land's gate runs the same classes
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    if verdict != "red":
+        return ""
+    return (f"{tid}: its merge with trunk breaks the repo-shape check ({names}): fix it on the lane (merge trunk in, "
+            "then precheck again)")
 
 
 def _lane_tree(wt, branch):
