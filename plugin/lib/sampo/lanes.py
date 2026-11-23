@@ -4265,6 +4265,14 @@ def _merged_in_head(root, tid, rev="HEAD"):
     return tid in _merged_among(root, [tid], rev)
 
 
+def _merged_deps(root, dep_ids):
+    """T-6105: the ids among `dep_ids` whose own merge is already on HEAD (the integration branch). Such a dependency is met
+    whatever its brief says: its work is there to build on, so its open brief or lane holds nothing. T-6044's merge
+    0ec3dc293 sat in foreman/build while its brief was open, and T-6089 was refused 'waits on T-6044 (still building)'.
+    The rule is _merged_among's (the newest 2000 subjects)."""
+    return _merged_among(root, sorted(set(dep_ids))) if dep_ids else set()
+
+
 SKIPS_SHOWN = 15  # T-3293: a batch that skips more lists this many and says how many more (--json has all)
 
 
@@ -4433,9 +4441,11 @@ def brief_ready(p, args):
             waits = big.unmet(p, b, anchor, by_id)
         else:  # T-5725: a dependency whose finished lane has not landed is built on, not waited for; a building one is named
             sb = stk[b.id] = stack_base(p, b, briefs) if b.meta.get("depends_on") else StackBase()  # builder_brief reuses it
+            open_deps = [d for d in c._deps(b) if d not in by_id or by_id[d].status not in c.CLOSED]
+            met = _merged_deps(c.main_worktree(p.root) or p.root, open_deps) if open_deps else set()  # T-6105: on HEAD is met
             waits = [f"{d} (still building)" if d in sb.building else f"{d} (stopped, unreported)" if d in sb.unreported else d
-                     for d in c._deps(b)
-                     if (d not in by_id or by_id[d].status not in c.CLOSED) and d not in (sb.stack[2] if sb.stack else [])]
+                     for d in open_deps
+                     if d not in met and d not in (sb.stack[2] if sb.stack else [])]
         if waits:
             return "waits on " + ", ".join(waits)
         gaps = c.plan_gaps(b, autonomy, p.root)
@@ -4988,8 +4998,12 @@ def stack_base(p, b, briefs):
              if d in by and by[d].meta.get("lane") and not by[d].meta.get("lane_spike") and os.path.isdir(by[d].meta["lane"])]
     if not lanes:
         return StackBase()
-    done = set(c.finished_lanes(p, briefs, quiet_min=0, fresh=True))
     main = c.main_worktree(p.root) or p.root
+    met = _merged_deps(main, [x.id for x in lanes])  # T-6105: a dependency whose merge is on HEAD is met: no lane to wait for
+    lanes = [x for x in lanes if x.id not in met]
+    if not lanes:
+        return StackBase()
+    done = set(c.finished_lanes(p, briefs, quiet_min=0, fresh=True))
     heads = _lane_tips(main, [x for x in lanes if x.id in done])
     tips, building, unreported = {}, [], []
     for x in lanes:

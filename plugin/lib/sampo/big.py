@@ -1082,6 +1082,7 @@ def unmet(p, kid, up, by_id=None):
     ON up's integration branch (the lane is cut from that tip: a closed sibling that never landed there would be missing
     from it), or when it was dropped (its dependents are freed of it); any other dependency is met once closed, as
     everywhere."""
+    from sampo import lanes
     sib = set(_sibling_deps(kid, up))
     on = None
     out = []
@@ -1093,7 +1094,9 @@ def unmet(p, kid, up, by_id=None):
             on = _landed(p, up, sorted(sib)) if on is None else on
             if d not in on:
                 out.append(d)
-        elif x is None or x.status not in c.CLOSED:
+        elif (x is None or x.status not in c.CLOSED) and d not in lanes._merged_deps(_main(p), [d]):
+            # T-6105: an outside dependency whose merge is already on the build HEAD is met (the lanes' rule). A sibling is
+            # not: the child is cut from big/<ID>, and HEAD's merge of a sibling does not put it there.
             out.append(d)
     return out
 

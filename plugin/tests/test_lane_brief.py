@@ -15,8 +15,10 @@ import unittest
 from unittest import mock
 
 from helpers import PLUGIN, ForemanTestCase, read_text
+from test_big_run import Base as BigBase
 from test_lane_land import LandCase
 
+from sampo import big
 from sampo import core as c
 from sampo import lanes
 
@@ -844,6 +846,88 @@ class ReportInMessage(LandCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertNotIn("Traceback", r.stderr)
         self.assertEqual(self.brief(tid).section("Close fields").strip(), "")
+
+
+class DependencyMerged(ForemanTestCase):
+    """T-6105: a dependency whose own merge is already on the integration branch counts as met at brief time, whatever its
+    brief says. T-6089 was refused 'waits on T-6044 (still building)' while T-6044's merge 0ec3dc293 sat in foreman/build.
+    A dependency whose merge is not there yet still holds the brief."""
+
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        self.fm("lane", "max", "20")
+
+    def task(self, title, tier="M"):
+        return json.loads(self.fm("task", "new", title, "--type", "FEATURE", "--tier", tier, "--ac", "ok :: true",
+                                  "--step", "build it", "--interpretation", "Reading 1: a. Reading 2: b.",
+                                  "--approach", "1) a; fails if: x 2) use what exists: b; fails if: y 3) do less: c; "
+                                                "fails if: z Choice 1 (80%): a", "--json").stdout)["id"]
+
+    def dependent(self, dep):
+        tid = self.task("Dependent", tier="S")
+        self.fm("task", "set", tid, f"depends_on={dep}")
+        self.fm("task", "set", tid, "approved=true")
+        return tid
+
+    def merge_on_head(self, tid):
+        # the integration branch's own history: a merge commit naming the dependency, as a land writes it
+        subprocess.run(G + ["commit", "--allow-empty", "-qm", f"Merge {tid}: its work"], cwd=self.repo, check=True,
+                       capture_output=True)
+
+    def building_dependency(self):
+        """A dependency whose builder is alive and has not returned: its lane is still building (the T-6044 case)."""
+        from sampo import bus
+        dep = self.task("Dep")
+        self.fm("lane", "new", dep, "--json")
+        p = c.find_project(self.repo)
+        b = c.find_brief(p, dep)
+        b.meta["builder"] = c.now()
+        b.meta["builder_proc"] = f"{bus.host_id()}|{os.getpid()}|{bus._proc(os.getpid())[1]}"  # alive, uncommitted
+        c.save_brief(p, b)
+        return dep
+
+    def test_a_building_dependency_merged_on_head_lets_the_brief_go_ahead(self):
+        dep = self.building_dependency()
+        tid = self.dependent(dep)
+        self.merge_on_head(dep)
+        r = self.fm("lane", "brief", tid, check=False)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("still building", r.stdout + r.stderr)
+
+    def test_a_building_dependency_not_on_head_still_holds_the_brief(self):
+        dep = self.building_dependency()
+        tid = self.dependent(dep)
+        r = self.fm("lane", "brief", tid, check=False)
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        said = r.stdout + r.stderr
+        self.assertIn(f"{tid} waits on {dep}", said)
+        self.assertIn("still building", said)
+
+    def test_the_ready_sweep_skips_a_dependent_until_its_dependency_is_merged_on_head(self):
+        dep = self.task("Dep")  # open, no lane: the sweep names it as a wait, and the merge clears it
+        tid = self.dependent(dep)
+        skipped = json.loads(self.fm("lane", "brief", "--ready", "--json", check=False).stdout)["skipped"]
+        self.assertIn(f"waits on {dep}", " ".join(str(x) for x in skipped if tid in str(x)), skipped)
+        self.merge_on_head(dep)
+        skipped = json.loads(self.fm("lane", "brief", "--ready", "--json", check=False).stdout)["skipped"]
+        self.assertFalse([x for x in skipped if tid in str(x)], skipped)
+
+
+class DependencyMergedBig(BigBase):  # T-6105: a big child waits on an outside dependency only until its merge is on HEAD
+    def test_a_big_child_whose_outside_dependency_is_merged_on_head_is_briefed(self):
+        tid, kids = self.big()
+        big.branch(self.p, c.find_brief(self.p, tid))
+        kid = kids["c1"]
+        dep = json.loads(self.fm("task", "new", "Outside dep", "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true",
+                                 "--step", "s", "--json").stdout)["id"]
+        self.fm("task", "set", kid, f"depends_on={dep}")
+        refused = self.fm("lane", "brief", kid, check=False)
+        self.assertNotEqual(refused.returncode, 0, refused.stdout)
+        self.assertIn(f"waits on {dep}", refused.stdout + refused.stderr)
+        self.git("commit", "--allow-empty", "-qm", f"Merge {dep}: its work")  # the outside work lands on the build HEAD
+        r = self.fm("lane", "brief", kid, check=False)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
 
 if __name__ == "__main__":
