@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- The lane pilot's driver check exempts Sampo's own sampo-map merge driver when it is mapmerge.command() exactly, so lanes are no longer refused (T-6178).
 - The ReadDedupe test for a refused whole read now pins the context budget's every-time refusal, so trunk's baseline red is cleared (T-6179).
 - Map bullets near the 2000-character limit stay under it when two sides append to them, and a lane whose merge with trunk breaks the map check is refused at precheck (T-6103).
 - The gap chart, the lane brief's unpiped evidence line and the lanes exam drill's review hold are green on trunk again (T-6145).
