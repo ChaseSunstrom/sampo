@@ -680,14 +680,26 @@ def passed(p, shas, since=""):
     return out
 
 
-def gate(p, b, main, ref, files, cache_name=CACHE_FILE, timing=True, record=False):
+def timing_due(p, main, base, files):
+    """T-5935, T-6048: (whether the hooks need a timing bench for a change of `files` against `base`, the benched files among
+    them): none when no changed file is one a hook can run or read (_benched: docs, tests, notes), or when the saved hook
+    map says no changed file is one a hook process loaded; a missing or stale map times as before. One rule for a live
+    train's merged batch (train._live_timing) and the push hold's direct-commit range (release._judge)."""
+    benched = [f for f in files if _benched(f)]
+    hmap = cached_hook_map(p, main, base) if benched else None
+    return bool(benched) and not (hmap and not needs_timing(files, hmap)), benched
+
+
+def gate(p, b, main, ref, files, cache_name=CACHE_FILE, timing=True, record=False, passes=None):
     """[refusal lines] for a commit that changes Sampo's own plugin/, [] when it holds, isn't one, or the user said yes
     after its last refusal of this same commit. Each refusal is a self_change_refused ledger event with the sha.
     cache_name is the file its base half is cached in (T-4805: the push hold's own, not the lane train's).
     timing=False (T-5446, a live train's per-lane hold) leaves out the hook timing bench; the train times the merged
     batch once instead (train._live_timing).
     record=True (T-6031, the push hold's) logs a signed self_change_passed {sha, key} when the commit passes: by the gate,
-    by the user's yes (key + ":yes") or by the standing core yes (key + ":standing"); passed() reads them back."""
+    by the user's yes (key + ":yes") or by the standing core yes (key + ":standing"); passed() reads them back.
+    passes (T-6048), a dict: the pass is not logged but set as passes[sha] = the kind ("", ":yes" or ":standing"), for a
+    caller that records it only after a check the gate left out (the push hold's one timing of its whole range)."""
     if not os.path.isfile(os.path.join(main, "plugin", "lib", "fmguard.py")) or not any(
             f.startswith("plugin/") for f in files):
         return []
@@ -695,6 +707,8 @@ def gate(p, b, main, ref, files, cache_name=CACHE_FILE, timing=True, record=Fals
     if sha and approved(p, b, sha):
         if record:  # T-6031: the user's yes to this commit's refusal is a pass the hold need not ask for again
             _log_pass(p, b, sha, ":yes")
+        elif passes is not None:
+            passes[sha] = ":yes"
         return []
     out, tmp = [], tempfile.mkdtemp(prefix="fm-selfgate-")
     try:
@@ -760,9 +774,13 @@ def gate(p, b, main, ref, files, cache_name=CACHE_FILE, timing=True, record=Fals
         c.log_event(p, "self_change_standing_pass", task=b.id, data={"sha": sha, "rows": out[:20]})
         if record and sha:  # T-6031: kept only while that standing yes stands (passed() checks), so revoking it re-judges
             _log_pass(p, b, sha, ":standing")
+        elif passes is not None and sha:
+            passes[sha] = ":standing"
         return []
     if out:
         c.log_event(p, "self_change_refused", task=b.id, data={"sha": sha, "rows": out[:20]})
     elif record and sha:  # T-6031: the gate's own pass: the hold skips this commit next time
         _log_pass(p, b, sha)
+    elif passes is not None and sha:
+        passes[sha] = ""
     return out

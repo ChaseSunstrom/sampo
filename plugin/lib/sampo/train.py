@@ -1723,10 +1723,9 @@ def _live_timing(p, main, wt, base, files=None):
     sha = _git(wt, "rev-parse", "HEAD").stdout.strip()
     if files is None:
         files = [f for f in _git(main, "diff", "--name-only", base, sha).stdout.splitlines() if f.strip()]
-    benched = [f for f in files if selfgate._benched(f)]
-    hmap = selfgate.cached_hook_map(p, main, base) if benched else None
+    due, benched = selfgate.timing_due(p, main, base, files)  # T-6048: the push hold's range timing reads the same rule
     who = types.SimpleNamespace(id="live-train", meta={})
-    if not benched or (hmap and not selfgate.needs_timing(files, hmap)):
+    if not due:
         c.log_event(p, "live_timing_skipped", data={"sha": sha[:12], "files": len(files), "benched": benched[:10]})
         rows = []
         if any(f.startswith("plugin/") for f in files):  # the bench is skipped, the merged tree's footprint and verbs are not:

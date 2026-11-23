@@ -401,24 +401,68 @@ def _passed(p, root, shas):
     return selfgate.passed(p, shas, since=c.iso(min(stamps) - 86400))
 
 
-def _judge(p, b, root, todo):
-    """T-6031: [(sha, rows)] for the commits of todo (sha, parent, files) the gate holds, judged up to train.hold_jobs() at
-    a time (SAMPO_HOLD_JOBS, the lane train's knob): each worker has a scratch worktree of its own (checked out at a
-    commit's parent in turn) and all share the one PUSH_CACHE file (selfgate._save writes it atomically, a file per
-    thread). The hook bench inside a judgement is serialised machine-wide by selfgate._paired's lock and runs with no
-    other worker's replay beside it (selfgate.QUIET, so the timings aren't skewed); the rest overlaps.
-    A judge that can't run, a checkout that fails or a commit no worker reached is a hold, never a pass."""
+def _chain(root, todo):
+    """T-6048: (base, tip, files) of the range the commits of todo (sha, parent, files) make, or None: the tip is the one
+    commit that holds every other (a first-parent run does; two branches don't), the base the commits' common parent (the
+    oldest one's) and files what the tree changes from base to tip (renames listed as the delete and the add). None when git
+    can't say: the caller times each commit as before."""
+    shas = [s for s, _, _ in todo]
+    top = _git(root, "rev-list", "--topo-order", "--max-count=1", *shas, ok=True).split()
+    if len(top) != 1 or top[0] not in shas:
+        return None
+    tip = top[0]
+    for s in shas:
+        if s != tip and c._git(root, "merge-base", "--is-ancestor", s, tip, timeout=60, proc=True).returncode:
+            return None
+    base = _git(root, "merge-base", "--octopus", *dict.fromkeys(parent for _, parent, _ in todo), ok=True).split()
+    if len(base) != 1:
+        return None
+    got = c._git(root, "diff", "--name-only", "--no-renames", "-z", base[0], tip, timeout=120, proc=True)
+    if got.returncode:
+        return None
+    return base[0], tip, [f for f in got.stdout.split("\0") if f]
+
+
+def _range_timing(p, wt, chain, info):
+    """T-6048: the self-change gate with its hook timing on the tree of the chain's tip against its base (_chain), once for
+    the whole range of direct commits, as train._live_timing times a live train's batch; wt is a scratch worktree. The kind of
+    pass the range earned ("" the gate's own, ":standing" when only the standing yes passed its rows) or None when it holds
+    or can't run: the caller then times each commit, which names the one that slowed a hook. The skip rule is
+    selfgate.timing_due's, the train's (no changed file a hook runs or reads, or none the saved hook map says a hook
+    loaded: no bench, "" at once). The gate's task is its own: a user's yes to the tip doesn't skip the range's timing.
+    info["timing"] says which it was: "range", "range-skipped" or "range-held"."""
+    import types
+    from sampo import selfgate
+    base, tip, files = chain
+    if not selfgate.timing_due(p, wt, base, files)[0]:
+        info["timing"] = "range-skipped"
+        return ""
+    info["timing"] = "range-held"
+    try:
+        _git(wt, "checkout", "-q", "--detach", base)
+        got = {}
+        rows = selfgate.gate(p, types.SimpleNamespace(id="push-hold-timing", meta={}), wt, tip, files, PUSH_CACHE,
+                             passes=got)
+    except Exception:  # noqa: BLE001 — a timing that can't run is a hold, never a pass
+        return None
+    if rows:
+        return None
+    info["timing"] = "range"
+    return got.get(tip, "")
+
+
+def _pool(p, b, wts, todo, **kw):
+    """T-6031: {sha: rows} of selfgate.gate(**kw) for each commit of todo (sha, parent, files): a thread for each scratch
+    worktree of wts, each checked out at a commit's parent in turn, all sharing the one PUSH_CACHE file. A judge that
+    can't run is a hold's row, never a pass."""
     import queue
     import threading
-    from sampo import selfgate, train
-    if not todo:
-        return []
+    from sampo import selfgate
     work, rows_of = queue.Queue(), {}
     for t in todo:
         work.put(t)
 
-    def worker(i, wt):
-        cache = PUSH_CACHE
+    def worker(wt):
         while True:
             try:
                 s, parent, files = work.get_nowait()
@@ -426,10 +470,35 @@ def _judge(p, b, root, todo):
                 return
             try:
                 _git(wt, "checkout", "-q", "--detach", parent)
-                rows = selfgate.gate(p, b, wt, s, files, cache, record=True)
+                rows = selfgate.gate(p, b, wt, s, files, PUSH_CACHE, **kw)
             except Exception as e:  # noqa: BLE001 — a judge that can't run is a hold, never a pass
                 rows = [f"the self-change gate couldn't run ({type(e).__name__}: {c.fit(str(e), 160)})"]
             rows_of[s] = rows
+    threads = [threading.Thread(target=worker, args=(wt,), daemon=True) for wt in wts]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    return rows_of
+
+
+def _judge(p, b, root, todo, info=None):
+    """T-6031: [(sha, rows)] for the commits of todo (sha, parent, files) the gate holds, judged up to train.hold_jobs() at
+    a time (SAMPO_HOLD_JOBS, the lane train's knob): each worker has a scratch worktree of its own (checked out at a
+    commit's parent in turn) and all share the one PUSH_CACHE file (selfgate._save writes it atomically, a file per
+    thread). The hook bench inside a judgement is serialised machine-wide by selfgate._paired's lock and runs with no
+    other worker's replay beside it (selfgate.QUIET, so the timings aren't skewed); the rest overlaps.
+    T-6048: several commits that make one chain are each judged with timing=False (guard replay, cases, footprint, verbs)
+    and the chain is timed once on its last commit's tree (_range_timing), not once a commit; a commit's pass is recorded
+    (signed, selfgate._log_pass) only after that timing passed or was skipped. When the range holds, every commit is judged
+    again with its own timing, as a lone commit is, and that names the one that slowed a hook. info, a dict, gets
+    info["timing"]: "each", "range", "range-skipped" or "range-held".
+    A judge that can't run, a checkout that fails or a commit no worker reached is a hold, never a pass."""
+    from sampo import selfgate, train
+    if not todo:
+        return []
+    info = {} if info is None else info
+    rows_of = {}
     with c.scratch_dir("sampo-hold-", root) as tmp:  # T-4735: the owned scratch root
         made = []
         try:
@@ -437,11 +506,20 @@ def _judge(p, b, root, todo):
                 wt = os.path.join(tmp, f"hold{i}")
                 _git(root, "worktree", "add", "-q", "--detach", wt, todo[i][1])
                 made.append(wt)
-            threads = [threading.Thread(target=worker, args=(i, wt), daemon=True) for i, wt in enumerate(made)]
-            for t in threads:
-                t.start()
-            for t in threads:
-                t.join()
+            chain = _chain(root, todo) if len(todo) > 1 else None
+            if chain is None:
+                info["timing"] = "each"
+                rows_of = _pool(p, b, made, todo, record=True)
+            else:
+                passes = {}
+                rows_of = _pool(p, b, made, todo, timing=False, passes=passes)
+                via = _range_timing(p, made[0], chain, info)
+                if via is None:  # the range holds: each commit's own timing names the one that slowed a hook
+                    rows_of = _pool(p, b, made, todo, record=True)
+                else:
+                    for s, _, _ in todo:
+                        if s in passes and not rows_of.get(s):  # recorded only now, and revocable when the range passed on the standing yes
+                            selfgate._log_pass(p, b, s, via or passes[s])
         finally:
             for wt in made:
                 _git(root, "worktree", "remove", "--force", wt, ok=True)
@@ -462,7 +540,8 @@ def _push_hold(p, b, root, commits, by):
     judged file runs nothing; a lane-landed one was judged when it landed, and one from before landings were recorded
     counts as judged. Nothing is pushed and the grant is kept. T-6031: a commit that passed (the gate's pass, a yes, or the
     standing yes while it stands) under today's gate is recorded signed and not judged by a later hold: the hold's push_hold_judged
-    event says how many it judged and skipped and its seconds. The base half of the judge is cached in its own file (a
+    event says how many it judged and skipped, its seconds and how it timed them. T-6048: several direct commits are judged
+    without the hook bench and their range is timed once (_judge); a slower hook in any of them still holds it. The base half of the judge is cached in its own file (a
     different parent per commit would miss the train's)."""
     from sampo import selfgate
     todo, held = [], []
@@ -476,15 +555,16 @@ def _push_hold(p, b, root, commits, by):
             held.append((s, ["couldn't list the files it changed (no first parent, or git failed): held rather than passed"]))
         elif any(selfgate._judged(f) or f in selfgate.CASES for f in got[1]):
             todo.append((s, got[0], got[1]))
-    t0, skipped = time.monotonic(), 0
+    t0, skipped, info = time.monotonic(), 0, {}
     if todo:  # T-6031: a commit the gate passed under today's gate is not judged again
         done = _passed(p, root, [s for s, _, _ in todo])
         skipped = sum(s in done for s, _, _ in todo)
         todo = [t for t in todo if t[0] not in done]
-        held += _judge(p, b, root, todo)
+        held += _judge(p, b, root, todo, info)
     if direct:
         c.log_event(p, "push_hold_judged", task=b.id, data={"by": by, "judged": len(todo), "skipped": skipped,
-                                                            "held": len(held), "seconds": round(time.monotonic() - t0, 1)})
+                                                            "held": len(held), "seconds": round(time.monotonic() - t0, 1),
+                                                            "timing": info.get("timing", "")})
     if held:
         what = "; ".join(f"{s[:8]} {c.fit(c.plain(_git(root, 'log', '-1', '--format=%s', s, ok=True).strip()), 60)}: "
                          + c.joinmore(rows, 3, "; ") for s, rows in held[:3])

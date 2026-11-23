@@ -514,9 +514,8 @@ class LandAfterShips(ReleaseCase):
         self.assertEqual(sh(origin, "log", "-1", "--format=%s", "main").strip(), "Foreman 9.9.9")
 
 
-class PushHold(ForemanTestCase):
-    """T-4805: fm release --push merges the release onto origin main; a commit made straight on the trunk in what it
-    merges is judged by the self-change gate against its parent first, as fm ship's is."""
+class PushHoldBase(ForemanTestCase):
+    """T-4805: the repo, origin and task a push hold is judged in; no tests of its own (PushHold and PushHoldTiming)."""
     CASES = "plugin/tests/fixtures/guard_cases.jsonl"
     ALLOW = "plugin/tests/fixtures/guard_allow.jsonl"
 
@@ -549,6 +548,136 @@ class PushHold(ForemanTestCase):
         sh(self.repo, "add", "-A")
         sh(self.repo, "commit", "-qm", msg)
         return sh(self.repo, "rev-parse", "HEAD").strip()
+
+    def hold(self, shas, gate=None):
+        """release._push_hold over these commits with the guard judge faked to agree (a plain pass); (the commits the
+        gate was called for, once each in call order, the refusal text or '')."""
+        from unittest import mock
+
+        from sampo import cli, release, selfgate
+        seen = []
+        real = gate or selfgate.gate
+
+        def counted(p, b, main, ref, files, *a, **kw):
+            seen.append(ref)
+            return real(p, b, main, ref, files, *a, **kw)
+        b = c.find_brief(self.p, self.tid)
+        with mock.patch.object(selfgate, "_verdicts", lambda tree, cmds: ["allow" if cmd == "ls" else "destructive" for cmd, _ in cmds]), \
+                mock.patch.object(selfgate, "_bench", lambda t: ({"Stop": {"p95": 100.0, "budget": 500}}, {"SessionStart": 2000})), \
+                mock.patch.object(selfgate, "_corpus", lambda: []), mock.patch.object(selfgate, "gate", counted):
+            try:
+                release._push_hold(self.p, b, self.repo, shas, "fm ship")
+                return list(dict.fromkeys(seen)), ""  # T-6048: the range's timing gate calls the last commit again
+            except cli.UsageError as e:
+                return list(dict.fromkeys(seen)), str(e)
+
+
+class PushHoldTiming(PushHoldBase):
+    """T-6048: the push hold judges each direct commit without the hook timing bench and times their range once on the last
+    commit's tree; a range that holds is timed commit by commit to name the one that slowed a hook."""
+    SLOW = "hook Stop p95 100 -> 900 ms (+800%)"
+
+    def timed(self, shas, slow_marker="SLOW", due=True):
+        """(the benches run, why, the self_change_passed shas in the ledger at the range's bench): release._push_hold over
+        shas with _paired counted; a tree holding slow_marker the base lacks is the slow one; due False makes the saved
+        hook map say no changed file is one a hook loads."""
+        from unittest import mock
+
+        from sampo import selfgate
+        runs = []
+
+        def paired(base, new, cache=None, excused=None):
+            def has(tree):
+                with open(os.path.join(tree, "lib", "fmguard.py"), encoding="utf-8") as f:
+                    return slow_marker in f.read()
+            runs.append(len([e for e in c.ledger_events(self.p, ("self_change_passed",))]))
+            return ({"Stop": self.SLOW} if has(new) and not has(base) else {}), {}, {}
+        patches = [mock.patch.object(selfgate, "_paired", paired)]
+        if not due:
+            patches.append(mock.patch.object(selfgate, "cached_hook_map", lambda p, main, base: {"Stop": ["plugin/lib/sampo/core.py"]}))
+        for pt in patches:
+            pt.start()
+        try:
+            seen, why = self.hold(shas)
+        finally:
+            for pt in patches:
+                pt.stop()
+        return runs, why
+
+    def passed(self):
+        return sorted(e["data"]["sha"] for e in c.ledger_events(self.p, ("self_change_passed",)))
+
+    def test_n_direct_commits_run_one_timing_bench_not_n(self):
+        shas = [self.commit({"plugin/lib/fmguard.py": f"x = {i + 2}\n"}, f"commit {i}") for i in range(4)]
+        runs, why = self.timed(shas)
+        self.assertEqual((len(runs), why), (1, ""), "one bench for the four commits")
+        self.assertEqual(runs, [0], "no commit's pass was recorded before the range's timing passed")
+        self.assertEqual(self.passed(), sorted(shas), "each is recorded after it")
+
+    def test_a_slower_hook_in_one_commit_holds_the_push_and_the_fallback_names_it(self):
+        a = self.commit({"plugin/lib/fmguard.py": "x = 2\n"}, "fast one")
+        slow = self.commit({"plugin/lib/fmguard.py": "x = 3  # SLOW\n"}, "slows a hook")
+        z = self.commit({"plugin/lib/other.py": "y = 1\n"}, "fast two")
+        runs, why = self.timed([a, slow, z])
+        self.assertEqual(len(runs), 1 + 3, "the range's bench, then each commit's own")
+        self.assertEqual(runs[0], 0, "nothing recorded before the range's timing")
+        self.assertIn(slow[:8], why)
+        self.assertNotIn(a[:8], why)
+        self.assertNotIn(z[:8], why)
+        self.assertIn("hook Stop", why)
+        self.assertEqual(self.passed(), sorted([a, z]), "the slow one is never recorded as passed")
+
+    def test_a_slower_hook_in_the_first_of_several_is_still_held(self):
+        slow = self.commit({"plugin/lib/fmguard.py": "x = 3  # SLOW\n"}, "slows a hook")
+        later = [self.commit({"plugin/lib/other.py": f"y = {i}\n"}, f"later {i}") for i in range(3)]
+        runs, why = self.timed([slow] + later)
+        self.assertIn(slow[:8], why)
+        self.assertEqual(self.passed(), sorted(later))
+
+    def test_a_range_no_hook_loads_runs_no_bench_and_records_the_passes(self):
+        shas = [self.commit({"plugin/lib/sampo/unused.py": f"y = {i}\n"}, f"commit {i}") for i in range(3)]
+        runs, why = self.timed(shas, due=False)
+        self.assertEqual((runs, why), ([], ""))
+        self.assertEqual(self.passed(), sorted(shas))
+
+    def test_a_range_of_docs_and_tests_only_changes_runs_no_bench(self):
+        """Only a judged file is a direct commit's concern; nothing here is benched or judged."""
+        shas = [self.commit({"docs/note.md": f"{i}\n", "plugin/tests/t.py": f"{i}\n"}, f"commit {i}") for i in range(3)]
+        runs, why = self.timed(shas)
+        self.assertEqual((runs, why, self.passed()), ([], "", []))
+
+    def test_a_standing_yes_that_passes_the_timing_rows_is_recorded_as_standing(self):
+        """The range timing passed only through the standing yes: each commit's record is revocable, not a plain pass."""
+        from sampo import selfgate
+        c.update_meta(self.p, standing={"core": {"at": c.now(), "task": self.tid, "why": "test"}})
+        shas = [self.commit({"plugin/lib/fmguard.py": "x = 3  # SLOW\n"}, "slows a hook"),
+                self.commit({"plugin/lib/other.py": "y = 1\n"}, "fast")]
+        runs, why = self.timed(shas)
+        self.assertEqual(why, "")
+        keys = {e["data"]["sha"]: e["data"]["key"] for e in c.ledger_events(self.p, ("self_change_passed",))}
+        self.assertEqual(set(keys), set(shas))
+        self.assertTrue(all(k == selfgate.gate_key() + ":standing" for k in keys.values()), keys)
+
+    def test_commits_that_are_not_one_chain_are_timed_each(self):
+        """The range needs a last commit that holds every other; two branches are timed commit by commit, as before."""
+        base = sh(self.repo, "rev-parse", "HEAD").strip()
+        left = self.commit({"plugin/lib/other.py": "y = 1\n"}, "left")
+        sh(self.repo, "checkout", "-q", "-b", "side", base)
+        right = self.commit({"plugin/lib/third.py": "z = 1\n"}, "right")
+        sh(self.repo, "checkout", "-q", "work")
+        runs, why = self.timed([left, right])
+        self.assertEqual((len(runs), why), (2, ""))
+        self.assertEqual(self.passed(), sorted([left, right]))
+
+    def test_one_direct_commit_is_judged_and_timed_once_as_before(self):
+        sha = self.commit({"plugin/lib/fmguard.py": "x = 2\n"}, "one")
+        runs, why = self.timed([sha])
+        self.assertEqual((len(runs), why, self.passed()), (1, "", [sha]))
+
+
+class PushHold(PushHoldBase):
+    """T-4805: fm release --push merges the release onto origin main; a commit made straight on the trunk in what it
+    merges is judged by the self-change gate against its parent first, as fm ship's is."""
 
     def push(self):
         """(refusal text or '', guard replays): release._push in this process, the judge faked as test_lanes does."""
@@ -651,28 +780,6 @@ class PushHold(ForemanTestCase):
         why, judged = self.push()
         self.assertEqual((why, judged), ("", 0))
 
-    def hold(self, shas, gate=None):
-        """release._push_hold over these commits with the guard judge faked to agree (a plain pass); (the gate's call
-        refs, the refusal text or '')."""
-        from unittest import mock
-
-        from sampo import cli, release, selfgate
-        seen = []
-        real = gate or selfgate.gate
-
-        def counted(p, b, main, ref, files, *a, **kw):
-            seen.append(ref)
-            return real(p, b, main, ref, files, *a, **kw)
-        b = c.find_brief(self.p, self.tid)
-        with mock.patch.object(selfgate, "_verdicts", lambda tree, cmds: ["allow" if cmd == "ls" else "destructive" for cmd, _ in cmds]), \
-                mock.patch.object(selfgate, "_bench", lambda t: ({"Stop": {"p95": 100.0, "budget": 500}}, {"SessionStart": 2000})), \
-                mock.patch.object(selfgate, "_corpus", lambda: []), mock.patch.object(selfgate, "gate", counted):
-            try:
-                release._push_hold(self.p, b, self.repo, shas, "fm ship")
-                return seen, ""
-            except cli.UsageError as e:
-                return seen, str(e)
-
     def test_a_commit_the_gate_passed_is_not_judged_again_until_the_gate_changes(self):
         """T-6031: every ship judged the same direct commits again (66 minutes of hook bench): a pass is a self_change_passed
         record keyed by the sha and the gate's inputs, and a later hold skips it."""
@@ -734,7 +841,7 @@ class PushHold(ForemanTestCase):
                 if first:
                     barrier.wait()
                 head = sh(main, "rev-parse", "HEAD").strip()
-                if head != sh(main, "rev-parse", f"{ref}^1").strip():
+                if timing is False and head != sh(main, "rev-parse", f"{ref}^1").strip():  # T-6048: not the range's timing call
                     state["bad"].append(ref)
                 return []
             finally:
