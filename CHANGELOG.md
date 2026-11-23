@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- The ship push hold judges each direct commit with timing off and times their whole range once on the last commit's tree (a slower hook in any of them still holds the push, and each commit is then timed on its own to name it; a commit's pass is recorded only after its timing passed) (T-6048).
 - sampo ship pushes the newest commit the verify records show green in the whole suite (a red record holds only its merge and the commits after it), waits for and reuses a verify running on its tree, records its own green run, and keeps a cut run's unrun classes so the next ship runs only them; the land ends a ship with SIGTERM before SIGKILL (T-6097).
 - A builder's stop in the main checkout no longer starts a git read of the tip commit, so the BoardPosture child count is green on trunk again (T-6088).
 - sampo lane brief has a cheap explorer (local model, then Haiku, then a static note) write a mechanically validated working-set note that opens the builder brief, cost --per-lane shows the explorer's tokens and the explore share apart from the builder's, and the split turns off for a lane class whose first-pass rate falls below its unsplit rate (T-6062).
