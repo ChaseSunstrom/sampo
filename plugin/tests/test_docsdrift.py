@@ -117,8 +117,8 @@ class TaskDocsDrift(_Repo):
             f.write("# Rules\n")
         subprocess.run(["git", "-C", self.repo, "add", "-A"], check=True)
         blockers, _ = docs.task_docs(self.repo, "rules/foreman.md and gone/NOPE.md")
-        self.assertEqual(blockers, ["docs impact names gone/NOPE.md, which doesn't exist",
-                                    "docs impact names rules/foreman.md, which doesn't exist (plugin/rules/foreman.md?)"])
+        # T-6026: a path suffix that exactly one touched doc has is that doc (the file is staged, so the task touched it)
+        self.assertEqual(blockers, ["docs impact names gone/NOPE.md, which doesn't exist"])
         os.makedirs(os.path.join(self.repo, "mods", "rules"))  # T-2000: several matches are all suggested
         with open(os.path.join(self.repo, "mods", "rules", "foreman.md"), "w") as f:
             f.write("# Rules\n")
@@ -213,3 +213,155 @@ class TaskDocsDrift(_Repo):
         self.append("NEW.md", "See `src/missing.py`.\n")
         blockers, _ = docs.task_docs(self.repo, "NEW.md")
         self.assertTrue(any("src/missing.py" in b for b in blockers))
+
+
+class DocsImpactResolve(_Repo):
+    """T-6026: a bare file name or path suffix that exactly one doc the task touched has is that doc: the close takes
+    it, writes the path into the brief and goes on. Zero or several candidates still refuse, and name them."""
+
+    def setUp(self):
+        super().setUp()
+        self.commit_all("docs with old drift")
+
+    def commit_all(self, msg):
+        subprocess.run(["git", "-C", self.repo, "add", "-A"], check=True)
+        subprocess.run(["git", "-C", self.repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", msg],
+                       check=True)
+
+    def head(self):
+        return subprocess.run(["git", "-C", self.repo, "rev-parse", "HEAD"], capture_output=True, text=True,
+                              check=True).stdout.strip()
+
+    def lane_edit(self, rel):
+        """The task: its start, then an edit the lane committed (HEAD moved past it, the working tree is clean)."""
+        base = self.head()
+        with open(os.path.join(self.repo, rel), "a") as f:
+            f.write("Updated by the task.\n")
+        self.commit_all("the lane's commit")
+        return base
+
+    def test_a_bare_name_one_touched_doc_has_resolves_and_is_written_into_the_impact(self):
+        write(self.repo, {"docs/planning.md": "# Plan\n"})
+        self.commit_all("planning doc")
+        base = self.lane_edit("docs/planning.md")
+        blockers, notes, impact = docs.check_docs(self.repo, "planning.md", base)
+        self.assertEqual(blockers, [])
+        self.assertEqual(impact, "docs/planning.md", "the brief records the resolved path")
+        self.assertTrue(any("taken as docs/planning.md" in n for n in notes), notes)
+
+    def test_a_path_suffix_with_one_touched_match_resolves(self):
+        write(self.repo, {"docs/references/audit.md": "# Audit\n"})
+        self.commit_all("audit doc")
+        base = self.lane_edit("docs/references/audit.md")
+        blockers, _, impact = docs.check_docs(self.repo, "references/audit.md", base)
+        self.assertEqual(blockers, [])
+        self.assertEqual(impact, "docs/references/audit.md")
+
+    def test_two_names_in_one_line_each_resolve_to_their_own_doc(self):
+        write(self.repo, {"docs/planning.md": "# Plan\n", "docs/references/audit.md": "# Audit\n"})
+        self.commit_all("two docs")
+        base = self.head()
+        self.append("docs/planning.md", "Changed.\n")
+        self.append("docs/references/audit.md", "Changed.\n")
+        self.commit_all("the lane's commit")
+        blockers, _, impact = docs.check_docs(self.repo, "planning.md and references/audit.md", base)
+        self.assertEqual(blockers, [])
+        self.assertEqual(impact, "docs/planning.md and docs/references/audit.md")
+
+    def test_several_touched_matches_refuse_and_name_each_one(self):
+        write(self.repo, {"docs/a/audit.md": "# A\n", "ops/audit.md": "# B\n"})
+        self.commit_all("two audits")
+        base = self.head()
+        self.append("docs/a/audit.md", "Changed.\n")
+        self.append("ops/audit.md", "Changed.\n")
+        self.commit_all("the lane's commit")
+        blockers, _, impact = docs.check_docs(self.repo, "audit.md", base)
+        self.assertEqual(blockers, ["docs impact names audit.md, which doesn't exist "
+                                    "(one of docs/a/audit.md, ops/audit.md?)"])
+        self.assertEqual(impact, "audit.md", "nothing resolved, so nothing is written")
+
+    def test_zero_matches_refuse_without_a_candidate(self):
+        blockers, _, impact = docs.check_docs(self.repo, "fm-reproducer.md", self.head())
+        self.assertEqual(blockers, ["docs impact names fm-reproducer.md, which doesn't exist"])
+        self.assertEqual(impact, "fm-reproducer.md")
+
+    def test_a_folder_part_that_matches_no_path_suffix_refuses(self):
+        # a typo in the folder part is no suffix of any tracked doc, so it is not taken for the one that has the name
+        write(self.repo, {"docs/planning.md": "# Plan\n"})
+        self.commit_all("planning doc")
+        base = self.lane_edit("docs/planning.md")
+        blockers, _, impact = docs.check_docs(self.repo, "guide/planning.md", base)
+        self.assertEqual(blockers, ["docs impact names guide/planning.md, which doesn't exist"])
+        self.assertEqual(impact, "guide/planning.md")
+
+    def test_an_untouched_single_match_still_refuses(self):
+        # T-4155: a doc the task never changed is not the doc it updated, even when it is the only one of that name
+        write(self.repo, {"vendor/x/CHANGELOG.md": "# Vendored\n"})
+        self.commit_all("vendored")
+        base = self.head()
+        blockers, notes, impact = docs.check_docs(self.repo, "CHANGELOG.md", base)
+        self.assertEqual(blockers, ["docs impact names CHANGELOG.md, which doesn't exist (vendor/x/CHANGELOG.md?)"])
+        self.assertEqual(impact, "CHANGELOG.md")
+
+    def test_finish_takes_the_one_doc_the_lane_committed_and_writes_its_path_into_the_brief(self):
+        # the close: the lane's commit is the task's change (it moved HEAD), the close goes on, the brief keeps the path
+        self.fm("init")
+        self.fm("task", "new", "Mid", "--type", "FEATURE", "--tier", "M", "--interpretation", "Reading 1: a. Reading 2: b.",
+                "--approach", "1) a; fails if: x 2) use what exists: b; fails if: y 3) do less: c; fails if: z Choice 1 (80%): a",
+                "--ac", "works :: python3 -c 'print(1)'", "--step", "build", "--focus")
+        write(self.repo, {"docs/planning.md": "# Plan\n"})
+        self.commit_all("the lane's commit")
+        self.fm("task", "step", "T-0001", "done", "1", "--evidence", "python3 -c 'print(0)'", "ok")
+        p = self.fm("task", "finish", "T-0001", "--audit", "self", "--lens", "intent: ok", "--lens", "edge: ok",
+                    "--docs", "planning.md", "--lesson", "the path is recorded", check=False)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        from sampo import core as c
+        b = next(b for b in c.load_briefs(c.find_project(self.repo)) if b.id == "T-0001")
+        self.assertEqual(b.status, "done")
+        self.assertEqual(b.section("Docs impact").strip(), "docs/planning.md")
+
+    def test_drift_the_lane_committed_in_the_doc_it_names_stays_a_note(self):
+        # T-6026: 'touched' is the task's own change (its commits count), but drift stays measured against HEAD, as it
+        # was: drift in a committed doc is a note, not a blocker (the T-0035 rule for old drift)
+        write(self.repo, {"docs/planning.md": "# Plan\n"})
+        self.commit_all("planning doc")
+        base = self.head()
+        self.append("docs/planning.md", "See `src/never-written.py`.\n")
+        self.commit_all("the lane's commit")
+        blockers, notes, impact = docs.check_docs(self.repo, "planning.md", base)
+        self.assertEqual(blockers, [])
+        self.assertTrue(any("src/never-written.py" in n for n in notes), notes)
+        self.assertEqual(impact, "docs/planning.md")
+
+    def test_finish_closes_a_lane_whose_own_commit_carries_drift_and_prints_the_note(self):
+        # the close goes on past drift the lane committed in the doc it names, and prints that drift as a note
+        self.fm("init")
+        self.fm("task", "new", "Mid", "--type", "FEATURE", "--tier", "M", "--interpretation", "Reading 1: a. Reading 2: b.",
+                "--approach", "1) a; fails if: x 2) use what exists: b; fails if: y 3) do less: c; fails if: z Choice 1 (80%): a",
+                "--ac", "works :: python3 -c 'print(1)'", "--step", "build", "--focus")
+        write(self.repo, {"docs/planning.md": "# Plan\n"})
+        self.commit_all("planning doc")
+        self.append("docs/planning.md", "See `src/never-written.py`.\n")
+        self.commit_all("the lane's commit")
+        self.fm("task", "step", "T-0001", "done", "1", "--evidence", "python3 -c 'print(0)'", "ok")
+        p = self.fm("task", "finish", "T-0001", "--audit", "self", "--lens", "intent: ok", "--lens", "edge: ok",
+                    "--docs", "planning.md", "--lesson", "drift stays a note", check=False)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("src/never-written.py", p.stdout + p.stderr, "the drift is printed as a note")
+        from sampo import core as c
+        b = next(b for b in c.load_briefs(c.find_project(self.repo)) if b.id == "T-0001")
+        self.assertEqual(b.status, "done")
+        self.assertEqual(b.section("Docs impact").strip(), "docs/planning.md")
+
+    def test_the_resolved_impact_resolves_again_to_nothing(self):
+        # a second close reads the path the first one wrote: it exists, so there is nothing to resolve
+        write(self.repo, {"docs/planning.md": "# Plan\n"})
+        self.commit_all("planning doc")
+        base = self.lane_edit("docs/planning.md")
+        _, _, impact = docs.check_docs(self.repo, "planning.md", base)
+        blockers, _, again = docs.check_docs(self.repo, impact, base)
+        self.assertEqual((blockers, again), ([], "docs/planning.md"))
+
+    def append(self, rel, text):
+        with open(os.path.join(self.repo, rel), "a") as f:
+            f.write(text)

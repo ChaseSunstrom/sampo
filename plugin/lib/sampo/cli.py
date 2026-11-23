@@ -1172,7 +1172,10 @@ def cmd_task(args):
         touches, risky, gone, diff = _task_view(p, pre)
         ptier, ptier_why = _task_tier(p, pre, touches, diff)  # T-5715: the process tier the audits and fields follow
         owed = c.owes_close_fields(ptier, pre.tier)
-        drift, notes = sdocs.task_docs(p.root, pre.section("Docs impact")) if owed else ([], [])
+        # T-6026: the docs the task touched are its own changes since its start (a lane commits them), and the impact
+        # text keeps the path each bare name resolved to
+        drift, notes, impact = sdocs.check_docs(p.root, pre.section("Docs impact"), c.task_base(p.root, pre)) \
+            if owed else ([], [], None)
 
         lesson = c.plain(args.lesson or "").strip()
         files = list(touches)
@@ -1202,6 +1205,8 @@ def cmd_task(args):
                     f" — one call settles most of it: sampo task finish {b.id} --run \"<test cmd>\" --audit \"<how>\""
                     + (" --lens \"<lens>: <result>\" … --docs \"<…>\" --lesson \"<…>\"" if owed else ""))
                 raise c.PolicyError(f"{b.id} can't be marked done{lead}:\n  - " + "\n  - ".join(reasons))
+            if impact is not None and impact != b.section("Docs impact"):  # T-6026: the brief records the resolved path
+                b.set_section("Docs impact", impact)
             if lesson:
                 old = b.section("Lessons").rstrip()
                 b.set_section("Lessons", (old + "\n" if old else "") + f"- {lesson}")
@@ -3196,7 +3201,7 @@ def _done_only_gaps(p, b, args, ptier=None):
     gaps = []
     if c.owes_close_fields(ptier or c.ptier_now(b)[0], b.tier):  # T-5715: normal and risky only
         impact = c.redact(args.docs) if args.docs else b.section("Docs impact")
-        gaps += sdocs.task_docs(p.root, impact)[0]
+        gaps += sdocs.task_docs(p.root, impact, c.task_base(p.root, b))[0]  # T-6026: the same base as fm task done
     return gaps + _child_gaps(p, b) + _kind_gaps(b, c.first_touch(p, b.id))
 
 

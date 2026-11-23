@@ -408,7 +408,8 @@ def claims(root, files=None):
 
 def _added_text(root, rel):
     """What the working tree adds to *rel* against HEAD: the + lines of its diff, or the whole file when git does
-    not track it yet. A doc's drift is the task's only where it sits in that text (T-0035)."""
+    not track it yet. A doc's drift is the task's only where it sits in that text (T-0035). Drift is measured against
+    HEAD on purpose: drift a lane committed in a named doc stays a note (T-6026 keeps that); only 'touched' moves."""
     try:
         tracked = subprocess.run(["git", "-C", root, "ls-files", "--error-unmatch", "--", rel],
                                  capture_output=True, text=True, timeout=30).returncode == 0
@@ -425,11 +426,13 @@ def _added_text(root, rel):
         return ""
 
 
-def _touched_docs(root):
-    """T-4155: the files the working tree changes against HEAD, and the untracked ones (root-relative); empty when git
-    can't say, so a name is then never taken for a doc on a guess."""
+def _touched_docs(root, base=None):
+    """T-4155: the files the working tree changes against the task's start (base), and the untracked ones
+    (root-relative); empty when git can't say, so a name is then never taken for a doc on a guess. T-6026: the start,
+    not HEAD: a lane commits its work, and a doc it committed is still a doc the task updated (HEAD had none)."""
+    rev = base if base and re.fullmatch(r"[0-9a-f]{7,64}", base) else "HEAD"  # a hex id only: never an option to git
     try:
-        changed = subprocess.run(["git", "-C", root, "diff", "--name-only", "--relative", "HEAD", "--"],
+        changed = subprocess.run(["git", "-C", root, "diff", "--name-only", "--relative", rev, "--"],
                                  capture_output=True, text=True, timeout=30)
         fresh = subprocess.run(["git", "-C", root, "ls-files", "--others", "--exclude-standard"],
                                capture_output=True, text=True, timeout=30)
@@ -440,10 +443,18 @@ def _touched_docs(root):
     return set(changed.stdout.splitlines()) | set(fresh.stdout.splitlines())
 
 
-def task_docs(root, docs_impact):
+def task_docs(root, docs_impact, base=None):
     """For fm task done (M/L): (blockers, notes). Docs the task says it updated must exist and add no drift; drift in
     other docs, and old drift in the ones it updated, is reported, not blocking, so an old problem never holds up
     unrelated work."""
+    blockers, notes, _ = check_docs(root, docs_impact, base)
+    return blockers, notes
+
+
+def check_docs(root, docs_impact, base=None):
+    """task_docs, and the Docs impact text the brief keeps: as given, but each bare file name or path suffix that
+    resolved to its one touched doc written as that doc's path (T-6026). `base` is where the task's own changes start
+    (its task_base); none reads HEAD."""
     named = {os.path.normpath(n) for n in re.findall(r"[\w./-]+\.md\b", docs_impact or "")}
     gone = [n for n in sorted(named) if not os.path.exists(os.path.join(root, n))]
     try:  # T-1995: name the one tracked doc it most likely meant ("rules/sampo.md" for plugin/rules/sampo.md)
@@ -453,13 +464,13 @@ def task_docs(root, docs_impact):
         tracked = []
     meant = {n: [t for t in tracked if t.endswith("/" + n)] for n in gone}
     # T-4148: a bare file name ("verification.md": 11 refusals for docs/verification.md) that exactly one tracked doc
-    # has is that doc, as `git add verification.md` would find it; a name with a folder part may be a typo and still
-    # blocks, with the hint (T-1995). The doc it was taken for is checked for drift in its place.
-    # It must be on disk (git ls-files lists a doc `rm` deleted) and one the task's working tree changed against HEAD (a
-    # vendor/x/CHANGELOG.md nobody touched is no doc this task updated): else it stays missing, with the hint.
-    cand = {n: meant[n][0] for n in gone if "/" not in n and len(meant[n]) == 1
-            and os.path.exists(os.path.join(root, meant[n][0]))}
-    touched = _touched_docs(root) if cand else set()
+    # has is that doc, as `git add verification.md` would find it; the doc it was taken for is checked for drift in its
+    # place. T-6026: a path suffix ("references/audit.md" for docs/references/audit.md) is taken the same way; a typo in
+    # a folder part matches no tracked path, so it still blocks, with the hint (T-1995).
+    # It must be on disk (git ls-files lists a doc `rm` deleted) and one the task's working tree changed since its
+    # start (a vendor/x/CHANGELOG.md nobody touched is no doc this task updated): else it stays missing, with the hint.
+    cand = {n: meant[n][0] for n in gone if len(meant[n]) == 1 and os.path.exists(os.path.join(root, meant[n][0]))}
+    touched = _touched_docs(root, base) if cand else set()
     took = {n: t for n, t in cand.items() if t in touched}
     if took:
         named = (named - set(took)) | set(took.values())
@@ -467,6 +478,7 @@ def task_docs(root, docs_impact):
     blockers = [f"docs impact names {n}, which doesn't exist" + (f" ({meant[n][0]}?)" if len(meant[n]) == 1 else
                 f" (one of {', '.join(meant[n][:3])}?)" if meant[n] else "") for n in gone]  # T-2000: up to three
     notes = [f"docs impact names {n}: taken as {t}, the one tracked doc of that name" for n, t in sorted(took.items())]
+    text = re.sub(r"[\w./-]+\.md\b", lambda m: took.get(os.path.normpath(m.group(0)), m.group(0)), docs_impact or "")
     added = {}
     for f in scan(root):
         line = f"{f['file']}: {f['kind']} {f['detail']}"
@@ -492,7 +504,7 @@ def task_docs(root, docs_impact):
             blockers.append(f"doc claim in a doc this task updated: {line}")
         else:
             notes.append(line)
-    return blockers, notes
+    return blockers, notes, text
 
 
 def cmd_docs(args):
