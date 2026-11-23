@@ -8,6 +8,7 @@ A refusal names the numbers. The user's yes to `fm ask ID core` given after a re
 never a decision, never a yes for an earlier commit. The user's standing core yes passes a hold made only of
 footprint, verb-count or hook-speed rows (T-3219), never one where the guard blocks less, a case was removed or the gate
 couldn't run. A gate that can't run refuses with the reason, and the per-commit yes passes that too."""
+import concurrent.futures
 import contextlib
 import hashlib
 import hmac
@@ -43,6 +44,8 @@ _RUNNER = ("import json, os, sys\nsys.path.insert(0, sys.argv[1])\nfrom sampo im
            "print(json.dumps([v.get(r._key(x, y or os.path.expanduser('~'))) for x, y in cmds]))\n")
 LOAD_BAND = 1.5  # T-3176: a cached base bench is reused only when the load per CPU now is within this factor of its own
 CACHE_S = 86400  # T-3176: the base's bench and replay, kept per base tree hash, are good for a day
+REPLAY_CHUNK = 250  # T-6154: guard replay commands per process (a chunk is one process with a state folder of its own)
+REPLAY_JOBS = 4  # T-6154: chunks replayed at once (the machine has 16 cores, shared with up to ~100 agents)
 
 
 def _git(main, *a, text=False, input=None):
@@ -116,17 +119,39 @@ def _env(state):
     return dict({k: os.environ[k] for k in keep if k in os.environ}, FOREMAN_STATE=state)
 
 
-def _verdicts(plugin, cmds):
-    """Each command's verdict from this tree's own guard, judged by the base's fmreplay."""
+def _run_chunk(plugin, cmds):
+    """One replay process's verdicts for cmds, in a state folder of its own; None when that process timed out."""
     # T-2363: a hook the bench started may still be writing its state as this returns; a leftover file is no reason
     # for the gate to fail (a gate that can't run refuses)
     with tempfile.TemporaryDirectory(prefix="fm-gate-state-", ignore_cleanup_errors=True) as state:
-        r = subprocess.run([sys.executable, "-I", "-c", _RUNNER, os.path.join(plugin, "lib")], input=json.dumps(cmds),
-                           capture_output=True, text=True, timeout=600, env=_env(state))
+        try:
+            r = subprocess.run([sys.executable, "-I", "-c", _RUNNER, os.path.join(plugin, "lib")], input=json.dumps(cmds),
+                               capture_output=True, text=True, timeout=600, env=_env(state))
+        except subprocess.TimeoutExpired:
+            return None
     got = json.loads(r.stdout or "null")
     if not isinstance(got, list) or len(got) != len(cmds):
         raise RuntimeError(f"guard replay: {(r.stderr or r.stdout).strip()[-160:]}")
     return got
+
+
+def _verdicts(plugin, cmds):
+    """Each command's verdict from this tree's own guard, judged by the base's fmreplay. T-6154: the commands go in chunks
+    of REPLAY_CHUNK, REPLAY_JOBS processes at once, so one long replay on a loaded machine can't time the gate out; a
+    chunk that times out is run once more, alone, before the gate says it couldn't run."""
+    chunks = [cmds[i:i + REPLAY_CHUNK] for i in range(0, len(cmds), REPLAY_CHUNK)]
+    if not chunks:
+        return []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, min(REPLAY_JOBS, len(chunks)))) as pool:
+        parts = list(pool.map(lambda ch: _run_chunk(plugin, ch), chunks))
+    out = []
+    for ch, got in zip(chunks, parts):  # the pool is done: a retry has the machine to itself
+        if got is None:
+            got = _run_chunk(plugin, ch)
+            if got is None:
+                raise RuntimeError(f"guard replay: a chunk of {len(ch)} commands timed out twice")
+        out.extend(got)
+    return out
 
 
 def _bench(plugin):

@@ -776,5 +776,97 @@ class KeyPath(unittest.TestCase):  # T-3192: the MAC key lives in the account's 
         self.assertEqual(os.listdir(self.elsewhere), ["selfgate.key"])
 
 
+class ReplayChunks(unittest.TestCase):  # T-6154: the guard replay runs in chunks, a few processes at once; a timed-out chunk runs once more alone
+    CMDS = [(f"cmd {i}", "") for i in range(10)]
+
+    def fake(self, hang=None):
+        """Stands in for each replay process (subprocess.run, so no Popen pid is ever killed): a command's verdict is its own
+        text, so order shows. hang(cmds, attempt) True makes that run time out. Returns (run, log): one row per run."""
+        import subprocess
+        import threading
+        import time
+        lock, log, live, tries = threading.Lock(), [], [0], {}
+
+        def run(args, input=None, env=None, **kw):
+            cmds = json.loads(input)
+            key = json.dumps(cmds)
+            with lock:
+                tries[key] = tries.get(key, 0) + 1
+                attempt = tries[key]
+                live[0] += 1
+                log.append({"cmds": cmds, "state": env["FOREMAN_STATE"], "attempt": attempt, "live": live[0]})
+            try:
+                time.sleep(0.05)
+                if hang and hang(cmds, attempt):
+                    raise subprocess.TimeoutExpired(args, 600)
+                return subprocess.CompletedProcess(args, 0, json.dumps([f"verdict {c}" for c, _ in cmds]), "")
+            finally:
+                with lock:
+                    live[0] -= 1
+        return run, log
+
+    def replay(self, cmds, chunk, jobs, hang=None):
+        from unittest import mock
+        from sampo import selfgate as g
+        run, log = self.fake(hang)
+        with mock.patch.object(g, "REPLAY_CHUNK", chunk), mock.patch.object(g, "REPLAY_JOBS", jobs), \
+                mock.patch.object(g.subprocess, "run", side_effect=run):
+            return g._verdicts("/nonexistent/plugin", cmds), log
+
+    def test_the_chunks_keep_the_order_and_equal_one_process(self):
+        chunked, log = self.replay(self.CMDS, chunk=3, jobs=4)
+        one, one_log = self.replay(self.CMDS, chunk=100, jobs=4)
+        self.assertEqual(chunked, [f"verdict cmd {i}" for i in range(10)])
+        self.assertEqual(chunked, one)
+        self.assertEqual(len(log), 4, "10 commands in chunks of 3 are 4 runs")
+        self.assertEqual(len(one_log), 1, "one chunk is one process, as before")
+
+    def test_no_more_than_the_jobs_run_at_once(self):
+        got, log = self.replay([(f"cmd {i}", "") for i in range(12)], chunk=1, jobs=3)
+        self.assertEqual(got, [f"verdict cmd {i}" for i in range(12)])
+        self.assertEqual(len(log), 12)
+        self.assertLessEqual(max(r["live"] for r in log), 3)
+        self.assertGreater(max(r["live"] for r in log), 1, "the chunks ran beside each other")
+
+    def test_each_chunk_gets_its_own_state_folder_and_it_is_removed(self):
+        import os
+        _, log = self.replay(self.CMDS, chunk=3, jobs=4)
+        states = [r["state"] for r in log]
+        self.assertEqual(len(set(states)), len(states))
+        self.assertFalse(any(os.path.exists(s) for s in states), "each state folder is cleaned up when its run ends")
+
+    def test_a_timed_out_chunk_is_run_once_more_alone(self):
+        got, log = self.replay(self.CMDS, chunk=3, jobs=4,
+                               hang=lambda cmds, attempt: attempt == 1 and ["cmd 4", ""] in cmds)
+        self.assertEqual(got, [f"verdict cmd {i}" for i in range(10)])
+        retries = [r for r in log if r["attempt"] == 2]
+        self.assertEqual(len(retries), 1, "the timed-out chunk is run once more")
+        self.assertEqual(retries[0]["live"], 1, "the retry runs alone, no other chunk in flight")
+        self.assertEqual(len(log), 5, "four chunks and one retry")
+
+    def test_a_real_replay_in_chunks_equals_one_process(self):  # the guard itself, no stub: chunks of 2 against one process
+        import os
+        from sampo import selfgate as g
+        plugin = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        cmds = [["ls", ""], ["rm -rf /", ""], ["git status", ""], ["rm -rf ~", ""], ["pwd", ""]]
+        with mock.patch.object(g, "REPLAY_CHUNK", 2), mock.patch.object(g, "REPLAY_JOBS", 3):
+            chunked = g._verdicts(plugin, cmds)
+        with mock.patch.object(g, "REPLAY_CHUNK", 100):
+            one = g._verdicts(plugin, cmds)
+        self.assertEqual(chunked, one)
+        self.assertEqual(len(one), 5)
+        self.assertNotEqual(one[1], "allow", "the guard still blocks rm -rf /")
+
+    def test_a_chunk_that_times_out_twice_refuses_with_the_reason(self):
+        from unittest import mock
+        from sampo import selfgate as g
+        run, log = self.fake(hang=lambda cmds, attempt: ["cmd 4", ""] in cmds)
+        with mock.patch.object(g, "REPLAY_CHUNK", 3), mock.patch.object(g, "REPLAY_JOBS", 4), \
+                mock.patch.object(g.subprocess, "run", side_effect=run), \
+                self.assertRaisesRegex(RuntimeError, "guard replay: .*timed out twice"):
+            g._verdicts("/nonexistent/plugin", self.CMDS)
+        self.assertEqual(sum(1 for r in log if ["cmd 4", ""] in r["cmds"]), 2, "exactly one retry, then the refusal")
+
+
 if __name__ == "__main__":
     unittest.main()
