@@ -364,6 +364,14 @@ def weekly_rate(now=None):
     return max(0.0, (same[-1]["used"] - same[0]["used"]) * 3600 / span)
 
 
+def hours_to_cap(week, rate):
+    """T-6221: the hours until the week reaches 100% at the recent burn rate (% per hour), or None: no weekly reading, an
+    unknown rate, or a flat or falling week. An unknown rate never holds, as in pace()."""
+    if not _num(week) or not _num(rate) or rate <= 0:
+        return None
+    return max(0.0, (100 - week) / rate)
+
+
 def pace(week, now=None):
     """T-3902: the weekly pace against the horizon, or None (no horizon, or no weekly reading). allowance: the % per hour
     left for the hours to the horizon; rate: the recent burn (weekly_rate); projected: the % at the horizon at that rate;

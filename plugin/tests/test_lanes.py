@@ -7758,5 +7758,80 @@ class StaleCodeLoop(unittest.TestCase):
         self.assertTrue(any("exec" in str(a) for a in log.call_args_list), "the failed exec is logged")
 
 
+class UsageCutoff(ForemanTestCase):
+    """T-6221: a brand-new lane is refused when the weekly cap is projected inside the p90 brief-to-merge time plus 30 min;
+    urgent work, a recovery or resume, --why, an unknown rate and a far cap still brief."""
+
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        self.p = c.find_project(self.repo)
+
+    def task(self):
+        return first(self.fm("task", "new", "Cutoff probe", "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true",
+                             "--step", "s", "--json").stdout)["id"]
+
+    def brief(self, tid, week, rate, p90=90.0, why="", resume=None, urgent=False):
+        from sampo import budget as bud
+        b = c.find_brief(self.p, tid)
+        if urgent:
+            b.meta["priority"] = "urgent"
+        args = argparse.Namespace(json=True, model=None, why=why)
+        with mock.patch.object(bud, "weekly_rate", return_value=rate), \
+                mock.patch.object(bud, "rate_limits", return_value={"seven_day": week}), \
+                mock.patch.object(slanes, "brief_to_merge_p90", return_value=(p90, 20)), \
+                contextlib.redirect_stdout(io.StringIO()):
+            slanes.builder_brief(self.p, b, args, resume_branch=resume)
+
+    def test_a_new_lane_near_the_cap_is_refused_with_the_hours_and_the_p90(self):
+        tid = self.task()  # 97% used at 1.8 %/h: 100 min to the cap, under the 90 min p90 plus 30
+        with self.assertRaises(c.PolicyError) as e:
+            self.brief(tid, 97.0, 1.8)
+        msg = str(e.exception)
+        self.assertIn("1.7 h", msg)
+        self.assertIn("p90", msg)
+        self.assertIn("90 min", msg)
+        self.assertNotIn("\n", msg)
+        self.assertFalse(os.path.exists(os.path.join(self.p.dir, "audits", f"{tid}.builder.md")))
+
+    def test_a_refusal_holds_the_batch(self):
+        tid = self.task()
+        with self.assertRaises(c.PolicyError) as e:
+            self.brief(tid, 97.0, 1.8)
+        self.assertTrue(getattr(e.exception, "batch", False))
+
+    def test_urgent_work_still_briefs(self):
+        tid = self.task()
+        self.brief(tid, 97.0, 1.8, urgent=True)
+        self.assertTrue(os.path.exists(os.path.join(self.p.dir, "audits", f"{tid}.builder.md")))
+
+    def test_a_resume_still_briefs(self):
+        tid = self.task()
+        self.brief(tid, 97.0, 1.8, resume="lane/x")
+        self.assertTrue(os.path.exists(os.path.join(self.p.dir, "audits", f"{tid}.builder.md")))
+
+    def test_why_overrides_and_is_printed(self):
+        tid = self.task()
+        self.brief(tid, 97.0, 1.8, why="finish before the reset")
+        self.assertTrue(os.path.exists(os.path.join(self.p.dir, "audits", f"{tid}.builder.md")))
+
+    def test_an_unknown_rate_never_holds(self):
+        tid = self.task()
+        self.brief(tid, 97.0, None)
+        self.assertTrue(os.path.exists(os.path.join(self.p.dir, "audits", f"{tid}.builder.md")))
+
+    def test_a_cap_far_away_briefs(self):
+        tid = self.task()  # 40% used at 0.1 %/h: 600 h to the cap
+        self.brief(tid, 40.0, 0.1)
+        self.assertTrue(os.path.exists(os.path.join(self.p.dir, "audits", f"{tid}.builder.md")))
+
+    def test_hours_to_cap_is_the_room_over_the_rate(self):
+        from sampo import budget as bud
+        self.assertAlmostEqual(bud.hours_to_cap(97.0, 1.8), 3 / 1.8)
+        self.assertIsNone(bud.hours_to_cap(97.0, None))
+        self.assertIsNone(bud.hours_to_cap(97.0, 0.0))
+        self.assertEqual(bud.hours_to_cap(100.0, 1.0), 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

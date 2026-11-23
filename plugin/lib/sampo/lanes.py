@@ -1826,6 +1826,34 @@ def land_backlog_cap():
     return LAND_HOLD_TRAINS * train.BATCH_MAX
 
 
+CUTOFF_MARGIN_MIN = 30  # T-6221: a new lane briefed this close to the weekly cap than its p90 to merge is stranded mid-flight
+CUTOFF_FALLBACK_MIN = 90  # T-6221: the p90 brief-to-merge time when no lane has landed in the window yet
+CUTOFF_SAMPLE = 20  # T-6221: the landed lanes the p90 brief-to-merge time reads: the newest this many
+
+
+def brief_to_merge_p90(p, now=None):
+    """T-6221: (p90 minutes from a lane's brief to its merge over the newest CUTOFF_SAMPLE landed lanes, how many were
+    read). CUTOFF_FALLBACK_MIN and 0 when none has landed in LANDING_WINDOW_S. From the ledger's lane_builder and
+    lane_merge events: a merge pairs with the latest brief of its task before it."""
+    since = c.iso((now or time.time()) - LANDING_WINDOW_S)
+    briefed, mins = {}, []
+    for e in c.ledger_events(p, ("lane_builder", "lane_merge"), since):
+        tids = [x.strip() for x in str(e.get("task") or "").split(",") if x.strip()]
+        at = c.parse_ts(e.get("ts"))
+        if e.get("event") == "lane_builder":
+            for tid in tids:
+                briefed[tid] = at
+            continue
+        for tid in tids:
+            a = briefed.pop(tid, None)
+            if a is not None and at is not None and at > a:
+                mins.append((at - a).total_seconds() / 60)
+    last = sorted(mins[-CUTOFF_SAMPLE:])
+    if not last:
+        return CUTOFF_FALLBACK_MIN, 0
+    return last[max(0, math.ceil(0.9 * len(last)) - 1)], len(last)
+
+
 def never_accepted(p, briefs, now=None):
     """T-4938: [(task id, age in seconds)], oldest first, of finished lanes (awaiting_merge: commits past trunk, clean,
     quiet) that carry no check_state and no accepted_at and whose last commit is ORPHAN_H hours old. Such a lane never
@@ -5645,6 +5673,22 @@ def builder_brief(p, b, args, resume_branch=None, after="", stacked=None, check=
     # both caps (21 waiting lanes refused sampo do sweep-lanes's recovery of T-5771); a brand-new lane is held as before
     # T-5933: a branch already merged into HEAD (resume --force on a leftover) is no unfinished work: the bar still holds
     queue = [] if resume_branch is not None and not _merged_in_head(c.main_worktree(p.root) or p.root, b.id) else waiting
+    # T-6221: a new lane that cannot merge before the weekly cap cuts the sessions off is stranded mid-flight (uncommitted
+    # work, an unreviewed tip): held beside the backlog hold; urgent work, a recovery or resume finishes work, so it passes
+    rate = budget.weekly_rate()
+    left = budget.hours_to_cap(budget.rate_limits().get("seven_day"), rate)
+    if left is not None and resume_branch is None and b.priority != "urgent":
+        p90, n = brief_to_merge_p90(p)
+        if left * 60 < p90 + CUTOFF_MARGIN_MIN:
+            known = f"p90 of the last {n} landed lanes" if n else "no lane has landed yet, so the default"
+            msg = (f"the weekly cap is projected in {left:.1f} h at {rate:g}%/h: a lane briefed now needs about {p90:.0f} "
+                   f"min to merge ({known}) plus {CUTOFF_MARGIN_MIN} min, and would be stranded when usage runs out; "
+                   f"finish the lanes in flight first (sampo next)")
+            if why:
+                print(f"sampo: {b.id} briefed inside the usage cutoff ({left:.1f} h to the cap, the p90 is {p90:.0f} min): "
+                      f"{why}", file=sys.stderr)
+            else:
+                raise _batch_refusal(c.PolicyError(f"{msg}, or give a reason (sampo lane brief {b.id} --why REASON); {stay}"))
     if len(queue) > hold and b.priority != "urgent":  # T-4938: finishing beats starting; urgent work drains the pile
         if why:
             print(f"sampo: {b.id} briefed past the land backlog ({len(queue)} finished lanes wait to land, the bar is "
