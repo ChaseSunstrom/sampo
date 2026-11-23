@@ -152,9 +152,20 @@ def _no_verdict(code, out, limit):
         return None
     if code == 124:
         return f"timed out after {limit} s (no verdict)"
-    if code in (130, 143) or (code > 128 and ENDED_LINE.search(out)):
+    if ended_from_outside(code, out):
         return "ended from outside (no verdict)"
     return None
+
+
+def ended_from_outside(code, out):
+    """T-6032: True when a run's outside end (exit 130/143, or another signal's 128+n with run.py's INCOMPLETE line) left
+    it no verdict: a red line in the output is still a red, whatever ended the run. One reading for the ambient runs and
+    the post-merge verify (lanes._pm_ended_check)."""
+    from sampo import release
+    out = out or ""
+    if release._TEST_RED.search(out) or FAILED.search(out):
+        return False
+    return code in (130, 143) or (code > 128 and bool(ENDED_LINE.search(out)))
 
 
 def _say(p, text, keep_red=False):

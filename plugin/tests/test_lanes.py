@@ -4620,6 +4620,102 @@ class PostMergeVerify(ForemanTestCase):
         with self.assertRaises(c.PolicyError):
             slanes._pm_green_at(self.p, self.repo, sha)
 
+    # a verify suite a waiting ship ended from outside (T-6032): run.py's own ending line, exit 143 (SIGTERM)
+    ENDED = ("echo 'run.py: ended from outside (SIGTERM) after 5 s: the classes still running were killed, the classes "
+             "not started were not run'; echo 'not run (ended from outside): 3'; exit 143")
+
+    def test_a_verify_run_a_ship_ended_leaves_the_merge_pending_never_red_never_reverted(self):  # T-6032
+        os.environ["FM_POSTMERGE_CMD"] = self.ENDED
+        self.addCleanup(os.environ.pop, "FM_POSTMERGE_CMD", None)
+        sha = self.land("a", bad=True)
+        slanes.pm_run(self.p, self.repo)
+        self.assertEqual(self.state(sha), "pending", "no result: it runs again after the ship")
+        self.assertTrue(os.path.exists(os.path.join(self.repo, "bad.txt")), "nothing was reverted")
+        r = slanes.pm_records(self.p)[sha]
+        self.assertFalse(r.get("tries"), "an end from outside is no try: the next pass counts none against it")
+        self.assertTrue(c.ledger_events(self.p, ["postmerge_ended"]))
+
+    def test_an_alone_rerun_of_a_red_class_that_a_ship_ended_is_no_red_alone_and_reverts_nothing(self):  # T-6032
+        os.environ["FM_POSTMERGE_RERUN"] = self.ENDED  # the full run was red; its alone-rerun was ended from outside
+        self.addCleanup(os.environ.pop, "FM_POSTMERGE_RERUN", None)
+        sha = self.land("a", bad=True)
+        slanes.pm_run(self.p, self.repo)
+        self.assertEqual(self.state(sha), "pending")
+        self.assertTrue(os.path.exists(os.path.join(self.repo, "bad.txt")), "nothing was reverted")
+        self.assertTrue(c.ledger_events(self.p, ["postmerge_ended"]))
+
+    def test_a_probe_or_alone_rerun_a_ship_ended_judges_nothing(self):  # T-6032
+        sha = self.land("a")
+        with self.assertRaises(c.PolicyError) as got:
+            slanes._pm_cmd_green_at(self.repo, sha, self.ENDED)
+        self.assertIn("ended from outside", str(got.exception))
+        self.assertFalse(slanes._pm_cmd_green_at(self.repo, sha, "exit 1"), "a plain red stays a red")
+
+    def test_a_shape_pass_red_whose_alone_rerun_a_ship_ended_is_no_short_red_for_a_probe(self):  # T-6032
+        os.environ["FM_POSTMERGE_SHAPE"] = "echo 'FAIL: test_x (test_mod.Cls.test_x)'; exit 1"
+        os.environ["FM_POSTMERGE_RERUN"] = self.ENDED
+        for k in ("FM_POSTMERGE_SHAPE", "FM_POSTMERGE_RERUN"):
+            self.addCleanup(os.environ.pop, k, None)
+        sha = self.land("a")
+        reds, short = [], []
+        with self.assertRaises(slanes._PmEnded):  # not "red alone": the probe answers nothing, it does not name classes
+            slanes._pm_green_at(self.p, self.repo, sha, reds, short)
+        self.assertEqual((reds, short), ([], []))
+
+    def test_a_probe_at_head_a_ship_ended_leaves_the_pass_quiet_and_the_oldest_pending(self):  # T-6032
+        os.environ["FM_POSTMERGE_CMD"] = self.ENDED
+        self.addCleanup(os.environ.pop, "FM_POSTMERGE_CMD", None)
+        a, b = self.land("a", bad=True), self.land("b")
+        slanes.pm_run(self.p, self.repo)  # no PolicyError leaves the pass
+        self.assertEqual([self.state(a), self.state(b)], ["pending", "pending"])
+        self.assertTrue(os.path.exists(os.path.join(self.repo, "bad.txt")), "nothing was reverted")
+        self.assertEqual(len(c.ledger_events(self.p, ["postmerge_ended"])), 1, "the oldest, whose claim the probe held, is the one named")
+        self.assertTrue(c.ledger_events(self.p, ["postmerge_ended"]))
+
+    def test_a_verify_a_ship_keeps_ending_never_reaches_unverified_and_is_never_red(self):  # T-6032
+        os.environ["FM_POSTMERGE_CMD"] = self.ENDED
+        self.addCleanup(os.environ.pop, "FM_POSTMERGE_CMD", None)
+        sha = self.land("a", bad=True)
+        for _ in range(8):  # a day of ships: the existing tries (3 = unverified) are never spent by an end
+            slanes.pm_run(self.p, self.repo)
+            r = slanes.pm_records(self.p)[sha]
+            self.assertEqual((r["state"], r.get("tries", 0)), ("pending", 0), "an end is no try: no verdict is no failure")
+        self.assertTrue(os.path.exists(os.path.join(self.repo, "bad.txt")), "never reverted")
+        os.environ["FM_POSTMERGE_CMD"] = "exit 0"
+        slanes.pm_run(self.p, self.repo)  # and the pass after the last ship gives the merge its verdict
+        self.assertEqual(self.state(sha), "green")
+
+    def test_a_plain_kill_of_a_verify_with_a_red_line_is_still_red_and_one_without_is_no_verdict(self):  # T-6032
+        ended = slanes._PmEnded
+        slanes._pm_ended_check(143, "FAIL: test_x (test_mod.Cls.test_x)\n")  # a runner that printed FAIL failed
+        slanes._pm_ended_check(1, "ended from outside")  # an exit 1 is the run's own
+        with self.assertRaises(ended):
+            slanes._pm_ended_check(143, "")  # the same reading the ambient runs use: a 143 with no red is no verdict
+        with self.assertRaises(ended):
+            slanes._pm_ended_check(130, "INCOMPLETE (ended from outside)\n")
+
+    def test_a_settle_run_a_ship_ended_stamps_nothing_and_runs_again(self):  # T-6032
+        a = self.land("a", bad=True)
+        slanes.pm_set(self.p, a, state="conflict", classes=["test_mod.Cls"])
+        with unittest.mock.patch.object(slanes, "pm_rerun_cmd", return_value=self.ENDED):
+            self.assertFalse(slanes._pm_settle(self.p, self.repo, a))
+        r = slanes.pm_records(self.p)[a]
+        self.assertEqual(r["state"], "conflict", "no verdict: it stays a conflict")
+        self.assertNotIn("settle_head", r, "and is not stamped as checked, so the next pass settles it again")
+
+    def test_a_merge_a_ship_ended_is_run_again_by_the_next_pass_and_a_start_verify_spawns_it(self):  # T-6032
+        os.environ["FM_POSTMERGE_CMD"] = self.ENDED
+        self.addCleanup(os.environ.pop, "FM_POSTMERGE_CMD", None)
+        sha = self.land("a")
+        slanes.pm_run(self.p, self.repo)
+        self.assertEqual(self.state(sha), "pending")
+        with unittest.mock.patch.object(slanes, "pm_spawn") as spawn:  # the train's trigger: a pending record owes a pass
+            train.start_verify(self.p, self.repo, [False])
+        self.assertEqual(spawn.call_count, 1, "a pending record with no runner starts the verify again after the ship")
+        os.environ["FM_POSTMERGE_CMD"] = "exit 0"  # the ship is done: the slot is free, the suite runs through
+        slanes.pm_run(self.p, self.repo)
+        self.assertEqual(self.state(sha), "green", "the rerun gives the merge its real result")
+
     def test_a_red_the_first_parent_cannot_run_is_the_merges_own_and_reverts(self):
         # T-3224: the merge added the red class; on the first parent run.py finds no such test and exits 1 too
         os.environ["FM_POSTMERGE_RERUN"] = "ls bad*.txt >/dev/null 2>&1 || { echo 'run.py: no test matches test_mod'; " \

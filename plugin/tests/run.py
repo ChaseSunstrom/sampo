@@ -938,29 +938,93 @@ def _gate_held(folder):
     return _SUITE["held"] and _prio_waiting(folder, "suite-")
 
 
-def _holder(fd):
-    """Who holds the suite slot, from what it wrote into the lock file."""
+END_ASK = "suite-end-"  # T-6032: the lock's folder's suite-end-<pid>: a waiting ship asks the low-priority holder of that pid to end
+END_POLL_S = 0.5  # ... how often a low-priority holder looks for it
+RANK_LOW, RANK_NORMAL, RANK_SHIP = "low", "normal", "ship"
+
+
+def suite_rank(origin):
+    """T-6032: how much a full suite matters to whoever waits for it: the ship's own run (origin ship) first; the post-merge
+    verify's (origin verify, or SAMPO_SLOT_LOW) last, which no one waits on; any other between (the gates and probes that
+    run with SAMPO_SLOT_PRIORITY=1 are not the ship's). Only a ship waiting on a low holder asks it to end."""
+    if origin == "ship":
+        return RANK_SHIP
+    return RANK_LOW if origin == "verify" or is_low() else RANK_NORMAL
+
+
+def _lock_holder(fd):
+    """The lock file's JSON (what the holder wrote: pid, cwd, at, rank) as a dict; {} when not written yet or garbled."""
     try:
         h = json.loads(os.pread(fd, 4096, 0))
+        return h if isinstance(h, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def _holder(fd):
+    """Who holds the suite slot, from what it wrote into the lock file."""
+    h = _lock_holder(fd)
+    try:
         return f"the full suite running in {h['cwd']} (pid {int(h['pid'])}, {(time.time() - float(h['at'])) // 60:.0f} min)"
-    except (OSError, ValueError, TypeError, KeyError):  # not written yet, or garbled
+    except (TypeError, ValueError, KeyError):
         return "another full suite"
 
 
+def _ask_to_end(folder, fd, asked):
+    """T-6032: when the slot's holder (per the lock file) is a low-priority run and not already asked: make its
+    suite-end-<pid> marker in `folder` (the lock file's own: the one place the holder and every waiter agree on, whatever
+    their runtime dirs) and say so. The holder ends itself (_watch_end); no signal goes to a pid read from a file.
+    Returns the pid asked (or `asked` unchanged): a new holder is asked again."""
+    h = _lock_holder(fd)
+    try:
+        pid = int(h["pid"])
+    except (TypeError, ValueError, KeyError):
+        return asked
+    if h.get("rank") != RANK_LOW or pid <= 0 or pid == asked:  # an older run.py's lock has no rank: never asked
+        return asked
+    try:
+        os.close(os.open(os.path.join(folder, f"{END_ASK}{pid}"), os.O_WRONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600))
+    except OSError:
+        return asked
+    sys.stderr.write(f"run.py: asking {_holder(fd)} (a low-priority run) to end for this one\n")
+    sys.stderr.flush()
+    return pid
+
+
+def _watch_end(folder, stop):
+    """T-6032: a low-priority holder's thread: when a waiting ship made end-<my pid>, this run ends the way an outside
+    kill ends it (ENDED: the classes still running are killed, the ones not started are not run, none is red) and its
+    slot frees. The marker goes at once, so a later run with this pid is not ended by it."""
+    path = os.path.join(folder, f"{END_ASK}{os.getpid()}")
+    while not stop.wait(END_POLL_S):
+        if os.path.lexists(path):
+            with contextlib.suppress(OSError):
+                os.unlink(path)
+            if not ENDED:
+                ENDED.append(signal.SIGTERM)
+                sys.stderr.write("run.py: a ship's full suite waits for this low-priority run: ending it, "
+                                 "it runs again after the ship\n")
+                sys.stderr.flush()
+            return
+
+
 @contextlib.contextmanager
-def suite_slot(until):
+def suite_slot(until, rank=RANK_NORMAL):
     """T-3541: the machine's one full-suite slot, held while the block runs: three full suites at once (two builders'
     and the ship's) each took 3x as long and slowed everything else. A second full run waits, saying for whom every
     minute, and goes ahead beside the holder once until (an epoch) passes. None when nested in a class (SAMPO_SLOT),
-    SAMPO_NO_SUITE_SLOT=1 or no flock. The holder's pid, cwd and start are in the lock file; the kernel frees the lock
-    when the holder dies."""
-    fd = None
+    SAMPO_NO_SUITE_SLOT=1 or no flock. The holder's pid, cwd, start and rank are in the lock file; the kernel frees the
+    lock when the holder dies. T-6032: a ship-rank waiter asks a low-rank holder to end (_ask_to_end); a low-rank holder
+    ends itself when asked (_watch_end), so a verify suite never holds the ship behind it for hours."""
+    fd, ask_dir = None, None
     if not (_env(SLOT_ENV) or _env(SUITE_ENV) or not fcntl):
         path = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "sampo", "suite.lock")
+        ask_dir = os.path.dirname(path)  # T-6032: end requests live beside the lock: the holder and a waiter share it
         with contextlib.suppress(OSError):
             os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
             fd = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
-    said, mark = 0.0, None
+    said, mark, asked, looked = 0.0, None, 0, 0.0
+    stop, watcher = threading.Event(), None
     try:
         while fd is not None:
             try:
@@ -968,12 +1032,22 @@ def suite_slot(until):
             except OSError:
                 pass
             else:
+                if rank == RANK_LOW:  # T-6032: only a low run can be asked to end
+                    with contextlib.suppress(OSError):  # an old request is not this run's: gone BEFORE the lock names this pid
+                        os.unlink(os.path.join(ask_dir, f"{END_ASK}{os.getpid()}"))  # (a waiter reads the pid from the lock)
                 with contextlib.suppress(OSError):
                     os.ftruncate(fd, 0)
-                    os.pwrite(fd, json.dumps({"pid": os.getpid(), "cwd": os.getcwd(), "at": time.time()}).encode(), 0)
+                    os.pwrite(fd, json.dumps({"pid": os.getpid(), "cwd": os.getcwd(), "at": time.time(),
+                                              "rank": rank}).encode(), 0)
                 _SUITE["held"] = True
+                if rank == RANK_LOW:
+                    watcher = threading.Thread(target=_watch_end, args=(ask_dir, stop), daemon=True)
+                    watcher.start()
                 break
             now = time.time()
+            if rank == RANK_SHIP and now - looked >= 1.0:  # T-6032: a low holder is asked to end for this run
+                looked = now
+                asked = _ask_to_end(ask_dir, fd, asked)
             if ENDED:  # T-4399: ended from outside: no suite starts, the wait ends now
                 break
             if now >= until:
@@ -993,6 +1067,11 @@ def suite_slot(until):
         yield
     finally:
         _SUITE["held"] = False
+        stop.set()
+        if watcher:
+            watcher.join(2)
+            with contextlib.suppress(OSError):
+                os.unlink(os.path.join(ask_dir, f"{END_ASK}{os.getpid()}"))  # the end request of a run that is done
         if mark:
             _unmark(mark)
         if fd is not None:
@@ -3538,7 +3617,7 @@ def _suite(a):
     dl = a.deadline if a.deadline is not None else int(os.environ.get("FM_RUN_DEADLINE") or 0) or max(8 * cap, 600)
     a.deadline, end = dl, t0 + dl
     # T-3541: the whole suite (the gate: no names, -k or -p) waits for any other on the machine, at most half its deadline
-    slot = suite_slot(t0 + dl / 2) if not (a.names or a.k or a.p) else contextlib.nullcontext()
+    slot = suite_slot(t0 + dl / 2, suite_rank(origin)) if not (a.names or a.k or a.p) else contextlib.nullcontext()
     # T-4247: at most two classes to run: they may take an express slot; T-4650: so may a few classes of little work
     small = small_selection((owner(j) for j in todo), todo, times, parts)
     narrow = is_narrow(a.names, a.k, a.p)  # T-4685: a handful of named modules may also take the reserve's idle slots

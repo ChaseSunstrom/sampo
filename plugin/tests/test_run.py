@@ -812,6 +812,141 @@ class SuiteSlot(unittest.TestCase):
         self.assertIn("going ahead beside it", err)
 
 
+class SuitePreempt(SuiteSlot):
+    """T-6032: a ship's full suite waited hours behind a niced verify suite that held the machine's suite slot (11-20, 211
+    min). A waiting ship-priority run now asks a low-priority holder (origin verify) to end: it ends itself the way an
+    outside kill does (T-4399: classes not run, never red), and the ship takes the slot. Equal or higher is never asked."""
+
+    test_two_full_runs_take_turns_and_the_second_says_for_whom = None  # the parent's tests run in SuiteSlot, not again
+    test_a_targeted_run_never_waits = None
+    test_the_switch_skips_the_slot_and_a_wait_runs_out_beside_the_holder = None
+
+    def setUp(self):
+        super().setUp()
+        self.env = {k: v for k, v in self.env.items() if "_SLOT_" not in k and "RUN_ORIGIN" not in k and "_PRIORITY" not in k}
+        self.run_dir = os.path.join(self.d, "run")
+        self.env.update(XDG_RUNTIME_DIR=self.run_dir)  # the slot folder is this test's own
+        self.ask = os.path.dirname(self.lock)  # the end requests live beside the lock, where the holder and a waiter meet
+
+    def asks(self):
+        return [x for x in os.listdir(self.ask) if x.startswith("suite-end-")] if os.path.isdir(self.ask) else []
+
+    def lock_has(self, p):
+        if not os.path.exists(self.lock):
+            return False
+        with open(self.lock) as f:
+            return f'"pid": {p.pid}' in f.read()
+
+    def holder(self, origin):
+        p = self.start("--deadline", "120", SAMPO_RUN_ORIGIN=origin)
+        end = time.time() + 60
+        while time.time() < end and not self.lock_has(p):
+            time.sleep(0.05)
+        self.assertTrue(self.lock_has(p), "the holder took the slot")
+        return p
+
+    def reap(self, *ps):
+        for p in ps:
+            if p.poll() is None:
+                p.terminate()
+            p.communicate(timeout=60)
+
+    def test_a_ship_waiting_on_a_verify_run_ends_it_between_classes_and_takes_the_slot(self):
+        low = self.holder("verify")
+        self.addCleanup(self.reap, low)
+        ship = self.start("--deadline", "120", SAMPO_RUN_ORIGIN="ship")
+        self.addCleanup(self.reap, ship)
+        _, lerr = low.communicate(timeout=60)  # ended on its own: nobody signalled it
+        self.assertEqual(low.returncode, 143, lerr)
+        self.assertIn("ended from outside", lerr)
+        self.assertNotIn("FAILED", lerr, "an ended run is never red")
+        self.assertFalse(os.path.exists(self.log), "its class was not run to the end")
+        open(self.go, "w").close()
+        _, serr = ship.communicate(timeout=120)
+        self.assertEqual(ship.returncode, 0, serr)
+        self.assertIn("asking the full suite running in", serr)
+        self.assertIn("to end", serr)
+        self.assertEqual(len(open(self.log).read().split("\n")) - 1, 1, "only the ship's class ran")
+
+    def test_a_holder_of_equal_priority_is_never_asked_to_end(self):
+        for origin in ("ship", "builder"):
+            with self.subTest(origin=origin):
+                if os.path.exists(self.go):
+                    os.unlink(self.go)
+                first = self.holder(origin)
+                self.addCleanup(self.reap, first)
+                second = self.start("--deadline", "120", SAMPO_RUN_ORIGIN=origin)
+                self.addCleanup(self.reap, second)
+                time.sleep(3)  # long past the holder's end-request poll
+                self.assertIsNone(first.poll(), "the holder is still running")
+                self.assertFalse(self.asks())
+                open(self.go, "w").close()
+                outs = [p.communicate(timeout=120) for p in (first, second)]
+                self.assertEqual([p.returncode for p in (first, second)], [0, 0], outs)
+                self.assertNotIn("ended from outside", outs[0][1] + outs[1][1])
+                os.unlink(self.log)
+
+    def test_a_lower_waiter_never_asks_a_higher_holder(self):
+        first = self.holder("ship")
+        self.addCleanup(self.reap, first)
+        second = self.start("--deadline", "120", SAMPO_RUN_ORIGIN="verify")
+        self.addCleanup(self.reap, second)
+        time.sleep(3)
+        self.assertIsNone(first.poll())
+        self.assertFalse(self.asks())
+
+    def test_a_priority_gate_is_not_the_ship_and_never_asks_a_low_holder_to_end(self):
+        """SAMPO_SLOT_PRIORITY=1 is the train's gate and probes, a sampo check outside a lane: only origin ship asks."""
+        low = self.holder("verify")
+        self.addCleanup(self.reap, low)
+        gate = self.start("--deadline", "120", SAMPO_RUN_ORIGIN="probe", SAMPO_SLOT_PRIORITY="1")
+        self.addCleanup(self.reap, gate)
+        time.sleep(3)
+        self.assertIsNone(low.poll(), "the low holder is still running")
+        self.assertFalse(self.asks())
+
+    def test_the_ask_reaches_a_holder_whose_runtime_folder_is_not_the_waiters(self):
+        """The marker sits beside the lock (the one path both share), not in a per-process runtime folder: a verify
+        started under another XDG_RUNTIME_DIR than the ship's is still asked."""
+        low = self.holder("verify")
+        self.addCleanup(self.reap, low)
+        ship = self.start("--deadline", "120", SAMPO_RUN_ORIGIN="ship", XDG_RUNTIME_DIR=os.path.join(self.d, "run-other"))
+        self.addCleanup(self.reap, ship)
+        _, lerr = low.communicate(timeout=60)
+        self.assertEqual(low.returncode, 143, lerr)
+        self.assertIn("ended from outside", lerr)
+        open(self.go, "w").close()
+        _, serr = ship.communicate(timeout=120)
+        self.assertEqual(ship.returncode, 0, serr)
+        self.assertEqual(self.asks(), [], "the request is gone once the holder ended")
+
+    def test_the_ask_is_a_marker_for_the_holders_pid_and_no_signal_is_sent(self):
+        """A lock file holder (here this process, as pid 4242 says nothing) of low rank is asked by a marker file; the
+        waiter never signals a pid it read from a file."""
+        import json
+        self.held()
+        with open(self.lock, "w") as f:  # rewritten in place: still the flock holder's file
+            json.dump({"pid": 4242, "cwd": "/elsewhere", "at": time.time() - 185, "rank": "low"}, f)
+        ship = self.start(SAMPO_RUN_ORIGIN="ship")  # FM_RUN_DEADLINE 16: waits 8 s, then goes ahead beside the holder
+        self.addCleanup(self.reap, ship)
+        end = time.time() + 6
+        mark = os.path.join(self.ask, "suite-end-4242")
+        while time.time() < end and not os.path.exists(mark):
+            time.sleep(0.05)
+        self.assertTrue(os.path.exists(mark), "the end request names the holder's pid")
+        _, err = ship.communicate(timeout=120)
+        self.assertIn("going ahead beside it", err)
+        self.assertEqual(ship.returncode, 0, err)
+
+    def test_a_holder_with_no_rank_in_its_lock_file_is_not_asked(self):  # a run of an older run.py holds it
+        self.held()
+        ship = self.start(SAMPO_RUN_ORIGIN="ship")
+        self.addCleanup(self.reap, ship)
+        _, err = ship.communicate(timeout=120)
+        self.assertIn("going ahead beside it", err)
+        self.assertFalse(self.asks())
+
+
 class LeftNote(unittest.TestCase):
     """T-4789: the closing line says how long this run left a free slot to others, for each reason."""
 

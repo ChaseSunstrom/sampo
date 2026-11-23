@@ -6946,6 +6946,12 @@ def _pm_unread(main, sha, files, classes):
 
 
 VERIFY_GONE = "the verify scratch worktree was removed by something else"  # T-4728
+ENDED_BY_SHIP = "the verify run was ended from outside (a ship took the suite slot)"  # T-6032
+
+
+class _PmEnded(c.PolicyError):
+    """T-6032: a verify's run was ended from outside (_pm_ended_check): no verdict. A PolicyError, so a caller that stops
+    its pass on a lost tree stops on this too; pm_verify and pm_run record it (_pm_ended_record) and never let it escape."""
 
 
 def _tree_lost(wt):
@@ -6965,6 +6971,34 @@ def _pm_lost_record(p, sha, r, tries):
     pm_set(p, sha, state="pending" if tries < 3 else "unverified", tries=tries, note=VERIFY_GONE)
     print(f"sampo lane verify: {VERIFY_GONE} ({sha[:9]}); nothing reverted, the next pass runs it again", file=sys.stderr)
     return True
+
+
+def _pm_ended_check(code, out, sha=""):
+    """T-6032: the one place a verify's run (the suite, its shape pass, a class rerun alone or on the first parent, a probe
+    at HEAD) is read for an end from outside, by the reading the ambient runs use (ambient.ended_from_outside: exit
+    130/143, no red line): a waiting ship asked this low-priority run to free the machine's suite slot, or a signal ended
+    it. Its classes were killed or not run, never red: it says nothing of the merge, so this raises _PmEnded and no
+    caller judges the run."""
+    from sampo import ambient
+    if ambient.ended_from_outside(code, out):
+        raise _PmEnded(f"{ENDED_BY_SHIP}{f' ({sha[:9]})' if sha else ''}; nothing judged, the next pass runs it again")
+
+
+def _pm_ended_record(p, sha):
+    """T-6032: record that the verify of `sha` was ended from outside (see _pm_ended_check); always False, pm_verify's
+    answer for a merge left unfinished (the pass stops; the next one runs it). The record goes back to pending and
+    nothing is reverted; the verify yields to ships (ship_yield), so the next pass runs it once the ship is done. An end
+    spends no try (the tries the record already has stand): a merge reaches "unverified" only by runs that began and
+    could not finish, never by being ended before its verdict. Each end waits on a ship that then finishes, so the
+    repeats are bounded by the ships, and each is in the ledger (postmerge_ended)."""
+    r = pm_records(p).get(sha)
+    if not r:
+        return False
+    c.log_event(p, "postmerge_ended", task=r["task"], data={"sha": sha, "tries": r.get("tries", 0)})
+    pm_set(p, sha, state="pending")
+    print(f"sampo lane verify: the run on {sha[:9]} was ended from outside (a ship took the suite slot); nothing judged, "
+          f"nothing reverted, the next pass runs it again", file=sys.stderr)
+    return False
 
 
 def _pm_trunk_red(p, tid, sha, classes, partial=False):
@@ -7025,6 +7059,8 @@ def _pm_judge(main, wt, sha, gone, code, out, owns=()):
         if again:
             c.wait_for_load(f"lane verify {sha[:9]}")  # T-3425: the alone-rerun waits for load like a gate
         acode, aout = c.run_command(wt, again, c.load_scaled(900), niced=True, low=True, origin="verify") if again else (1, "")
+        if again:
+            _pm_ended_check(acode, aout, sha)  # T-6032: ended by a ship: not "red alone", no verdict
         if again and not acode:
             flaky, reach = reds, []
         else:
@@ -7041,6 +7077,7 @@ def _pm_judge(main, wt, sha, gone, code, out, owns=()):
                 _git(wt, "reset", "--hard", "-q", f"{sha}^1")
                 if not gone or not _git(wt, "revert", "-m", "1", "--no-commit", "--no-edit", *reversed(gone)).returncode:
                     pcode, pout = c.run_command(wt, again, c.load_scaled(900), niced=True, low=True, origin="verify")
+                    _pm_ended_check(pcode, pout, sha)  # T-6032: ended by a ship: not "named by no one", no verdict
                     # T-3224: a class is inherited only when the parent names it failing; a parent run that
                     # names none ("no test matches" for a class the merge added, a crash) leaves the red this merge's.
                     # T-5518: per class: the classes the parent also fails are excused, the rest stay blamed
@@ -7157,6 +7194,7 @@ def pm_verify(p, main, sha):
                                         origin="verify")
             if _pm_tree_lost(p, sha, r, tries, wt):
                 return False
+            _pm_ended_check(scode, sout, sha)  # T-6032: a ship took the slot: no result (the except below records it)
             if scode and scode != 124 and _pm_shape_named(sout, scode):  # no class named: no verdict, the suite decides
                 verdict = _pm_judge(main, wt, sha, gone, scode, sout, _pm_own_mods(p, [r["task"]]))
                 if verdict[1]:  # blamed on this merge after the flake, docs-only and parent checks: it stands for the run
@@ -7184,9 +7222,12 @@ def pm_verify(p, main, sha):
                                           low=True, origin="verify")  # T-3757: what landed becomes the usual; T-4197; T-4570: yields slots to waiting builders
             if _pm_tree_lost(p, sha, r, tries, wt):  # T-4728: a run in a removed folder ends 127: no merge is reverted for it
                 return False
+            _pm_ended_check(code, out, sha)  # T-6032: a ship took the slot: no result, the merge stays pending
             judged = _pm_judge(main, wt, sha, gone, code, out, _pm_own_mods(p, [r["task"]]))
         reds, reach, flaky, inherited, unrelated, files = judged
         vanished = _tree_lost(wt)  # T-4728: judged before the finally removes it: the reruns above ran in this tree too
+    except _PmEnded:  # T-6032: a run was ended from outside: pending, nothing judged
+        return _pm_ended_record(p, sha)
     finally:
         _git(main, "worktree", "remove", "--force", wt)
         shutil.rmtree(tmp, ignore_errors=True)
@@ -7406,7 +7447,7 @@ def pm_run(p, main):
         if head and (newest, head) not in probed:
             probed.add((newest, head))
             if _pm_claim(p, todo[0]):  # holds the queue (other runners stop at the oldest) while HEAD runs
-                reds, cut, short, upto, part = [], None, [], 0, []
+                reds, cut, short, upto, part, ended = [], None, [], 0, [], False
                 try:
                     # T-5936: the heads' own affected classes, unless a sweep is due (a requeued merge: the whole suite)
                     green = _pm_green_at(p, main, head, reds, short, part=part, heads=len(todo),
@@ -7431,8 +7472,13 @@ def pm_run(p, main):
                             c.log_event(p, "postmerge_flaky", data={"sha": head, "classes": reds, "covers": len(todo)})
                         else:
                             cut = _pm_first_red(main, todo, again)
+                except _PmEnded:  # T-6032: a ship took the slot: nothing judged; no PolicyError leaves the pass
+                    ended = True
                 finally:
                     pm_set(p, todo[0], state="pending")
+                if ended:  # after the finally: its pending must not undo the record's (unverified past the cap)
+                    _pm_ended_record(p, todo[0])
+                    return
                 if green:
                     _pm_cover(p, main, todo, head, partial=bool(part))
                     continue
@@ -7465,10 +7511,15 @@ def _pm_green_at(p, main, sha, reds=None, short=None, part=None, since=None, hea
                                         origin="verify")
             if _tree_lost(wt):
                 raise c.PolicyError(f"{VERIFY_GONE} ({sha[:9]}); nothing judged, the next pass runs it again")
+            _pm_ended_check(scode, sout, sha)  # T-6032: a ship took the slot: no verdict, the merges stay pending
             sreds = _pm_shape_named(sout, scode) if scode and scode != 124 else []  # none named: no verdict, the suite decides
             if sreds:
                 again = pm_rerun_cmd(main, sreds)
-                if not (again and not c.run_command(wt, again, c.load_scaled(900), niced=True, low=True, origin="verify")[0]):
+                acode, aout = (c.run_command(wt, again, c.load_scaled(900), niced=True, low=True, origin="verify")
+                               if again else (1, ""))
+                if again:
+                    _pm_ended_check(acode, aout, sha)  # T-6032: an ended rerun alone is no red alone: no short answer
+                if not (again and not acode):
                     if reds is not None:
                         reds.extend(sreds)
                     if short is not None:
@@ -7487,6 +7538,7 @@ def _pm_green_at(p, main, sha, reds=None, short=None, part=None, since=None, hea
                                       origin="verify")  # T-4197; T-4570
         if _tree_lost(wt):  # T-4728: a run in a removed folder is no red suite: stop the pass, the merge stays pending
             raise c.PolicyError(f"{VERIFY_GONE} ({sha[:9]}); nothing judged, the next pass runs it again")
+        _pm_ended_check(code, out, sha)  # T-6032: a ship took the slot: no verdict, the merges stay pending
         if code:
             if reds is not None and code != 124:  # a timeout names nothing
                 reds.extend(k for k in pm_classes(out, code) if not k.startswith("suite exit"))
@@ -7510,9 +7562,10 @@ def _pm_cmd_green_at(main, sha, cmd, limit=900):
         if _git(main, "worktree", "add", "--detach", wt, sha).returncode:
             return False
         c.wait_for_load(f"lane verify {sha[:9]}")  # as pm_verify's alone-rerun waits
-        code = c.run_command(wt, cmd, c.load_scaled(limit), niced=True, low=True, origin="verify")[0]  # T-4197: a lane verify's run; T-4570
+        code, out = c.run_command(wt, cmd, c.load_scaled(limit), niced=True, low=True, origin="verify")  # T-4197: a lane verify's run; T-4570
         if _tree_lost(wt):  # T-4728: 127 from a removed folder is no red class: the bisection would blame a merge
             raise c.PolicyError(f"{VERIFY_GONE} ({sha[:9]}); nothing judged, the next pass runs it again")
+        _pm_ended_check(code, out, sha)  # T-6032: an ended run is no red class either: the bisection would blame a merge
         return not code
     finally:
         _git(main, "worktree", "remove", "--force", wt)
