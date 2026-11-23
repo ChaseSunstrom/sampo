@@ -32,6 +32,7 @@ import re
 import stat
 import sys
 import shlex
+import tempfile
 
 
 class lazy:  # fmcore.lazy's twin: this module imports no other Foreman module
@@ -1700,7 +1701,8 @@ def classify_write(path, ctx, real=True):
         rlane, rmain = getattr(ctx, "confine_real", None) or (lane, main)
         if lane and not _under(p, lane) and not _under(p, rlane) and not _under(os.path.realpath(p), rlane) \
                 and not (p.startswith("/dev/") and _SAFE_DEV.match(p)) \
-                and (any(_under(p, m) for m in (main, rmain) if m) or not any(_under(p, s) for s in ctx.scratch)):
+                and (any(_under(p, m) for m in (main, rmain) if m) or not any(_under(p, s) for s in ctx.scratch)
+                     or _trusted_tree(p, main)):  # T-6189: scratch, but a tree Sampo's code runs later
             cats.append("confine")
         root = getattr(ctx, "unbriefed", None)  # strictly inside: a checkout-wide git write (merge, pull) is no edit
         if root and _strictly_under(p, root) and "state-direct" not in cats and not any(  # a scratch dir holding the
@@ -1708,6 +1710,36 @@ def classify_write(path, ctx, real=True):
                 if not _under(root, d)) and not _in_briefed_lane(p, ctx):  # T-4340: this variant, as it is
             cats.append("brief")
     return list(dict.fromkeys(cats))  # a/link/../x: the caller judges where it really goes too (_walk, _judge: T-4667)
+
+
+_TRUSTED_ROOTS = {}  # (FOREMAN_SCRATCH_ROOT, temp root) -> the scratch root as named and as it really is (T-6189)
+
+
+def _trusted_tree(p, main):
+    """T-6189: a path inside a folder Sampo's own code later executes, though it lies in a scratch folder: its scratch
+    root (named, or through a link: verify, brief, ship and train trees), a fallback root or a fork server's folder (both
+    named in the temp root by prefix), or another lane's worktree (main's lanes folder). A builder's own scratchpad and
+    other temp files stay scratch. Pure path checks, the scratch root cached per process."""
+    tmp = tempfile.gettempdir()
+    uid = getattr(os, "getuid", lambda: 0)()
+    key = (os.environ.get("FOREMAN_SCRATCH_ROOT"), tmp)
+    roots = _TRUSTED_ROOTS.get(key)
+    if roots is None:
+        named = os.path.abspath(key[0] or os.path.join(tmp, f"sampo-scratch-{uid}"))
+        roots = _TRUSTED_ROOTS[key] = tuple(dict.fromkeys(x for x in (named, os.path.realpath(named))
+                                                          if x != os.path.realpath(tmp)))
+    if any(_under(p, r) for r in roots):
+        return True
+    for t in dict.fromkeys((tmp, os.path.realpath(tmp))):  # the first folder under the temp root, named or real
+        if _under(p, t) and p != t:
+            first = p[len(t) + 1:].split("/", 1)[0]
+            if first.startswith((f"sampo-scratch-{uid}-", "fmfork-")):
+                return True
+    if main:
+        lanes = (main + ".lanes", os.path.realpath(main) + ".lanes")
+        if any(_under(p, d) or _under(os.path.realpath(p), d) for d in lanes):
+            return True
+    return False
 
 
 def _in_briefed_lane(p, ctx):

@@ -2372,6 +2372,69 @@ class LiteralLoops(GuardCase):
         self.run_table(refused, self.bash)                                               # (not a known value here)
 
 
+class ConfineScratchRoot(GuardCase):
+    """T-6189: a confined session's writes into a folder Sampo's own code later runs (its scratch root's verify, brief and
+    ship trees, a fork server's folder, another lane's worktree) are confine, however the folder is named; its own
+    scratchpad and an unrelated temp file still pass."""
+
+    def setUp(self):
+        import fmguard
+        self.fmguard = fmguard
+        self.base = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.base, True)
+        b = self.base
+        self.main, self.lane = os.path.join(b, "main"), os.path.join(b, "main", ".claude", "worktrees", "agent-a")
+        self.other = os.path.join(b, "main.lanes", "agent-b")
+        self.sroot, self.link = os.path.join(b, "sroot"), os.path.join(b, "link")
+        self.pad = os.path.join(b, "scratchpad")
+        for d in (self.lane, self.other, os.path.join(self.sroot, "sampo-train-1"), self.pad):
+            os.makedirs(d)
+        os.symlink(self.sroot, self.link)
+        self.fork = tempfile.mkdtemp(prefix="fmfork-test-", dir=tempfile.gettempdir())
+        self.addCleanup(shutil.rmtree, self.fork, True)
+        self.unrelated = tempfile.mkdtemp(prefix="pytest-test-", dir=tempfile.gettempdir())
+        self.addCleanup(shutil.rmtree, self.unrelated, True)
+        env = mock.patch.dict(os.environ, {"FOREMAN_SCRATCH_ROOT": self.sroot})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def ctx(self):
+        return self.fmguard.Ctx(cwd=self.lane, project_root=self.lane, home=os.path.join(self.base, "h"),
+                                foreman_home=os.path.join(self.base, "fh"),
+                                scratch=[self.base, tempfile.gettempdir()], task_id="T-0007",
+                                confine=(self.lane, self.main))
+
+    def test_a_confined_write_into_the_scratch_root_is_refused(self):
+        ctx = self.ctx()
+        for path in (os.path.join(self.sroot, "sampo-train-1", "verify.py"),
+                     os.path.join(self.link, "sampo-train-1", "verify.py")):  # named, and through a link to it
+            with self.subTest(path=path):
+                self.assertIn("confine", self.fmguard.classify_write(path, ctx))
+                self.assertIn("confine", {c for c, _ in g.findings("Write", {"file_path": path, "content": "x"}, ctx)})
+                self.assertIn("confine", {c for c, _ in g.findings("Edit", {"file_path": path}, ctx)})
+                cmd = f"echo x > {path}"
+                self.assertIn("confine", {c for c, _ in g.findings("Bash", {"command": cmd}, ctx)})
+
+    def test_a_confined_write_into_a_fork_server_folder_is_refused(self):
+        path = os.path.join(self.fork, "worker.py")
+        self.assertIn("confine", self.fmguard.classify_write(path, self.ctx()))
+        self.assertIn("confine", {c for c, _ in g.findings("Bash", {"command": f"echo x > {path}"}, self.ctx())})
+
+    def test_a_confined_write_into_another_lane_is_refused(self):
+        path = os.path.join(self.other, "x.py")
+        self.assertIn("confine", self.fmguard.classify_write(path, self.ctx()))
+        self.assertIn("confine", {c for c, _ in g.findings("Write", {"file_path": path, "content": "x"}, self.ctx())})
+
+    def test_the_own_lane_scratchpad_and_an_unrelated_temp_file_still_pass(self):
+        ctx = self.ctx()
+        for path in (os.path.join(self.lane, "x.py"), os.path.join(self.pad, "notes.txt"),
+                     os.path.join(self.unrelated, "x.txt")):
+            with self.subTest(path=path):
+                self.assertNotIn("confine", self.fmguard.classify_write(path, ctx))
+                self.assertNotIn("confine", {c for c, _ in g.findings("Write", {"file_path": path, "content": "x"}, ctx)})
+                self.assertNotIn("confine", {c for c, _ in g.findings("Bash", {"command": f"echo x > {path}"}, ctx)})
+
+
 class ScratchNames(GuardCase):
     def test_a_scratch_folder_reached_through_a_link_is_still_scratch(self):
         # T-1249: macOS's /tmp is a link to /private/tmp; the resolved path wasn't under the unresolved scratch folder,
