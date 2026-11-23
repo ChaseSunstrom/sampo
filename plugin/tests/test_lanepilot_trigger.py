@@ -624,8 +624,12 @@ class LanePilot(ForemanTestCase):
     def give_up(self, say="", once="", outcome="failed", tip=False):
         """T-6014: stub resolver runs that commit nothing (the agent said `say` on every run, `once` on the first), then the
         lead's one line. tip: the lane's stop tip is the main checkout's HEAD, a commit the conflict shape can be read from."""
-        self.park()
+        lane = self.park()
         self.claude(commit=False)
+        if tip:  # the lane sits at that very commit (parked() reads the stop tip against the lane's HEAD): the two repos' init
+            # commits are alike only when made in the same second, so the lane is put on the main checkout's, not left to a clock
+            for git in (["fetch", "-q", self.repo, "HEAD"], ["reset", "-q", "--hard", "FETCH_HEAD"]):
+                subprocess.run(["git", "-C", lane, *git], check=True, capture_output=True)
         if say:
             os.environ["STUB_SAY"] = say
         if once:

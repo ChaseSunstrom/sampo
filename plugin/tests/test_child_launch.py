@@ -373,7 +373,7 @@ ALLOWED = {
     "pilotsig.py::_headless": "the lane pilot's builder needs the plugin's agents and tools: it runs in ideas.fresh_cwd with the "
                               "lane by --add-dir, user settings only and the pilot's own env; not --disable-slash-commands",
     "pilotsig.py::claude_found": "asks whether claude_cmd() finds a program; nothing starts",
-    "pilotsig.py::_stuck": "names the program in a message; nothing starts",
+    "pilotsig.py::words":"names the program in a message; nothing starts",
     "plugins.py::_claude": "`claude plugin ...` (the subcommand is a variable, the plugin CLI): starts no model session",
     "bench.py::_turn": "a replay measures the candidate plugin in the bench's own worktree of the owner's checkout: its "
                        "CLAUDE.md, settings and plugins are the thing under test (see the comment at the argv)",
