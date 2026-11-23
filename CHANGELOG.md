@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- A train's gate also runs the test modules that import, mock.patch or name a file the batch changes, so trunk red is stopped at the train (T-6160).
 - Trunk's four red test classes are green again, each fixed at its cause: the lazy pattern, the file-map lines, the doc example, and the reviewed home reads (T-5553).
 - Lane pilot fix rounds keep the fixer's answer and no longer stop on Python bytecode or nested scratch repos (T-6194).
 - Reviewer effort is lifted one level for a review class whose low-effort reviews escape more often than its earlier reviews (T-6165).
