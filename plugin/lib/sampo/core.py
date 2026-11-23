@@ -650,6 +650,122 @@ def pin_slug(old_root, new_root):
     return slug
 
 
+# T-5707 round 5: the git options a call in a LANE worktree carries. A lane's config and attributes are the builder's: git runs
+# a filter, diff or merge driver the config defines whenever an attributes source names it (the worktree's .gitattributes,
+# the index copy of one the worktree lost, attr.tree, core.attributesFile, info/attributes), so no check of those files can
+# keep a driver from running. Naming every defined driver and emptying it can.
+HARDEN_GIT = ("-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "diff.external=", "-c", "core.pager=cat",
+              # round 6: every other config key whose value is a program git may start while it reads or commits (git help
+              # --config swept): signature checks and signing, the ssh and alternate-refs commands, editors, auto gc and
+              # maintenance, and the transports. Credential helpers stay: nothing the pilot runs fetches or pushes.
+              "-c", "log.showSignature=false", "-c", "commit.gpgSign=false", "-c", "tag.gpgSign=false",
+              "-c", "gpg.program=false", "-c", "gpg.openpgp.program=false", "-c", "gpg.ssh.program=false",
+              "-c", "gpg.x509.program=false", "-c", "core.alternateRefsCommand=", "-c", "core.sshCommand=false",
+              "-c", "protocol.allow=never", "-c", "core.editor=true", "-c", "sequence.editor=true", "-c", "gc.auto=0",
+              "-c", "maintenance.auto=false")
+_DRIVER_VARS = {"filter": ("clean", "smudge", "process"), "diff": ("textconv", "command"), "merge": ("driver",),
+                "hook": ("command",)}  # hook.<name>.command: a hook the config defines (git 2.54+), which core.hooksPath misses
+# round 6: a lane's submodule (a gitlink with its own .git) carries its own config, which driver_args never lists: no
+# command recurses into one
+_DRIVERS_OFF = "core.attributesFile=/dev/null"  # driver_args carries it: a call that has it has been through lane_call
+_NO_SUBMODULES = ("-c", "submodule.recurse=false", "-c", "diff.ignoreSubmodules=all", "-c", "status.submoduleSummary=false")
+
+
+def driver_args(root, ext=True):
+    """HARDEN_GIT plus one `-c` per driver the git config of `root` defines (any scope), each emptied: filter.<n>.clean,
+    smudge and process empty and required false, diff.<n>.textconv and command empty, merge.<n>.driver the no-op `true`,
+    and no attributes file or tree (core.attributesFile, attr.tree). Names are read with `git config --list --name-only`,
+    which runs no driver. None (fail closed) when the config cannot be listed or a name cannot be passed on a command line
+    (`-c` splits at the first `=`)."""
+    import subprocess
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    try:
+        r = subprocess.run(["git", "-C", root, "config", "--list", "--name-only", "-z"], capture_output=True, text=True,
+                           errors="replace", timeout=10, env=env, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    names = {k: set() for k in _DRIVER_VARS}
+    for key in (x for x in r.stdout.split("\0") if x):
+        parts = key.split(".")
+        if len(parts) >= 3 and parts[0].lower() in names:
+            name = ".".join(parts[1:-1])
+            if "=" in name or "\n" in name or "\0" in name:
+                return None
+            names[parts[0].lower()].add(name)
+    out = [x for i in range(0, len(HARDEN_GIT), 2) if ext or HARDEN_GIT[i + 1] != "diff.external=" for x in HARDEN_GIT[i:i + 2]]
+    out += ["-c", _DRIVERS_OFF, "-c", "attr.tree=", *_NO_SUBMODULES]
+    for name in sorted(names["hook"]):
+        out += ["-c", f"hook.{name}.enabled=false"]
+    for name in sorted(names["filter"]):
+        out += [x for v in ("clean", "smudge", "process") for x in ("-c", f"filter.{name}.{v}=")] \
+            + ["-c", f"filter.{name}.required=false"]
+    for name in sorted(names["diff"]):
+        out += [x for v in ("textconv", "command") for x in ("-c", f"diff.{name}.{v}=")]
+    for name in sorted(names["merge"]):
+        out += ["-c", f"merge.{name}.driver=true"]
+    return tuple(out)
+
+
+def lane_top(root):
+    """The top of the linked worktree (a lane: its `.git` is a file, or a link) that holds `root` or is `root`, else ''.
+    Round 6: walks up from the real path to the nearest `.git` without running git, so a call made from a subdirectory of
+    a lane (`_git(lane/sub, ...)`) is found too; the nearest `.git` being a directory (a main checkout, or a nested repo
+    with its own config) is not a lane."""
+    if not root:
+        return ""
+    d = os.path.realpath(root)
+    while True:
+        g = os.path.join(d, ".git")
+        if os.path.lexists(g):
+            return d if os.path.islink(g) or not os.path.isdir(g) else ""
+        up = os.path.dirname(d)
+        if up == d:
+            return ""
+        d = up
+
+
+def _linked_worktree(root):
+    """True when `root` is in a linked worktree (a lane), at its top or below it: where a builder's own config and
+    attributes apply."""
+    return bool(lane_top(root))
+
+
+_GLOBAL_VALUE = ("-c", "-C", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--config-env", "--attr-source")
+
+
+def git_command(root, args):
+    """(index of the subcommand in `args`, the directory git runs in, whether --git-dir or --work-tree redirects it): the
+    leading global options (`-c k=v`, `-C dir`, `--no-pager`, `--git-dir X`, ...) are skipped, as git does, so a read
+    that carries one is still seen as the read it is. Round 6."""
+    i, where, redirect = 0, root, False
+    while i < len(args) and str(args[i]).startswith("-"):
+        a = str(args[i])
+        if a == "-C" and i + 1 < len(args):
+            where = os.path.join(where, str(args[i + 1]))
+        redirect = redirect or a in ("--git-dir", "--work-tree") or a.startswith(("--git-dir=", "--work-tree="))
+        i += 2 if a in _GLOBAL_VALUE else 1
+    return i, where, redirect
+
+
+def lane_call(root, args):
+    """`args` of one git call with a lane's drivers emptied in front of its subcommand (None when the drivers cannot be
+    listed): driver_args after any leading global options, so the caller's own `-c` cannot undo them, plus
+    `--ignore-submodules=all` on the commands that would enter a submodule. An emptied diff.external makes `git diff` fail
+    (it runs ""), so the commands that diff get `--no-ext-diff` instead. The one place `_git` and the pilot's `_g` make
+    that call."""
+    i, where, redirect = git_command(root, args)
+    sub = str(args[i]) if i < len(args) else ""
+    pre = driver_args(lane_top(where) or where, ext=sub not in _EXT_DIFF)
+    if pre is None:
+        return None
+    if not sub:
+        return args
+    return (*args[:i], *pre, sub, *(("--no-ext-diff",) if sub in _EXT_DIFF else ()),
+            *(("--ignore-submodules=all",) if sub in _IGN_SUBMODULES else ()), *args[i + 1:])
+
+
 def worktree_id(root):
     """Content id of a repo's working files (tracked and untracked, not ignored), the same before and after a commit.
     Built with a throwaway index, so edits made any way (Bash, editors, other tools) change it. None outside git."""
@@ -710,6 +826,12 @@ def worktree_tree(root, timeout=None):
         return None
     end = time.monotonic() + timeout if timeout else None
     left = lambda usual: max(0.001, end - time.monotonic()) if end else usual  # noqa: E731
+    top = git_root(root)
+    pre = ()
+    if _linked_worktree(top):  # T-5707 round 5: a lane's drivers never run in the tree id (add -A hashes through a clean filter)
+        pre = driver_args(top)
+        if pre is None:
+            return None
     with tempfile.TemporaryDirectory() as t:
         env = dict(os.environ, GIT_INDEX_FILE=os.path.join(t, "index"))
         try:
@@ -718,7 +840,7 @@ def worktree_tree(root, timeout=None):
             if real and os.path.isfile(real):
                 shutil.copy2(real, env["GIT_INDEX_FILE"])
             spec = mirror_excludes(root)
-            subprocess.run(["git", "-C", root, "add", "-A", "--", ".", *spec], env=env,
+            subprocess.run(["git", *pre, "-C", root, "add", "-A", "--", ".", *spec], env=env,
                            capture_output=True, timeout=left(120), check=True)
             tree = subprocess.run(["git", "-C", root, "write-tree"], env=env, capture_output=True, text=True,
                                   timeout=left(60), check=True).stdout.strip()
@@ -9460,6 +9582,12 @@ def trailer_grep(tid):
 GIT_KEPT = None  # T-3580: {root and args: [code, out, err]} of _git's ref-only answers, kept while the refs stand still
 _REF_ONLY = (("rev-parse",), ("rev-list",), ("merge-base",), ("cherry",))  # and worktree list: commits and refs alone
 _CLOCKED = ("--since", "--until", "--after", "--before", "--max-age", "--min-age")  # an answer that ages with the clock
+# the read-only commands that hash or diff files through a filter, textconv or merge driver: in a linked worktree (a lane)
+# _git empties every driver the config defines first. `add`, `commit`, `merge` and `checkout` are left alone (they would
+# write the neutralised bytes); the pilot's own commit path carries driver_args itself.
+_DRIVEN_READS = ("status", "diff", "diff-index", "diff-files", "diff-tree", "log", "show", "ls-files", "blame", "grep")
+_EXT_DIFF = ("diff", "show", "log", "diff-index", "diff-files", "diff-tree")
+_IGN_SUBMODULES = ("status", "diff", "diff-index", "diff-files", "diff-tree")  # the commands that take --ignore-submodules
 # exit 128 that answers about refs (a lock, a corrupt object or no repository is a failure, asked again next time)
 _NO_SUCH_REV = lazy(r"unknown revision|bad revision|Needed a single revision|not a valid object name|unknown commit")
 
@@ -9471,6 +9599,14 @@ def _git(root, *args, timeout=2, fail="", proc=False):
     replaced, and GIT_* variables can't point it at another repository. Sampo's one git runner (T-0961); fmguard
     keeps its own, it is hook-hot. T-3580: while a caller (fm ui) sets GIT_KEPT, a ref-only answer comes from it."""
     import subprocess
+    i, where, redirect = git_command(root, args)  # round 6: the subcommand after any leading `-c`, `-C`, `--no-pager`...
+    if i < len(args) and args[i] in _DRIVEN_READS and (redirect or _linked_worktree(where)) \
+            and _DRIVERS_OFF not in args[:i]:  # round 5: no lane driver runs (a caller that went through lane_call has done it)
+        got = lane_call(root, args)
+        if got is None:
+            r = subprocess.CompletedProcess(["git", *args], 127, "", "the lane's git drivers could not be listed")
+            return r if proc else fail
+        args = got
     cmd, key = ["git", "-c", "core.quotePath=false", "-C", root, *args], None
     if GIT_KEPT is not None and (args[:1] in _REF_ONLY or args[:2] == ("worktree", "list")) \
             and not any(str(a).startswith(_CLOCKED) for a in args):

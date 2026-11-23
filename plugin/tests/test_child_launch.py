@@ -372,8 +372,13 @@ ALLOWED = {
                                 "model session, takes no input and runs under a 10 s timeout",
     "pilotsig.py::_headless": "the lane pilot's builder needs the plugin's agents and tools: it runs in ideas.fresh_cwd with the "
                               "lane by --add-dir, user settings only and the pilot's own env; not --disable-slash-commands",
+    "lanepilot.py::fix_argv": "the pilot's fix session must edit the lane, so the lane is its cwd and FOREMAN_DRIVE_TASK makes "
+                              "the hooks treat it as a worker; every other hardening applies: ideas.harden, ideas.child_env, "
+                              "user settings only, an empty strict MCP config, dontAsk with no shell (Read, Grep, Glob and "
+                              "Edit/Write scoped to the lane, .git and ~/.claude denied), the credential deny rules, and a "
+                              "refusal when the lane's config differs from main's",
     "pilotsig.py::claude_found": "asks whether claude_cmd() finds a program; nothing starts",
-    "pilotsig.py::words":"names the program in a message; nothing starts",
+    "pilotsig.py::words": "names the program in a message; nothing starts",
     "plugins.py::_claude": "`claude plugin ...` (the subcommand is a variable, the plugin CLI): starts no model session",
     "bench.py::_turn": "a replay measures the candidate plugin in the bench's own worktree of the owner's checkout: its "
                        "CLAUDE.md, settings and plugins are the thing under test (see the comment at the argv)",

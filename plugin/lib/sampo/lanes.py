@@ -35,6 +35,17 @@ from sampo import racemetrics
 _git = functools.partial(c._git, timeout=120, proc=True)  # T-0961: fmcore's runner; callers read returncode/stderr
 
 
+def _lane_git(path, *args):
+    """`_git` in a lane worktree for a command that WRITES (add, rm, commit: `_git` itself only hardens the reads): every
+    filter, merge and diff driver, hook and signing program the lane's config defines is emptied first (core.lane_call), so
+    work the builder left behind can't start a program in the lead's session. A config that can't be listed runs no git
+    (rc 127). T-5707 round 6."""
+    got = c.lane_call(path, args)
+    if got is None:
+        return subprocess.CompletedProcess(["git", *args], 127, "", "the lane's git drivers could not be listed")
+    return _git(path, *got)
+
+
 def _ref_file(root, branch):
     common = c._git(root, "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse",
                     "--git-common-dir", timeout=10).strip()
@@ -2291,13 +2302,14 @@ def resume(p, b, main, args, ended=False, recover=None, after=""):
                                 f"delete: move them, or fm lane resume {b.id} --force \"<why>\"")
         branch = _git(path, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() or branch
         if _git(path, "status", "--porcelain").stdout.strip():
-            _git(path, "add", "-A")
+            if (r := _lane_git(path, "add", "-A")).returncode:  # T-5707 round 6: a clean filter the lane defines never runs
+                raise cli.UsageError(f"could not stage the work in {path}: {r.stderr.strip()[:300]}")
             held = [x for x in _git(path, "diff", "--cached", "--name-only").stdout.splitlines()
                     if _SECRETISH.search(os.path.basename(x))]
             for x in held:  # keys and .env files never ride into a commit
-                _git(path, "rm", "-q", "--cached", "--", x)
+                _lane_git(path, "rm", "-q", "--cached", "--", x)
             if _git(path, "diff", "--cached", "--quiet").returncode:
-                r = _git(path, "commit", "-qm", f"WIP: {b.id} builder stopped; work kept by fm lane resume")
+                r = _lane_git(path, "commit", "-qm", f"WIP: {b.id} builder stopped; work kept by fm lane resume")
                 if r.returncode:  # a pre-commit hook says no: nothing is removed
                     raise cli.UsageError(f"could not commit the WIP in {path}: {r.stderr.strip()[:300]}")
             if held:

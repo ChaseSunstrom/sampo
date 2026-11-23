@@ -88,7 +88,11 @@ class FinishedLanesBatch(unittest.TestCase):
 
         def run(cmd, *a, **k):
             if cmd[:1] == ["git"]:
-                seen.append((cmd[cmd.index("-C") + 2], os.path.realpath(cmd[cmd.index("-C") + 1])))
+                rest, i = cmd[cmd.index("-C") + 2:], 0
+                while rest[i] == "-c":  # T-5707: a lane's calls carry `-c driver.x=` overrides before the subcommand
+                    i += 2
+                if rest[i] != "config":  # and the `config --list` that names a lane's drivers first: it reads no lane state
+                    seen.append((rest[i], os.path.realpath(cmd[cmd.index("-C") + 1])))
             return real(cmd, *a, **k)
         with mock.patch("subprocess.run", run):
             return sorted(c.finished_lanes(self.p, self.briefs, quiet_min=quiet_min)), seen

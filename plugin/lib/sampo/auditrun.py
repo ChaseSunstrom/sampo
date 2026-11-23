@@ -452,9 +452,10 @@ def run(p, args):
     fmt = f"\n\n{typed_format()}"  # T-5706: a lens with no section of its own still gets the format
     typed_out, fallbacks = {}, []
     named = named_files(p, b.id, brief)  # T-6005: what the brief names under audits/, which the reviewer can't read itself
+    note = getattr(args, "pilot_note", "") or ""  # T-5707: the pilot's re-review scope (the fix delta, the prior findings), as data
     for i in range(0, len(lenses), PARALLEL):
         batch = lenses[i:i + PARALLEL]
-        jobs = [(_argv(model, cap, lane), f"{brief}{fmt}{named}{where_note}\n\nReview only the lens: {x}\nIgnore the other lens sections.\n"
+        jobs = [(_argv(model, cap, lane), f"{brief}{fmt}{named}{where_note}{note}\n\nReview only the lens: {x}\nIgnore the other lens sections.\n"
                  + CLOSING.format(lens=x), x)
                 for x in batch]
         try:

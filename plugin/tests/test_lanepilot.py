@@ -42,6 +42,8 @@ class PilotCase(LandCase):
         patch = mock.patch.dict(os.environ, env)
         patch.start()
         self.addCleanup(patch.stop)
+        # T-5707: the default fix rounds (1) are on here; a test that reads the legacy "changes" outcome opts out with
+        # no_fix_rounds(). The rounds' own behaviour is test_lanepilot_fix's
         self.tid = self.lane(1, self.name, when=OLD, tier=self.tier)
         # the builder's own return, stamped as its SubagentStop does (the hook matches the lane's agent-<id> path, which
         # this test lane does not have)
@@ -52,6 +54,12 @@ class PilotCase(LandCase):
 
     def pilot(self):
         return lanepilot.pilot(c.find_project(self.repo), self.tid, self.repo)
+
+    def no_fix_rounds(self):
+        """Opt this test out of the headless fix round: it reads the pilot's review outcome (changes needed) as is."""
+        rounds = mock.patch.object(lanepilot, "MAX_FIX_ROUNDS", 0)
+        rounds.start()
+        self.addCleanup(rounds.stop)
 
     def calls(self):
         return [json.loads(x) for x in open(self.log)] if os.path.exists(self.log) else []
@@ -452,6 +460,7 @@ class VerdictCache(PilotCase):
         self.assertEqual(self.launches(), 2, "a tampered entry is not served")
 
     def test_a_pilot_rerun_on_the_same_tip_costs_no_launch(self):
+        self.no_fix_rounds()  # T-5707: the legacy changes outcome; the fix round is test_lanepilot_fix's
         os.environ["STUB_BAD_LENS"] = "adversary"
         self.addCleanup(os.environ.pop, "STUB_BAD_LENS", None)
         self.assertEqual(self.pilot()["outcome"], "changes")
@@ -492,6 +501,7 @@ class FixRoundLenses(PilotCase):
         return train._lane_tip(self.repo, self.brief())
 
     def round_one(self, bad="edge"):
+        self.no_fix_rounds()  # T-5707: this reads the legacy changes outcome; the fix round is test_lanepilot_fix's
         os.environ["STUB_BAD_LENS"] = bad
         self.addCleanup(os.environ.pop, "STUB_BAD_LENS", None)
         r = self.pilot()
@@ -564,8 +574,28 @@ class FixRoundLenses(PilotCase):
         self.assertEqual({v["scope"] for k, v in self.scopes().items() if k[0] == new[:12]}, {"whole"})
 
 
+class DefaultRound(PilotCase):
+    tier = "M"
+
+    def test_the_default_runs_one_fix_round_before_the_lane_is_handed_back(self):
+        """T-5707: with no opt-out a HIGH finding gets a fix session (this stub is the reviewer script, so the session
+        commits nothing and the round ends in an exception that marks changes_asked), never an accept."""
+        self.assertEqual(lanepilot.MAX_FIX_ROUNDS, 1)
+        os.environ["STUB_BAD_LENS"] = "edge"
+        self.addCleanup(os.environ.pop, "STUB_BAD_LENS", None)
+        r = self.pilot()
+        self.assertEqual(r["outcome"], "exception", r)
+        self.assertIn("after 1 fix round", r["reason"])
+        self.assertEqual(self.brief().meta.get("changes_asked"), "lane-pilot")
+        self.assertFalse(self.accepted())
+
+
 class ChangesNeeded(PilotCase):
     tier = "M"
+
+    def setUp(self):
+        super().setUp()
+        self.no_fix_rounds()
 
     def test_a_high_finding_is_not_recorded_and_the_lane_is_not_accepted(self):
         os.environ["STUB_BAD_LENS"] = "edge"
@@ -663,7 +693,9 @@ class Unparsed(PilotCase):
 
     def test_a_real_changes_needed_reply_is_still_changes(self):
         self.stub(STUB_BAD_LENS="edge")
-        self.assertEqual(self.pilot()["outcome"], "changes")
+        self.no_fix_rounds()  # T-5707: the default hands a finding to a fix session first (test_lanepilot_fix's)
+        r = self.pilot()
+        self.assertEqual(r["outcome"], "changes", r)
 
 
 class ExceptionLines(PilotCase):
@@ -851,6 +883,7 @@ class PilotAnswer(PilotCase):
         self.assertTrue(self.accepted())
 
     def test_a_changes_needed_lane_is_read_with_its_why(self):
+        self.no_fix_rounds()
         os.environ["STUB_BAD_LENS"] = "intent"
         self.addCleanup(os.environ.pop, "STUB_BAD_LENS", None)
         got = pilotsig._answer(self.verb_out(self.tid), self.tid)
