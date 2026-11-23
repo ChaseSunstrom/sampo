@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- A big close no longer carries a commit as reviewed by a base guess, a stale lane cut or a re-indented line: patch ids keep whitespace, every hand-out records its lane cut, and a child with no cut counts none (T-6025).
 - A lane no longer reaches trunk before its review: the live land, the gated train, --first, lane merge, lane pick and fm serve's integrate hold a lane with no review at its tip as 'held: not reviewed at this tip', and the live land asks the pilot to review it (T-5968).
 - The state-write inventory test is green again: landlock.writable_for is dropped from its reviewed list and pins, since T-5974 stopped it reaching the real home (T-6024).
 - A review brief for a real lane is under 8,000 characters: the past findings, nits, pre-audit, sinks, files-vs-steps, changed functions and the builder's lens pass move to ID.context.md, named by path, once the brief passes 7,800, and the lens instructions and checklist paths stay (T-6005).
