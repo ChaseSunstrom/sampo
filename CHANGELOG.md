@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- The chained-lanes split script redacts each brief value before quoting it and is written without a second redaction pass, so a secret next to a quote no longer leaks into it and no pattern can unquote brief text; a part that does not read back with shlex is not written (T-6074).
 - Headless reviewers now answer in one typed JSON reply whose schema generates the prompt format, goes to claude as --json-schema and validates the reply, with one repair retry and the old regex parser kept as a counted fallback (T-6043).
 - Trunk's four reds are green again: core and hooks patterns compile lazily, the plan-clock Stub carries watch_steps and args, the ship fixture's helper is no longer named test_*, and train._lane_own reads --is-ancestor by exit code (T-6067).
 - The plan gate holds a step for a cold rival read only for a real one-way action (a ship, tag, publish or push command in a step or verify, a step opening with a release imperative, a dist or releases scope), no longer for 'merge' or 'publish' in prose (T-6058).
