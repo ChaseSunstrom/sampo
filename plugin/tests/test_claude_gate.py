@@ -25,7 +25,8 @@ UNGATED = {
     ("research.py", "_child"): "sampo research's child, a question the user asks",
     ("auditrun.py", "_argv"): "the audit lane's review child, a code review",
     ("serve.py", "_claude_cmd"): "sampo serve's job child, the user's own build",
-    ("ideas.py", "child_cmd"): "fm relate's brainstorm child: it writes ideas, it is not a benchmark or eval; exam "
+    ("lanepilot.py", "fix_argv"): "the pilot's fix session, a code fix in the user's lane, not a benchmark, eval or comparison",
+    ("ideas.py", "child_cmd"):"fm relate's brainstorm child: it writes ideas, it is not a benchmark or eval; exam "
                                "authoring through it is noted for a follow-up (T-5584)",
 }
 GATED_CALLS = ("claude_gate(", "gate_here(", "open_here(")

@@ -16,6 +16,7 @@ sensitive lane is read by Claude on every lens (security round). A lane picked b
 LOCAL_SAMPLE), or any lane of a class with fewer than PARITY_WINDOW samples, is reviewed by Claude on every lens too, and
 each local verdict is checked against it (the local_parity events, `sampo cost --local-parity`)."""
 import contextlib
+import fnmatch
 import hashlib
 import io
 import json
@@ -712,11 +713,16 @@ def fix_rules(p, b):
     under the lane only (`//path` is a filesystem-absolute rule). Denied, and a deny wins: the shell, the network, MCP, the
     credential folders (auditrun.deny_rules), any .git (the lane's gitfile, a nested repo, the shared one: a worktree's
     gitdir config is the main repo's), the files a claude loads as config, the user's ~/.claude and the main checkout."""
-    from sampo import auditrun
+    from sampo import auditrun, core
     lane = os.path.realpath(b.meta.get("lane") or "")
     main = os.path.realpath(p.root)
+    state = os.path.realpath(core.state_dir())
     allow = ["Read", "Grep", "Glob", f"Edit(/{lane}/**)", f"Write(/{lane}/**)"]
-    where = [f"/{lane}/.git", f"/{lane}/**/.git", f"/{lane}/**/.git/**", f"/{lane}/.git/**", "**/.git/**", "~/.claude/**",
+    # T-6229: the user's Claude folder is not denied whole (a lane under it, every lane here, would be): its settings, plugins,
+    # projects and Sampo's own state are, and the lane is none of them
+    where = [f"/{lane}/.git", f"/{lane}/**/.git", f"/{lane}/**/.git/**", f"/{lane}/.git/**", "**/.git/**",
+             "~/.claude/settings*.json", "~/.claude/plugins/**", "~/.claude/projects/**", f"/{state}/**",
+             *_claude_walls(lane, _claude_root(lane)),
              f"/{main}/.git/**", *(f"/{lane}/**/{x}/**" if x == ".claude" else f"/{lane}/**/{x}" for x in CONFIG_NAMES),
              f"/{lane}/.claude/**", *(f"/{lane}/{x}" for x in CONFIG_NAMES)]
     deny = ["Bash", "WebFetch", "WebSearch", "mcp__*", *auditrun.deny_rules(), *(f"{t}({w})" for w in where
@@ -724,18 +730,82 @@ def fix_rules(p, b):
     return allow, deny
 
 
-def fix_argv(p, b, found, n, cap, agent=True):
+def _claude_root(lane):
+    """T-6229: the Claude folder the lane sits under: the user's (CLAUDE_CONFIG_DIR, default ~/.claude) when the lane is under
+    it, else the outermost folder named .claude on the lane's path (a lane in a repo's .claude), else None."""
+    real = os.path.realpath(lane or ".")
+    home = os.path.realpath(os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude"))
+    if real.startswith(home + os.sep):
+        return home
+    parts = real.split(os.sep)
+    if ".claude" in parts[1:]:
+        return os.sep.join(parts[:parts.index(".claude", 1) + 1])
+    return None
+
+
+def _claude_walls(lane, root):
+    """T-6229: Edit and Write denied on every entry of the Claude folder `root` that is not on the way to `lane`, the entry
+    and everything under it. The lane's own path and its parents stay open, so the lane's allow rule is the only write
+    there. Walking the lane's ancestors, not denying the folder whole, keeps the lane writable. A name a glob would misread
+    raises OSError (the fix round then starts no session): a rule that did not match would be a hole. A glob character in
+    a sibling's name is widened to `*` so the deny still covers it; OSError only when that wider pattern would also match
+    the lane's own name at that level (the deny would then cover the lane). [] when no root."""
+    if not root:
+        return []
+    real = os.path.realpath(lane)
+    parts = os.path.relpath(real, root).split(os.sep)
+    if parts[0] == os.pardir:
+        return []
+    walls, cur = [], root
+    for name in parts:
+        for entry in sorted(os.listdir(cur)):
+            if entry == name:
+                continue
+            pat = "".join("*" if ch in "*?[]{}()!\\" else ch for ch in entry)
+            if fnmatch.fnmatchcase(name, pat):
+                raise OSError(f"{os.path.join(cur, entry)} widened to {pat!r} would also cover the lane's {name!r}")
+            walls += [f"/{os.path.join(cur, pat)}", f"/{os.path.join(cur, pat)}/**"]
+        cur = os.path.join(cur, name)
+    return walls
+
+
+def _fix_mode(lane):
+    """T-6229: the fix session's permission mode. A lane under a Claude folder is edited in bypassPermissions only when the
+    resolver's probe (pilotsig._permission_mode, bounded by the guard) saw this plugin refuse an outside write; otherwise
+    dontAsk, as before: Claude Code refuses an edit under a Claude folder in dontAsk, and the run then fails as it did."""
+    from sampo import pilotsig
+    return "bypassPermissions" if pilotsig._permission_mode(lane, pilotsig._plugin_dir(), FIX_AGENT) == "bypassPermissions" \
+        else "dontAsk"
+
+
+def _fix_session_env(tid, lane, mode):
+    """_fix_env, except under bypassPermissions: the env the guard probe ran with (pilotsig._claude_env, T-5889), so the
+    guard holds the session to its lane with the same confinement keys (HEADLESS, PILOT_LANE, PILOT_MAIN, the lane child)."""
+    from sampo import pilotsig
+    if mode != "bypassPermissions":
+        return _fix_env(tid)
+    env = pilotsig._claude_env(lane, FIX_AGENT)  # T-6229 review 1: the very env the probe used
+    env["FOREMAN_DRIVE_TASK"] = tid
+    env["PYTHONDONTWRITEBYTECODE"] = "1"  # T-6194, as _fix_env
+    return env
+
+
+def fix_argv(p, b, found, n, cap, agent=True, mode=None):
     """The headless fix session's argv, hardened as the reviewers' and ideas' are (T-5707 review): claude -p on sonnet
     under a --max-budget-usd cap, as the sampo:fm-builder agent when `agent` (the builder's contract and tools), with
-    no shell (--tools FIX_TOOLS, and Bash denied). --permission-mode dontAsk with --allowedTools from fix_rules: what is
-    not allowed is refused, not asked about. --setting-sources user and an empty --strict-mcp-config: the lane's own
-    settings, hooks and MCP servers do not load; ideas.harden adds --disable-slash-commands. The audits folder is added
-    for the brief's one file."""
-    from sampo import ideas
+    no shell (--tools FIX_TOOLS, and Bash denied). --permission-mode is _fix_mode's (dontAsk, or bypassPermissions with
+    this plugin's --plugin-dir when its guard was probed, T-6229) with --allowedTools from fix_rules: what is not allowed
+    is refused, not asked about. --setting-sources user and an empty --strict-mcp-config: the lane's own settings, hooks
+    and MCP servers do not load; ideas.harden adds --disable-slash-commands. The audits folder is added for the brief's
+    one file."""
+    from sampo import ideas, pilotsig
     brief = os.path.join(p.dir, "audits", f"{b.id}.builder.md")
     allow, deny = fix_rules(p, b)
+    mode = mode or _fix_mode(b.meta.get("lane") or "")
+    plugin = ["--plugin-dir", pilotsig._plugin_dir()] if mode == "bypassPermissions" else []
     return ideas.harden([
-        "claude", "-p", fix_prompt(p, b, found, n), "--permission-mode", "dontAsk", "--model", FIX_MODEL,
+        "claude", "-p", fix_prompt(p, b, found, n), "--permission-mode", mode, "--model", FIX_MODEL,
+        *plugin,
         "--max-budget-usd", f"{cap:g}", "--output-format", "json", "--setting-sources", "user",
         "--strict-mcp-config", "--mcp-config", json.dumps({"mcpServers": {}}), "--tools", FIX_TOOLS,
         *(["--agent", FIX_AGENT] if agent else []),
@@ -1293,13 +1363,14 @@ def fix_round(p, b, found, n, spent=None, kept=None):
         return "its lane worktree is gone"
     spent = [] if spent is None else spent
     try:
-        cap, env = max(0.01, fix_cap(p) - sum(spent)), _fix_env(b.id)
+        mode = _fix_mode(lane)
+        cap, env = max(0.01, fix_cap(p) - sum(spent)), _fix_session_env(b.id, lane, mode)
     except OSError as e:
         return f"fix session not started: {e}"
     code, so, se = 1, "", ""
     for agent in (True, False):  # an agent claude does not know is a refusal that spent nothing: try the plain argv
         try:
-            code, so, se = _run_claude(fix_argv(p, b, found, n, cap, agent), lane, env)
+            code, so, se = _run_claude(fix_argv(p, b, found, n, cap, agent, mode), lane, env)
         except OSError as e:
             return f"fix session not started: {e} (is `claude` on PATH and logged in?)"
         text, usd = budget.result(so)

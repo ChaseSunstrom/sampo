@@ -5,6 +5,7 @@ The stub claude plays both parts: with FOREMAN_DRIVE_TASK set it is the fix sess
 lane), otherwise a lens reviewer that reports HIGH when the lane holds a bad.txt naming its lens. No Popen is stubbed: the
 stub is a real script, so no fake pid ever reaches a kill."""
 # map-links: plugin/lib/sampo/lanepilot.py
+import fnmatch
 import json
 import os
 import shutil
@@ -18,6 +19,7 @@ from test_lanepilot import PilotCase
 from sampo import core as c
 from sampo import lanepilot
 from sampo import lanes
+from sampo import pilotsig
 from sampo import train
 
 STUB = r'''#!/usr/bin/env python3
@@ -372,7 +374,7 @@ class Argv(FixCase):
         for tool in ("Edit", "Write"):
             self.assertIn(f"{tool}(/{lane}/**)", allowed, "the lane only, by filesystem-absolute path")
             self.assertNotIn(tool, allowed, "no bare Edit or Write: that is every path")
-            for where in (f"/{lane}/.git", f"/{lane}/.git/**", f"/{lane}/**/.git/**", "**/.git/**", "~/.claude/**",
+            for where in (f"/{lane}/.git", f"/{lane}/.git/**", f"/{lane}/**/.git/**", "**/.git/**", "~/.claude/settings*.json",
                           f"/{main}/.git/**", f"/{lane}/.claude/**", f"/{lane}/.mcp.json", f"/{lane}/CLAUDE.md"):
                 self.assertIn(f"{tool}({where})", denied)
         for rule in allowed:  # nothing allowed names a path outside the lane
@@ -405,6 +407,133 @@ class Argv(FixCase):
         self.assertNotIn("--agent", fixes[1]["args"])
         self.assertEqual(self.arg(fixes[1], "--permission-mode"), "dontAsk")
         self.assertEqual(self.arg(fixes[1], "--setting-sources"), "user", "the plain retry is as hardened")
+
+
+class FixInClaudeFolder(FixCase):
+    """T-6229: a lane under a Claude folder (every lane here is) is edited by a fix session in bypassPermissions only when the
+    guard probe saw this plugin refuse an outside write; otherwise dontAsk, as before. The deny list has no rule over the lane."""
+
+    def setUp(self):
+        super().setUp()
+        claude = mock.patch.object(pilotsig, "_claude_folder", return_value=True)
+        claude.start()
+        self.addCleanup(claude.stop)
+
+    def argv(self, probe):
+        with mock.patch.object(pilotsig, "_guard_denies", return_value=probe) as guard:
+            args = lanepilot.fix_argv(c.find_project(self.repo), self.brief(), [], 1, 1.0)
+        self.assertTrue(guard.called or not probe)
+        return args
+
+    def arg(self, args, flag):
+        return args[args.index(flag) + 1]
+
+    def test_the_probe_refused_an_outside_write_so_the_session_runs_in_bypass_with_the_plugin(self):
+        args = self.argv(True)
+        self.assertEqual(self.arg(args, "--permission-mode"), "bypassPermissions")
+        self.assertEqual(self.arg(args, "--plugin-dir"), pilotsig._plugin_dir())
+
+    def test_the_probe_did_not_refuse_so_the_session_keeps_dontask_and_no_plugin_dir(self):
+        args = self.argv(False)
+        self.assertEqual(self.arg(args, "--permission-mode"), "dontAsk")
+        self.assertNotIn("--plugin-dir", args)
+
+    def test_the_lane_env_is_the_headless_one_only_under_bypass(self):
+        tid = self.tid
+        self.assertIn(c.HEADLESS_ENV, pilotsig._claude_env(self.lane_path, lanepilot.FIX_AGENT))
+        with mock.patch.object(pilotsig, "_guard_denies", return_value=True):
+            env = lanepilot._fix_session_env(tid, self.lane_path, "bypassPermissions")
+        self.assertEqual(env.get(c.HEADLESS_ENV), "1")
+        self.assertEqual(env.get(c.PILOT_LANE_ENV), os.path.realpath(self.lane_path))
+        self.assertNotIn(c.HEADLESS_ENV, lanepilot._fix_session_env(tid, self.lane_path, "dontAsk"))
+
+    def test_the_bypass_env_is_the_probes_env_on_every_key_it_adds_two(self):
+        """T-6229 review 1: the session is confined by the env the guard probe ran with, not a subset of it."""
+        probe = pilotsig._claude_env(self.lane_path, lanepilot.FIX_AGENT)
+        env = lanepilot._fix_session_env(self.tid, self.lane_path, "bypassPermissions")
+        differ = {k for k in set(probe) | set(env) if env.get(k) != probe.get(k)}
+        self.assertLessEqual(differ, {"FOREMAN_DRIVE_TASK", "PYTHONDONTWRITEBYTECODE"})
+        for k in (c.HEADLESS_ENV, c.PILOT_LANE_ENV, c.PILOT_MAIN_ENV, "SAMPO_LANE_CHILD"):
+            self.assertEqual(env.get(k), probe.get(k), k)
+
+    def test_the_claude_folder_is_denied_except_the_way_to_the_lane(self):
+        """T-6229 review 2: every entry of the Claude folder off the lane's path is denied for Edit and Write; the path is not."""
+        home = os.path.join(self.tmp, "fakehome", ".claude")
+        for f in ("settings.json", "hooks/h.sh", "plugins/x", "foreman/state/s", "foreman/other.txt", "foreman/src/a.py",
+                  "foreman/.claude/settings.json", "foreman/.claude/CLAUDE.md", "foreman/.claude/worktrees/agent-other/f",
+                  "foreman/.claude/worktrees/agent-x/keep.py"):
+            os.makedirs(os.path.dirname(os.path.join(home, f)), exist_ok=True)
+            with open(os.path.join(home, f), "w") as h:
+                h.write("x")
+        lane = os.path.join(home, "foreman", ".claude", "worktrees", "agent-x")
+        walls = lanepilot._claude_walls(lane, home)
+        for path in ("settings.json", "hooks", "plugins", "foreman/state", "foreman/other.txt", "foreman/src",
+                     "foreman/.claude/settings.json", "foreman/.claude/CLAUDE.md", "foreman/.claude/worktrees/agent-other"):
+            real = os.path.realpath(os.path.join(home, path))
+            self.assertIn(f"/{real}", walls, path)
+            self.assertIn(f"/{real}/**", walls, path)
+        for path in (home, os.path.join(home, "foreman"), os.path.join(home, "foreman", ".claude"),
+                     os.path.join(home, "foreman", ".claude", "worktrees"), lane):
+            self.assertNotIn(f"/{os.path.realpath(path)}", walls, path)
+        lane_file = os.path.join(os.path.realpath(lane), "keep.py")
+        self.assertFalse([w for w in walls if fnmatch.fnmatch(lane_file, w)], "no wall covers the lane's file")
+
+    def test_a_sibling_with_a_glob_character_gets_a_covering_deny_and_the_round_starts(self):
+        """T-6229 review 1: 'settings (1).json' is denied by a broadened pattern that still matches it; no refusal."""
+        import fnmatch
+        home = os.path.join(self.tmp, "globhome", ".claude")
+        os.makedirs(os.path.join(home, "foreman", "src"))
+        entry = os.path.join(home, "settings (1).json")
+        with open(entry, "w") as h:
+            h.write("x")
+        walls = lanepilot._claude_walls(os.path.join(home, "foreman", "lane"), home)
+        pat = os.path.join(home, "settings *1*.json")
+        self.assertIn(f"/{pat}", walls)
+        self.assertIn(f"/{pat}/**", walls)
+        self.assertTrue(fnmatch.fnmatchcase(entry, pat), "the broadened pattern still matches the sibling")
+
+    def test_a_glob_sibling_whose_pattern_matches_the_lanes_own_path_refuses(self):
+        """T-6229 review 1: 'for(e)man' broadens to a pattern that matches the lane's own 'foreman' at that level: refused."""
+        home = os.path.join(self.tmp, "clashhome", ".claude")
+        os.makedirs(os.path.join(home, "foreman", "src"))
+        with open(os.path.join(home, "for(e)man"), "w") as h:
+            h.write("x")
+        with self.assertRaises(OSError):
+            lanepilot._claude_walls(os.path.join(home, "foreman", "lane"), home)
+
+    def test_a_fix_round_starts_its_session_with_claude_bench_off(self):
+        """T-6229: a code fix in the user's lane is not a benchmark, so claude_bench being off never refuses it."""
+        self.fm("claude-bench", "off")
+        self.pilot()
+        self.assertTrue(self.kinds("fix"), "the fix session is started with the benchmark switch off")
+
+    def test_tools_are_unchanged_and_there_is_no_bash_web_or_mcp(self):
+        for probe in (True, False):
+            args = self.argv(probe)
+            self.assertEqual(self.arg(args, "--tools"), lanepilot.FIX_TOOLS)
+            allowed = args[args.index("--allowedTools") + 1:args.index("--disallowedTools")]
+            denied = args[args.index("--disallowedTools") + 1:]
+            self.assertFalse([x for x in allowed if x.startswith(("Bash", "WebFetch", "WebSearch", "mcp__"))], allowed)
+            for rule in ("Bash", "WebFetch", "WebSearch", "mcp__*"):
+                self.assertIn(rule, denied)
+
+    def test_the_deny_list_keeps_the_sensitive_paths_and_no_rule_covers_the_lane(self):
+        args = self.argv(True)
+        denied = args[args.index("--disallowedTools") + 1:]
+        home = os.path.expanduser("~")
+        lane = os.path.realpath(self.lane_path)
+        for where in ("~/.claude/settings*.json", "~/.claude/plugins/**", "~/.claude/projects/**",
+                      f"/{os.path.realpath(c.state_dir())}/**", "**/.git/**", f"/{os.path.realpath(self.repo)}/.git/**"):
+            for tool in ("Edit", "Write"):
+                self.assertIn(f"{tool}({where})", denied, where)
+        self.assertNotIn("Edit(~/.claude/**)", denied)
+        self.assertNotIn("Write(~/.claude/**)", denied)
+        probe_file = os.path.join(lane, "probe.py")
+        for rule in denied:
+            if not rule.startswith(("Edit(", "Write(")):
+                continue
+            pattern = rule.split("(", 1)[1][:-1].replace("~", home, 1)
+            self.assertFalse(fnmatch.fnmatch(probe_file, pattern), f"{rule} covers the lane")
 
 
 class FixFails(FixCase):
