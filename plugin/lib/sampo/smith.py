@@ -251,6 +251,7 @@ STATE_TEXT, STATE_FACTS = 160, 5  # characters of a state's text fields; facts k
 SMALL_OUT, THINK_FILE = 1024, "think-kept.json"  # T-4290: a local model's call this small starts with thinking off; the
 #                                                 kept sizes per model (a call that exhausted its thinking) live here
 THINK_LAPSE_DAYS = 14  # T-4297: a kept size older than this is not applied (one day's model and load, not a law)
+BUDGET_EMPTY_REPLIES = 2  # T-6107: a local model's reasoning-only replies in one run that turn its later calls of the run off
 STATE_NOTE = ("\nWith every action also send \"state\": a compact note of your thinking, so you need little other "
               "thinking: {\"goal\": \"...\", \"facts\": [\"what you have verified\"], \"hypothesis\": \"your best "
               "explanation\", \"next_check\": \"the command or file that would confirm it\", \"confidence\": 0 to 1}. "
@@ -2106,9 +2107,18 @@ def think_kept(name):
     return best
 
 
+def _lapsed(ts):
+    """T-6107: a time older than THINK_LAPSE_DAYS; a record with no time does not hold (it lapses)."""
+    num = isinstance(ts, (int, float)) and not isinstance(ts, bool)
+    return not num or time.time() - ts > THINK_LAPSE_DAYS * 86400
+
+
 def think_arm(name):
-    """T-4297: the arm the exam kept for this model ("native" or "off"), "" when none is."""
-    arm = _think_rec(_think_safe(_think_read), think_key(name)).get("arm")
+    """T-4297: the arm the exam kept for this model ("native" or "off"), "" when none is. T-6107: a budget arm (think_budget)
+    holds for THINK_LAPSE_DAYS from its time; after that the arm it displaced is the model's again."""
+    rec = _think_rec(_think_safe(_think_read), think_key(name))
+    b = rec.get("budget")
+    arm = b.get("was") if isinstance(b, dict) and _lapsed(b.get("ts")) else rec.get("arm")
     return arm if arm in ("native", "off") else ""
 
 
@@ -2131,6 +2141,40 @@ def think_record(name, size):
     _think_update(name, count)
 
 
+def think_budget(name):
+    """T-6107: a local model spent two of one run's calls whole on thinking, with no text: its record takes arm off (run
+    "budget", with the time), so the next run starts off too. The arm it displaces is kept in the budget (think_arm gives it
+    back once the budget lapses); a later budget keeps the first displaced arm."""
+    def arm_off(rec):
+        b = rec.get("budget")
+        if not isinstance(b, dict):
+            b = rec["budget"] = {"was": rec.get("arm") if rec.get("arm") in ("native", "off") else ""}
+        b["ts"] = time.time()
+        rec.update(arm="off", run="budget")
+    _think_update(name, arm_off)
+
+
+def budget_spent(run, name):
+    """T-6107: one reasoning-only reply to a local model's call that thought by default, counted for this run. The
+    BUDGET_EMPTY_REPLIES-th turns the model's later calls of the run off (think_start: "reasoning budget") and writes its
+    record (think_budget); a record that won't write stops nothing."""
+    counts = getattr(run, "budget_empty", None)
+    if counts is None:
+        counts = run.budget_empty = {}
+    counts[name] = counts.get(name, 0) + 1
+    off = getattr(run, "budget_off", None)
+    if off is None:
+        off = run.budget_off = set()
+    if counts[name] >= BUDGET_EMPTY_REPLIES and name not in off:
+        off.add(name)
+        run.emit("note", f"  {name} spent its whole output budget thinking in {BUDGET_EMPTY_REPLIES} calls of this run: "
+                         f"its later calls think off, and its record says so")
+        try:
+            think_budget(name)
+        except (OSError, ValueError, TypeError, core.LockTimeout):  # a record that won't write stops nothing
+            pass
+
+
 def think_forget(name, size):
     """T-4297: a call of this size that thought and answered: its kept entry (it had lapsed) is removed. The file is
     not written when there is none."""
@@ -2149,6 +2193,7 @@ def think_keep(name, arm, run, native, off, fixable=0):
         held = held if isinstance(held, int) and not isinstance(held, bool) else 0
         if before and before["arm"] != arm and fixable < held:
             return False, before
+        rec.pop("budget", None)  # T-6107: an exam grade replaces the budget arm, and its record with it
         rec.update(arm=arm, run=str(run), native=native, off=off, fixable=fixable, ts=time.time())
         return True, before
     return _think_update(name, keep)
@@ -2185,6 +2230,8 @@ def think_start(run, profile, kw, decides=False):
     name, size = str(profile.get("name") or ""), kw.get("max_tokens") or 0
     if size <= SMALL_OUT:
         return dict(kw, think=False), "small call"
+    if name in (getattr(run, "budget_off", None) or ()):  # T-6107: two of this run's calls spent their thinking with no text
+        return dict(kw, think=False), "reasoning budget"
     if not run.reason and think_arm(name) != "native":
         if not run.think_noted:
             run.think_noted = True
@@ -2246,6 +2293,7 @@ def complete_retrying(run, profile, messages, decides=False, **kw):
                         think_record(name, size)
                     except (OSError, ValueError, TypeError, core.LockTimeout):  # a count is extra: a state that won't write stops nothing
                         pass
+                    budget_spent(run, name)  # T-6107: the run's second one turns this model's later calls off
                 # T-4210: once, with thinking off, and said (a think_budget call already closed its thinking itself).
                 # T-4358: the thinking it did is not thrown away: its end rides the second ask as the model's own notes
                 off, asked = True, m.with_thought(messages, thought)
@@ -2303,6 +2351,7 @@ class Run:
         self.crit_secs = {}  # criterion number -> seconds its verify last took; check_secs is their sum once all are timed
         self.think_floor, self.think_noted = {}, False  # T-4290: per local model, the largest size thinking exhausted
         self.decide_floor, self.decide_noted = {}, False  # T-4588: per local model, the smallest plan-call size that spent it
+        self.budget_empty, self.budget_off = {}, set()  # T-6107: per local model, its reasoning-only replies; the ones off now
         self.small = bool(getattr(args, "small", False))  # T-2878: small-model mode (a profile's "small" turns it on too)
         self.own_endpoint = False  # T-4177: the profile is the user's own or a loopback one (guided_profile)
         self.state, self.checked, self.bad_run, self.broke = None, False, False, False  # a resume starts the state again

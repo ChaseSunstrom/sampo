@@ -8,6 +8,8 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
+import time
 import types
 import unittest
 from unittest import mock
@@ -18,6 +20,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
 from sampo import core as c  # noqa: E402
 from sampo import lanes as slanes  # noqa: E402
 from sampo import localruns  # noqa: E402
+from sampo import models  # noqa: E402
+from sampo import smith  # noqa: E402
 
 TURNS = "stopped: the model used all 40 turns (--max-steps) before step 2 was done; fm code --resume T-1 --max-steps N carries on"
 TIME = "stopped: out of time (--deadline 600 s) before step 1 was done; fm code --resume T-1 carries on"
@@ -820,6 +824,112 @@ class LocalFirstStats(LocalLane):
         self.run_local(tid, lambda p, b, lane, name: self.commit(b.id, lane) or 0)
         (row,) = self.rows()
         self.assertEqual((row["claude_tokens"], row["claude_tokens_basis"]), (0, "inferred"))
+
+
+class ThinkingBudget(unittest.TestCase):
+    """T-6107: a local model whose calls spend their whole output budget thinking, with no text, twice in one run: the run's
+    later calls of that model start with thinking off, and the model's profile record takes arm off, so the next run starts
+    off too. The stub endpoint answers only reasoning while thinking is on and text once it is off; the state is a temp dir,
+    and nothing calls a real model."""
+
+    LOCAL = {"name": "qwen-local", "kind": "openai", "base_url": "http://127.0.0.1:11434/v1", "model": "qwen"}
+    OTHER = {"name": "other-local", "kind": "openai", "base_url": "http://localhost:8000/v1", "model": "other"}
+    MSG = [{"role": "user", "content": "the question"}]
+    TEXT = {"text": "{}", "tool_calls": [], "usage": {}, "stop": "stop"}
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = tmp.name
+        self.state = os.path.join(tmp.name, "state")  # a fresh state: no real one is written
+        patch = mock.patch.dict(os.environ, {"FOREMAN_STATE": self.state})
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.notes = []
+
+    def run_of(self, reason="native"):
+        """One run of the loop. reason native makes a local call think; with no reason a local call starts off by default."""
+        run = smith.Run(types.SimpleNamespace(escalate=None, max_steps=None, reason=reason), self.root, self.root)
+        run.emit = lambda event, text, quiet=False, **data: self.notes.append(text) if event == "note" else None
+        return run
+
+    def endpoint(self, run, profile, sizes, spent=2, **kw):
+        """complete_retrying once per size, models.complete stood in by the endpoint: its first `spent` replies to a call that
+        thinks are all reasoning (the whole output budget spent), every other reply is text. Returns the thinking each model
+        call started with, in order ("unset": the profile's own)."""
+        thinks, left = [], [spent]
+
+        def stub(prof, messages, **call):
+            think = call.get("think", "unset")
+            thinks.append(think)
+            if think is not False and left[0] > 0:
+                left[0] -= 1
+                raise models.ModelError(f"{prof['name']}: reasoning used the whole budget: no text", reasoning=True)
+            return dict(self.TEXT)
+
+        with mock.patch.object(models, "complete", stub):
+            for size in sizes:
+                smith.complete_retrying(run, profile, self.MSG, **dict(kw, max_tokens=size))
+        return thinks
+
+    def write_record(self, data):
+        os.makedirs(self.state, exist_ok=True)
+        with open(os.path.join(self.state, smith.THINK_FILE), "w", encoding="utf-8") as f:
+            json.dump(data, f)
+
+    def record(self):
+        with open(os.path.join(self.state, smith.THINK_FILE), encoding="utf-8") as f:
+            return json.load(f)
+
+    def budget_record(self, days, was):
+        """A local model whose record holds the budget arm, written `days` ago over the arm it displaced (was)."""
+        return {"qwen-local": {"arm": "off", "run": "budget", "budget": {"was": was, "ts": time.time() - days * 86400}}}
+
+    def test_two_reasoning_only_replies_turn_thinking_off_for_the_rest_of_the_run(self):
+        thinks = self.endpoint(self.run_of(), self.LOCAL, [4096, 6144, 8192, 8192])
+        self.assertEqual(thinks, ["unset", False, "unset", False, False, False])
+
+    def test_one_reasoning_only_reply_does_not_turn_the_run_off(self):
+        thinks = self.endpoint(self.run_of(), self.LOCAL, [4096, 6144, 8192], spent=1)
+        self.assertEqual(thinks, ["unset", False, "unset", "unset"])
+        self.assertNotIn("arm", self.record()["qwen-local"])
+
+    def test_the_profile_record_takes_arm_off_for_that_model_and_leaves_the_others(self):
+        other = {"other-local": {"arm": "native", "run": "s1-001", "native": 5, "off": 4, "ts": time.time()}}
+        self.write_record(other)
+        self.endpoint(self.run_of(), self.LOCAL, [4096, 6144])
+        kept = self.record()
+        self.assertEqual((kept["qwen-local"]["arm"], kept["qwen-local"]["run"]), ("off", "budget"))
+        self.assertEqual(kept["other-local"], other["other-local"])
+        self.assertEqual(smith.think_arm("qwen-local"), "off")
+        self.assertEqual(smith.think_arm("other-local"), "native")
+
+    def test_the_next_run_starts_with_thinking_off_when_the_model_kept_native(self):
+        self.write_record({"qwen-local": {"arm": "native", "run": "s1-001", "native": 5, "off": 4, "ts": time.time()}})
+        self.assertEqual(self.endpoint(self.run_of(None), self.LOCAL, [8192], spent=0), ["unset"])
+        self.endpoint(self.run_of("native"), self.LOCAL, [4096, 6144])
+        self.assertEqual(self.endpoint(self.run_of(None), self.LOCAL, [8192], spent=0), [False])
+
+    def test_the_budget_arm_lapses_after_THINK_LAPSE_DAYS_and_gives_back_the_arm_it_displaced(self):
+        self.write_record(self.budget_record(13, "native"))
+        self.assertEqual(smith.think_arm("qwen-local"), "off")
+        self.write_record(self.budget_record(15, "native"))
+        self.assertEqual(smith.think_arm("qwen-local"), "native")
+        self.write_record(self.budget_record(15, ""))
+        self.assertEqual(smith.think_arm("qwen-local"), "")
+        self.assertEqual(smith.THINK_LAPSE_DAYS, 14)
+
+    def test_an_exam_grade_replaces_the_budget_arm_and_drops_its_record(self):
+        self.write_record(self.budget_record(1, "native"))
+        smith.think_keep("qwen-local", "native", "s9-001", 5, 3, fixable=4)
+        rec = self.record()["qwen-local"]
+        self.assertEqual((rec["arm"], rec["run"]), ("native", "s9-001"))
+        self.assertNotIn("budget", rec)
+
+    def test_a_call_the_caller_asked_to_think_is_its_choice_and_is_not_counted(self):
+        thinks = self.endpoint(self.run_of(), self.LOCAL, [4096, 6144], think=True)
+        self.assertEqual(thinks, [True, False, True, False])
+        self.assertFalse(os.path.exists(os.path.join(self.state, smith.THINK_FILE)))
 
 
 if __name__ == "__main__":
