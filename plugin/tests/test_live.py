@@ -668,6 +668,17 @@ class Serve(ForemanTestCase):
             if line.startswith("data: "):
                 return json.loads(line[6:])
 
+    def _kept_lands(self, path):  # T-6013: wait until the kept file holds a whole frame (a server writes it after publishing)
+        end = time.monotonic() + 5
+        while time.monotonic() < end:
+            try:
+                with open(path, encoding="utf-8") as f:
+                    if isinstance(json.load(f), dict):
+                        return
+            except (OSError, ValueError):
+                pass
+            time.sleep(0.02)
+
     def _restart(self):  # T-5549: a second server on the same project (a restart), serving on its own port; its
         # session secret is its own, so this logs in there and the cookie after it is the new server's
         again, token = live.make(self.p)
@@ -723,6 +734,7 @@ class Serve(ForemanTestCase):
         c1, r1, _ = self._open()
         built = self._frame(r1)
         c1.close()
+        self._kept_lands(os.path.join(self.p.dir, "live-frame.json"))
         self.assertTrue(os.path.exists(os.path.join(self.p.dir, "live-frame.json")), "a built frame is kept on disk")
         live._CACHE.clear()
         gate, started = threading.Event(), threading.Event()
@@ -750,11 +762,13 @@ class Serve(ForemanTestCase):
         self._frame(r1)
         c1.close()
         path = os.path.join(self.p.dir, "live-frame.json")
+        self._kept_lands(path)  # T-6013: the server keeps the frame just after it publishes it: let that write land first
         with open(path, "w", encoding="utf-8") as f:  # a torn or foreign file: nothing is served from it
             f.write("{not json")
         c2, r2, _ = self._open(port=self._restart())
         self.assertFalse(self._frame(r2).get("stale"), "a corrupt kept frame is ignored: a fresh build answers")
         c2.close()
+        self._kept_lands(path)  # the restart's own build keeps its frame over the corrupt file: wait for it, then remove
         os.remove(path)
         planted = os.path.join(self.tmp, "planted.json")
         with open(planted, "w", encoding="utf-8") as f:
@@ -1232,3 +1246,182 @@ class Act(ForemanTestCase):  # T-3026: POST /api/act, with the same-uid peer the
         with mock.patch.object(live, "_run") as run:
             self.assertEqual(self.act(json.dumps({"action": "note", "text": "x" * 20000}))[0], 413)
         run.assert_not_called()
+
+
+class IdleCost(ForemanTestCase):  # T-6013: an idle sampo watch --web costs next to nothing; a change still reaches the page
+    def setUp(self):
+        super().setUp()
+        self.fm("task", "new", "Idle it", "--type", "FEATURE", "--tier", "S", "--ac", "x :: true", "--step", "s", "--focus")
+        self.p = c.find_project(self.repo)
+        live._CACHE.clear()
+        live._BRIEFS.clear()
+
+    def _touch(self, *parts):
+        path = os.path.join(self.p.dir, *parts)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write("x\n")
+
+    def test_the_stamp_ignores_what_the_servers_own_build_writes(self):  # the build wrote cache/ and a hook writes lastcmd/
+        self._touch("cache", "board.json")
+        self._touch("lastcmd", "s1")
+        self._touch(".lock")
+        before = live._stamp(self.p)
+        self._touch("cache", "board.json")
+        self._touch("cache", "git.json")
+        self._touch("lastcmd", "s2")
+        self._touch(".lock")
+        self.assertEqual(live._stamp(self.p), before, "a write into cache/, lastcmd/ or .lock is no input of the frame: it woke a rebuild")
+        self._touch("ledger.jsonl")
+        self.assertNotEqual(live._stamp(self.p), before, "a ledger write still moves the stamp")
+
+    def _counted(self, names):
+        n = dict.fromkeys(names, 0)
+        wrapped = {}
+        for name in names:
+            def one(p, name=name, real=live.COLLECTORS[name]):
+                n[name] += 1
+                return real(p)
+            wrapped[name] = one
+        return n, mock.patch.dict(live.COLLECTORS, wrapped)
+
+    def _parses(self):
+        n, real = {"n": 0}, c.load_briefs
+
+        def counted(*a, **k):
+            n["n"] += 1
+            return real(*a, **k)
+        return n, mock.patch.object(c, "load_briefs", counted)
+
+    def test_the_briefs_are_parsed_again_only_when_a_brief_file_moved(self):
+        n, patch = self._parses()
+        with patch:
+            live._build_one(self.p)
+            live._build_one(self.p)
+            live._build_one(self.p)
+            self.assertEqual(n["n"], 1, "no brief file moved: the three builds share one parse")
+            self._touch("tasks", "T-0099-new.md")  # a brief appears: the folder's listing moves
+            live._build_one(self.p)
+            self.assertEqual(n["n"], 2)
+
+    def test_every_collector_runs_on_every_build(self):  # T-6013 review: nothing but the parse is kept
+        n, patch = self._counted(["lanes", "queue", "focus", "closed_today", "project"])
+        with patch:
+            live._build_one(self.p)
+            live._build_one(self.p)
+        self.assertEqual(n, {"lanes": 2, "queue": 2, "focus": 2, "closed_today": 2, "project": 2})
+
+    def test_the_stage_follows_the_autonomy_at_every_build_not_the_one_the_briefs_were_read_under(self):
+        got = []
+        auto = {"v": "standard"}
+        with mock.patch.object(c, "effective_autonomy", lambda *a, **k: auto["v"]), \
+                mock.patch.object(c, "stage", lambda b, a="standard", *r, **k: got.append(a) or "x"):
+            live._build_one(self.p)
+            auto["v"] = "slow"  # the risk budget, a pause, the plan record: none is a brief file
+            got.clear()
+            live._build_one(self.p)
+        self.assertTrue(got and set(got) == {"slow"}, f"the stage was computed under {set(got)}")
+
+    def test_a_lane_that_finished_shows_waiting_on_the_next_build_with_no_brief_file_moved(self):
+        b = live._briefs(self.p)[0]
+        b.meta["lane"] = self.repo  # the parse is the kept one: give its brief a lane
+        finished = {"ids": []}
+        with mock.patch.object(c, "finished_lanes", lambda *a, **k: finished["ids"]):
+            self.assertFalse(live.lanes(self.p)[0]["waiting"])
+            finished["ids"] = [b.id]  # git or the builder's process moved: no brief file did
+            self.assertTrue(live.lanes(self.p)[0]["waiting"])
+
+    def test_the_kept_briefs_expire_before_the_frame_ceiling(self):  # an edit that keeps a file's mtime and size is seen by then
+        self.assertLess(live.BRIEFS_S, live.FRAME_MAX_S)
+        n, patch = self._parses()
+        with patch, mock.patch.object(live, "BRIEFS_S", 0):
+            live._build_one(self.p)
+            live._build_one(self.p)
+        self.assertGreater(n["n"], 1, "a keep of no time parses again (once per use), not once")
+
+    def test_a_collector_that_raised_leaves_its_field_empty_and_the_next_build_runs_it(self):
+        real = live.COLLECTORS["lanes"]
+        calls = {"n": 0}
+
+        def flaky(p):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("boom")
+            return real(p)
+        with mock.patch.dict(live.COLLECTORS, {"lanes": flaky}):
+            self.assertEqual(live._build_one(self.p)["lanes"], [])
+            live._build_one(self.p)
+        self.assertEqual(calls["n"], 2)
+
+    def test_lanes_reads_the_autonomy_once_not_once_per_lane(self):
+        briefs = [mock.Mock(id=f"T-{i:04d}", status="active", meta={"lane": "x"}, title="t", steps=lambda: []) for i in range(6)]
+        seen = {"n": 0}
+        real = c.effective_autonomy
+
+        def counted(*a, **k):
+            seen["n"] += 1
+            return real(*a, **k)
+        with mock.patch.object(live, "_briefs", return_value=briefs), mock.patch.object(c, "finished_lanes", return_value=[]), \
+                mock.patch.object(c, "effective_autonomy", counted), mock.patch.object(c, "stage", return_value="build"):
+            self.assertEqual(len(live.lanes(self.p)), 6)
+        self.assertLessEqual(seen["n"], 1)
+
+    def _frames(self):
+        n = {"builds": 0}
+
+        def build():
+            n["builds"] += 1
+            return {"at": c.now(), "n": n["builds"]}
+        return n, live.Frames(build, lambda: live._stamp(self.p), os.path.join(self.p.dir, "live-frame-t.json"))
+
+    def test_no_stream_no_build_and_no_wake(self):
+        n, fr = self._frames()
+        with mock.patch.object(live, "STREAM_S", 0.05):
+            fr.subscribe()
+            for _ in range(100):
+                if n["builds"]:
+                    break
+                time.sleep(0.02)
+            fr.unsubscribe()
+            time.sleep(0.4)  # the thread may be mid-wait: let the last tick end
+            seen = n["builds"]
+            for _ in range(10):
+                self._touch("ledger.jsonl")  # the state moves and nobody watches: nothing runs
+                time.sleep(0.1)
+        fr.close()
+        self.assertEqual(n["builds"], seen, "with no stream open the frame thread builds nothing")
+        self.assertGreaterEqual(seen, 1)
+
+    def test_a_state_change_reaches_a_connected_stream_within_a_tick(self):
+        n, fr = self._frames()
+        with mock.patch.object(live, "STREAM_S", 0.1):
+            fr.subscribe()
+            f, _ = fr.take(0)
+            self.assertIsNotNone(f)
+            self._touch("ledger.jsonl")
+            t0, seen, got = time.monotonic(), f.seq, None
+            while time.monotonic() - t0 < 3 and not got:
+                nf, _ = fr.take(seen)
+                if nf is not None and nf.s["n"] > f.s["n"]:
+                    got = nf
+                seen = nf.seq if nf is not None else seen
+            fr.unsubscribe()
+            fr.close()
+        self.assertIsNotNone(got, "a ledger write is rebuilt and pushed")
+        self.assertLess(time.monotonic() - t0, 1.0)
+
+    def test_an_idle_stream_costs_under_five_percent_of_a_core(self):
+        n, fr = self._frames()
+        with mock.patch.object(live, "STREAM_S", 0.1):
+            fr.subscribe()
+            f, _ = fr.take(0)
+            seen = f.seq
+            t0, w0 = time.process_time(), time.monotonic()
+            while time.monotonic() - w0 < 3:
+                nf, _ = fr.take(seen)
+                seen = nf.seq if nf is not None else seen
+            cpu, wall = time.process_time() - t0, time.monotonic() - w0
+            fr.unsubscribe()
+            fr.close()
+        self.assertEqual(n["builds"], 1, "nothing changed: one build, then the held frame again")
+        self.assertLess(cpu / wall, 0.05, f"{cpu:.3f} s of cpu over {wall:.1f} s idle")

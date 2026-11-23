@@ -133,8 +133,29 @@ def _procs():
 
 # ---------------------------------------------------------------- collectors: each takes the project, returns its field
 
+BRIEFS_S = 25  # T-6013: the parsed briefs are kept this long while no brief file moved; under FRAME_MAX_S
+_BRIEFS = {}  # project dir -> (the tasks folder's listing, monotonic time, the briefs)
+
+
 def _briefs(p):
-    return _cached(("briefs", p.dir), CACHE_S, lambda: c.load_briefs(p))
+    """The project's briefs. T-6013: a build re-parsed them every tick; they are now kept while the tasks folder's listing
+    (each brief's name, mtime and size) is the one they were read under, for at most BRIEFS_S seconds. Only the parse is
+    kept: every collector still reads its own live inputs (the autonomy, git, the clock, processes) on each build, so
+    nothing it derives is stale."""
+    now = time.monotonic()
+    try:
+        key = _listing(os.path.join(p.dir, "tasks"))
+    except Exception:
+        key = None
+    with _LOCK:
+        hit = _BRIEFS.get(p.dir)
+    if key is not None and hit and hit[0] == key and now - hit[1] < BRIEFS_S:
+        return hit[2]
+    got = c.load_briefs(p)
+    if key is not None:
+        with _LOCK:
+            _BRIEFS[p.dir] = (key, now, got)
+    return got
 
 
 def project(p):
@@ -176,13 +197,16 @@ def lanes(p):
         done = set(c.finished_lanes(p, briefs, quiet_min=0))
     except Exception:
         done = set()
+    auto = None
     for b in briefs:
         if b.status in c.CLOSED or not b.meta.get("lane"):
             continue
         steps = b.steps()
         wait = b.id in done or bool(b.meta.get("builder_returned")) or lanes_mod._stop(b)[0] == "merged"
+        if auto is None:  # T-6013: read once per build: it loads meta.json and the risk budget, and a build has 100+ lanes
+            auto = c.effective_autonomy(p)
         out.append({"task": b.id, "waiting": wait, "title": b.title, "model": b.meta.get("builder_model"), "since": b.meta.get("updated"),
-                    "step": f"{sum(s.done for s in steps)}/{len(steps)}", "stage": c.stage(b, c.effective_autonomy(p))})
+                    "step": f"{sum(s.done for s in steps)}/{len(steps)}", "stage": c.stage(b, auto)})
     return out
 
 
@@ -646,11 +670,15 @@ def _meta(path):
     return (st.st_mtime_ns, st.st_size)
 
 
+FRAME_SELF = ("cache", "lastcmd", ".lock")  # T-6013: written by the build itself (cache/), by every guarded command and by every locked verb: read by no collector, and each woke a rebuild
+
+
 def _listing(d):
-    """A folder's entries by name, size and mtime (a subfolder by its own mtime only); () when there is no folder."""
+    """A folder's entries by name, size and mtime (a subfolder by its own mtime only); () when there is no folder. Not
+    the kept frames' files and not FRAME_SELF's names."""
     try:
         with os.scandir(d) as it:
-            return tuple(sorted((e.name, _meta(e.path)) for e in it if FRAME_KEPT not in e.name))
+            return tuple(sorted((e.name, _meta(e.path)) for e in it if FRAME_KEPT not in e.name and e.name not in FRAME_SELF))
     except FileNotFoundError:
         return ()
 
