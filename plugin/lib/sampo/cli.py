@@ -11136,7 +11136,7 @@ def _build_parser(only=None):
     s.add_argument("--should", choices=["allow", "block"], help="with wrong: the verdict the guard should give")
     s.add_argument("--why", default="", help="with wrong: what went wrong")
     s.add_argument("--cwd", metavar="DIR", help="the folder it would run in (default: here)")
-    s.add_argument("--tool", default="Bash", choices=["Bash", "Edit", "Write", "NotebookEdit", "Read", "Grep", "Glob", "LS", "LSP", "NotebookRead", "ReadMcpResourceTool"],
+    s.add_argument("--tool", default="Bash", choices=["Bash", "PowerShell", "Edit", "Write", "NotebookEdit", "Read", "Grep", "Glob", "LS", "LSP", "NotebookRead", "ReadMcpResourceTool"],
                    help="the tool (default Bash); a Grep, Glob, LS or LSP --path is the folder or file it runs on")
     s.add_argument("--path", metavar="P", help="with --tool Edit/Write: the file")
     s.add_argument("--days", type=int, default=7, help="with mine: how far back the transcripts are read (default 7)")

@@ -275,6 +275,11 @@ def findings(tool_name, tool_input, ctx):
         _COMMITS.clear()
         _FELL_BACK.clear()
         return check_bash(cmd, ctx)
+    if tool_name == "PowerShell":  # T-6018
+        cmd = (tool_input or {}).get("command")
+        if not isinstance(cmd, str):
+            return [("system", "the guard can't read a PowerShell call with no command string")]
+        return _powershell_findings(cmd, ctx)
     if tool_name == "Read":  # T-1224
         path, real = _walk(_expand(str(tool_input.get("file_path") or ""), ctx), ctx.cwd)
         return _judge(classify_read, path, real, ctx)
@@ -733,7 +738,12 @@ def classify_read(path, ctx):
 # a row of UNGUARDED (with its reason): test_guard holds every tool the plugin's agents name to one of the two.
 READ_TOOLS = {"Read": "read", "NotebookRead": "read", "LSP": "read", "LS": "read", "Grep": "search", "Glob": "search",
               "ReadMcpResourceTool": "uri", "Write": "write", "Edit": "write", "MultiEdit": "write",
-              "NotebookEdit": "write", "Bash": "bash"}
+              "NotebookEdit": "write", "Bash": "bash", "PowerShell": "powershell"}
+# T-6018: the tools that run a command line, by the syntax the guard reads it in. Every one is a READ_TOOLS row too (the hook
+# reaches the guard for it: hooks.GUARDED, hooks.json's matcher), and test_guard's ShellTools drives one table of credential
+# reads, state writes and allowed commands through each, so a shell tool added without a reading goes red. Monitor's command
+# is read as Bash's by the hook (T-3360).
+SHELL_TOOLS = {"Bash": "bash", "PowerShell": "powershell"}
 UNGUARDED = {
     "WebFetch": "fetches a web page by its URL and answers from the page: it takes no path on this machine and lists no folder",
     "ListMcpResourcesTool": "lists the resources an MCP server names (names and URIs it chose); reading one is ReadMcpResourceTool, guarded",
@@ -744,7 +754,6 @@ UNGUARDED = {
     "EnterWorktree": "makes a git worktree for the session by a branch name, or leaves it; no file is read or listed, and each later call's paths are judged against the new cwd",
     "ExitWorktree": "leaves the session's worktree (keeping or removing it); it reads no file and lists no folder",
     "SlashCommand": "runs a slash command by its name: the command's own text becomes a prompt, whose tool calls are each judged here",
-    "PowerShell": "runs a PowerShell command on Windows, a shell Ward does not parse: a gap that stays open until it reads that syntax (listed as its own task)",
 }
 # an MCP tool whose name says it reads, lists or searches files (the filesystem servers, desktop-commander, git's file tools):
 # one pattern for hooks.json's matcher and the guard (JS-compatible: Claude Code's matcher is a JS regex)
@@ -1709,6 +1718,780 @@ def _in_briefed_lane(p, ctx):
         if _strictly_under(p, d) and ".git" not in p[len(d) + 1:].split("/"):
             return True
     return False
+
+
+# ---------------------------------------------------------------- T-6018: PowerShell
+
+# The guard doesn't parse PowerShell: it reads the text conservatively and refuses what it can't read to the end (the same
+# "parse or refuse" as Bash's eval). The text is normalized first (backtick escapes, quotes, `'a' + 'b'`, backslashes, the
+# home spelt ~, $HOME, $env:HOME, $env:USERPROFILE or %USERPROFILE%, the literal `$v = '...'` assignments in order), then
+# every statement is read three ways: a credential name or path anywhere in it, a write (a redirect, a write cmdlet, an
+# .NET file call) whose target classify_write judges, and any other command's literal path into Sampo's state. A write
+# whose target the text doesn't give is a finding too. Over-refusal is the price: a refusal asks the user, a miss reads a key.
+_PS_CAP, _PS_TOKEN_CAP, _PS_STMT_CAP, _PS_SCRIPT_CAP = 50_000, 4000, 2000, 200_000
+_PS_HOME = lazy(r"\$\{?env:(?:home|userprofile)(?!\w)\}?|\$\{home\}|\$home(?!\w)|%(?:userprofile|home)%"
+                r"|\[(?:system\.)?environment\]::getfolderpath\(\s*\(?userprofile\)?\s*\)|\$env:homedrive\$env:homepath", re.I)
+_PS_UNPARSED = [(lazy(rx, re.I | re.M), why) for rx, why in (
+    (r"(?<![\w-])(?:iex|invoke-expression)(?![\w-])", "Invoke-Expression runs text built at run time"),
+    (r"\[char\]|\[scriptblock\]|frombase64string|(?<![\w-])add-type(?![\w-])|invokecommand\b|\.invoke\(",
+     "text built or compiled at run time ([char], [scriptblock], FromBase64String, Add-Type)"),
+    (r"(?<![\w-])(?:invoke-command|icm)(?![\w-])", "Invoke-Command runs a script block the guard can't follow"),
+    (r"(?<![\w-])-join(?![\w-])|['\")]\s+-f\s", "a path built with -join or -f"),
+    (r"@['\"][ \t]*\r?\n", "a here-string"),
+    (r"(?:^|[;|({\s])[&.]\s*[$(]", "a command run through a variable or an expression (& $x)"),
+    (r"(?<![\w-])(?:set|new)-(?:alias|variable)(?![\w-])|(?<![\w-])(?:sal|nal)\s|setenvironmentvariable",
+     "an alias or a variable that renames a command or the home"),
+    (r"\$(?:env:)?(?:home|userprofile|homepath|homedrive)\s*[+]?=(?!=)|(?<![\w-])set-item\s+env:",
+     "the home folder reassigned"))]
+_PS_CRED_NAME = lazy(r"(?<![\w.-])((?:" + "|".join(re.escape(d) for d in (*_CRED_DIRS, *_CRED_FILES)) + r")(?![\w.-])"
+                     r"(?:/[^\s,;|)}\]<>]*)?)", re.I)
+_PS_KEY_NAME = lazy(r"(?<![\w.-])id_(?:rsa|dsa|ecdsa|ed25519)(?![\w.]*\.pub)(?![\w-])", re.I)
+_PS_DOTNET = lazy(r"\[(?:system\.)?io\.(file|directory|filestream|streamwriter|binarywriter|filesystem)\]::(\w+)\(\s*"
+                  r"([^,)\s]*)(?:\s*,\s*([^,)\s]*))?", re.I)
+_PS_STREAM = lazy(r"(?:new-object\s+(?:system\.)?io\.|\[(?:system\.)?io\.)(?:streamwriter|filestream|binarywriter)\]?"
+                  r"(?:::new)?\s*\(?\s*([^,)\s]+)", re.I)
+_PS_OBJ_WRITE = lazy(r"\.(?:delete|moveto|copyto|appendtext|createtext|openwrite|create)\(", re.I)
+_PS_READ_METHODS = {"readalltext", "readallbytes", "readalllines", "readlines", "exists", "getfiles", "getdirectories",
+                    "enumeratefiles", "enumeratedirectories", "enumeratefilesystementries", "getfilesystementries",
+                    "openread", "getattributes", "getlastwritetime", "getcreationtime", "getlastaccesstime", "setcurrentdirectory"}
+_PS_ENV_DRIVE = lazy(r"(?:-\w+:)?(?:[\w.]+[/\\])?(\$?env:|environment::)(.*)", re.I)
+_PS_ENV_METHOD = lazy(r"getenvironmentvariables", re.I)
+
+
+def _ps_env_dump(word):
+    """T-6018: a word that names the whole environment, or a wildcard of it: Env:, 'env:', Env:*, env:A*, env:[A-Z]*,
+    $env:, a provider path (Microsoft.PowerShell.Core\\Environment::). One named variable (Env:HOME) is no dump."""
+    w = word.replace("`", "").replace("'", "").replace('"', "").strip(",;()")  # as PowerShell reads it: no escapes, no quotes
+    m = _PS_ENV_DRIVE.fullmatch(w)
+    if not m:
+        return False
+    rest = re.sub(r"^(?:[/\\]|\.(?=[/\\]|$))+", "", m.group(2))  # a run of slashes and ./ segments names the drive's root
+    if m.group(1).startswith("$"):  # $env:HOME\x is the variable HOME and a path after it
+        return not re.match(r"[A-Za-z_]", rest) or re.search(r"[*?\[]", rest) is not None
+    return re.fullmatch(r"[A-Za-z_]\w*", rest) is None  # default deny: only one plain variable name is no dump
+_PS_TARGET0 = {"set-content", "sc", "add-content", "ac", "out-file", "clear-content", "clc", "new-item", "ni", "mkdir", "md",
+               "tee-object", "tee", "export-csv", "export-clixml", "set-item", "si", "clear-item", "cli", "set-itemproperty",
+               "sp", "new-itemproperty", "clear-itemproperty", "start-transcript", "set-acl", "touch", "truncate"}
+_PS_REMOVE = {"remove-item", "ri", "rm", "rmdir", "del", "erase", "rd", "remove-itemproperty", "rp"}
+_PS_COPY = {"copy-item", "cpi", "cp", "copy"}
+_PS_MOVE = {"move-item", "mi", "mv", "move", "rename-item", "rni", "ren"}
+_PS_VERBS = _PS_TARGET0 | _PS_REMOVE | _PS_COPY | _PS_MOVE
+_PS_PIPED_TARGET = _PS_REMOVE | _PS_MOVE | {"clear-content", "clc", "set-itemproperty", "sp"}
+_PS_CD = {"cd", "sl", "chdir", "set-location", "push-location", "pushd"}
+_PS_POP = {"pop-location", "popd"}
+_PS_PATH_PARAMS, _PS_DEST_PARAMS = ("path", "literalpath", "filepath", "pspath"), ("destination", "destinationpath", "outfile", "outputfile")
+_PS_VALUE_PARAMS = {"value", "encoding", "stream", "filter", "include", "exclude", "itemtype", "name", "newname", "erroraction",
+                    "errorvariable", "width", "delimiter", "depth", "credential", "type", "inputobject", "first", "last",
+                    "skip", "pattern", "headers", "body", "method", "uri", "contenttype", "argumentlist", "workingdirectory",
+                    "property", "properties"}
+_PS_SAFE_ALIASES = {"ls", "dir", "gci", "gc", "cat", "type", "gi", "gp", "gl", "gm", "pwd", "echo", "write", "select", "sort",
+                    "where", "%", "?", "foreach", "measure", "fl", "ft", "fw", "cls", "clear", "sls", "cd", "sl", "chdir",
+                    "pushd", "popd", "gv", "ps", "man", "help", "more", "sleep", "diff", "compare", "head", "tail", "wc", "grep"}
+_PS_SAFE_VERB = lazy(r"(?:get|select|test|write|format|measure|sort|where|group|compare|convertto|convertfrom|import|resolve|"
+                     r"split|join|read|foreach|show|find|start-sleep|out-(?:host|string|null|default)|set-location|"
+                     r"push-location|pop-location)(?:-|$)", re.I)
+
+
+def _ps_norm(cmd, ctx):
+    """The command as one comparable text: escapes, quotes and + joins gone, / for \\, the home spelt out."""
+    t = re.sub(r"`[ \t]*\r?\n", " ", cmd.replace("\0", " "))
+    t = re.sub(r"`(.)", r"\1", t, flags=re.S).replace("`", "")
+    t = re.sub(r"""['"]\s*\+\s*['"]""", "", t)  # 'a' + 'b'
+    t = re.sub(r"""['"]\s*\+\s*(?=\$)""", "", t)  # 'a' + $b
+    t = re.sub(r"""\s*\+\s*['"]""", "", t)  # $b + 'a'
+    t = re.sub(r"""['"]""", "", t).replace("\\", "/")
+    t = _PS_HOME.sub(lambda _: ctx.home, t)
+    t = re.sub(r"(?<![^\s(=,:;|{])~(?=[/\s)]|$)", lambda _: ctx.home, t)
+    t = re.sub(r"(?<![^\s(=,])[A-Za-z]:(?=/)", "", t)  # C:/Users/x/.ssh: the drive isn't a folder here
+    for d in ctx.state_dirs:  # a Windows folder name has no case: STATE/ is state/ there
+        if d and len(d) > 1:
+            t = re.sub(re.escape(d.rstrip("/")) + r"(?=/|\s|$)", lambda _, d=d: d.rstrip("/"), t, flags=re.I)
+    return t
+
+
+def _ps_param(name):
+    n = name.lower()
+    if n in _PS_VALUE_PARAMS or n in _PS_PATH_PARAMS or n in _PS_DEST_PARAMS:
+        return n
+    if n in ("p", "lp"):
+        return "path" if n == "p" else "literalpath"
+    if len(n) >= 2:
+        for full in (*_PS_PATH_PARAMS, *_PS_DEST_PARAMS):
+            if full.startswith(n):
+                return full
+    if len(n) >= 3:
+        for full in sorted(_PS_VALUE_PARAMS):
+            if full.startswith(n):
+                return full
+    return n
+
+
+def _ps_args(words, groups=False):
+    """([(param, value)], [positional]): a known value parameter takes the next word, any other parameter is a switch.
+    A comma list (-Path a,b / a,b) is a path array: every element is its own value. groups=True adds a third result, the
+    positional words each as the list of its elements (the first word is the Path slot, whatever it lists)."""
+    named, pos, grp, i = [], [], [], 0
+
+    def add(canon, val):
+        if canon in _PS_PATH_PARAMS or canon in _PS_DEST_PARAMS:
+            named.extend((canon, p) for p in val.split(",") if p)
+        else:
+            named.append((canon, val))
+    while i < len(words):
+        w = words[i]
+        if w.startswith("-") and len(w) > 1 and not re.match(r"-\d", w):
+            name, colon, val = w[1:].partition(":")
+            canon = _ps_param(name)
+            if colon and val:
+                add(canon, val)
+            elif canon in _PS_VALUE_PARAMS or canon in _PS_PATH_PARAMS or canon in _PS_DEST_PARAMS:
+                if i + 1 < len(words):
+                    add(canon, words[i + 1])
+                    i += 1
+        else:
+            items = [p for p in w.split(",") if p]
+            pos += items
+            grp.append(items)
+        i += 1
+    return (named, pos, grp) if groups else (named, pos)
+
+
+def _ps_write_target(tok, ctx, cwd, why, out):
+    """Judge one write target: where it goes when the text says, a finding when it doesn't."""
+    tok = tok.strip()
+    if not tok:
+        return
+    if re.search(r"[$(){}@]", tok) or tok.startswith("~") or (cwd is None and not tok.startswith("/")):
+        out.append(("system", f"{why} a target not known before it runs ({tok[:80]}): name the path literally"))
+        return
+    path, real = _walk(tok, cwd)
+    out.extend(_judge(classify_write, path, real, ctx, f" ({why})"))
+
+
+_PS_LEAVES = ("id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", "credentials", "config", "hosts.yml", "secrets.env", "config.json")
+_PS_TARGETS = {}
+
+
+def _ps_targets(ctx):
+    """The guarded paths under the home, as lower-case component lists (a folder, and its usual files)."""
+    home = ctx.home.lower().rstrip("/")
+    if home not in _PS_TARGETS:
+        ts = []
+        for d in (*_CRED_DIRS, *_CRED_FILES):
+            ts.append((home + "/" + d.lower()).split("/"))
+            if d in _CRED_DIRS:
+                ts += [(home + "/" + d.lower() + "/" + leaf).split("/") for leaf in _PS_LEAVES]
+        _PS_TARGETS[home] = ts
+    return _PS_TARGETS[home]
+
+
+def _ps_glob_reaches(pat, ctx, lister=False):
+    """T-6018: whether a path pattern reaches (or is a folder above) one of the home's guarded paths. PowerShell's * and ?
+    match a leading dot, so ~/.s?h/id_* counts, and so does a pattern above the home (/home/*/.ssh/x). `ls ~/*` alone is a
+    listing of the home (names, not contents), so a lister is let off that one."""
+    import fnmatch
+    pat = os.path.normpath(pat.lower().replace("\\", "/"))
+    if lister and pat in (ctx.home.lower().rstrip("/") + "/*", ctx.home.lower().rstrip("/") + "/*.*"):
+        return False
+    ps = pat.split("/")
+    return any(len(ps) <= len(ts) and all(fnmatch.fnmatchcase(t, p) for p, t in zip(ps, ts)) for ts in _ps_targets(ctx))
+
+
+def _ps_wild_hits(pattern, ctx):
+    """Whether a -Filter/-Include wildcard could match the name of a guarded file or folder."""
+    import fnmatch
+    names = {c for ts in _ps_targets(ctx) for c in ts[len(ctx.home.rstrip("/").split("/")):]}
+    return any(fnmatch.fnmatchcase(n, pattern.lower()) for n in names)
+
+
+# The reader: a strict lexer (every word is a literal it fully understood or the line is refused), then the statements.
+_PS_KNOWN_VAR = lazy(r"\$(?:null|true|false)(?!\w)", re.I)
+_PS_TYPELIT = lazy(r"\[[A-Za-z_][\w.,\[\] ]*\]")
+_PS_OPERATORS = {"-join", "-replace", "-ireplace", "-creplace", "-split", "-isplit", "-csplit"}
+_PS_FANCY = "‘’‚‛“”„"
+_PS_SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "ash", "csh", "tcsh", "fish"}
+_PS_PWSH = {"pwsh", "powershell", "pwsh-preview", "powershell_ise"}
+_PS_INTERP = lazy(r"(?:python[\d.]*|py|pypy[\d.]*|node(?:js)?|deno|bun|perl[\d.]*|ruby[\d.]*|php[\d.]*|lua[\d.]*|tclsh[\d.]*|osascript)")
+_PS_NO_RUN = {"cmd", "start-process", "saps", "start", "ii", "invoke-item", "start-job", "sajb", "start-threadjob",
+              "invoke-expression", "iex", "invoke-command", "icm", "add-type", "invoke-wmimethod", "invoke-cimmethod",
+              "register-scheduledtask", "schtasks", "at", "wscript", "cscript", "mshta", "rundll32", "regsvr32", "msiexec",
+              "wmic", "forfiles", "bitsadmin", "conhost"}
+_PS_LAUNCHERS = {"sudo", "env", "xargs", "nohup", "time", "command", "exec", "doas", "nice", "timeout", "stdbuf", "setsid",
+                 "ionice", "runas", "call", "busybox", "su", "script", "nsenter", "unshare", "strace", "flock", "chroot"}
+_PS_LISTERS = {"ls", "dir", "gci", "get-childitem", "get-item", "gi", "get-itemproperty", "gp"}
+_PS_READERS = {"get-content", "gc", "cat", "type", "get-itempropertyvalue", "gpv", "get-filehash", "get-acl", "import-csv",
+               "ipcsv", "import-clixml", "test-path", "resolve-path", "rvpa", "convert-path", "expand-archive", "import-module",
+               "import-powershelldatafile", "select-xml", "get-authenticodesignature", "get-pfxcertificate",
+               "compress-archive", "format-hex", "more", "head", "tail"} | _PS_LISTERS
+_PS_PIPE_TAKERS = _PS_READERS | _PS_REMOVE | _PS_MOVE | _PS_COPY | {"clear-content", "clc", "set-itemproperty", "sp", "set-acl"}
+_PS_SWITCHES = {"recurse", "force", "raw", "file", "directory", "name", "whatif", "confirm", "verbose", "debug", "nonewline",
+                "append", "noclobber", "hidden", "readonly", "system", "r", "s"}
+_PS_CMD_FLAG = lazy(r"-c(?:o(?:m(?:m(?:a(?:n(?:d)?)?)?)?)?)?", re.I)
+
+
+def _ps_base(word):
+    """A program's name: after any folder (either slash), lower case, no .exe."""
+    b = re.split(r"[\\/]", word)[-1].lower()
+    return b[:-4] if b.endswith(".exe") else b
+
+
+def _ps_lex(cmd, ctx, script=False):
+    """([(op, words, quoted)], [reason]): the statements of a PowerShell line, each word unquoted. Every construct whose
+    value or meaning isn't in the text (a variable but the home, $( ), ${ }, a backtick, a call operator, a script block,
+    a join or a format) is a reason. The line is allowed only when there is none."""
+    stmts, why, words, quoted, cur = [], [], [], [], []
+    st = {"open": False, "q": False, "op": ""}
+
+    def bad(t):
+        if t not in why:
+            why.append(t)
+
+    def flush():
+        if st["open"]:
+            words.append("".join(cur))
+            quoted.append(st["q"])
+        cur.clear()
+        st["open"] = st["q"] = False
+
+    def end(nextop):
+        nonlocal words, quoted
+        flush()
+        if words:
+            stmts.append((st["op"], words, quoted))
+            words, quoted, st["op"] = [], [], nextop
+        elif nextop:
+            st["op"] = nextop
+
+    if any(ch in cmd for ch in _PS_FANCY):
+        bad("a typographic quote (PowerShell reads it as a quote)")
+    n, i = len(cmd), 0
+    while i < n:
+        c = cmd[i]
+        if c in " \t\0\f\v":
+            flush()
+            i += 1
+        elif c in "\r\n;":
+            end("")
+            i += 1
+        elif c == "|":
+            if cmd.startswith("||", i):
+                end("&&")
+                i += 2
+            else:
+                end("|")
+                i += 1
+        elif c == "&":
+            if cmd.startswith("&&", i):
+                end("&&")
+                i += 2
+                continue
+            if not (i and cmd[i - 1] == ">"):
+                bad("the & call or background operator")
+            cur.append(c)
+            st["open"] = True
+            i += 1
+        elif c == "'":
+            j, buf = i + 1, []
+            while True:
+                k = cmd.find("'", j)
+                if k < 0:
+                    bad("an unterminated quote")
+                    buf.append(cmd[j:])
+                    j = n
+                    break
+                buf.append(cmd[j:k])
+                if cmd.startswith("''", k):
+                    buf.append("'")
+                    j = k + 2
+                    continue
+                j = k + 1
+                break
+            if (i and cmd[i - 1] == "+") or (j < n and cmd[j] == "+"):
+                bad("a string joined with +")
+            cur.extend(buf)
+            st["open"] = st["q"] = True
+            i = j
+        elif c == '"':
+            j, buf, closed = i + 1, [], False
+            while j < n:
+                ch = cmd[j]
+                if ch == '"':
+                    if cmd.startswith('""', j):
+                        buf.append('"')
+                        j += 2
+                        continue
+                    closed = True
+                    j += 1
+                    break
+                if ch == "`":
+                    bad("a backtick escape")
+                    j += 2
+                    continue
+                if ch == "$":
+                    m = _PS_HOME.match(cmd, j) or _PS_KNOWN_VAR.match(cmd, j)
+                    if m:
+                        buf.append(m.group(0))
+                        j = m.end()
+                        continue
+                    if j + 1 >= n or cmd[j + 1] in ' "\t\r\n':
+                        buf.append("$")
+                        j += 1
+                        continue
+                    bad("a variable or expression inside a string")
+                buf.append(ch)
+                j += 1
+            if not closed:
+                bad("an unterminated quote")
+            if (i and cmd[i - 1] == "+") or (j < n and cmd[j] == "+"):
+                bad("a string joined with +")
+            cur.extend(buf)
+            st["open"] = st["q"] = True
+            i = j
+        elif c == "`":
+            bad("a backtick escape")
+            if i + 1 < n:
+                cur.append(cmd[i + 1])
+            st["open"] = True
+            i += 2
+        elif c == "$":
+            m = _PS_HOME.match(cmd, i) or _PS_KNOWN_VAR.match(cmd, i)
+            if m:
+                cur.append(m.group(0))
+                i = m.end()
+            else:
+                bad("a variable, subexpression or expression whose value the text doesn't give")
+                cur.append(c)
+                i += 1
+            st["open"] = True
+        elif script and c in "{}":  # a script's block: its statements are read one by one, the braces split them
+            end("")
+            i += 1
+        elif c in "(){}":
+            bad("a parenthesised expression, a call, a script block or a brace")
+            cur.append(c)
+            st["open"] = True
+            i += 1
+        elif c == "<":
+            bad("an input redirect or a block comment")
+            cur.append(c)
+            st["open"] = True
+            i += 1
+        elif c == "@" and not st["open"]:
+            bad("an array, hashtable, splat or here-string")
+            cur.append(c)
+            st["open"] = True
+            i += 1
+        elif c == "#" and not st["open"]:
+            k = cmd.find("\n", i)
+            i = n if k < 0 else k
+        elif c == "[" and not st["open"] and _PS_TYPELIT.match(cmd, i):
+            bad("a .NET type or static member")
+            cur.append(c)
+            st["open"] = True
+            i += 1
+        else:
+            cur.append(c)
+            st["open"] = True
+            i += 1
+    end("")
+    for _op, ws, qs in stmts:
+        if ws[0] == "." or (qs[0] and re.search(r"[\\/]", ws[0])):
+            bad("a dot-sourced file or a quoted program path")
+        for k, w in enumerate(ws):
+            lw = w.lower()
+            if lw in _PS_OPERATORS or w == "+" or (lw == "-f" and k and qs[k - 1]):
+                bad(f"the {w} operator builds text")
+    return stmts, why
+
+
+def _ps_creds_under(pat, ctx):
+    """Whether a folder (or a glob of them) holds a guarded path: it is a prefix of one."""
+    return _ps_glob_reaches(pat, ctx)
+
+
+def _ps_handoff(line, ctx, out, budget):
+    """A literal line for a POSIX shell or an interpreter: Bash's own reading of it."""
+    if budget[0] <= 0:
+        out.append(("system", "too many shells or interpreters started from one PowerShell line to read: run them in parts"))
+        return
+    budget[0] -= 1
+    _DISCARDS[:], _DISCARDS_OF[0] = [], line
+    _COMMITS.clear()
+    _FELL_BACK.clear()
+    try:
+        out += check_bash(line, ctx)
+    except Exception:
+        out.append(("system", "a shell started from PowerShell that the guard can't read"))
+
+
+_PS_PROGRAMS = _PS_SHELLS | _PS_PWSH | _PS_NO_RUN | {"wsl"}
+# Default deny: a statement's command must be on one of these lists, or it is a `system` refusal. Read-only cmdlets (their
+# paths are judged as literals), writers (only as the first of a pipeline, their target judged by classify_write), and the
+# cmdlets that only reshape the text the pipeline carries (no script block: the lexer refuses braces).
+_PS_ALLOWED = (_PS_READERS - {"expand-archive", "import-module", "compress-archive", "import-powershelldatafile",
+                              "select-xml", "get-authenticodesignature", "get-pfxcertificate"}) | _PS_CD | _PS_POP | {
+    "select-string", "sls", "get-location", "gl", "pwd", "get-date", "get-command", "gcm", "get-help", "get-member", "gm",
+    "write-output", "echo", "write-host", "write", "get-variable", "gv", "get-process", "ps", "get-service", "get-psdrive",
+    "get-filehash", "get-acl", "split-path", "join-path", "get-random", "get-unique", "get-uiculture", "get-culture"}
+_PS_TEXT_CONSUMERS = {"where-object", "where", "?", "select-object", "select", "sort-object", "sort", "measure-object", "measure",
+                      "out-host", "out-string", "out-null", "out-default", "format-table", "ft", "format-list", "fl", "format-wide",
+                      "fw", "format-custom", "fc", "group-object", "group", "get-unique", "select-string", "sls"}
+_PS_ALLOWED = _PS_ALLOWED | _PS_TEXT_CONSUMERS
+_PS_WRITERS = _PS_VERBS
+_PS_ANYWHERE = (_PS_SHELLS | _PS_PWSH | {"wsl", "cmd", "sudo", "env", "xargs", "find", "busybox", "doas", "nohup", "exec",
+                                         "nsenter", "unshare", "strace", "chroot", "runas", "su", "start-process", "saps",
+                                         "invoke-expression", "iex", "invoke-command", "icm", "add-type", "wscript", "cscript",
+                                         "mshta", "rundll32", "regsvr32", "msiexec", "wmic", "forfiles", "bitsadmin", "conhost",
+                                         "schtasks", "invoke-item", "start-job", "sajb", "start-threadjob", "invoke-wmimethod",
+                                         "invoke-cimmethod", "register-scheduledtask", "powershell_ise"})
+_PS_KEYWORDS = {"if", "elseif", "else", "while", "until", "do", "for", "foreach", "switch", "try", "catch", "finally", "trap",
+                "param", "return", "throw", "function", "filter", "begin", "process", "end", "break", "continue", "exit", "data",
+                "using", "class", "enum", "workflow", "in", "-and", "-or", "-not", "-xor", "!"}
+_PS_ASSIGN = {"=", "+=", "-=", "*=", "/=", "%="}
+
+
+def _ps_danger(x):
+    """Whether a word names a shell, an interpreter or a launcher: by basename after any path, any case, .exe or not, in a
+    word of its own or among the words a quoted string holds."""
+    for t in x.split():
+        b = _ps_base(t.strip("(){}[]'\"&$@,;=`"))
+        if b in _PS_ANYWHERE or _PS_INTERP.fullmatch(b):
+            return True
+    return False
+
+
+def _ps_split_assign(w, q):
+    """`$x=Get-Content f` as the words `$x`, `=`, `Get-Content f` (a script statement)."""
+    nw, nq = [], []
+    for x, qq in zip(w, q):
+        m = re.fullmatch(r"(\$\w+)([-+*/%]?=)(.*)", x, re.S)
+        if m and not qq or m and m.group(3):
+            nw += [m.group(1), m.group(2)] + ([m.group(3)] if m.group(3) else [])
+            nq += [False, False] + ([qq] if m.group(3) else [])
+        else:
+            nw.append(x)
+            nq.append(qq)
+    return nw, nq
+
+
+def _ps_positions(w, q, out):
+    """The words of a script statement that stand where a command goes (the first, one after a keyword, `=`, `(`, `$(` or
+    `&`) plus any other word of the Verb-Noun shape. A variable where a command goes is refused."""
+    pos, expect, call, n = [], True, False, len(w)
+    for i, x in enumerate(w):
+        if not q[i] and (x.lower() in _PS_KEYWORDS or x in _PS_ASSIGN):
+            expect, call = True, False
+            continue
+        if not q[i] and x == ".":
+            call = True
+            continue
+        lead = None if q[i] else re.match(r"(?:\$\(|@\(|[(!&{])+", x)
+        s = x[lead.end():] if lead else x
+        if lead:
+            expect = True
+            call = call or "&" in lead.group(0)
+        if s == "":
+            continue
+        s = s.rstrip(")]}")
+        if expect or call:
+            if s.startswith("$") and not q[i]:
+                if call or not (i + 1 < n and w[i + 1] in _PS_ASSIGN):
+                    out.append(("system", f"{x[:40]} stands where a command goes: the guard can't tell what runs"))
+            elif (q[i] or re.fullmatch(r"-?[\d.]+|-\w+", s)) and not call:
+                pass  # a literal value or a parameter, not a command
+            else:
+                pos.append(i)
+            expect = call = False
+        elif not q[i] and re.fullmatch(r"[A-Za-z]+-[A-Za-z]+", s):
+            pos.append(i)
+    return pos
+
+
+def _ps_program(stmts, ctx, cwd0, depth, budget, out, script=False):
+    """The statements of one line: a program is judged by what it is handed, a path piped into a command is refused, and a
+    wildcard that could match a guarded name in a folder that holds one is refused. Default deny: a command not on the lists
+    above, and any shell, interpreter or launcher anywhere in a statement that isn't `<shell> -c '<literal>'`, is refused.
+    script: the body of a .ps1 (braces split the statements; a keyword or `$x =` leads one)."""
+    cwd, stack, chain = cwd0, [], []
+    for op, w, q in stmts:
+        if op != "|":
+            chain = []
+        if not w:
+            continue
+        if script:
+            w, q = _ps_split_assign(w, q)
+        home = ctx.home
+        cmds = _ps_positions(w, q, out) if script else [0]
+        w = list(w)
+        for i in cmds:  # `(Test-Path x)`, `&python`, `{sh`: the command's own name, bare
+            if not q[i]:
+                w[i] = re.sub(r"^(?:\$\(|@\(|[(!&{])+", "", w[i]).rstrip(")]}") or w[i]
+        done = set()
+        for p in sorted(set(cmds) | {i for i, x in enumerate(w) if _ps_danger(x)}):
+            if p in done:
+                continue
+            name, k, aname = _ps_base(w[p]), p, w[p].lower()  # aname: a path or .exe is a program on disk, never a cmdlet
+            if name in _PS_LAUNCHERS or (p not in cmds and name not in _PS_PROGRAMS and not _PS_INTERP.fullmatch(name)):
+                # sudo bash x, env X=1 python y: the program is the first one it names; env -S '...', find -exec: refused
+                k = next((i for i in range(p + 1, len(w)) if (b := _ps_base(w[i])) in _PS_PROGRAMS or _PS_INTERP.fullmatch(b)), 0)
+                if not k:
+                    out.append(("system", f"{w[p][:60]} can start a program the guard can't read (a launcher, or a shell named "
+                                          "inside a word): run the command directly"))
+                    done.add(p)
+                    continue
+                name = _ps_base(w[k])
+            done.update(range(p, k + 1))
+            rest = [_PS_HOME.sub(lambda _: home, x) for x in w[k + 1:]]
+            if name in _PS_NO_RUN:
+                out.append(("system", f"{name} runs text or a program the guard can't read to the end (caret escapes, %VAR%, a "
+                                      "script block): run the command directly"))
+            elif name in _PS_SHELLS or name == "wsl":
+                sh = rest
+                if name == "wsl":
+                    sh = rest[1:] if rest and _ps_base(rest[0]) in _PS_SHELLS else []
+                if len(sh) == 2 and sh[0] == "-c":
+                    _ps_handoff(sh[1], ctx, out, budget)
+                else:
+                    out.append(("system", f"{name} started other than as `{name} -c '<one literal command>'`: the guard can't "
+                                          "take its input apart"))
+            elif name in _PS_PWSH:
+                if len(rest) == 2 and _PS_CMD_FLAG.fullmatch(rest[0]):
+                    if depth >= 3:
+                        out.append(("system", "PowerShell started from PowerShell too deep to read"))
+                    else:
+                        out += [(c, f"{d} (in a nested {name})") for c, d in
+                                _powershell_findings(rest[1], ctx, depth + 1, cwd, budget)]
+                else:
+                    out.append(("system", f"{name} started other than as `{name} -Command '<literal>'` (a file, -EncodedCommand, "
+                                          "flags or a variable): the guard can't read what it runs"))
+            elif _PS_INTERP.fullmatch(name):
+                if len(rest) == 2 and rest[0] in ("-c", "-e", "-E", "-p", "--eval"):
+                    _ps_handoff(f"{name} {rest[0]} {shlex.quote(rest[1])}", ctx, out, budget)
+                else:
+                    out.append(("system", f"{name} started other than as `{name} -c '<literal>'`: the guard can't read the script"))
+            elif p not in cmds:
+                out.append(("system", f"{w[p][:60]} names a shell, an interpreter or a launcher inside a command the guard "
+                                      "can't take apart"))
+            elif name.endswith(".ps1"):
+                out += _ps_script(w[p], ctx, cwd or cwd0, depth, budget)
+            elif aname in _PS_WRITERS:
+                if op == "|":
+                    out.append(("system", f"{w[p]} writes what the pipeline hands it: name the path and the value, not a pipe"))
+            elif aname in _READS and _bad_flag(rest, _READS[aname]):
+                # the native sort -o FILE / --compress-program that pwsh on Linux runs: the Bash table's write flags
+                out.append(("system", f"{w[p]} with a flag that writes a file or runs a program (Bash's list for it): "
+                                      "name no output file"))
+            elif aname not in _PS_ALLOWED:
+                out.append(("system", f"{w[p][:60]} is not on the list of commands the guard reads (read-only cmdlets with a "
+                                      "literal path): run it in a shell the user approves"))
+            elif op == "|" and aname not in _PS_TEXT_CONSUMERS and aname not in _PS_PIPE_TAKERS:
+                out.append(("system", f"{w[p]} takes what the pipeline hands it, which the guard can't see"))
+        c0 = cmds[0] if cmds else 0
+        w, q = w[c0:], q[c0:]
+        if not w:
+            continue
+        nw = [_ps_norm(x, ctx) for x in w]
+        cname = w[0].lower()
+        named, pos = _ps_args(nw[1:])
+        if op == "|":
+            explicit = any(kk in _PS_PATH_PARAMS for kk, _ in named)
+            odd = any(x.startswith("-") and _ps_param(x[1:].partition(":")[0]) not in
+                      (*_PS_VALUE_PARAMS, *_PS_PATH_PARAMS, *_PS_DEST_PARAMS, *_PS_SWITCHES) for x in nw[1:])
+            if cname in _PS_PIPE_TAKERS and not (explicit or (pos and not odd)):
+                out.append(("system", f"{w[0]} gets its path from the pipeline: name the path"))
+            elif cname in ("select-string", "sls") and not (explicit or len(pos) >= 2):
+                for pn, pa in chain:  # strings are searched; file objects from a lister are read
+                    if pn in _PS_LISTERS:
+                        pn_named, pn_pos = _ps_args(pa)
+                        root = next((v for kk, v in pn_named if kk in _PS_PATH_PARAMS), pn_pos[0] if pn_pos else None)
+                        root = root if root is not None else cwd
+                        if root is None or _ps_creds_under(root if root.startswith("/") else os.path.join(cwd or cwd0, root), ctx):
+                            out.append(("system", f"a listing of {root or 'an unknown folder'}, which holds guarded files, piped "
+                                                  "into Select-String reads them: name the files"))
+        pats = [p for kk, v in named if kk in ("filter", "include") for p in v.split(",") if p]
+        for x, nxt in zip(nw[1:], nw[2:] + [""]):  # -Fil, -Inc: the shortest forms PowerShell takes
+            nm, colon, val = x[1:].partition(":")
+            if x.startswith("-") and len(nm) >= 3 and ("filter".startswith(nm.lower()) or "include".startswith(nm.lower())):
+                pats += [p for p in (val if colon and val else nxt).split(",") if p]
+        if pats:
+            roots = [v for kk, v in named if kk in _PS_PATH_PARAMS] + pos or [cwd]
+            if any(r is None or _ps_creds_under(r if r.startswith("/") else os.path.join(cwd or cwd0, r), ctx) for r in roots) \
+                    and any(_ps_wild_hits(p, ctx) for p in pats):
+                out.append(("system", f"{w[0]} -Filter/-Include {','.join(pats)} could match a guarded file in a folder that holds "
+                                      "them: name the files"))
+        if cname in _PS_CD or cname in _PS_POP:
+            tgt = next((v for kk, v in named if kk in _PS_PATH_PARAMS), pos[0] if pos else "")
+            if cname in _PS_POP:
+                cwd = stack.pop() if stack else cwd0
+            else:
+                if cname in ("push-location", "pushd"):
+                    stack.append(cwd)
+                cwd = None if not tgt or (cwd is None and not tgt.startswith("/")) else _walk(tgt, cwd)[0]
+        chain.append((cname, nw[1:]))
+
+
+def _powershell_findings(cmd, ctx, depth=0, cwd=None, budget=None, strict=True):
+    """T-6018: every (category, detail) a PowerShell command line touches, read as the module comment says. Fails closed:
+    a line too long, nested too deep, or built at run time is a `system` finding, not a pass."""
+    budget = [20] if budget is None else budget  # the shells and interpreters one line (and what it nests) may start
+    if len(cmd) > _PS_CAP:
+        return [("system", f"a PowerShell command of {len(cmd)} characters is too long to read (the cap is {_PS_CAP}): "
+                           "run it in parts")]
+    raw = re.sub(r"`[ \t]*\r?\n", " ", cmd.replace("\0", " "))
+    raw = re.sub(r"`(.)", r"\1", raw, flags=re.S).replace("`", "")
+    out = [("system", f"PowerShell the guard can't read to the end: {why}") for rx, why in _PS_UNPARSED if rx.search(raw)]
+    home = ctx.home.rstrip("/")
+    text = _ps_norm(cmd, ctx)
+    cwd0 = cwd or ctx.cwd
+    cwd, stack, known, vars_ = cwd0, [], {}, {}
+    parts = re.split(r"(\|\||&&|[;\n\r|])", text)
+    if len(parts) > 2 * _PS_STMT_CAP:
+        return out + [("system", "a PowerShell command of too many statements to read: run it in parts")]
+    ntok, seen = 0, set()
+
+    def cred(rel):
+        if rel in seen:
+            return []
+        seen.add(rel)
+        full = home + "/" + rel
+        return [("credentials", full)] if "credentials" in classify_read(full, ctx) else []
+
+    op = ""
+    for i in range(0, len(parts), 2):
+        stmt, op = parts[i], (parts[i - 1] if i else "")
+        for _ in range(3):  # $d = '~/.ssh'; ... $d/id_rsa
+            new = re.sub(r"\$(\w+)(?![\w:])|\$\{(\w+)\}", lambda mm: vars_.get((mm.group(1) or mm.group(2)).lower(), mm.group(0)), stmt)
+            if new == stmt:
+                break
+            stmt = new
+        am = re.match(r"\s*\$(\w+)\s*(\+?)=(?!=)\s*(.*)", stmt, re.S)
+        if am:
+            vars_[am.group(1).lower()] = (vars_.get(am.group(1).lower(), "") if am.group(2) else "") + am.group(3).strip()
+        for cm in _PS_CRED_NAME.finditer(stmt):  # a credential folder or file by name, whatever the folder above it
+            out += cred(cm.group(1))
+        if _PS_KEY_NAME.search(stmt):
+            out.append(("credentials", "a private key by its name"))
+        words = stmt.split()
+        ntok += len(words)
+        if ntok > _PS_TOKEN_CAP:
+            return out + [("system", "a PowerShell command of too many words to read: run it in parts")]
+        for w in words:  # a path token: where it goes, a glob too
+            tok = re.sub(r"^-\w+:", "", w).strip("(){}[],;<>=")
+            if not tok or tok.startswith("-") or "$" in tok:
+                continue
+            if re.search(r"[*?\[]", tok):
+                if cwd is None and not tok.startswith("/"):
+                    out.append(("system", f"a pattern ({tok[:80]}) in a folder the guard lost track of: name the path"))
+                elif _ps_glob_reaches(tok if tok.startswith("/") else os.path.join(cwd or cwd0, tok), ctx,
+                                      lister=bool(words) and words[0].lstrip("($@").lower() in _PS_LISTERS):
+                    out.append(("credentials", f"{tok} (a pattern that reaches the home's credentials)"))
+                continue
+            if "/" in tok or cwd != cwd0 or tok.startswith("."):
+                path, real = _walk(tok, cwd or cwd0)
+                out += _judge(classify_read, path, real, ctx)
+        # the commands in the statement: each word that is a verb starts one
+        clean = [re.sub(r"^[\s@&{\[]+|[)}\]]+$", "", w) for w in words]  # a leading ( or $ stays: (Join-Path ..) is no path
+        first = clean[0].lstrip("($@").lower() if clean and not am else ""
+        snamed, _ = _ps_args(clean[1:])
+        for k, v in snamed:  # -OutFile, -DestinationPath, -Destination: a write, whatever the command
+            if k in _PS_DEST_PARAMS:
+                _ps_write_target(v, ctx, cwd, f"{clean[0]} writes", out)
+        if first in _PS_CD or first in _PS_POP:
+            named, pos = _ps_args(clean[1:])
+            tgt = next((v for k, v in named if k in _PS_PATH_PARAMS), pos[0] if pos else "")
+            if first in _PS_POP:
+                cwd = stack.pop() if stack else cwd0
+            else:
+                if first in ("push-location", "pushd"):
+                    stack.append(cwd)
+                cwd = None if not tgt or re.search(r"[$(){}@]|^~", tgt) or cwd is None and not tgt.startswith("/") \
+                    else _walk(tgt, cwd)[0]
+        for j, w in enumerate(clean):
+            lw = w.lstrip("($@").lower()
+            rest = clean[j + 1:]
+            if lw in _PS_VERBS:
+                named, pos, grp = _ps_args(rest, groups=True)
+                pathv = [v for k, v in named if k in _PS_PATH_PARAMS]
+                dest = [v for k, v in named if k in _PS_DEST_PARAMS]
+                targets, sources = [], []
+                if lw in _PS_TARGET0:
+                    targets = pathv or (grp[0] if grp else [])
+                elif lw in _PS_REMOVE:
+                    targets = pathv + pos
+                elif lw in _PS_COPY or lw in _PS_MOVE:
+                    # positional binding skips a named -Path: `cp -Path a b` puts b in Destination
+                    slot = (grp[0] if grp else []) if pathv else (grp[1] if len(grp) > 1 else [])
+                    targets = list(dest) if dest else slot
+                    if lw in _PS_MOVE:
+                        sources = pathv or (grp[0] if grp else [])
+                for v in sources + targets:
+                    _ps_write_target(v, ctx, cwd, f"{w} writes", out)
+                if op == "|" and lw in _PS_PIPED_TARGET and not (targets or sources or dest or named):
+                    out.append(("system", f"{w} gets its target from the pipeline: name the path it removes or moves"))
+            if lw in _PS_SHELL_WORDS and _ps_encoded(rest):
+                out.append(("system", "PowerShell started with -EncodedCommand: the command is hidden from the guard"))
+        for rm in re.finditer(r"(?<![-=#])(?:\d|\*)?>{1,2}(?!&)\s*([^\s<>|;&]*)", stmt):  # > file, >> file, 2> file
+            tgt = rm.group(1)
+            if tgt and tgt.lower() not in ("$null", "nul", "/dev/null", "/nul"):
+                _ps_write_target(tgt, ctx, cwd, "a redirect writes", out)
+            elif not tgt:
+                out.append(("system", "a redirect with no target the guard can read"))
+        for dm in _PS_DOTNET.finditer(stmt):  # [IO.File]::WriteAllText(path, text)
+            kind, meth = dm.group(1).lower(), dm.group(2).lower()
+            if meth in _PS_READ_METHODS or kind == "filesystem":
+                continue
+            for a in (dm.group(3), dm.group(4) if meth in ("copy", "move", "replace") else ""):
+                _ps_write_target(a, ctx, cwd, f"[IO.{dm.group(1)}]::{dm.group(2)} writes", out)
+        if any(_ps_env_dump(x) for x in clean[1:]) or \
+                _PS_ENV_METHOD.search(stmt):
+            out.append(("system", "the environment listed whole (Env:, $env:, GetEnvironmentVariables) prints every secret "
+                                  "in it: name the variable"))
+        for sm in _PS_STREAM.finditer(stmt):
+            _ps_write_target(sm.group(1), ctx, cwd, "a file stream writes", out)
+        if _PS_OBJ_WRITE.search(stmt):
+            out.append(("system", "a method that changes a file, on an object the guard can't trace"))
+        # a command that isn't read-only, naming a path inside Sampo's state
+        if first and first not in _PS_SAFE_ALIASES and not _PS_SAFE_VERB.match(first):
+            for w in clean[1:]:
+                tok = re.sub(r"^-\w+:", "", w).strip(",;").lstrip("(")
+                if tok and not tok.startswith("-") and "$" not in tok and ("/" in tok or cwd != cwd0):
+                    path, real = _walk(tok, cwd or cwd0)
+                    out += [(c, f"{p} (named by {first}, which isn't read-only)") for c, p in
+                            _judge(classify_write, path, real, ctx) if c == "state-direct"]
+    # the line the call types must be all literal (strict); a script on disk is project code, its lexer reasons are let go but
+    # every program it starts and every command it names is judged the same way
+    stmts, why = _ps_lex(cmd.replace("\0", " "), ctx, script=not strict)
+    if why and strict:
+        out.append(("system", "PowerShell the guard can't read to the end: " + "; ".join(why[:4]) +
+                    " (name the path or the command literally)"))
+    if len(stmts) > _PS_STMT_CAP:
+        out.append(("system", "a PowerShell command of too many statements to read: run it in parts"))
+    else:
+        _ps_program(stmts, ctx, cwd0, depth, budget, out, script=not strict)
+    return list(dict.fromkeys(out))
+
+
+_PS_SHELL_WORDS = {"powershell", "powershell.exe", "pwsh", "pwsh.exe"}
+
+
+def _ps_encoded(args):
+    return any(re.fullmatch(r"-(?:e|ec|en\w*)", a.lower()) for a in args)
+
+
+def _ps_script(word, ctx, cwd, depth, budget=None):
+    """A .ps1 the command runs: its text is read as a command line too (a file we can't read isn't run, so no finding)."""
+    if depth >= 3:
+        return [("system", "PowerShell scripts nest too deep to read")]
+    word = _ps_norm(word, ctx)
+    path = word if word.startswith("/") else os.path.join(cwd, word)
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            body = f.read(_PS_SCRIPT_CAP + 1)
+    except (OSError, ValueError):  # a script the guard can't open may be written by an earlier statement of the same line
+        return [("system", f"the script {word} can't be read: the guard can't tell what it runs")]
+    if len(body) > _PS_SCRIPT_CAP:
+        return [("system", f"the script {word} is too long to read: run its parts")]
+    return [(c, f"{d} (in {word})") for c, d in _powershell_findings(body, ctx, depth + 1, cwd, budget, strict=False)]
 
 
 # ---------------------------------------------------------------- shell parsing

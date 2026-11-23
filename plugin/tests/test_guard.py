@@ -4404,7 +4404,7 @@ class CredentialTools(GuardCase):
                       "Glob": {"pattern": cred}, "LS": {"path": cred}, "ReadMcpResourceTool": {"uri": "file://" + cred},
                       "Write": {"file_path": cred, "content": "x"}, "Edit": {"file_path": cred, "old_string": "a", "new_string": "b"},
                       "MultiEdit": {"file_path": cred, "edits": []}, "NotebookEdit": {"notebook_path": cred, "new_source": "x"},
-                      "Bash": {"command": "cat " + cred}}[tool]
+                      "Bash": {"command": "cat " + cred}, "PowerShell": {"command": "Get-Content " + cred}}[tool]
                 self.assertBlocked(g.check(tool, ti, self.ctx()), "credentials", f"{tool}: {how}")
 
     def test_a_filesystem_server_tool_is_read_by_name_and_arguments(self):
@@ -4560,7 +4560,11 @@ class GuardCaps(_CapRows, GuardCase):
         "_FORMS_CAP": "the prefilter escalates on any % in a path",
         "_DECODE_CAP": "the prefilter escalates on any % in a path",
         "_LINK_SCAN": "the prefilter has its own, smaller _PREFILTER_SCAN, and escalates when it is spent",
-        "_LINK_CHAIN": "the prefilter escalates on any link to a folder, so never follows a chain"}
+        "_LINK_CHAIN": "the prefilter escalates on any link to a folder, so never follows a chain",
+        "_PS_CAP": "a limit on a PowerShell command line's length; the prefilter judges paths of file tools, not shell text",
+        "_PS_TOKEN_CAP": "a limit on PowerShell tokens; shell text, never seen by the prefilter",
+        "_PS_STMT_CAP": "a limit on PowerShell statements; shell text, never seen by the prefilter",
+        "_PS_SCRIPT_CAP": "a limit on a PowerShell script's size; shell text, never seen by the prefilter"}
     HOOKS_ONLY = {"_PREFILTER_SCAN", "_PRODUCT_CAP"}  # bounds of the prefilter itself: each one ends in an escalation
 
     @staticmethod
@@ -4590,6 +4594,9 @@ class GuardCaps(_CapRows, GuardCase):
         for i in range(3):  # c0 -> c1 -> c2 -> c3
             os.symlink(os.path.join(chain, f"c{i + 1}"), os.path.join(chain, f"c{i}", "next"))
         search = "mcp__fs__search_files"
+        script = os.path.join(repo, "cap-trip.ps1")
+        with open(script, "w") as f:
+            f.write("Get-Date -Format x\n")
         return {"_BRACE_CAP": (2, "Grep", {"pattern": "x", "path": repo, "glob": "{a,b,c}"}),
                 "_GLOB_CAP": (10, "Glob", {"pattern": "a" * 11, "path": repo}),
                 "_FORM_CAP": (3, search, {"path": repo, "patterns": [f"p{i}" for i in range(6)]}),
@@ -4602,7 +4609,11 @@ class GuardCaps(_CapRows, GuardCase):
                 "_FORMS_CAP": (2, "mcp__fs__read_file", {"path": "%2541"}),
                 "_LINK_SCAN": (20, search, {"path": scan, "pattern": "**/x"}),
                 "_LINK_DEPTH": (2, search, {"path": os.path.join(depth, "deep"), "pattern": "**/x"}),
-                "_LINK_CHAIN": (2, search, {"path": os.path.join(chain, "c0"), "pattern": "**/zzz"})}
+                "_LINK_CHAIN": (2, search, {"path": os.path.join(chain, "c0"), "pattern": "**/zzz"}),
+                "_PS_CAP": (5, "PowerShell", {"command": "Get-Date"}),
+                "_PS_TOKEN_CAP": (1, "PowerShell", {"command": "Get-Date -Format x"}),
+                "_PS_STMT_CAP": (1, "PowerShell", {"command": "Get-Date; Get-Date"}),
+                "_PS_SCRIPT_CAP": (5, "PowerShell", {"command": script})}
 
     def test_every_cap_by_name_has_a_row_that_trips_it(self):
         found = self.cap_names(g)
@@ -5163,6 +5174,568 @@ class CredentialToolsHook(ForemanTestCase):
             with mock.patch.object(hooks, "_committed", return_value=None):
                 self.assertIsNone(hooks._credential_search(plain))
                 self.assertTrue(hooks._credential_search(pl))
+
+
+class ShellTools(GuardCase):
+    """T-6018: every tool that runs a shell is guarded at least as strictly as Bash. One table of intents, each written in
+    every shell-running tool's own syntax (fmguard.SHELL_TOOLS names them): a tool with no column fails here, so a new shell
+    tool is guarded or it goes red. PowerShell is read by a conservative scan (fmguard._powershell_findings)."""
+    S = "{fhome}/state/projects/x/ledger.jsonl"
+    # (label, {tool: command}): a credential read, in the forms the credential guard normalizes
+    CREDENTIAL_READS = [
+        ("tilde", {"Bash": "cat ~/.ssh/id_rsa", "PowerShell": "Get-Content ~/.ssh/id_rsa"}),
+        ("tilde-backslash", {"Bash": "cat ~/.ssh/id_rsa", "PowerShell": r"Get-Content ~\.ssh\id_rsa"}),
+        ("env-home", {"Bash": 'cat "$HOME/.ssh/id_rsa"', "PowerShell": r"Get-Content $env:HOME\.ssh\id_rsa"}),
+        ("env-braced", {"Bash": "cat ${HOME}/.aws/credentials", "PowerShell": r"gc ${env:HOME}\.aws\credentials"}),
+        ("env-userprofile", {"Bash": 'cat "$HOME/.ssh/id_rsa"', "PowerShell": r"type $env:USERPROFILE\.ssh\id_rsa"}),
+        ("home-variable", {"Bash": "cat $HOME/.ssh/id_rsa", "PowerShell": "Get-Content $HOME/.ssh/id_rsa"}),
+        ("percent", {"Bash": "cat ~/.ssh/id_rsa", "PowerShell": r"Get-Content %USERPROFILE%\.ssh\id_rsa"}),
+        ("case", {"Bash": "cat ~/.SSH/ID_RSA", "PowerShell": r"Get-Content ~\.SSH\ID_RSA"}),
+        ("absolute", {"Bash": "cat {home}/.aws/credentials", "PowerShell": "Get-Content {home}/.aws/credentials"}),
+        ("quoted", {"Bash": "cat '{home}/.ssh/id_ed25519'", "PowerShell": "Get-Content '{home}\\.ssh\\id_ed25519'"}),
+        ("param", {"Bash": "cat ~/.netrc", "PowerShell": "Get-Content -LiteralPath:~/.netrc"}),
+        ("pipeline", {"Bash": "cat ~/.kube/config | head", "PowerShell": "Get-Content ~/.kube/config | Select-Object -First 3"}),
+        ("dotnet", {"Bash": "cat ~/.ssh/id_rsa", "PowerShell": "[IO.File]::ReadAllText('~/.ssh/id_rsa')"}),
+        ("joined-name", {"Bash": "cat ~/.ssh/id_rsa", "PowerShell": "Get-Content (Join-Path $HOME '.ssh/id_rsa')"}),
+        ("joined-string", {"Bash": "cat ~/.ssh/id_rsa", "PowerShell": "Get-Content ('~/.s' + 'sh/id_rsa')"}),
+        ("variable", {"Bash": "d=~/.ssh; cat $d/id_rsa", "PowerShell": "$d = '~/.ssh'; Get-Content $d/id_rsa"}),
+        ("tick", {"Bash": "cat ~/.ssh/id_rsa", "PowerShell": "Get-Content ~/.s`sh/id_rsa"}),
+        ("copy", {"Bash": "cp ~/.ssh/id_rsa out.txt", "PowerShell": "Copy-Item ~/.ssh/id_rsa out.txt"}),
+        ("nested-shell", {"Bash": "bash -c 'cat ~/.ssh/id_rsa'", "PowerShell": "bash -c 'cat ~/.ssh/id_rsa'"}),
+        ("windows-drive", {"Bash": "cat ~/.ssh/id_rsa", "PowerShell": r"Get-Content C:\Users\someone\.ssh\id_rsa"}),
+        # T-6018 review: a shell named by a path, behind a launcher, or a pwsh/python line carrying the read
+        ("shell-by-path", {"Bash": "/bin/bash -c 'cat ~/.ssh/id_rsa'", "PowerShell": "/bin/bash -c 'cat ~/.ssh/id_rsa'"}),
+        ("shell-exe", {"Bash": "bash -c 'cat ~/.ssh/id_rsa'", "PowerShell": r"C:\tools\bash.exe -c 'cat ~/.ssh/id_rsa'"}),
+        ("shell-dot-slash", {"Bash": "./sh -c 'cat ~/.ssh/id_rsa'", "PowerShell": "./sh -c 'cat ~/.ssh/id_rsa'"}),
+        ("shell-sudo", {"Bash": "sudo bash -c 'cat ~/.ssh/id_rsa'", "PowerShell": "sudo bash -c 'cat ~/.ssh/id_rsa'"}),
+        ("shell-wsl", {"Bash": "wsl bash -c 'cat ~/.ssh/id_rsa'", "PowerShell": "wsl bash -c 'cat ~/.ssh/id_rsa'"}),
+        ("pwsh-command", {"Bash": "pwsh -c 'cat ~/.ssh/id_rsa'", "PowerShell": "pwsh -Command 'Get-Content ~/.ssh/id_rsa'"}),
+        ("python-c", {"Bash": "python3 -c 'print(open(\"{home}/.ssh/id_rsa\").read())'",
+                      "PowerShell": "python3 -c 'print(open(\"{home}/.ssh/id_rsa\").read())'"}),
+        ("glob-above-home", {"Bash": "cat {homeparent}/*/.ssh/id_rsa", "PowerShell": "Get-Content {homeparent}/*/.ssh/id_rsa"}),
+        ("glob-relative", {"Bash": "cd ~; cat .s*/id_rsa", "PowerShell": "Set-Location ~; Get-Content .s*/id_rsa"}),
+    ]
+    # a write into Sampo's state, in the forms a shell offers
+    STATE_WRITES = [
+        ("redirect", {"Bash": 'echo x > ' + S, "PowerShell": '"x" > ' + S}),
+        ("append", {"Bash": "echo x >> " + S, "PowerShell": "'x' >> " + S}),
+        ("set-content", {"Bash": "tee " + S + " < /dev/null", "PowerShell": "Set-Content -Path " + S + " -Value x"}),
+        ("add-content", {"Bash": "echo x >> " + S, "PowerShell": "Add-Content " + S + " x"}),
+        ("out-file", {"Bash": "echo x | tee " + S, "PowerShell": "'x' | Out-File -FilePath " + S}),
+        ("remove", {"Bash": "rm -rf {fhome}/state", "PowerShell": "Remove-Item -Recurse -Force {fhome}/state"}),
+        ("copy", {"Bash": "cp x " + S, "PowerShell": "Copy-Item x " + S}),
+        ("move", {"Bash": "mv x " + S, "PowerShell": "Move-Item x " + S}),
+        ("alias", {"Bash": "rm " + S, "PowerShell": "ri " + S}),
+        ("backslash", {"Bash": "rm " + S, "PowerShell": r"Remove-Item {fhome}\state\projects\x\ledger.jsonl"}),
+        ("env-home", {"Bash": 'rm "$HOME/.claude/foreman/state/projects/x/ledger.jsonl"',
+                      "PowerShell": r"Remove-Item $env:HOME\.claude\foreman\state\projects\x\ledger.jsonl"}),
+        ("tilde", {"Bash": "rm ~/.claude/foreman/state/projects/x/ledger.jsonl",
+                   "PowerShell": "Set-Content ~/.claude/foreman/state/projects/x/ledger.jsonl x"}),
+        ("case", {"Bash": "rm {fhome}/STATE/projects/x/ledger.jsonl", "PowerShell": "Remove-Item {fhome}/STATE/projects/x/ledger.jsonl"}),
+        ("join-path", {"Bash": "rm " + S, "PowerShell": "Set-Content (Join-Path $env:HOME '.claude/foreman/state/a.json') x"}),
+        ("variable", {"Bash": "S={fhome}/state; rm $S/a", "PowerShell": "$s = '{fhome}/state'; Remove-Item $s/a"}),
+        ("cd-then-write", {"Bash": "cd {fhome}/state && echo x > a", "PowerShell": "Set-Location {fhome}/state; Set-Content a x"}),
+        ("dotnet", {"Bash": "echo x > " + S, "PowerShell": "[IO.File]::WriteAllText('" + S + "', 'x')"}),
+        ("unknown-target", {"Bash": "rm $T", "PowerShell": "Set-Content -Path $target -Value x"}),
+        ("nested-shell", {"Bash": "bash -c 'echo x > " + S + "'", "PowerShell": "bash -c 'echo x > " + S + "'"}),
+    ]
+    # rows where PowerShell is refused though Bash's own line is not: Windows has no case in a folder name, and a PowerShell
+    # write whose target the text doesn't give can't be judged (the Bash column keeps the row so every tool has a case)
+    POWERSHELL_STRICTER = {"case", "unknown-target"}
+    # credential rows only the PowerShell reader judges: Bash's own scan doesn't look through wsl or expand a glob that
+    # reaches a guarded folder (its column stays so every tool has a case; a Bash follow-up is its own task)
+    POWERSHELL_ONLY_READS = {"shell-wsl", "glob-above-home", "glob-relative"}
+    # reads and writes the guard leaves alone, per tool
+    ALLOWED = [
+        ("project-read", {"Bash": "cat README.md", "PowerShell": "Get-Content README.md"}),
+        ("project-list", {"Bash": "ls -la", "PowerShell": "Get-ChildItem -Force | Sort-Object Name"}),
+        ("project-write", {"Bash": "echo x > out.txt", "PowerShell": "Set-Content out.txt x"}),
+        ("public-key", {"Bash": "cat ~/.ssh/id_rsa.pub", "PowerShell": "Get-Content ~/.ssh/id_rsa.pub"}),
+        ("known-hosts", {"Bash": "cat ~/.ssh/known_hosts", "PowerShell": r"Get-Content $env:HOME\.ssh\known_hosts"}),
+        ("state-read", {"Bash": "cat " + S, "PowerShell": "Get-Content " + S + " | Select-String x"}),
+        ("home-note", {"Bash": "cat ~/notes.txt", "PowerShell": r"Get-Content $env:USERPROFILE\notes.txt"}),
+        ("text-only", {"Bash": "echo hello", "PowerShell": "Write-Host 'hello'"}),
+        ("single-quoted-dollar", {"Bash": "echo 'a $b'", "PowerShell": "Write-Host 'a $b'"}),
+        ("home-var-in-string", {"Bash": 'echo "$HOME/notes"', "PowerShell": 'Get-Content "$env:USERPROFILE/notes.txt"'}),
+        ("literal-shell-line", {"Bash": "bash -c 'echo hi'", "PowerShell": "bash -c 'echo hi'"}),
+        ("project-lister-into-reader", {"Bash": "ls | grep x", "PowerShell": "Get-ChildItem | Select-String x"}),
+        ("filter-by-extension", {"Bash": "ls *.py", "PowerShell": "Get-ChildItem -Recurse -Filter *.py"}),
+        ("null-redirect", {"Bash": "echo x 2>/dev/null", "PowerShell": "Write-Host x 2>$null"}),
+    ]
+    # PowerShell the scan can't read to the end is refused outright, as Bash's unreadable eval is
+    UNPARSED = ["iex $payload", "Invoke-Expression (Get-Content x.ps1 -Raw)", "powershell -EncodedCommand SQBFAFgA",
+                "pwsh -enc SQBFAFgA", "[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b))",
+                "Get-Content ([char]126 + '/x')", "Get-Content ('{0}/x' -f '~')", "& $tool x", "Get-Content (-join ('~','/x'))",
+                "$s = @'\nline\n'@\nSet-Content out.txt $s", "Invoke-Command -ScriptBlock { 1 }"]
+
+    def fill(self, cmd):  # not str.format: a PowerShell command is full of braces
+        return (cmd.replace("{fhome}", self.fhome).replace("{homeparent}", os.path.dirname(self.home))
+                .replace("{home}", self.home).replace("{repo}", self.repo))
+
+    def ps(self, cmd, **kw):
+        return g.check("PowerShell", {"command": self.fill(cmd)}, self.ctx(**kw))
+
+    def run_shell(self, tool, cmd, **kw):
+        return g.check(tool, {"command": self.fill(cmd)}, self.ctx(**kw))
+
+    def test_every_shell_running_tool_has_a_column_in_every_row(self):
+        self.assertTrue({"Bash", "PowerShell"} <= set(g.SHELL_TOOLS), "Claude Code's two shell tools")
+        for table in (self.CREDENTIAL_READS, self.STATE_WRITES, self.ALLOWED):
+            for label, cmds in table:
+                with self.subTest(row=label):
+                    self.assertEqual(sorted(set(g.SHELL_TOOLS) - set(cmds)), [], f"{label}: a shell tool with no case")
+
+    def test_the_shell_tools_are_what_the_guard_and_the_hooks_name(self):
+        """The walker: every tool a PreToolUse matcher names that runs a command line is a SHELL_TOOLS row, each such row
+        is matched by a matcher and judged by the hook (hooks.GUARDED), and READ_TOOLS reads it as a shell."""
+        from sampo import hooks
+        plugin = os.path.dirname(os.path.dirname(os.path.abspath(g.__file__)))
+        with open(os.path.join(plugin, "hooks", "hooks.json"), encoding="utf-8") as f:
+            pre = json.load(f)["hooks"]["PreToolUse"]
+        matchers = [e.get("matcher", "") for e in pre]
+        names = {w for m in matchers if not m.startswith("mcp__") for w in m.split("|") if re.fullmatch(r"[A-Za-z]+", w)}
+        shellish = {w for w in names if re.search(r"shell|bash|cmd|command|terminal|exec|script", w, re.I)}
+        self.assertEqual(sorted(shellish - set(g.SHELL_TOOLS) - {"Monitor"}), [], "a hook matcher names a shell nobody guards")
+        for tool in g.SHELL_TOOLS:
+            with self.subTest(tool=tool):
+                self.assertTrue(any(re.fullmatch(m, tool) for m in matchers if m), f"no PreToolUse matcher names {tool}")
+                self.assertIn(tool, hooks.GUARDED, f"{tool}: the hook never reaches the guard for it")
+                self.assertEqual(g.READ_TOOLS.get(tool), g.SHELL_TOOLS[tool])
+                self.assertNotIn(tool, g.UNGUARDED)
+        # the tools Claude Code runs a command line with: Monitor's is read as Bash's by the hook (T-3360)
+        for tool in ("Bash", "PowerShell"):
+            self.assertIn(tool, g.SHELL_TOOLS)
+        self.assertEqual(hooks.MONITOR_AS_BASH, "Monitor")
+
+    def test_a_credential_read_is_refused_by_every_shell_tool(self):
+        for tool in g.SHELL_TOOLS:
+            for label, cmds in self.CREDENTIAL_READS:
+                if tool == "Bash" and label in self.POWERSHELL_ONLY_READS:
+                    continue
+                with self.subTest(tool=tool, form=label):
+                    self.assertBlocked(self.run_shell(tool, cmds[tool]), "credentials", cmds[tool])
+
+    def test_a_state_write_is_refused_by_every_shell_tool(self):
+        for tool in g.SHELL_TOOLS:
+            for label, cmds in self.STATE_WRITES:
+                if tool == "Bash" and label in self.POWERSHELL_STRICTER:
+                    continue
+                with self.subTest(tool=tool, form=label):
+                    r = self.run_shell(tool, cmds[tool])
+                    self.assertIsNotNone(r, cmds[tool])
+                    self.assertIn(r.category, ("state-direct", "system"), cmds[tool])
+                    if label not in ("unknown-target", "cd-then-write", "nested-shell", "variable", "join-path"):
+                        self.assertEqual(r.category, "state-direct", cmds[tool])
+
+    # T-6018 fix round: a comma list names several targets, a named -Path included; a native text consumer's output flag
+    # writes; an environment listing prints every secret in it
+    PS_LIST_WRITES = [
+        ("named-path-list", "Set-Content -Path /tmp/a," + S + " -Value y"),
+        ("named-path-list-tail", "Set-Content -Path " + S + ",/tmp/a -Value y"),
+        ("positional-list", "Set-Content /tmp/a," + S + " v"),
+        ("remove-named-list", "Remove-Item -Path /tmp/x," + S),
+        ("remove-literalpath-list", "Remove-Item -LiteralPath /tmp/x," + S),
+        ("add-content-list", "Add-Content -Path /tmp/a," + S + " -Value y"),
+        ("out-file-list", "'x' | Out-File -FilePath /tmp/a," + S),
+        ("new-item-list", "New-Item -Path /tmp/a," + S),
+        ("tee-list", "Get-Date | Tee-Object -FilePath /tmp/a," + S),
+        ("export-csv-list", "Get-Date | Export-Csv -Path /tmp/a," + S),
+        ("copy-destination-list", "Copy-Item README.md -Destination /tmp/a," + S),
+        ("move-destination-list", "Move-Item README.md -Destination /tmp/a," + S),
+        ("rename-list", "Rename-Item -Path /tmp/a," + S + " -NewName z"),
+        ("native-sort-output", "Get-Content a.txt | sort -o " + S),
+        ("native-sort-output-long", "sort --output=" + S + " a.txt"),
+        ("native-sort-compress", "sort --compress-program=x a.txt"),
+        ("env-drive-gci", "Get-ChildItem Env:"),
+        ("env-drive-gci-path", "Get-ChildItem -Path Env:"),
+        ("env-drive-gci-alias", "gci env:"),
+        ("env-drive-dir", "dir env:"),
+        ("env-drive-ls", "ls Env:"),
+        ("env-drive-gi", "Get-Item Env:*"),
+        ("env-bare", "$env:"),
+        ("sort-bundled", "sort -uo " + S + " in"),
+        ("sort-bundled-attached", "sort -ro" + S + " in"),
+        ("sort-long-prefix", "sort --out=" + S + " in"),
+        ("sort-long-prefix-space", "sort --outp " + S + " in"),
+        ("env-quoted", "Get-ChildItem 'env:'"),
+        ("env-quoted-wild", 'gci "Env:*"'),
+        ("env-wild-name", "ls env:A*"),
+        ("env-wild-q", "Get-Item env:?ATH*"),
+        ("env-wild-class", "Get-ChildItem -Path env:[A-Z]*"),
+        ("env-slash", "Get-ChildItem env:/"),
+        ("env-backslash", "gci env:\\"),
+        ("env-dot-slash", "gci env:./"),
+        ("env-dot-backslash", "gci env:.\\"),
+        ("env-backtick", "gci e`nv:"),
+        ("env-double-slash", "Get-ChildItem Env://"),
+        ("env-double-backslash", "Get-ChildItem Env:\\\\"),
+        ("env-slash-dot-slash", "gci env:/./"),
+        ("env-quoted-slash", "gci 'env:/'"),
+        ("env-quote-split", "gci e'n'v:"),
+        ("env-path-slash", "Get-ChildItem -Path env:/"),
+        ("env-nested-name", "gci env:HOME/x"),
+        ("env-provider-slash", "Get-ChildItem Environment::/"),
+        ("env-provider-qualified-slash", "Get-ChildItem Microsoft.PowerShell.Core\\Environment::\\"),
+        ("env-dollar-slash", "echo $env:/"),
+        ("env-provider-path", "Get-ChildItem Microsoft.PowerShell.Core\\Environment::"),
+        ("env-method-group", "[Environment]::GetEnvironmentVariables | Out-String"),
+        ("env-method-no-paren", "[System.Environment]::GetEnvironmentVariables"),
+        ("env-all-vars", "[Environment]::GetEnvironmentVariables()"),
+    ]
+
+    def test_a_comma_list_a_native_output_flag_and_an_environment_dump_are_refused_in_powershell(self):
+        for label, cmd in self.PS_LIST_WRITES:
+            with self.subTest(row=label):
+                r = self.ps(cmd)
+                self.assertIsNotNone(r, f"passed: {cmd!r}")
+                self.assertIn(r.category, ("system", "state-direct"), cmd)
+
+    def test_a_standing_yes_lifts_what_bash_lets_it_lift_and_never_a_state_write_in_any_shell_tool(self):
+        for tool in g.SHELL_TOOLS:
+            with self.subTest(tool=tool):
+                # state-direct is not authorizable; a credential read is, and a yes lifts it as it does for Bash
+                cmd = self.STATE_WRITES[0][1][tool]
+                self.assertBlocked(self.run_shell(tool, cmd, allow=["state-direct", "core", "system"]), "state-direct")
+                cred = self.CREDENTIAL_READS[0][1][tool]
+                self.assertIsNone(self.run_shell(tool, cred, allow=["credentials"]), "a standing yes lifts a credential read")
+
+    def test_what_bash_allows_a_shell_tool_may_run(self):
+        for tool in g.SHELL_TOOLS:
+            for label, cmds in self.ALLOWED:
+                with self.subTest(tool=tool, form=label):
+                    r = self.run_shell(tool, cmds[tool])
+                    self.assertIsNone(r, f"{cmds[tool]}: {r}")
+
+    def test_powershell_the_scan_cannot_read_to_the_end_is_refused(self):
+        for cmd in self.UNPARSED:
+            with self.subTest(cmd=cmd):
+                self.assertBlocked(self.ps(cmd), "system", cmd)
+
+    def test_powershell_with_no_command_string_is_refused_not_a_crash(self):
+        for ti in ({}, {"command": None}, {"command": ["a"]}, {"command": 7}):
+            with self.subTest(ti=ti):
+                self.assertBlocked(g.check("PowerShell", ti, self.ctx()), "system")
+
+    def test_powershell_huge_or_nul_input_is_refused_or_read_without_hanging(self):
+        t0 = time.monotonic()
+        self.assertBlocked(self.ps("Get-Content x\n" * 200_000), "system")
+        self.assertBlocked(self.ps("Get-Content ~/.ssh/id_rsa\0 " + "a " * 5000), "credentials")
+        self.assertLess(time.monotonic() - t0, 10)
+
+
+class PowerShellEvasion(GuardCase):
+    """T-6018 review: a PowerShell statement is allowed only when every word is a literal the reader fully understood. One row
+    per construct that hides where a path or a program comes from: each is refused (a `system` refusal when nothing in the text
+    names a credential, `credentials` or `state-direct` when it does), never passed."""
+    DYNAMIC = [  # a path or program built at run time
+        ("subexpression", "Get-Content $(Join-Path ~ 'x')"),
+        ("braced-variable", "Get-Content ${x}/id_rsa"),
+        ("interpolated-string", 'Get-Content "$a/.ssh/id_x"'),
+        ("plain-variable", "Get-Content $p"),
+        ("variable-assignment-from-command", "$p = Get-Location; Get-Content $p"),
+        ("env-other-than-home", "Get-Content $env:APPDATA/x"),
+        ("concat-plus", "Get-Content ('~/.s' + 'sh/id_rsa')"),
+        ("concat-tight", "Get-Content ('a'+'b')"),
+        ("concat-with-variable", "Get-Content ('a' + $b)"),
+        ("join-operator", "Get-Content (-join ('a','b'))"),
+        ("format-operator", "Get-Content ('{0}/x' -f 'a')"),
+        ("replace-operator", "Get-Content ('x' -replace 'x','y')"),
+        ("split-operator", "Get-Content ('a/b' -split '/')"),
+        ("parenthesised-command", "Get-Content (Join-Path a b)"),
+        ("backtick-escape", "Get-Content a`b"),
+        ("script-block", "Get-ChildItem | ForEach-Object { Get-Content $_.FullName }"),
+        ("where-block", "Get-ChildItem | Where-Object { $_.Length -gt 1 }"),
+        ("hashtable", "Get-Content @{a=1}"),
+        ("splat", "Get-Content @args"),
+        ("here-string", "Write-Host @'\nx\n'@"),
+        ("call-operator", "& 'Get-Content' x"),
+        ("call-operator-tight", "&'Get-Content' x"),
+        ("dot-source", ". ./evil.ps1"),
+        ("expression-statement", "(Get-Command Get-Content) x"),
+        ("unterminated-single", "Get-Content 'x"),
+        ("unterminated-double", 'Get-Content "x'),
+        ("block-comment", "Get-Content <# x #> y"),
+        ("type-cast", "Get-Content [string]'x'"),
+        ("new-object-com", "New-Object -ComObject WScript.Shell"),
+    ]
+    PIPELINE = [  # a path handed down a pipeline, not written in the text
+        ("content-from-pipe", "Get-Content paths.txt | Get-Content"),
+        ("string-into-reader", "'x' | Get-Content"),
+        ("alias-reader", "Get-Content paths.txt | gc"),
+        ("select-string-from-home-listing", "Get-ChildItem {home} -Recurse | Select-String x"),
+        ("copy-from-pipe", "Get-Content paths.txt | Copy-Item -Destination out"),
+        ("remove-from-pipe", "Get-ChildItem | Remove-Item"),
+        ("import-csv-from-pipe", "Get-Content paths.txt | Import-Csv"),
+    ]
+    GLOBS = [  # a wildcard that could reach a guarded name
+        ("filter-star", "Get-ChildItem {home} -Recurse -Filter *"),
+        ("filter-id", "Get-ChildItem {home} -Recurse -Filter id_*"),
+        ("include-star", "Get-ChildItem {home} -Recurse -Include *"),
+        ("include-list", "Get-ChildItem {home} -Recurse -Include *.py,*.json"),
+        ("filter-abbrev", "Get-ChildItem {home} -Recurse -Fil id_*"),
+        ("filter-colon", "Get-ChildItem {home} -Recurse -Filter:id_*"),
+        ("question-mark", "Get-Content {home}/.s?h/id_rsa"),
+        ("bracket", "Get-Content {home}/.ss[h]/id_rsa"),
+        ("read-whole-home", "Get-Content {home}/*"),
+        ("copy-glob", "Copy-Item {home}/.ss*/* out"),
+        ("glob-above-home", "Get-Content {homeparent}/*/.ssh/id_rsa"),
+        ("dotdot-glob", "Get-Content {home}/x/../.s*/id_rsa"),
+        ("cd-glob", "Set-Location {home}; Get-Content .s*/id_rsa"),
+        ("cd-glob-dot-star", "Set-Location {home}; Get-Content .*"),
+    ]
+    PROGRAMS = [  # a shell or interpreter the reader can't take apart into one literal command
+        ("cmd-c", "cmd /c type nothing.txt"),
+        ("cmd-exe-c-caret", 'cmd.exe /c "ty^pe x"'),
+        ("cmd-percent", "cmd /c type %USERPROFILE%\\x"),
+        ("cmd-path", r"C:\Windows\System32\cmd.exe /c dir"),
+        ("cmd-bare", "cmd"),
+        ("start-process", "Start-Process bash"),
+        ("start-process-alias", "saps notepad"),
+        ("start-alias", "start notepad"),
+        ("start-job", "Start-Job -ScriptBlock { 1 }"),
+        ("invoke-item", "Invoke-Item x.exe"),
+        ("invoke-expression", "Invoke-Expression 'ls'"),
+        ("iex", "iex 'ls'"),
+        ("encoded-command", "powershell -EncodedCommand AAAA"),
+        ("enc", "pwsh -enc AAAA"),
+        ("pwsh-file", "pwsh -File x.ps1"),
+        ("pwsh-with-flags", "pwsh -NoProfile -Command 'ls'"),
+        ("pwsh-bare", "pwsh"),
+        ("add-type", "Add-Type -TypeDefinition 'x'"),
+        ("process-start", "[System.Diagnostics.Process]::Start('x')"),
+        ("bash-bare", "bash"),
+        ("bash-script", "bash x.sh"),
+        ("bash-login", "bash -lc 'echo hi'"),
+        ("bash-two-words", "bash -c echo hi"),
+        ("bash-path", "/usr/bin/bash x.sh"),
+        ("bash-exe-path", r"C:\tools\bash.exe x.sh"),
+        ("bash-quoted-path", r'"C:\Program Files\Git\bin\bash.exe" x.sh'),
+        ("sh-dot-slash", "./sh x.sh"),
+        ("zsh-script", "zsh x.sh"),
+        ("dash-script", "dash x.sh"),
+        ("ksh-script", "ksh x.sh"),
+        ("wsl-bare", "wsl ls"),
+        ("sudo-bash", "sudo bash x.sh"),
+        ("env-bash", "env X=1 bash x.sh"),
+        ("xargs-bash", "xargs bash x.sh"),
+        ("python-script", "python x.py"),
+        ("python3-script", "python3 x.py"),
+        ("python-m", "python -m http.server"),
+        ("node-script", "node x.js"),
+        ("node-exe", r"C:\nodejs\node.exe x.js"),
+        ("perl-script", "perl x.pl"),
+        ("ruby-script", "ruby x.rb"),
+        ("pipeline-into-shell", "Get-Content x | bash"),
+        ("pipeline-into-python", "Get-Content x | python"),
+        ("wscript", "wscript x.vbs"),
+        ("mshta", "mshta x.hta"),
+        ("rundll32", "rundll32 x,y"),
+    ]
+    # a literal `-c` line is handed to Bash's reading and passes when that does
+    HANDED_ON_OK = ["bash -c 'echo hi'", "/bin/bash -c 'ls'", "sh -c 'echo hi'", "pwsh -Command 'Get-ChildItem'",
+                    "python3 -c 'print(1)'"]
+
+    def fill(self, cmd):
+        return (cmd.replace("{homeparent}", os.path.dirname(self.home)).replace("{home}", self.home)
+                .replace("{fhome}", self.fhome).replace("{repo}", self.repo))
+
+    def ps(self, cmd, **kw):
+        return g.check("PowerShell", {"command": self.fill(cmd)}, self.ctx(**kw))
+
+    def refused(self, table):
+        for label, cmd in table:
+            with self.subTest(row=label):
+                r = self.ps(cmd)
+                self.assertIsNotNone(r, f"passed: {cmd!r}")
+                self.assertIn(r.category, ("system", "credentials", "state-direct"), cmd)
+
+    def test_a_path_or_program_built_at_run_time_is_refused(self):
+        self.refused(self.DYNAMIC)
+
+    def test_a_path_handed_down_a_pipeline_is_refused(self):
+        self.refused(self.PIPELINE)
+
+    def test_a_wildcard_that_could_reach_a_guarded_name_is_refused(self):
+        self.refused(self.GLOBS)
+
+    def test_a_shell_or_interpreter_the_reader_cannot_take_apart_is_refused(self):
+        self.refused(self.PROGRAMS)
+
+    def test_the_refusals_with_nothing_credential_in_them_are_system_not_credentials(self):
+        plain = {"subexpression", "plain-variable", "variable-assignment-from-command", "env-other-than-home",
+                 "concat-tight", "join-operator", "call-operator", "dot-source", "script-block"}
+        for label, cmd in [r for r in self.DYNAMIC if r[0] in plain] + self.PROGRAMS[:6]:
+            with self.subTest(row=label):
+                r = self.ps(cmd)
+                self.assertIsNotNone(r)
+                self.assertEqual(r.category, "system", cmd)
+
+    def test_a_literal_line_handed_to_bash_passes_when_bash_does(self):
+        for cmd in self.HANDED_ON_OK:
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(self.ps(cmd), cmd)
+
+    def test_a_nested_powershell_line_is_read_too(self):
+        self.assertBlocked(self.ps("pwsh -Command 'Get-Content ~/.ssh/id_rsa'"), "credentials")
+        self.assertBlocked(self.ps("pwsh -c 'Set-Content {fhome}/state/projects/x/ledger.jsonl x'"), "state-direct")
+        self.assertBlocked(self.ps("pwsh -c 'Get-Content $x'"), "system")
+
+    # default deny: a command off the allowlist is refused, and a shell, interpreter or launcher named anywhere in a statement
+    NOT_ALLOWLISTED = [
+        ("curl", "curl http://example.invalid/x"),
+        ("git", "git status"),
+        ("unknown-cmdlet", "Invoke-Thing x"),
+        ("native-exe", r".\tool.exe x"),
+        ("cmdlet-name-as-exe", r".\Get-Content.exe x"),
+        ("cmdlet-name-by-path", r"C:\tools\ls.exe x"),
+        ("import-module", "Import-Module .\\x.psm1"),
+        ("expand-archive", "Expand-Archive x.zip out"),
+        ("set-alias-like", "Rename-Thing a b"),
+        ("env-dash-s", "env -S 'bash -c x'"),
+        ("env-assignment", "env X=1 Get-Content x"),
+        ("find-exec", "find . -name x -exec bash y ;"),
+        ("find-exec-quoted", "find . -exec 'sh -c x' ;"),
+        ("xargs-late", "Get-Content list.txt | xargs sh x.sh"),
+        ("xargs-handed-line", "Get-Content list.txt | xargs sh -c 'cat ~/.ssh/id_rsa'"),
+        ("timeout-nested", "timeout 5 env bash x"),
+        ("shell-late-in-argv", "Get-ChildItem x bash"),
+        ("python-late-in-argv", "Get-Content x python3"),
+        ("shell-path-late", r"Get-Content x C:\Git\bin\bash.exe"),
+        ("launcher-late", "Get-Content x sudo"),
+        ("shell-named-in-quotes", "Get-Content 'a sh b'"),
+        ("pwsh-late", "Get-Content x pwsh"),
+        ("cmd-late", "Get-Content x cmd.exe"),
+    ]
+    # a path (or anything) handed to a writer down a pipeline: the target is never in the text
+    PIPED_WRITES = ["Get-Content a.txt | {c}", "Get-Content a.txt | {c} out.txt", "Get-Content a.txt | {c} -Value x",
+                    "Get-ChildItem | {c} -Path out.txt"]
+    SEND_AND_EXPORT = ["Send-MailMessage", "Export-Csv", "Export-Clixml", "Tee-Object", "Out-File", "Set-Item", "Clear-Item",
+                       "New-Item", "Set-Content", "Add-Content", "Out-Printer", "Export-Alias", "Set-Clipboard", "Start-Transcript"]
+
+    def test_a_command_off_the_allowlist_or_a_shell_anywhere_in_a_statement_is_refused(self):
+        self.refused(self.NOT_ALLOWLISTED)
+
+    def test_every_write_cmdlet_is_refused_when_the_pipeline_feeds_it(self):
+        for c in sorted(g._PS_TARGET0 | g._PS_REMOVE | g._PS_COPY | g._PS_MOVE) + self.SEND_AND_EXPORT:
+            for form in self.PIPED_WRITES:
+                with self.subTest(cmdlet=c, form=form):
+                    cmd = form.replace("{c}", c)
+                    self.assertIsNotNone(self.ps(cmd), cmd)
+
+    def test_every_pipe_target_cmdlet_is_a_pipe_taker_the_reader_refuses(self):
+        for c in sorted(g._PS_TARGET0):
+            with self.subTest(cmdlet=c):
+                self.assertIn(c, g._PS_WRITERS)
+                self.assertNotIn(c, g._PS_TEXT_CONSUMERS)
+                self.assertIsNotNone(self.ps(f"Get-Content a.txt | {c}"))
+
+    def test_the_text_only_pipeline_stages_and_read_only_cmdlets_pass(self):
+        for cmd in ("Get-Content README.md | Select-Object -First 3", "Get-ChildItem . | Sort-Object Name | Format-Table",
+                    "Get-Content README.md | Measure-Object -Line | Out-Host", "Test-Path README.md", "Resolve-Path README.md",
+                    "Get-Content README.md | Select-String todo", "Get-ChildItem . | Where-Object Name -like 'a*' | Out-String",
+                    "Get-Item Env:HOME", "Get-Item -Path env:Path", "Write-Output $env:USERPROFILE\\notes.txt",
+                    "Set-Content notes.txt hello", "Write-Output hi", "Set-Location . ; Get-ChildItem"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(self.ps(cmd), cmd)
+
+    def script(self, body, name="s.ps1"):
+        path = os.path.join(self.repo, name)
+        with open(path, "w") as f:
+            f.write(body)
+        self.addCleanup(lambda: os.path.exists(path) and os.remove(path))
+        return path
+
+    # a .ps1 the call runs is read with the same program pass: its lexer reasons are let go, nothing else is
+    SCRIPT_BODIES = [
+        ("shell-script", "bash x.sh"),
+        ("shell-in-block", "if ($a) { sh y.sh }"),
+        ("shell-after-assign", "$r = bash x.sh"),
+        ("shell-by-path", "/bin/bash x.sh"),
+        ("shell-exe", r"C:\Git\bin\bash.exe x.sh"),
+        ("interpreter-script", "python x.py"),
+        ("interpreter-after-call", "& python3 x.py"),
+        ("interpreter-in-parens", "$o = (node x.js)"),
+        ("launcher", "env -S 'bash -c x'"),
+        ("native-command", "curl http://example.invalid/x"),
+        ("unknown-cmdlet", "Invoke-Thing x"),
+        ("unknown-cmdlet-after-assign", "$x = Get-Thing x"),
+        ("variable-as-command", "& $cmd x"),
+        ("variable-expression", "$x.Delete()"),
+        ("native-after-keyword", "return curl x"),
+        ("piped-writer", "Get-Content a | Set-Content b"),
+        ("start-process", "Start-Process x"),
+        ("nested-script-missing", "./nothere.ps1"),
+        ("handed-line-refused-by-bash", "bash -c 'rm -rf ~'"),
+        ("handed-line-with-git", "bash -c 'git push --force origin main'"),
+        ("pwsh-line-reads-state", "pwsh -c 'Set-Content {fhome}/state/projects/x/ledger.jsonl x'"),
+    ]
+
+    def test_a_script_body_gets_the_program_pass_of_a_typed_line(self):
+        for label, body in self.SCRIPT_BODIES:
+            with self.subTest(row=label):
+                self.script(self.fill(body))
+                r = self.ps("./s.ps1")
+                self.assertIsNotNone(r, f"passed: {body!r}")
+                r = self.ps(".\\s.ps1")
+                self.assertIsNotNone(r, f"passed: {body!r}")
+
+    def test_a_script_that_only_reads_and_assigns_passes(self):
+        self.script("$x = Get-Content README.md\nif (Test-Path README.md) {\n  Get-ChildItem . | Sort-Object Name\n}\n"
+                    "# a comment\n$n = 3\nWrite-Output 'done'\nbash -c 'echo hi'\n")
+        self.assertIsNone(self.ps("./s.ps1"))
+
+    def test_a_script_that_names_another_is_read_to_the_bottom_and_the_depth_is_bounded(self):
+        self.script("./s.ps1", "s.ps1")
+        r = self.ps("./s.ps1")
+        self.assertIsNotNone(r)  # a script that calls itself ends at the depth cap, refused
+
+    def test_a_nested_script_with_a_shell_is_refused_from_a_typed_line_and_a_script(self):
+        self.script("bash x.sh", "inner.ps1")
+        self.script("./inner.ps1", "outer.ps1")
+        self.assertBlocked(self.ps("./outer.ps1"), "system")
+        self.assertBlocked(self.ps("./inner.ps1"), "system")
+
+    def test_a_script_the_guard_cannot_open_is_refused_not_passed(self):
+        self.assertBlocked(self.ps("./not-there.ps1"), "system")
+        self.assertBlocked(self.ps("Set-Content gen.ps1 'bash x'; ./gen.ps1"), "system")
+
+    def test_nesting_is_bounded(self):
+        cmd = "Get-ChildItem"
+        for _ in range(8):
+            cmd = "pwsh -Command '" + cmd.replace("'", "''") + "'"
+        t0 = time.monotonic()
+        self.assertIsNotNone(self.ps(cmd))
+        self.assertLess(time.monotonic() - t0, 5)
+
+
+class ShellToolsHook(ForemanTestCase):
+    """T-6018: the hook itself sends a PowerShell call to the guard (the matcher names it, GUARDED holds it), and `sampo guard
+    try --tool` gives the same verdict as for Bash."""
+    def deny(self, tool, cmd, home):
+        p = self.hook("PreToolUse", {"tool_name": tool, "tool_input": {"command": cmd}}, env={"HOME": home})
+        out = json.loads(p.stdout or "{}").get("hookSpecificOutput") or {}
+        return out.get("permissionDecision"), out.get("permissionDecisionReason", ""), p
+
+    def test_the_hook_refuses_a_credential_read_in_every_shell_tool_and_passes_an_ordinary_command(self):
+        home = os.path.join(self.tmp, "userhome")
+        os.makedirs(os.path.join(home, ".ssh"), exist_ok=True)
+        for tool, bad, fine in (("Bash", "cat ~/.ssh/id_rsa", "ls"),
+                                ("PowerShell", r"Get-Content $env:HOME\.ssh\id_rsa", "Get-ChildItem")):
+            with self.subTest(tool=tool):
+                decision, why, p = self.deny(tool, bad, home)
+                self.assertEqual(decision, "deny", p.stdout + p.stderr)
+                self.assertIn("credentials", why)
+                decision, why, p = self.deny(tool, fine, home)
+                self.assertIsNone(decision, p.stdout + p.stderr)
+
+    def test_guard_try_reads_a_powershell_command_like_a_bash_one(self):
+        home = os.path.join(self.tmp, "userhome")
+        os.makedirs(home, exist_ok=True)
+        for tool, cmd, want in (("PowerShell", "Get-Content ~/.ssh/id_rsa", "deny"), ("PowerShell", "Get-ChildItem", "allow"),
+                                ("Bash", "cat ~/.ssh/id_rsa", "deny")):
+            with self.subTest(tool=tool, cmd=cmd):
+                got = json.loads(self.fm("guard", "try", cmd, "--tool", tool, "--json", env={"HOME": home}).stdout)
+                self.assertEqual(got["decision"], want, got)
 
 
 class LaneAutoFocus(ForemanTestCase):

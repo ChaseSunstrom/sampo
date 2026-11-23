@@ -50,7 +50,7 @@ JOB_TYPICAL_MIN = {"close": 60, "ci": 30, "train": 60}  # T-4670: minutes a queu
 CONTEXT_NOTE_PCT = 60     # context use at a task boundary worth mentioning (context rot)
 CONTEXT_NOTE_TOKENS = 200_000  # T-0703: every turn re-reads the context, so past this a 1M window costs at 20%
 FILE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
-GUARDED = FILE_TOOLS | {"Bash"}
+GUARDED = FILE_TOOLS | {"Bash", "PowerShell"}  # T-6018: PowerShell runs a shell, so it gets the shell guard
 MONITOR_AS_BASH = "Monitor"  # T-3360: the tool whose command the Bash guard also reads (Claude Code 2.1.314)
 # async events (latency irrelevant) and per-batch MessageDisplay are not timed
 UNTIMED = {"MessageDisplay", "PostToolUse", "PostToolUseFailure", "SubagentStart", "SubagentStop"}
@@ -3918,11 +3918,12 @@ def cmd_guard_try(args):
         return replay.cmd_mine(args, cli)
     if args.action != "try":
         raise cli.UsageError("sampo guard: the actions are try, wrong and mine")
-    key = {"Bash": "command", "NotebookEdit": "notebook_path", "NotebookRead": "notebook_path",
+    key = {"Bash": "command", "PowerShell": "command", "NotebookEdit": "notebook_path", "NotebookRead": "notebook_path",
            "ReadMcpResourceTool": "uri"}.get(args.tool, "file_path")
-    target = args.text if args.tool == "Bash" else args.path
+    is_shell = args.tool in ("Bash", "PowerShell")  # T-6018: a shell tool takes its command as the text
+    target = args.text if is_shell else args.path
     if not target:
-        raise cli.UsageError("sampo guard try needs a command" if args.tool == "Bash" else f"--tool {args.tool} needs --path")
+        raise cli.UsageError("sampo guard try needs a command" if is_shell else f"--tool {args.tool} needs --path")
     tin = {key: target}
     if args.tool in _SEARCH_TOOLS:  # T-5987: the folder a search runs in (every file in it), or the path a tool reads
         tin = {"Grep": {"pattern": "x", "path": target}, "Glob": {"pattern": "**/*", "path": target},

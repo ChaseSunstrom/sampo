@@ -31,7 +31,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Bash|Write|Edit|MultiEdit|NotebookEdit|Agent|Task|Monitor|Workflow",
+        "matcher": "Bash|Write|Edit|MultiEdit|NotebookEdit|Agent|Task|Monitor|Workflow|PowerShell",
         "hooks": [
           {
             "type": "command",
