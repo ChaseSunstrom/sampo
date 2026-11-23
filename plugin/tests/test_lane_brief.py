@@ -3,6 +3,7 @@ brief` raised ValueError for any task with a code scope. A scoped Python file pl
 gives the warning line."""
 # map-links: plugin/lib/sampo/lanes.py
 import contextlib
+import glob
 import io
 import json
 import os
@@ -13,7 +14,8 @@ import types
 import unittest
 from unittest import mock
 
-from helpers import ForemanTestCase
+from helpers import PLUGIN, ForemanTestCase, read_text
+from test_lane_land import LandCase
 
 from sampo import core as c
 from sampo import lanes
@@ -776,6 +778,72 @@ class WorkingSetRunner(ForemanTestCase):
         got, why = workset.validate(self.repo, base, {**ok, "tests": ["python3 tests/test_mod.py", "rm -rf src tests/test_mod.py"]})
         self.assertIsNone(got)
         self.assertTrue(why)
+
+
+class ReportInMessage(LandCase):
+    """T-6106: a builder's final message is its report, and the close reads its close lines from the returned text (the
+    tip commit's trailers only when the message has none). No agent file and no rendered builder brief asks for a report
+    file: the harness refuses a subagent's Write of one (T-5963; four builders lost a turn to it this evening). The
+    report.txt path that 9f4e05a92 named was never code, and no code names it now. Green on trunk when written: this
+    pins the rule, so a later edit that brings a report file back fails here."""
+
+    REPORT_FILE = re.compile(r"report\.(?:md|txt|json)\b|\.fm-scratch/report"
+                             r"|\b(?:write|save|saves)\s+(?:the\s+|your\s+|its\s+|a\s+|full\s+)?report\s+"
+                             r"(?:to|into)\b", re.I)
+
+    def test_no_agent_file_asks_for_a_report_file(self):
+        for asks in ("Write your report to .fm-scratch/report.md", "Save the full report to report.txt",
+                     "write the report into .fm-scratch/report.json"):  # the scan catches each wording (a control)
+            self.assertIsNotNone(self.REPORT_FILE.search(asks), asks)
+        self.assertIsNone(self.REPORT_FILE.search("Write no report file: the text returns to the lead"))
+        paths = sorted(glob.glob(os.path.join(PLUGIN, "agents", "fm-*.md")))
+        self.assertGreaterEqual(len(paths), 6, paths)
+        for path in paths:
+            with self.subTest(agent=os.path.basename(path)):
+                self.assertIsNone(self.REPORT_FILE.search(read_text(path)), "the final message is the report")
+
+    def test_a_rendered_builder_brief_asks_for_no_report_file(self):
+        tid = json.loads(self.fm("task", "new", "Report wording", "--type", "FEATURE", "--tier", "S",
+                                 "--ac", "red :: python3 -c 'import sys; sys.exit(3)'", "--step", "build it",
+                                 "--json").stdout)["id"]
+        r = self.fm("lane", "brief", tid, "--json", env={"FOREMAN_BRIEF_VERIFY": "on"}, check=False)
+        out = json.loads(r.stdout) if r.stdout.strip().startswith("{") else {}
+        self.assertTrue(out.get("path"), (r.stdout, r.stderr))
+        with open(out["path"], encoding="utf-8") as f:
+            text = f.read()
+        self.assertIn("## Your contract (sampo:fm-builder)", text, "the scan reads the rules a builder gets")
+        m = self.REPORT_FILE.search(text)
+        self.assertIsNone(m, m and text[max(0, m.start() - 80):m.end() + 80])
+
+    def test_no_code_names_the_report_txt_path_of_9f4e05a92(self):
+        for name in ("lanes.py", "hooks.py"):
+            with self.subTest(module=name):
+                self.assertNotIn("report.txt", read_text(os.path.join(PLUGIN, "lib", "sampo", name)))
+
+    def stop(self, tid, msg):
+        self.hook("SubagentStop", {"agent_type": "sampo:fm-builder", "agent_id": "a1b2c3d4",
+                                   "last_assistant_message": msg})
+        return self.brief(tid).section("Close fields").strip()
+
+    def test_a_returned_message_with_close_lines_and_no_trailers_has_them_read(self):
+        tid = self.lane(1, "a.txt")
+        tip = subprocess.run(["git", "-C", os.path.join(self.tmp, "lane1"), "log", "-1", "--format=%B"],
+                             capture_output=True, text=True, check=True).stdout
+        self.assertNotIn("CHANGELOG:", tip, "the close lines must come from the message, not the tip commit")
+        block = (f"CHANGELOG: Does a thing ({tid}).\nTITLE: Does a thing ({tid})\nLESSON: a rule it taught.\n"
+                 "NUMBERS: none: no metric\nDOCS: none: internal\n")
+        fields = self.stop(tid, f"branch b\nsha abc\ncriterion 1: pass\n\n{block}")
+        self.assertIn(f"CHANGELOG: Does a thing ({tid}).", fields)
+        self.assertIn(f"TITLE: Does a thing ({tid})", fields)
+        self.assertIn("LESSON: a rule it taught.", fields)
+
+    def test_a_returned_message_with_no_close_lines_closes_with_no_error(self):
+        tid = self.lane(1, "a.txt")
+        r = self.hook("SubagentStop", {"agent_type": "sampo:fm-builder", "agent_id": "a1b2c3d4",
+                                       "last_assistant_message": "branch b\nsha abc\ncriterion 1: pass\n"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+        self.assertEqual(self.brief(tid).section("Close fields").strip(), "")
 
 
 if __name__ == "__main__":
