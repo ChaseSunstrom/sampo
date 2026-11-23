@@ -1530,7 +1530,8 @@ def per_lane(p, days, now=None, lead_replies=None):
     lanes = {t: r for t, r in sorted(lanes.items()) if r}
     return {"days": days, "landed": len(landed), "git": git,
             "ledger": {"tasks": len(ledger), "events": ledger_events},
-            "lanes": lanes, "median": _medians(lanes), "unattributed": unattr}
+            "lanes": lanes, "median": _medians(lanes), "unattributed": unattr,
+            "landed_at": {t: landed[t] for t in lanes}}  # T-6060: the day a lane's dollars belong to
 
 
 def _medians(lanes):
@@ -1632,6 +1633,203 @@ def _per_lane(p, args, cli):
     return cli.out(args, data, text)
 
 
+MODEL_PRICES = os.path.join(c.PLUGIN_ROOT, "data", "model-prices.json")  # T-6060: dollars per million tokens by family
+NATIVE_REFERENCE = os.path.join(c.PLUGIN_ROOT, "data", "native-reference.json")  # the plain Claude Code arm's dollars per task
+NATIVE_FILE = "native-reference.json"  # a measured one in the project's state replaces the stored one
+NATIVE_TARGET = 0.1  # the user's goal (2026-11-22): a tenth of what plain Claude Code costs per task
+NATIVE_DAYS = 14
+
+
+def _json_file(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            got = json.load(f)
+    except (OSError, ValueError, RecursionError):
+        return None
+    return got if isinstance(got, dict) else None
+
+
+def _price_row(row):
+    """A family's row when all four token kinds are positive finite numbers, else None (a half-filled row is no price)."""
+    ok = isinstance(row, dict) and all(
+        isinstance(row.get(k), (int, float)) and not isinstance(row.get(k), bool) and 0 < row[k] < float("inf")
+        for k in PER_LANE_KINDS)
+    return {k: row[k] for k in PER_LANE_KINDS} if ok else None
+
+
+def prices():
+    """The price table: {date, source, families: {family: {input, cache_read, cache_write, output}}, highest}: only the
+    families whose four prices are all positive numbers; `highest` is the dearest of them (what a Claude model of no known
+    family is priced at), None with none. A missing or corrupt file gives no families: nothing then has a dollar figure."""
+    got = _json_file(MODEL_PRICES) or {}
+    fam = got.get("families") if isinstance(got.get("families"), dict) else {}
+    rows = {k: r for k, v in fam.items() if (r := _price_row(v))}
+    return {"date": got.get("date"), "source": got.get("source"), "families": rows,
+            "highest": max(rows, key=lambda f: sum(rows[f].values())) if rows else None}
+
+
+def model_family(model, table=None):
+    """(family, assumed): 'opus', 'sonnet' or 'haiku' for a name that says claude or anthropic (any provider prefix: "us.anthropic.
+    claude-…", "anthropic/claude-…") and a family; 'local' for any other name (a model of this machine's: zero dollars, its
+    tokens still counted); a Claude name of no known family (or none: a reply that named no model) is the table's highest-priced
+    family, assumed and flagged (an unknown model is never claimed free or cheap), 'unknown' with no table."""
+    m = str(model or "").lower()
+    if m and "claude" not in m and "anthropic" not in m and m != "<synthetic>":
+        return "local", False
+    for f in ("opus", "sonnet", "haiku"):
+        if f in m:
+            return f, False
+    return (table or prices()).get("highest") or "unknown", True
+
+
+def usd(rec, table=None):
+    """{usd, local, assumed, unpriced, tokens} of one role's share of a lane: each token kind at its model family's price,
+    the share's tokens split among its models by turns (a share that ran under two models is priced by how many turns each
+    took); a local model's turns are zero dollars, counted. `local` is True when every turn was local. A Claude family with no
+    row in the table has no price: usd is None and the family is in `unpriced` (never $0)."""
+    table = table or prices()
+    models = dict(rec.get("models") or {})
+    if (rest := (rec.get("turns") or 0) - sum(models.values())) > 1e-9:  # replies that named no model: assumed, never free
+        models[""] = rest
+    turns = sum(models.values())
+    total, local_turns, assumed, unpriced = 0.0, 0.0, [], set()
+    for model, n in models.items():
+        fam, guess = model_family(model, table)
+        if fam == "local":
+            local_turns += n
+            continue
+        if guess:
+            assumed.append(model or "(no model)")
+        if not (row := table["families"].get(fam)):
+            unpriced.add(fam)
+            continue
+        total += sum(rec.get(k, 0) * (n / turns) * row[k] for k in PER_LANE_KINDS) / 1e6
+    return {"usd": None if unpriced else round(total, 8), "local": bool(models) and local_turns == turns,
+            "assumed": sorted(set(assumed)), "unpriced": sorted(unpriced),
+            "tokens": {k: round(rec.get(k, 0)) for k in PER_LANE_KINDS}}
+
+
+def native_reference(p):
+    """{usd_per_task, n, source, date, measured} the plain Claude Code arm's dollars per solved task: the project's own
+    native-reference.json (a measured one) over the stored exam figure (plugin/data/native-reference.json: exam s8-049,
+    one task, marked unmeasured); None when neither is a positive number."""
+    for path in (os.path.join(p.dir, NATIVE_FILE), NATIVE_REFERENCE):
+        got = _json_file(path)
+        v = got.get("usd_per_task") if got else None
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 and v == v and v != float("inf"):
+            return {"usd_per_task": v, "n": got.get("n"), "source": str(got.get("source") or path)[:300],
+                    "date": got.get("date"), "measured": bool(got.get("measured"))}
+    return None
+
+
+def _med(xs):
+    return statistics.median(xs) if xs else None
+
+
+def priced_lanes(r, table=None):
+    """per_lane's result with each lane's roles priced: {task: {role: usd(rec)}}."""
+    table = table or prices()
+    return {t: {role: usd(rec, table) for role, rec in roles.items()} for t, roles in r["lanes"].items()}
+
+
+def _lane_usd(roles):
+    """A lane's dollars, its roles summed; None when any of them has no price."""
+    got = [x["usd"] for x in roles.values()]
+    return None if any(g is None for g in got) else sum(got)
+
+
+def vs_native(p, days, r=None):
+    """T-6060: dollars per landed lane by role against plain Claude Code. {days, landed, prices: {date, source}, lanes:
+    {task: {role: {usd, local, assumed, tokens}}}, median: {role: {n, usd}}, lane_usd_median (of each lane's roles summed),
+    builder_usd_median (the builder alone: a native session's proxy), reference, ratio (lane_usd_median / the
+    reference's dollars; None with none), builder_ratio, target_ratio (0.1), target_usd, landed_at, unpriced}.
+    `r` is a per_lane() result a caller already read."""
+    r = r if r is not None else per_lane(p, days)
+    table = prices()
+    lanes = priced_lanes(r, table)
+    no_price = sorted({f for roles in lanes.values() for x in roles.values() for f in x["unpriced"]})
+    # one share with no price makes every aggregate unknown: a median of the lanes that do have one is a half truth
+    med = {role: {"n": len(rows), "usd": None if no_price else _med([x["usd"] for x in rows])} for role in PER_LANE_ROLES
+           if (rows := [roles[role] for roles in lanes.values() if role in roles])}
+    ref = native_reference(p)
+    per = None if no_price else _med([_lane_usd(roles) for roles in lanes.values()])
+    builder = med.get("builder", {}).get("usd")
+    ratio = lambda v: round(v / ref["usd_per_task"], 4) if ref and v is not None else None  # noqa: E731
+    return {"days": days, "landed": r["landed"], "prices": {"date": table["date"], "source": table["source"]},
+            "lanes": lanes, "median": med, "lane_usd_median": per, "builder_usd_median": builder, "reference": ref,
+            "ratio": ratio(per), "builder_ratio": ratio(builder), "target_ratio": NATIVE_TARGET,
+            "target_usd": ref["usd_per_task"] * NATIVE_TARGET if ref else None,
+            "landed_at": r.get("landed_at", {}), "no_price": no_price, "highest": table["highest"],
+            "unpriced": sorted({m for roles in lanes.values() for x in roles.values() for m in x["assumed"]})}
+
+
+def native_series(p, days=NATIVE_DAYS, priced=None):
+    """The Board's trend: {reference, target_ratio, target_usd, days: [{day, lanes, usd, ratio}]}, one entry per day, the
+    last `days` days oldest first; a day's usd is the median dollars of the lanes that landed that day, its ratio that over
+    the reference's dollars (None on a day nothing landed, or with no reference). `priced` is a vs_native() result."""
+    v = priced if priced is not None else vs_native(p, days)
+    ref = v.get("reference") or native_reference(p)
+    by_day = collections.defaultdict(list)
+    for t, roles in v["lanes"].items():
+        day = str(v.get("landed_at", {}).get(t) or "")[:10]
+        if day:
+            by_day[day].append(_lane_usd(roles))
+    today = datetime.datetime.now(datetime.timezone.utc).date()
+    rows = []
+    for back in range(days - 1, -1, -1):
+        day = (today - datetime.timedelta(days=back)).isoformat()
+        got = by_day.get(day, [])
+        d = None if None in got else _med(got)  # a lane of that day with no price: the day has no figure
+        rows.append({"day": day, "lanes": len(by_day.get(day, [])), "usd": None if d is None else round(d, 6),
+                     "ratio": round(d / ref["usd_per_task"], 4) if d is not None and ref else None})
+    return {"reference": ref, "target_ratio": NATIVE_TARGET,
+            "target_usd": ref["usd_per_task"] * NATIVE_TARGET if ref else None, "days": rows}
+
+
+def vs_native_text(v):
+    money = lambda x: "n/a" if x is None else f"${x:.4f}" if x < 1 else f"${x:.2f}"  # noqa: E731
+    out = [f"Dollars per landed lane, last {v['days']:g} day(s): {v['landed']} lane(s) landed; each token kind (input, "
+           f"cache read, cache write, output) at its model family's price ({v['prices']['date']}), a local model at $0 with "
+           "its tokens counted"]
+    for t, roles in v["lanes"].items():
+        out.append(f"  {t}: {money(_lane_usd(roles))} = " + " · ".join(
+            f"{role} {money(x['usd'])}" + (" (local)" if x["local"] else "") for role, x in roles.items()))
+    out.append("Median per role (the lanes that have it):")
+    for role in PER_LANE_ROLES:
+        if role in ("other",) and role not in v["median"]:
+            continue
+        m = v["median"].get(role)
+        out.append(f"  {role}: " + (f"{money(m['usd'])} (n {m['n']})" if m else "none recorded"))
+    out.append("Headless children (a rival read, a card fill) are not counted yet (T-6071): the dollars above are the "
+               "lead, builder, reviewer and fixer shares")
+    out.append(f"Per lane, all roles (median): {money(v['lane_usd_median'])}; the builder alone: {money(v['builder_usd_median'])}")
+    if v["no_price"]:
+        why = ("the price table is missing, unreadable or has no usable price for any family" if not v["highest"]
+               else f"the price table has no price for {', '.join(v['no_price'])}")
+        out.append(f"No dollar figure and no ratio: {why} (plugin/data/model-prices.json); a model with no price is never counted as $0")
+        return "\n".join(out)
+    ref = v["reference"]
+    if not ref:
+        out.append("no native reference: the plain Claude Code arm's dollars per solved task is not recorded, so no ratio")
+        return "\n".join(out)
+    out.append(f"Native (plain Claude Code) reference: ${ref['usd_per_task']:.2f} per solved task, n {ref['n']}, "
+               f"{ref['date']}: {ref['source']}"
+               + ("" if ref["measured"] else " [not measured: one exam task, n 1; Claude exam runs are paused by the user, "
+                  "so no measured figure is possible now]"))
+    if v["ratio"] is not None:
+        alone = "" if v["builder_ratio"] is None else f" (builder alone {v['builder_ratio']:.2f}x)"
+        out.append(f"Ratio, Sampo per lane over native: {v['ratio']:.2f}x{alone}; "
+                   f"the 10x line is {NATIVE_TARGET:g}x = {money(v['target_usd'])} per lane: "
+                   + ("met" if v["ratio"] <= NATIVE_TARGET else f"{v['ratio'] / NATIVE_TARGET:.1f} times over it"))
+    if v["unpriced"]:
+        out.append(f"Model(s) of no known family priced as {v['highest']}, the dearest: {', '.join(v['unpriced'])}")
+    return "\n".join(out)
+
+
+def _vs_native(p, args, cli):
+    return cli.out(args, (v := vs_native(p, args.days)), vs_native_text(v))
+
+
 CPU_ORIGINS = ("builder", "land", "verify", "ship", "probe", "other")  # tests/run.py's ORIGINS, and what none of them is
 
 
@@ -1722,6 +1920,8 @@ def cmd_cost(args):
     p = cli.resolve(args)
     if getattr(args, "cpu", False):  # T-6006
         return _cpu(args, p, cli)
+    if getattr(args, "vs_native", False):  # T-6060
+        return _vs_native(p, args, cli)
     if any(getattr(args, k, False) for k in ("per_lane", "save_baseline", "compare_baseline")):  # T-5950
         args.per_lane = True  # the baseline flags imply it (the help says so)
         return _per_lane(p, args, cli)

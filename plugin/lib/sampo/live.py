@@ -42,6 +42,7 @@ from sampo import jobprog, killsafe, settingsserve
 WEB = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "web", "live"))
 CACHE_S = 2.5  # T-5549: above STREAM_S, so /api/state's one-off build is never older than a stream tick's
 SLOW_S = 30  # the stats read whole card and moon files
+NATIVE_S = 600  # the dollars-per-lane trend reads 3 weeks of transcripts and the trunk's log (T-6060)
 STREAM_S = 2  # a stream's frame every STREAM_S seconds; one build per view serves every stream of it
 FRAME_MAX_S = 30  # T-5549: a frame whose input stamp is unchanged is still rebuilt this often (git and GPU are not stamped)
 KEEP_S = 30  # T-5549: the last frame is kept on disk at most this often
@@ -542,10 +543,12 @@ def stats(p, wait=True):
                           "grid_ui": cov["ui"].get("grid", 0), "fill": smallcards.fill_pace()},  # T-3105: the fill to 30,000
                 "moons": {"candidates": st["total"], "stages": st["stages"], "pace": moonscale.pace(p)},
                 "spend": spend_today(), "bench": []}  # ponytail: the bench table is a model read away; the page shows none until a cheap one exists
-    from sampo import louhi
+    from sampo import cost, louhi
     key = ("stats", p.dir)
+    native = (lambda: cost.native_series(p, cost.NATIVE_DAYS))  # T-6060: 14 days of transcripts: never read in a page's request
     return dict(_cached(key, SLOW_S, slow) if wait else _stale(key, SLOW_S, slow, {}), closed_today=len(_closed_today(p)),
-                gap=_cached(("gap", p.dir), 30, lambda: louhi.gap_series(p)))  # T-3930: the models panel's trend
+                gap=_cached(("gap", p.dir), 30, lambda: louhi.gap_series(p)),  # T-3930: the models panel's trend
+                native=_stale(("native", p.dir), NATIVE_S, native, {}))  # background only, even for wait=True; an error there keeps the last trend (or {}) and leaves the cards and moons alone
 
 
 def board(p):

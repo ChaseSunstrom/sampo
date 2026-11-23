@@ -1,0 +1,9 @@
+{
+  "date": "2026-11-22",
+  "source": "Anthropic's published list prices, dollars per million tokens, by model family; cache_write is the 5 minute cache (the 1 hour cache costs more, and the transcripts do not split the two)",
+  "families": {
+    "opus": {"input": 5.0, "cache_read": 0.5, "cache_write": 6.25, "output": 25.0},
+    "sonnet": {"input": 3.0, "cache_read": 0.3, "cache_write": 3.75, "output": 15.0},
+    "haiku": {"input": 1.0, "cache_read": 0.1, "cache_write": 1.25, "output": 5.0}
+  }
+}

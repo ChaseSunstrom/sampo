@@ -202,6 +202,11 @@ const SampoBoard = (() => {
       gpu: s.gpu ? {name: str(gpu.name, 40), used: int(gpu.used_mb), total: int(gpu.total_mb), util: Math.min(100, int(gpu.util_pct))} : null,
       gap: Object.entries(obj(obj(s.stats).gap)).slice(0, 5).map(([name, rows]) =>  // T-3930: points behind the Claude reference
         ({name: str(name, 24), pts: arr(rows).map((r) => num(obj(r).gap, NaN)).filter(isFinite).slice(-14)})).filter((x) => x.pts.length > 0),
+      native: (() => {  // T-6060: Sampo's dollars per landed lane over plain Claude Code's, per day (NaN: nothing landed that day)
+        const n = obj(obj(s.stats).native);
+        return {pts: arr(n.days).map((r) => num(obj(r).ratio, NaN)).slice(-14), target: num(n.target_ratio, 0.1),
+          src: str(obj(n.reference).source, 60)};
+      })(),
       cpm: Math.round(calls / 5), loaded: models.filter((m) => m.loaded).length};
   }
 
@@ -1166,11 +1171,45 @@ const SampoBoard = (() => {
   const GROUP_COL = (T) => ({claude: T.orange, jeff: T.violet, ollama: T.cyan});
   DRAW.models = {  // 06: agents → the models they call, each line as thick as its calls; the GPU underneath
     base(g, d, w, h, T, mem) {
-      const pad = 14, gc = GROUP_COL(T), gh = d.gap.length ? 54 : 18, y1 = h - pad - (d.gpu ? 28 : 0) - gh;
+      const nh = 46, gapH = d.gap.length ? 54 : 18, pad = 14, gc = GROUP_COL(T), gh = gapH + nh, y1 = h - pad - (d.gpu ? 28 : 0) - gh;
       mem.L = [];
       mem.quiet = !d.links.length;
+      {  // T-6060: Sampo's dollars per landed lane over plain Claude Code's, per day: 1 is native, the dashed line is 10x cheaper
+        const nTop = h - pad - (d.gpu ? 28 : 0) - nh + 12, nBot = nTop + nh - 24, x0 = pad + 4, x1 = w - pad - 60, pts = d.native.pts;
+        const seen = pts.filter(isFinite), last = seen.length ? seen[seen.length - 1] : null;
+        txt(g, "COST VS NATIVE", pad, nTop - 4, T.orange, 7.5, "left", 600);
+        if (!seen.length) txt(g, "no landed lane priced yet", pad + 86, nTop - 4, T.dim, 7.5);
+        else {
+          const hi = Math.max(1.2, ...seen), Y = (v) => nBot - (nBot - nTop) * Math.min(v, hi) / hi;
+          g.strokeStyle = T.grid;
+          g.beginPath();
+          g.moveTo(x0, Y(1) + 0.5);
+          g.lineTo(x1, Y(1) + 0.5);
+          g.stroke();
+          g.strokeStyle = T.green;
+          g.setLineDash([3, 3]);
+          g.beginPath();
+          g.moveTo(x0, Y(d.native.target) + 0.5);
+          g.lineTo(x1, Y(d.native.target) + 0.5);
+          g.stroke();
+          g.setLineDash([]);
+          const X = (i) => (pts.length > 1 ? x0 + (x1 - x0) * i / (pts.length - 1) : x1);
+          g.strokeStyle = g.fillStyle = T.orange;
+          g.beginPath();
+          let pen = false;
+          pts.forEach((v, i) => {
+            if (!isFinite(v)) { pen = false; return; }
+            g[pen ? "lineTo" : "moveTo"](X(i), Y(v));
+            pen = true;
+          });
+          g.stroke();
+          pts.forEach((v, i) => { if (isFinite(v)) { g.beginPath(); g.arc(X(i), Y(v), 1.6, 0, TAU); g.fill(); } });
+          txt(g, `${last.toFixed(2)}x`, x1 + 6, Y(last) + 3, T.orange, 7.5);
+          txt(g, `10x ${d.native.target}x`, x1 + 6, Y(d.native.target) + 3, T.green, 7);
+        }
+      }
       {  // the frontier gap: one line per local profile, points behind Claude per run (lower is closer; below 0 beats Claude)
-        const top = h - pad - (d.gpu ? 28 : 0) - gh + 12, bot = top + Math.max(4, gh - 22), x0 = pad + 4, x1 = w - pad - 60;
+        const top = h - pad - (d.gpu ? 28 : 0) - gh + 12, bot = top + Math.max(4, gapH - 22), x0 = pad + 4, x1 = w - pad - 60;
         txt(g, "GAP TO CLAUDE", pad, top - 4, T.orange, 7.5, "left", 600);
         if (!d.gap.length) txt(g, "no gap yet: first paid reference run pending", pad + 78, top - 4, T.dim, 7.5);
         else {

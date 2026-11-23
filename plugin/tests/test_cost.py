@@ -804,6 +804,173 @@ class PerLane(HookCase):
         self.assertIn("0 lane(s) landed", proc.stdout)
 
 
+class VsNative(HookCase):
+    """T-6060: `sampo cost --vs-native`: dollars per landed lane by role (each token kind at its model family's price, a
+    local model at zero), the plain Claude Code reference with its source and n, the ratio and the 10x line."""
+
+    at, ev, reply, write, run_file, merge, stop = (PerLane.__dict__[k] for k in (
+        "at", "ev", "reply", "write", "run_file", "merge", "stop"))
+    SONNET, OPUS, HAIKU, LOCAL = "claude-sonnet-4-5", "claude-opus-4-7", "claude-haiku-4-5", "qwen3:30b"
+
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        self.cfg = os.path.join(self.tmp, "cfg")
+        self.folder = os.path.join(self.cfg, "projects", "".join(ch if ch.isalnum() else "-" for ch in self.repo))
+        os.makedirs(os.path.join(self.folder, "lead-1", "subagents"))
+        self.t0 = datetime.datetime.now(datetime.timezone.utc).timestamp() - 10 * 3600
+        self.p = self.project()
+        self.addCleanup(lambda: os.environ.pop("FOREMAN_NOW", None))
+
+    def rig(self, ref=True):
+        """Lane A (T-0001): a sonnet builder, a haiku reviewer, an opus lead. Lane B (T-0002): a LOCAL builder, a sonnet reviewer."""
+        self.ev(0, "lane_builder", "T-0001", {"path": "/x/.claude/worktrees/agent-aaa"})
+        self.ev(1, "lane_builder", "T-0002", {"path": "/x/.claude/worktrees/agent-bbb/"})
+        self.ev(1.5, "reviewer_bound", "T-0001", {"agent_id": "rrr"})
+        self.stop(2, "sampo:fm-builder", "aaa", [self.reply("m1", 100, 5000, 500, 50, self.SONNET),
+                                                  self.reply("m2", 100, 5000, 500, 50, self.SONNET)])
+        self.stop(2.5, "sampo:fm-reviewer", "rrr", [self.reply("m1", 10, 2000, 0, 5, self.HAIKU)])
+        self.stop(3.2, "sampo:fm-builder", "bbb", [self.reply("m1", 300, 9000, 800, 80, self.LOCAL)], task="T-0002")
+        self.stop(3.5, "sampo:fm-reviewer", "rrb", [self.reply("m1", 20, 4000, 0, 10, self.SONNET)], task="T-0002")
+        self.ev(3, "lane_landed", "T-0001", {"tasks": ["T-0001"]})
+        self.ev(4, "lane_landed", "T-0002", {"tasks": ["T-0002"]})
+        self.merge("Merge T-0001: lane A", 3)
+        self.merge("Merge T-0002: lane B", 4)
+        self.write(os.path.join(self.folder, "lead-1.jsonl"), [
+            self.reply(f"l{i}", 10, 1000, 100, 20, self.OPUS, self.at(h)) for i, h in enumerate((0.5, 0.6))])
+        if ref:
+            os.makedirs(self.p.dir, exist_ok=True)
+            with open(os.path.join(self.p.dir, "native-reference.json"), "w") as f:
+                json.dump({"usd_per_task": 0.01, "n": 3, "source": "exam tests, plain arm", "date": "2026-11-22",
+                           "measured": True}, f)
+
+    def vs(self, *flags):
+        return self.fm_json("cost", "--vs-native", *flags, env={"CLAUDE_CONFIG_DIR": self.cfg})
+
+    def test_vs_native_prices_each_role_per_token_kind_and_model_family(self):
+        self.rig()
+        got = self.vs()["lanes"]
+        a, b = got["T-0001"], got["T-0002"]
+        # sonnet $3 in, $0.30 read, $3.75 write, $15 out per M: 200 in, 10000 read, 1000 write, 100 out
+        self.assertAlmostEqual(a["builder"]["usd"], 0.00885, places=8)
+        # opus $5, $0.50, $6.25, $25: 20 in, 2000 read, 200 write, 40 out
+        self.assertAlmostEqual(a["lead"]["usd"], 0.00335, places=8)
+        # haiku $1, $0.10, $1.25, $5: 10 in, 2000 read, 5 out
+        self.assertAlmostEqual(a["reviewer"]["usd"], 0.000235, places=8)
+        self.assertAlmostEqual(b["reviewer"]["usd"], 0.00141, places=8)
+
+    def test_vs_native_counts_a_local_model_lane_at_zero_dollars_but_keeps_its_tokens(self):
+        self.rig()
+        got = self.vs()
+        b = got["lanes"]["T-0002"]["builder"]
+        self.assertEqual(b["usd"], 0)
+        self.assertTrue(b["local"])
+        self.assertEqual(b["tokens"]["cache_read"], 9000, "counted, not dropped")
+        self.assertFalse(got["lanes"]["T-0001"]["builder"]["local"])
+        self.assertEqual(got["median"]["builder"]["n"], 2)
+
+    def test_vs_native_prints_the_reference_with_its_source_and_n_the_ratio_and_the_10x_line(self):
+        self.rig()
+        got = self.vs()
+        ref = got["reference"]
+        self.assertEqual((ref["usd_per_task"], ref["n"], ref["source"]), (0.01, 3, "exam tests, plain arm"))
+        self.assertAlmostEqual(got["lane_usd_median"], (0.012435 + 0.00141) / 2, places=8)
+        self.assertAlmostEqual(got["ratio"], got["lane_usd_median"] / 0.01, places=4)
+        self.assertAlmostEqual(got["target_usd"], 0.001, places=8)
+        self.assertEqual(got["target_ratio"], 0.1)
+        self.assertAlmostEqual(got["builder_usd_median"], 0.00885 / 2, places=8)
+        text = self.fm("cost", "--vs-native", env={"CLAUDE_CONFIG_DIR": self.cfg}).stdout
+        for part in ("lead", "builder", "reviewer", "fixer", "exam tests, plain arm", "n 3", "Ratio", "10x"):
+            self.assertIn(part, text)
+        # the dollar figures of the synthetic lanes, not only the role names
+        for part in ("T-0001: $0.0124", "T-0002: $0.0014", "reviewer $0.0002", "(local)", "Per lane, all roles (median): $0.0069",
+                     "0.69x", "$0.0010 per lane", "6.9 times over it"):
+            self.assertIn(part, text)
+        self.assertIn("T-6071", text, "headless children (rival, cards) are not counted yet, and the view says so")
+        self.assertNotIn("rival: none recorded", text)
+
+    def test_a_missing_or_corrupt_price_table_gives_no_dollar_figure_and_no_ratio_never_met(self):
+        from sampo import cost
+        self.rig()
+        for name, body in (("missing.json", None), ("corrupt.json", "{not json"), ("empty.json", "{}"),
+                           ("noopus.json", json.dumps({"families": {"sonnet": {"input": 3, "cache_read": 0.3,
+                                                                                "cache_write": 3.75, "output": 15},
+                                                                    "haiku": {"input": 1}}}))):
+            path = os.path.join(self.tmp, name)
+            if body is not None:
+                with open(path, "w") as f:
+                    f.write(body)
+            with self.subTest(name), unittest.mock.patch.object(cost, "MODEL_PRICES", path), \
+                    unittest.mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": self.cfg}):
+                got = cost.vs_native(self.p, 14)
+                text = cost.vs_native_text(got)
+            self.assertIsNone(got["ratio"])
+            self.assertIsNone(got["lane_usd_median"])
+            self.assertIsNone(got["builder_ratio"])
+            self.assertTrue(got["no_price"], "the view says which family has no price")
+            self.assertNotIn("met", text.replace("(median)", ""))
+            self.assertIn("no price", text)
+            self.assertNotIn("lead $", text, "a Claude role with no price shows n/a, never $0")
+
+    def test_a_local_only_lane_is_zero_dollars_even_with_no_price_table(self):
+        from sampo import cost
+        rec = {"input": 300, "cache_read": 9000, "cache_write": 800, "output": 80, "turns": 1, "models": {self.LOCAL: 1}}
+        got = cost.usd(rec, {"families": {}})
+        self.assertEqual(got["usd"], 0)
+        self.assertTrue(got["local"])
+
+    def test_a_provider_prefixed_claude_id_is_claude_and_an_unknown_family_prices_at_the_highest(self):
+        from sampo import cost
+        table = cost.prices()
+        for m in ("us.anthropic.claude-sonnet-4-5-v1:0", "anthropic/claude-opus-4-7", "anthropic.claude-3-haiku"):
+            self.assertNotEqual(cost.model_family(m, table)[0], "local", m)
+        self.assertEqual(cost.model_family("us.anthropic.claude-sonnet-4-5-v1:0", table), ("sonnet", False))
+        self.assertEqual(cost.model_family("anthropic/claude-opus-4-7", table), ("opus", False))
+        self.assertEqual(cost.model_family("qwen3:30b", table), ("local", False))
+        fam, guess = cost.model_family("anthropic/claude-next-9", table)
+        self.assertEqual((fam, guess), ("opus", True), "the highest-priced family, flagged")
+        rec = {"input": 1_000_000, "cache_read": 0, "cache_write": 0, "output": 0, "turns": 1,
+               "models": {"anthropic/claude-next-9": 1}}
+        got = cost.usd(rec, table)
+        self.assertAlmostEqual(got["usd"], 5.0)
+        self.assertEqual(got["assumed"], ["anthropic/claude-next-9"])
+
+    def test_the_text_labels_the_reference_unmeasured_and_says_claude_exam_runs_are_paused(self):
+        self.rig(ref=False)
+        text = self.fm("cost", "--vs-native", env={"CLAUDE_CONFIG_DIR": self.cfg}).stdout
+        for part in ("$0.93", "n 1", "not measured", "paused"):
+            self.assertIn(part, text)
+
+    def test_the_help_says_headless_children_are_not_counted_yet(self):
+        out = self.fm("cost", "--help").stdout
+        self.assertIn("not counted yet", out.replace("\n", " ").replace("  ", " "))
+
+    def test_vs_native_with_no_reference_says_so_and_prints_no_ratio(self):
+        from sampo import cost
+        self.rig(ref=False)
+        with unittest.mock.patch.object(cost, "NATIVE_REFERENCE", os.path.join(self.tmp, "nowhere.json")):
+            with unittest.mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": self.cfg}):
+                got = cost.vs_native(self.p, 14)
+                text = cost.vs_native_text(got)
+        self.assertIsNone(got["reference"])
+        self.assertIsNone(got["ratio"])
+        self.assertIn("no native reference", text)
+        self.assertIn("lead", text, "the dollars are still shown")
+
+    def test_vs_native_with_nothing_landed_is_a_sentence_not_a_traceback(self):
+        proc = self.fm("cost", "--vs-native", env={"CLAUDE_CONFIG_DIR": os.path.join(self.tmp, "none")})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertNotIn("Traceback", proc.stderr)
+        self.assertIn("0 lane(s) landed", proc.stdout)
+
+    def test_the_stored_reference_is_the_one_exam_task_and_marked_unmeasured(self):
+        from sampo import cost
+        self.rig(ref=False)
+        ref = cost.native_reference(self.p)
+        self.assertEqual((ref["usd_per_task"], ref["n"], ref["measured"]), (0.93, 1, False))
+        self.assertIn("s8-049", ref["source"])
+
+
 class CpuOrigin(HookCase):
     """T-6006: `sampo cost --cpu` prints the CPU-seconds the test runs of the window cost, by the origin that started
     them (builder, land gate, behind verify, ship), per landed lane; each run.py appends one row to the repo's CPU log."""

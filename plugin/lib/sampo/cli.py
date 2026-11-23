@@ -10880,6 +10880,9 @@ def _build_parser(only=None):
     s.add_argument("--per-lane", action="store_true", help="per landed lane: input, cache read, cache write and output "
                    "tokens of its lead, builder, reviewer and fixer shares, a median per role, and the runs that fit "
                    "no lane (T-5950)")
+    s.add_argument("--vs-native", action="store_true", help="dollars per landed lane by role (each token kind at its model "
+                   "family's price, a local model at zero) against the plain Claude Code reference, the ratio and the 10x line; "
+                   "headless children (rivals, cards) are not counted yet (T-6071), and no table or family price means no ratio (T-6060)")
     s.add_argument("--cpu", action="store_true", help="test CPU seconds per landed lane in the window, by who started "
                    "the run (builder, land gate, behind verify, ship, probe), and what reusing a green class saved (T-6006)")
     s.add_argument("--save-baseline", action="store_true", help="save the medians per role as the baseline "

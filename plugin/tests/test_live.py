@@ -251,6 +251,94 @@ class Snapshot(ForemanTestCase):
         self.assertEqual((q["step"], q["stage"]), ("0/1", "executing"))
 
 
+class NativeRatio(ForemanTestCase):
+    """T-6060: the Board's daily trend of Sampo's dollars per landed lane against the plain Claude Code reference."""
+
+    def setUp(self):
+        super().setUp()
+        self.fm("task", "new", "Price the lanes", "--type", "FEATURE", "--tier", "S", "--ac", "it prices :: true",
+                "--step", "build it", "--focus")
+        self.p = c.find_project(self.repo)
+        live._CACHE.clear()
+        self.day = lambda back: c.iso(time.time() - back * 86400)[:10]
+
+    def lanes(self):
+        """T-0001 landed today for $0.40 and T-0002 for $0.20, T-0003 three days ago for $1.00 (reference $0.50)."""
+        sh = lambda usd: {"usd": usd, "local": False, "tokens": {}}  # noqa: E731
+        return {"days": 14, "landed": 3, "git": {}, "ledger": {}, "median": {}, "unattributed": {},
+                "lanes": {"T-0001": {"lead": sh(0.1), "builder": sh(0.3)}, "T-0002": {"builder": sh(0.2)},
+                          "T-0003": {"builder": sh(1.0)}},
+                "landed_at": {"T-0001": self.day(0) + "T01:00:00", "T-0002": self.day(0) + "T02:00:00",
+                              "T-0003": self.day(3) + "T02:00:00"}}
+
+    def series(self):
+        from sampo import cost
+        ref = {"usd_per_task": 0.5, "n": 4, "source": "tests", "date": "2026-11-22", "measured": True}
+        with mock.patch.object(cost, "native_reference", lambda p: ref):
+            return cost.native_series(self.p, 14, priced=self.lanes())
+
+    def test_native_ratio_is_one_point_per_day_over_14_days_with_the_10x_line(self):
+        got = self.series()
+        self.assertEqual(len(got["days"]), 14)
+        self.assertEqual(got["target_ratio"], 0.1)
+        self.assertAlmostEqual(got["target_usd"], 0.05)
+        today, back3 = got["days"][-1], got["days"][-4]
+        self.assertEqual((today["day"], back3["day"]), (self.day(0), self.day(3)))
+        self.assertAlmostEqual(today["ratio"], 0.3 / 0.5, places=4)  # the median of $0.40 and $0.20
+        self.assertAlmostEqual(back3["ratio"], 1.0 / 0.5, places=4)
+        self.assertEqual((today["lanes"], back3["lanes"]), (2, 1))
+        self.assertIsNone(got["days"][-2]["ratio"], "a day nothing landed is a gap, not zero")
+
+    def test_the_snapshot_carries_the_trend_in_stats_from_the_same_numbers(self):
+        from sampo import cost
+        want = self.series()
+        with mock.patch.object(cost, "native_series", lambda p, days=14, priced=None: want):
+            live.stats(self.p, wait=True)
+            for t in list(threading.enumerate()):  # the refresh runs in the background: let it finish
+                if t is not threading.current_thread() and t.name.startswith("live-"):
+                    t.join(10)
+            s = live.stats(self.p, wait=True)
+        self.assertEqual(s["native"], want)
+        json.dumps(s["native"])
+
+    def test_wait_true_never_blocks_on_the_transcript_read_either(self):
+        from sampo import cost
+        gate = threading.Event()
+        with mock.patch.object(cost, "native_series", lambda p, days=14, priced=None: gate.wait(10) or {"days": []}):
+            t0 = time.monotonic()
+            live.stats(self.p, wait=True)
+            took = time.monotonic() - t0
+            gate.set()
+        self.assertLess(took, 5)
+
+    def test_an_error_in_the_trend_leaves_the_other_panels_intact(self):
+        from sampo import cost
+        def boom(p, days=14, priced=None):
+            raise RuntimeError("transcripts unreadable")
+        with mock.patch.object(cost, "native_series", boom):
+            s = live.stats(self.p, wait=True)
+            time.sleep(0.3)
+            s = live.stats(self.p, wait=True)
+        self.assertEqual(s["native"], {})
+        self.assertIn("cards", s)
+
+    def test_the_page_never_waits_on_the_transcript_read(self):
+        from sampo import cost
+        gate = threading.Event()
+        with mock.patch.object(cost, "native_series", lambda p, days=14, priced=None: gate.wait(10) or {"days": []}):
+            t0 = time.monotonic()
+            s = live.stats(self.p, wait=False)
+            took = time.monotonic() - t0
+            gate.set()
+        self.assertLess(took, 5)
+        self.assertEqual(s["native"], {})
+
+    def test_the_board_reads_the_trend_from_stats_native(self):
+        js = open(os.path.join(c.PLUGIN_ROOT, "web", "live", "board.js")).read()
+        self.assertIn("obj(s.stats).native", js)
+        self.assertIn("target_ratio", js, "the 10x line is drawn from the same numbers")
+
+
 class JobProgress(ForemanTestCase):  # T-3044: the loops the page shows write done of total as they go
     def setUp(self):
         super().setUp()

@@ -1,0 +1,7 @@
+{
+  "usd_per_task": 0.93,
+  "n": 1,
+  "measured": false,
+  "source": "exam s8-049, the plain Claude Code arm: $0.93 per solved task (one task, so not a median: a measured one replaces it, written to the project's native-reference.json)",
+  "date": "2026-11-22"
+}
