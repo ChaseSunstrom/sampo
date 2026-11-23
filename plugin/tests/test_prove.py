@@ -1479,6 +1479,79 @@ class TaskProveRunner(ForemanTestCase):
         self.assertIn("kept at its start version: tests/run.py", r.stdout)
 
 
+class TestOnlyBaseline(ForemanTestCase):
+    """T-6108: a trunk red fixed only in its test proves. The start tree keeps its broken test (it must fail there, by
+    name) and the current tree runs the repaired one (it must pass). A test green at the start, one red by an import
+    error there, a red that names no test, and a diff that also touches code are not baseline repairs."""
+    RED = ("import unittest\n\n\nclass T(unittest.TestCase):\n    def test_app(self):\n"
+           "        self.assertEqual(open('app.txt').read().strip(), 'nwe')\n\n\nif __name__ == '__main__':\n    unittest.main()\n")
+    FIXED = RED.replace("'nwe'", "'new'")
+
+    def start(self, test_text):
+        self.fm("init")
+        write(self.repo, {"app.txt": "new\n", "test_app.py": test_text})
+        subprocess.run(["git", "-C", self.repo, "add", "-A"], check=True)
+        subprocess.run(["git", "-C", self.repo, "commit", "-qm", "base"], check=True)
+        self.fm("task", "new", "Fix the app test", "--type", "FIX", "--tier", "S", "--ac", "ok :: true",
+                "--step", "s", "--focus")
+
+    def prove(self):
+        return self.fm("task", "prove", "T-0001", "--run", "python3 test_app.py", check=False)
+
+    def test_a_baseline_red_with_a_test_only_repair_proves(self):
+        self.start(self.RED)
+        write(self.repo, {"test_app.py": self.FIXED})
+        r = self.prove()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("proved: a test-only repair of a trunk red", r.stdout)
+        from sampo import core as c
+        b = c.find_brief(c.find_project(self.repo), "T-0001")
+        self.assertTrue(any("baseline" in line for line in b.evidence()), b.evidence())
+
+    def test_a_test_green_at_the_start_is_not_proved(self):
+        self.start(self.FIXED)
+        write(self.repo, {"test_app.py": self.FIXED + "# touched\n"})
+        r = self.prove()
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("passes without the change too", r.stdout)
+
+    def test_a_baseline_red_by_an_import_error_is_not_proved(self):
+        self.start("import no_such_helper_6108\n" + self.RED)
+        write(self.repo, {"test_app.py": self.FIXED})
+        r = self.prove()
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("broke before its test failed by name", r.stdout)
+
+    def test_a_baseline_red_that_names_no_test_is_not_proved(self):
+        self.start("import sys\nsys.exit(1)\n")
+        write(self.repo, {"test_app.py": "import sys\nsys.exit(0)\n"})
+        r = self.prove()
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("broke before its test failed by name", r.stdout)
+
+    def test_a_repair_that_still_fails_here_is_not_proved(self):
+        self.start(self.RED)
+        write(self.repo, {"test_app.py": self.RED.replace("'nwe'", "'nope'")})
+        r = self.prove()
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("fails on the current tree", r.stdout)
+
+    def test_a_repair_that_drops_the_failing_test_is_not_proved(self):
+        self.start(self.RED)
+        write(self.repo, {"test_app.py": "import unittest\n\n\nclass T(unittest.TestCase):\n    def test_other(self):\n"
+                                         "        self.assertTrue(True)\n\n\nif __name__ == '__main__':\n    unittest.main()\n"})
+        r = self.prove()
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("test-only repair", r.stdout)
+
+    def test_a_diff_that_also_touches_code_is_not_a_baseline_repair(self):
+        self.start(self.RED)
+        write(self.repo, {"test_app.py": self.FIXED, "app.txt": "changed\n"})
+        r = self.prove()
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("test-only repair", r.stdout)
+
+
 REAL_STATE_CHECK = sprove._state_is_real  # before any test's setUp patches it (helpers.SampoTestCase)
 APP = "def used():\n    return 1\n\n\ndef unused():\n    return 2\n"
 SUITE = "import unittest\nimport app\n\n\nclass T(unittest.TestCase):\n    def test_used(self):\n        self.assertEqual(app.used(), 1)\n"

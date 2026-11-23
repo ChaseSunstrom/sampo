@@ -3785,6 +3785,26 @@ def _ran_in(p, root):
     return f" · ran in lane {os.path.relpath(root, p.root)}" if root != p.root else ""
 
 
+def _repair_touches_red(start, now, output):
+    """T-6108: a baseline repair must change a test the start tree's red names: a unittest `FAIL: m (C)` or `ERROR: m (C)`
+    line of the red output whose `def m` in a changed file has a different body now (a deleted or renamed one doesn't
+    count). Output with no such line (another runner's format) isn't judged here: the named-module check stands alone."""
+    import ast
+    named = re.findall(r"(?m)^(?:FAIL|ERROR): (\w+) \(", output or "")
+    if not named:
+        return True
+
+    def defs(text):
+        try:
+            tree = ast.parse(text)
+        except (SyntaxError, ValueError, RecursionError, MemoryError):  # unreadable: no defs, so no test counts as touched
+            return {}
+        return {n.name: ast.dump(n) for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    before = {f: defs(s) for f, s in start.items()}
+    after = {f: defs(s) for f, s in now.items()}
+    return any(m in after[f] and after[f][m] != before[f].get(m) for f in after for m in named)
+
+
 def _has_testcase(root, f):
     """T-3808: whether a changed file holds a unittest TestCase class (a class statement, not a mention; read bounded)."""
     try:
@@ -3823,6 +3843,8 @@ def task_prove(p, args):
     # T-3808: a tests-folder file is a test when it's named as one or holds a TestCase; run.py and forkcli.py are code
     tests = [f for f in changed if f in named or _has_testcase(root, f)]
     code = [f for f in changed if f not in tests]
+    other = [f for f in smap.changed(root, base) if f not in tests]  # T-6108: any changed file that is not a test (code, docs, deletions)
+    baseline = False  # T-6108: set in the start-tree copy below, once the start tree is there to ask
     kept = []  # T-3107: no changed test file: the check runs on the start tree as it was; T-1919: tests-folder files the start tree has, not test-named (run.py): code under change stays there
     subjects = {re.sub(r"^test_|_test$|\.(?:test|spec)$", "", os.path.splitext(os.path.basename(f))[0]) for f in named}
     src = "\n".join(pathlib.Path(root, f).read_text(errors="replace") for f in named)
@@ -3838,7 +3860,12 @@ def task_prove(p, args):
         if not os.path.isdir(wt):
             raise UsageError(f"git worktree add at {base[:12]} failed")
         try:
+            # T-6108: a test-only diff whose tests all exist at the start tree repairs the trunk's own red: the start tree
+            # keeps its broken tests (they must fail there, by name), so the repaired copy can't turn the red run green
+            baseline = bool(tests) and not other and all(os.path.isfile(os.path.join(wt, f)) for f in tests)
             for f in tests:
+                if baseline:
+                    continue
                 if f not in named and os.path.lexists(os.path.join(wt, f)) and not needed(f):
                     kept.append(f)
                     continue
@@ -3862,6 +3889,7 @@ def task_prove(p, args):
                     raise UsageError(f"{b.id}: --run names {new[0]}, absent at the start tree {base[:12]}: it would "
                                      f"fail there as 'not found', not as the bug")
             red = c.run_command(wt, args.run, args.timeout, pipefail=True)
+            start_src = {f: pathlib.Path(wt, f).read_text(errors="replace") for f in tests} if baseline else {}
         finally:
             c._git(p.root, "worktree", "remove", "--force", wt, timeout=60)
             c._git(p.root, "worktree", "prune", timeout=30)
@@ -3869,27 +3897,42 @@ def task_prove(p, args):
     tree = c.worktree_id(root)
 
     def record(b):
-        b.add_evidence(args.run, c.run_result(*red) + " (start tree + this task's tests)", step=args.step, ac=args.ac,
+        b.add_evidence(args.run, c.run_result(*red) + (" (start tree: baseline, a test-only repair of a trunk red)" if baseline
+                                                      else " (start tree + this task's tests)"), step=args.step, ac=args.ac,
                        tree=tree, ran=True)
         b.add_evidence(args.run, c.run_result(*green), step=args.step, ac=args.ac, tree=tree, ran=True)
-    mutate(p, b.id, record, "prove", {"cmd": args.run[:200], "red": red[0], "green": green[0],
+    mutate(p, b.id, record, "prove", {"cmd": args.run[:200], "red": red[0], "green": green[0], "baseline": baseline,
                                       "tests": [f for f in tests if f not in kept][:10], "kept": kept[:10]})
     real = bool(red[0])
     if red[0] and not tests:  # T-3107: no changed test to anchor on: the red must be a test failing, not a broken run
         real = bool(c.failing_tests(red[1])) or (red[0] not in (5, 124, 126, 127) and not re.search(
             r"ModuleNotFoundError|ImportError|No such file|no tests ran|no test matches", red[1] or ""))
+    if baseline and red[0]:  # T-6108: the trunk's red is a test of the changed files that fails by name, and the repair changed it
+        stems = {os.path.splitext(os.path.basename(f))[0] for f in tests}
+        now_src = {f: pathlib.Path(root, f).read_text(errors="replace") for f in tests}
+        real = any(c.test_module(n) in stems for n in c.failing_tests(red[1])) and _repair_touches_red(start_src, now_src, red[1])
     proved = real and not green[0]
-    verdict = ("proved: fails without the change, passes with it" if proved else
-               "not proved: the start-tree run broke before any test failed (import error, missing file, no tests):\n"
-               + "\n".join((red[1] or "").strip().splitlines()[-5:]) if red[0] and not real else
-               "not proved: it passes without the change too, so it doesn't test the fix" if not red[0] else
-               "not proved: it fails on the current tree")
+    tail = "\n".join((red[1] or "").strip().splitlines()[-5:])
+    if proved and baseline:
+        verdict = ("proved: a test-only repair of a trunk red: the start tree's test fails there by name, the repaired one "
+                   "passes here (it shows the test was broken, not that a code fix works)")
+    elif proved:
+        verdict = "proved: fails without the change, passes with it"
+    elif red[0] and not real and baseline:
+        verdict = ("not proved: the start-tree run broke before its test failed by name (import error, missing file, or no "
+                   "failing test named for the changed test file):\n" + tail)
+    elif red[0] and not real:
+        verdict = "not proved: the start-tree run broke before any test failed (import error, missing file, no tests):\n" + tail
+    elif not red[0]:
+        verdict = "not proved: it passes without the change too, so it doesn't test the fix"
+    else:
+        verdict = "not proved: it fails on the current tree"
     if kept:  # T-1845 named them after a vacuous red run; T-1919 leaves them at the start
         shown, left = c.more(kept, 5)
         verdict += (f"\n  kept at its start version: {', '.join(shown + [left] if left else shown)} (in a tests folder and on the start tree, "
                     f"not test-named: code under change). If the new tests need its new code, record the red run in "
                     f"the Regression test section instead")
-    out(args, {"proved": proved, "red": red[0], "green": green[0], "tests": tests, "kept": kept},
+    out(args, {"proved": proved, "red": red[0], "green": green[0], "tests": tests, "kept": kept, "baseline": baseline},
         f"{b.id}: {verdict}\n  start tree + {len([f for f in tests if f not in kept])} test file(s): {c.run_result(*red)}"
         f"\n  current tree: "
         f"{c.run_result(*green)}")
