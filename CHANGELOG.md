@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- sampo lane brief holds a new lane when the weekly usage cap is projected within the p90 brief-to-merge time plus 30 min, so no lane is stranded mid-flight (T-6221).
 - Pilot fix rounds start in a lane under ~/.claude even when a sibling entry has a glob character in its name, denied by a widened pattern (T-6229).
 - A train's gate also runs the test modules that import, mock.patch or name a file the batch changes, so trunk red is stopped at the train (T-6160).
 - Trunk's four red test classes are green again, each fixed at its cause: the lazy pattern, the file-map lines, the doc example, and the reviewed home reads (T-5553).
