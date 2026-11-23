@@ -48,7 +48,7 @@ class _Stubbed(ForemanTestCase):
         with open(reply, "w") as f:
             f.write(REPLY)
         self.env = {"PATH": bindir + os.pathsep + os.environ["PATH"], "STUB_LOG": self.log, "STUB_REPLY": reply,
-                    "CLAUDE_CONFIG_DIR": os.path.join(self.tmp, "cc")}
+                    "CLAUDE_CONFIG_DIR": self.safe_config_dir()}  # T-6020: not under /tmp
         self.fm("init")
 
     def calls(self):

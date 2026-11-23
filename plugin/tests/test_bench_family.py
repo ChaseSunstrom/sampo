@@ -74,7 +74,7 @@ class _Bench(ForemanTestCase):
         os.chmod(os.path.join(bindir, "claude"), 0o755)
         self.log = os.path.join(self.tmp, "stub.log")
         self.env = {"PATH": bindir + os.pathsep + os.environ["PATH"], "STUB_LOG": self.log,
-                    "CLAUDE_CONFIG_DIR": os.path.join(self.tmp, "cc0")}  # T-3364: where the stub keeps its transcript
+                    "CLAUDE_CONFIG_DIR": self.safe_config_dir()}  # T-3364: where the stub keeps its transcript; T-6020: not under /tmp
         self.fm("init")
         self.fm("claude-bench", "on")  # T-5584: a benchmark calls a Claude model only once the user turns it on
         self.write("calc.py", "def double(x):\n    return x + x + 1\n")
@@ -194,7 +194,7 @@ class Duel(_Bench):
     def setUp(self):
         super().setUp()
         rival = os.path.join(self.tmp, "rival")  # T-0294: a duel's rival must be an installed plugin
-        cc = os.path.join(self.tmp, "cc")
+        cc = self.safe_config_dir()  # T-6020: not under /tmp
         os.makedirs(os.path.join(cc, "plugins"))
         with open(os.path.join(cc, "plugins", "installed_plugins.json"), "w") as f:
             json.dump({"version": 2, "plugins": {"rival@m": [{"scope": "user", "installPath": rival}]}}, f)
@@ -442,7 +442,7 @@ class Repro(_Bench):  # T-1261
 
 class SoakStorm(_Bench):  # T-1259
     def test_a_soak_storm_compacts_early_and_a_sweep_runs_once_per_window(self):
-        cfg = os.path.join(self.tmp, "cfg")
+        cfg = self.safe_config_dir()  # T-6020: not under /tmp
         env = dict(self.env, CLAUDE_CONFIG_DIR=cfg)
         self.fm("bench", "build", env=env)
         res = json.loads(self.fm("bench", "soak", "--ids", self.calc, "--turns", "1", "--compact-at", "20000",
@@ -466,7 +466,7 @@ class Marathon(_Bench):
     """T-1242: a long session measured as one: both arms forced to compact early, the compactions counted."""
 
     def test_a_duel_can_force_early_compaction_on_both_arms_and_counts_it(self):
-        cfg = os.path.join(self.tmp, "cfg")
+        cfg = self.safe_config_dir()  # T-6020: not under /tmp
         env = dict(self.env, CLAUDE_CONFIG_DIR=cfg)
         self.fm("bench", "build", env=env)
         res = json.loads(self.fm("bench", "duel", "--vs", "none", "--compact-at", "40000", "--max", "1", "--json",
@@ -494,7 +494,7 @@ class Marathon(_Bench):
         self.assertIn("titles", x["diag"])
 
     def test_a_run_can_force_early_compaction_too(self):
-        cfg = os.path.join(self.tmp, "cfg")
+        cfg = self.safe_config_dir()  # T-6020: not under /tmp
         env = dict(self.env, CLAUDE_CONFIG_DIR=cfg)
         self.fm("bench", "build", env=env)
         res = json.loads(self.fm("bench", "run", "--compact-at", "30000", "--max", "1", "--json", env=env,

@@ -40,7 +40,7 @@ class Confirm(ForemanTestCase):
         with open(os.path.join(bindir, "claude"), "w") as f:
             f.write(STUB)
         os.chmod(os.path.join(bindir, "claude"), 0o755)
-        cc = os.path.join(self.tmp, "cc")
+        cc = self.safe_config_dir()  # T-6020: a config folder under /tmp is refused by the child launcher
         env = {"PATH": bindir + os.pathsep + os.environ["PATH"], "STUB_LOG": os.path.join(self.tmp, "log"),
                "CLAUDE_CONFIG_DIR": cc, "FOREMAN_SESSION_ID": "new-session"}
         self.fm("init")

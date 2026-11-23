@@ -431,7 +431,7 @@ class Due(ForemanTestCase):
 
 class LensSkills(ForemanTestCase):
     def test_audit_prep_names_installed_review_skills_per_lens(self):
-        cc = os.path.join(self.tmp, "cc")
+        cc = self.safe_config_dir()
         path = os.path.join(cc, "plugins", "cache", "m", "sec", "1.0")
         os.makedirs(os.path.join(path, "skills", "sec-scan"))
         with open(os.path.join(path, "skills", "sec-scan", "SKILL.md"), "w") as f:

@@ -48,7 +48,7 @@ class Evolve(ForemanTestCase):
         os.chmod(os.path.join(bindir, "claude"), 0o755)
         self.log = os.path.join(self.tmp, "stub.log")
         self.env = {"PATH": bindir + os.pathsep + os.environ["PATH"], "STUB_LOG": self.log,
-                    "CLAUDE_CONFIG_DIR": os.path.join(self.tmp, "cc")}  # T-3364: where the stub keeps its transcript
+                    "CLAUDE_CONFIG_DIR": self.safe_config_dir()}  # T-3364: where the stub keeps its transcript; T-6020: not under /tmp
         # a Foreman repo to evolve: a plugin that ships the guard, an fm that runs the real one, one skill
         self.frepo = os.path.join(self.tmp, "fake-foreman")
         files = {"plugin/.claude-plugin/plugin.json": '{"name": "foreman"}',
@@ -66,6 +66,7 @@ class Evolve(ForemanTestCase):
         git(self.frepo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "fake foreman")
         # one bench case in the project, as in test_bench
         self.fm("init")
+        self.fm("claude-bench", "on")  # T-5584: a bench turn calls a Claude model only once the user turns it on
         self.write("calc.py", "def double(x):\n    return x + x + 1\n")
         git(self.repo, "add", "calc.py")
         git(self.repo, "commit", "-qm", "calc")

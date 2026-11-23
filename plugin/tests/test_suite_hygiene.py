@@ -166,6 +166,131 @@ class DeadFunctions(unittest.TestCase):
         self.assertEqual(dead(tmp, collections.Counter(["used", "used", "_gone"])), ["fmx.py:4 _gone"])
 
 
+def config_dir_sets(src):
+    """T-6020: [(line, value node or None)] for each place a module SETS CLAUDE_CONFIG_DIR: a dict key, a keyword argument,
+    an item store, setdefault/putenv/setenv, through a name bound to the variable's name too (reads, pops and the name
+    inside a stub script's text are not sets). None: the value is not in sight."""
+    tree = ast.parse(src)
+    alias = {t.id for n in ast.walk(tree) if isinstance(n, ast.Assign) and isinstance(n.value, ast.Constant)
+             and n.value.value == "CLAUDE_CONFIG_DIR" for t in n.targets if isinstance(t, ast.Name)}
+
+    def is_key(k):
+        return isinstance(k, ast.Constant) and k.value == "CLAUDE_CONFIG_DIR" or isinstance(k, ast.Name) and k.id in alias
+    found = []
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Dict):
+            found += [(k.lineno, v) for k, v in zip(n.keys, n.values) if is_key(k)]
+        elif isinstance(n, ast.keyword) and n.arg == "CLAUDE_CONFIG_DIR":
+            found.append((n.value.lineno, n.value))
+        elif isinstance(n, ast.Assign):
+            found += [(t.lineno, n.value) for t in n.targets if isinstance(t, ast.Subscript) and is_key(t.slice)]
+        elif isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr in ("setdefault", "putenv", "setenv") \
+                and n.args and is_key(n.args[0]):
+            found.append((n.lineno, n.args[1] if len(n.args) > 1 else None))
+    return sorted(found, key=lambda x: x[0])
+
+
+def unsafe_config_dir_sets(src):
+    """T-6020: the lines of each set of CLAUDE_CONFIG_DIR whose value is not a safe_config_dir() call, or a name or
+    attribute that the module binds only from one (a parameter or any other binding is unsafe)."""
+    tree = ast.parse(src)
+
+    def safe_call(v):
+        return isinstance(v, ast.Call) and isinstance(v.func, ast.Attribute) and v.func.attr == "safe_config_dir"
+
+    bound = {}  # "name" or ".attr" -> every value assigned to it in the module
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Assign):
+            for t in n.targets:
+                key = t.id if isinstance(t, ast.Name) else "." + t.attr if isinstance(t, ast.Attribute) else None
+                if key:
+                    bound.setdefault(key, []).append(n.value)
+
+    def safe(v):
+        if safe_call(v):
+            return True
+        key = v.id if isinstance(v, ast.Name) else "." + v.attr if isinstance(v, ast.Attribute) else None
+        return bool(key) and bool(bound.get(key)) and all(safe_call(x) for x in bound[key])
+    return [line for line, v in config_dir_sets(src) if not safe(v)]
+
+
+# T-6020: files that set CLAUDE_CONFIG_DIR to a folder under the test's own /tmp, each with why no headless child
+# (ideas.child_env, which refuses a folder under one others can write: T-5706) starts from it. Found by tracing
+# config_dir_problem over every module that sets it: the ones that did reach a launcher use safe_config_dir. A file that
+# names a launcher entry point must say in its reason what is mocked; test_never_launches_is_checked holds the rest.
+_COST = "`fm cost` and the usage readers parse transcripts under it; no child"
+_FOLDER = "`fm` commands read or write plugins, settings or skills under it; no child"
+_HOOKS = "a hook or a lane-side `fm` command reads its transcripts and settings; no child"
+CONFIG_DIR_NEVER_LAUNCHES = {
+    "helpers.py": "the default env of fm(): a folder that does not exist, so no real account is read; a test that starts a "
+                  "child passes its own env",
+    "test_child_launch.py": "it tests the refusal itself, with the ancestor check mocked where a child must start",
+    "test_rename_scan.py": "scans the tree for renamed words with the variable set; starts nothing",
+    "test_ideas.py": "`fm cost --sessions` reads transcripts under it; its run_child is mocked (mock.patch.object)",
+    "test_bench.py": "the stub claude keeps its transcript there; bench runs the claude itself, not through ideas.child_env",
+    "test_claude.py": "the stub claude keeps its transcript there; the argv tests run it directly",
+    "test_perf_cost.py": _COST, "test_cost.py": _COST, "test_cost_forecast.py": _COST, "test_cost_sources.py": _COST,
+    "test_speed.py": _COST, "test_usage_age.py": _COST, "test_economics.py": _COST, "test_flow_report.py": _COST,
+    "test_clock_windows.py": _COST, "test_steermeter.py": _COST, "test_friction.py": _COST, "test_repeats.py": _COST,
+    "test_followups.py": _COST, "test_concerns.py": _COST, "test_concerns_order.py": _COST,
+    "test_concerns_repeat.py": _COST, "test_round_f.py": _COST, "test_skillroute.py": _COST, "test_lib_hostile.py": _COST,
+    "test_tool_proof.py": _COST, "test_ahead.py": _COST,
+    "test_plugins.py": _FOLDER, "test_settings.py": _FOLDER, "test_update.py": _FOLDER, "test_library.py": _FOLDER,
+    "test_supply_delta.py": _FOLDER, "test_which.py": _FOLDER, "test_migrate.py": _FOLDER, "test_targets.py": _FOLDER,
+    "test_sandbox.py": _FOLDER, "test_profile.py": _FOLDER, "test_code_skills.py": _FOLDER, "test_doctor.py": _FOLDER,
+    "test_private_terms.py": _FOLDER,
+    "test_hooks.py": _HOOKS, "test_long.py": _HOOKS, "test_keeper.py": _HOOKS, "test_guard_cases.py": _HOOKS,
+    "test_guard_mine.py": _HOOKS, "test_pilotsig.py": _HOOKS, "test_flywheel.py": _HOOKS, "test_tool_queue.py": _HOOKS,
+}
+LAUNCHER_NAMES = re.compile(r"\b(run_child|run_children|child_env|fresh_cwd)\b")
+
+
+class ConfigDir(unittest.TestCase):
+    def test_the_walker_finds_each_way_a_test_sets_it(self):
+        src = ("import os\nf({'CLAUDE_CONFIG_DIR': 1})\nf(CLAUDE_CONFIG_DIR=2)\nos.environ['CLAUDE_CONFIG_DIR'] = 3\n"
+               "os.environ.pop('CLAUDE_CONFIG_DIR')\nx = os.environ['CLAUDE_CONFIG_DIR']\ns = 'CLAUDE_CONFIG_DIR=4'\n")
+        self.assertEqual([line for line, _ in config_dir_sets(src)], [2, 3, 4])
+
+    def test_the_walker_judges_each_set_by_itself(self):
+        # T-6020 review: one safe_config_dir() call in a file must not hide another set that is under /tmp
+        src = ("x = self.safe_config_dir()\nf({'CLAUDE_CONFIG_DIR': x})\nf(CLAUDE_CONFIG_DIR=os.path.join(t, 'cc'))\n"
+               "self.cc = self.safe_config_dir()\nf(CLAUDE_CONFIG_DIR=self.cc)\nf(CLAUDE_CONFIG_DIR=self.safe_config_dir())\n"
+               "y = self.safe_config_dir()\ny = os.path.join(t, 'y')\nf(CLAUDE_CONFIG_DIR=y)\nf(CLAUDE_CONFIG_DIR=param)\n")
+        self.assertEqual(unsafe_config_dir_sets(src), [3, 9, 10])
+
+    def test_the_walker_finds_the_other_spellings(self):
+        src = ("import os\nos.environ.setdefault('CLAUDE_CONFIG_DIR', a)\nos.putenv('CLAUDE_CONFIG_DIR', b)\n"
+               "K = 'CLAUDE_CONFIG_DIR'\nf({K: c})\nos.environ[K] = d\nmp.setenv('CLAUDE_CONFIG_DIR', e)\n"
+               "os.environ.update(CLAUDE_CONFIG_DIR=g)\nos.environ.update({'CLAUDE_CONFIG_DIR': h})\n")
+        self.assertEqual(unsafe_config_dir_sets(src), [2, 3, 5, 6, 7, 8, 9])
+
+    def test_every_test_that_sets_it_uses_safe_config_dir_or_never_starts_a_child(self):
+        # T-6020: T-5706's launcher refuses a CLAUDE_CONFIG_DIR under a folder others can write, which /tmp is: a test that
+        # reaches ideas.run_child or run_children (a stub claude) with one under self.tmp reads "didn't run", red
+        bad, listed = [], set()
+        for path in sorted(glob.glob(os.path.join(HERE, "**", "*.py"), recursive=True)):
+            name = os.path.relpath(path, HERE)
+            with open(path, encoding="utf-8") as f:
+                unsafe = unsafe_config_dir_sets(f.read())
+            if unsafe and name in CONFIG_DIR_NEVER_LAUNCHES:
+                listed.add(name)
+            elif unsafe:
+                bad.append(f"{name}: lines {unsafe}")
+        self.assertEqual(bad, [], "set CLAUDE_CONFIG_DIR from self.safe_config_dir() (helpers), or list the file in "
+                                 "CONFIG_DIR_NEVER_LAUNCHES with why no headless child starts from it")
+        self.assertEqual(sorted(set(CONFIG_DIR_NEVER_LAUNCHES) - listed), [],
+                         "listed but every set of it is now safe_config_dir (or the file is gone): drop it")
+
+    def test_never_launches_is_checked(self):
+        # T-6020 review: a reason is text; this holds what can be held: a file that names a launcher entry point says what
+        # is mocked, and no reason is empty
+        for name, why in CONFIG_DIR_NEVER_LAUNCHES.items():
+            self.assertGreater(len(why), 30, name)
+            with open(os.path.join(HERE, name), encoding="utf-8") as f:
+                if LAUNCHER_NAMES.search(f.read()):
+                    self.assertIn("mock", why, f"{name} names a launcher entry point: its reason must say what is mocked")
+
+
 class UndefinedNames(unittest.TestCase):
     def test_every_name_read_is_bound(self):
         # T-0698: renames left _new_context_file, _UPDATE, _veto_note, _mask_substs and _IFS_USE read but bound
