@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- sampo capture --parent T-X (or a discovered/followup capture naming T-X) while T-X's lane has not landed folds into that lane's next fix round and resume brief instead of filing a task; --new files one; sampo triggers --follow-share reports the share of landed lanes with a follow-up task within 48 h (T-6065).
 - The lane pilot takes its review lenses and model from the depth map, keeps each parsed verdict by diff, lens, model, prompt version and brief so an unchanged re-review launches nothing, and after a fix round lets clean lenses read only the fix (T-6044).
 - An S lane now builds on the local model first and goes to a Claude builder, with the local diff and notes, only when the local run abstains, fails its verify, times out or touches a sensitive path; landings are recorded per lane class and a class under 30% of 5 tries routes to Claude (T-6061).
 - Audit prep puts every kill, killpg, pkill, rm -rf, rmtree and git reset --hard with a computed or global target into the reviewer brief, in Python, shell and Sampo's mapped languages, flags a test that stubs Popen with no int pid, and makes the adversary lens clear each line (T-5902).
