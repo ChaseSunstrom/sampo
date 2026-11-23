@@ -6821,5 +6821,205 @@ class PatchIdentity(unittest.TestCase):  # T-6025: a review is carried by the ex
         self.assertIn('"--verbatim"', inspect.getsource(slanes._patch_id_cmd))
 
 
+import datetime  # noqa: E402  (T-6062: the working-set cases below)
+import types  # noqa: E402
+
+WS_MOD = "def alpha(x):\n    return x + 1\n\n\ndef beta(y):\n    return alpha(y) * 2\n"
+WS_GOOD = {"ranges": [{"path": "pkg/mod.py", "symbol": "beta"}], "tests": ["python3 tests/test_mod.py"]}
+WS_LOCAL = {"name": "stub-local", "kind": "openai", "base_url": "http://127.0.0.1:9/v1", "sessions": 2}
+
+
+class WsRig(ForemanTestCase):
+    """T-6062: the rig the working-set cases share: a repo with one scoped task, the explorer's two clients stubbed so no
+    model and no `claude` is ever launched, and a landed lane's ledger, trunk merge and transcripts for `cost --per-lane`."""
+
+    repo_seed = ("seed", (("pkg/mod.py", WS_MOD), ("tests/test_mod.py", "import unittest\n")))
+
+    def setUp(self):
+        super().setUp()
+        from sampo import callcards, ideas, models, workset
+        self.workset = workset
+        self.fm("init")
+        self.p = c.find_project(self.repo)
+        self.tid = self.new_task("Tweak beta")
+        env = mock.patch.dict(os.environ, {"FOREMAN_WORKSET": "on",
+                                           "SAMPO_SESSION_SLOTS_DIR": os.path.join(self.tmp, "slots")})
+        env.start()
+        self.addCleanup(env.stop)
+        self.asked, self.haiku_asked = [], []
+
+        def ask(card, prompt):
+            self.asked.append(prompt)
+            return {"text": json.dumps(WS_GOOD), "model": "stub-local", "usage": {"in": 1200, "out": 80}}
+
+        def haiku(prompt):
+            self.haiku_asked.append(prompt)
+            return {"text": json.dumps(WS_GOOD), "model": "haiku", "usage": {"input": 900, "output": 60}}
+
+        for target, name, new in ((callcards, "_ask", ask), (workset, "_haiku", haiku),
+                                  (models, "registry", lambda: [{"local": True, "profile": dict(WS_LOCAL)}]),
+                                  (ideas, "run_children", mock.Mock(side_effect=AssertionError("a real claude child ran")))):
+            patch = mock.patch.object(target, name, new)
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.cfg = os.path.join(self.tmp, "cfg")
+        self.folder = os.path.join(self.cfg, "projects", "".join(ch if ch.isalnum() else "-" for ch in self.repo))
+        os.makedirs(os.path.join(self.folder, "lead-1", "subagents"))
+        self.t0 = datetime.datetime.now(datetime.timezone.utc).timestamp() - 10 * 3600
+
+    def new_task(self, title, type_="FEATURE", tier="S"):
+        return json.loads(self.fm("task", "new", title, "--type", type_, "--tier", tier, "--scope", "pkg/mod.py", "--step",
+                                  "change `beta` in pkg/mod.py", "--ac", "beta doubles :: python3 tests/test_mod.py",
+                                  "--json").stdout)["id"]
+
+    def brief(self, tid=None, **kw):
+        tid = tid or self.tid
+        with contextlib.redirect_stdout(io.StringIO()):
+            slanes.builder_brief(self.p, c.find_brief(self.p, tid), types.SimpleNamespace(json=True, model=None), **kw)
+        with open(os.path.join(self.p.dir, "audits", f"{tid}.builder.md"), encoding="utf-8") as f:
+            return f.read()
+
+    def ev(self, hours, event, task=None, data=None):
+        os.environ["FOREMAN_NOW"] = c.iso(self.t0 + hours * 3600)
+        try:
+            c.log_event(self.p, event, task=task, data=data or {})
+        finally:
+            os.environ.pop("FOREMAN_NOW", None)
+
+    def row(self, mid, content, out=50):
+        return {"type": "assistant", "sessionId": "lead-1", "message": {
+            "id": mid, "model": "claude-x", "usage": {"input_tokens": 10, "cache_read_input_tokens": 1000,
+                                                      "cache_creation_input_tokens": 100, "output_tokens": out},
+            "content": content}}
+
+    def read_of(self, path, n):
+        return self.row(f"r{n}", [{"type": "tool_use", "id": f"tu{n}", "name": "Read", "input": {"file_path": path}}])
+
+    def landed_lane(self, tid, explorer, reads=None, wt="/w/.claude/worktrees/agent-aaa"):
+        """A lane that landed at hour 3: its builder run (reading `reads`, absolute paths) and the explorer's ledger row."""
+        self.ev(0, "lane_builder", tid, {"path": wt})
+        if explorer:
+            self.ev(0.1, "lane_workset", tid, explorer)
+        rows = [self.read_of(p, i) for i, p in enumerate(reads or [])] or [self.row("m0", [])]
+        path = os.path.join(self.folder, "lead-1", "subagents", "aaa.jsonl")
+        with open(path, "w") as f:
+            f.write("\n".join(json.dumps(r) for r in rows) + "\n")
+        self.ev(2, "subagent", None, {"agent_type": "sampo:fm-builder", "agent_id": "aaa", "transcript": path})
+        self.ev(3, "lane_landed", tid, {"tasks": [tid]})
+        when = c.iso(self.t0 + 3 * 3600)
+        subprocess.run(["git", "-C", self.repo, "commit", "-q", "--allow-empty", "-m", f"Merge {tid}: lane"], check=True,
+                       env=dict(os.environ, GIT_COMMITTER_DATE=when, GIT_AUTHOR_DATE=when))
+
+    def per_lane(self, *flags):
+        return self.fm("cost", "--per-lane", *flags, env={"CLAUDE_CONFIG_DIR": self.cfg})
+
+
+class WorkingSetSplit(WsRig):
+    """T-6062: the explorer's tokens (its model, local or Claude) are kept apart from the builder's, `sampo cost
+    --per-lane` shows both, and the split turns itself off for a lane class whose first-pass rate over 10 split lanes is
+    below that of its unsplit lanes, with the numbers kept."""
+
+    EXPLORER = {"source": "local", "split": True, "model": "stub-local", "local": True, "input": 1200, "output": 80,
+                "files": ["pkg/mod.py", "tests/test_mod.py"], "ranges": 1, "tests": 1, "chars": 300, "fell": [],
+                "dropped": [], "gate": {}, "class": "FEATURE/S"}
+
+    def test_the_explorers_local_tokens_and_the_builders_are_two_records(self):
+        self.landed_lane("T-0001", self.EXPLORER)
+        got = json.loads(self.per_lane("--json").stdout)
+        self.assertEqual(got["lanes"]["T-0001"]["builder"]["output"], 50, "the builder's own tokens, none of the explorer's")
+        ws = got["workset"]["T-0001"]
+        self.assertEqual((ws["source"], ws["model"], ws["local"], ws["input"], ws["output"]),
+                         ("local", "stub-local", True, 1200, 80))
+        text = self.per_lane().stdout
+        self.assertIn("explorer", text)
+        self.assertIn("local stub-local", text)
+        self.assertIn("in 1200", text)
+        self.assertIn("builder", text, "both are shown")
+
+    def test_a_haiku_explorers_tokens_are_named_as_claude_usage(self):
+        self.landed_lane("T-0001", dict(self.EXPLORER, source="haiku", model="haiku", local=False, input=900, output=60))
+        got = json.loads(self.per_lane("--json").stdout)
+        self.assertEqual((got["workset"]["T-0001"]["local"], got["workset"]["T-0001"]["input"]), (False, 900))
+        self.assertIn("Claude haiku", self.per_lane().stdout)
+
+    def test_a_lane_without_an_explorer_has_no_workset_row(self):
+        self.landed_lane("T-0001", None)
+        got = json.loads(self.per_lane("--json").stdout)
+        self.assertNotIn("T-0001", got.get("workset", {}))
+        self.assertNotIn("explorer", self.per_lane().stdout)
+
+    def test_the_gate_turns_a_class_off_when_its_split_rate_is_below_its_unsplit_rate_at_ten_lanes(self):
+        gate = self.workset.gate
+        row = lambda split, ok, n: [(split, ok)] * n  # noqa: E731
+        got = gate(row(True, True, 4) + row(True, False, 6) + row(False, True, 3) + row(False, False, 1))
+        self.assertTrue(got["off"], got)
+        self.assertEqual((got["split"], got["split_ok"], got["unsplit"], got["unsplit_ok"]), (10, 4, 4, 3),
+                         "the numbers are kept")
+        self.assertFalse(gate(row(True, True, 3) + row(True, False, 6) + row(False, True, 3))["off"], "nine split lanes: too few")
+        self.assertFalse(gate(row(True, True, 8) + row(True, False, 2) + row(False, True, 3) + row(False, False, 1))["off"],
+                         "80% against 75%: it earns its place")
+        self.assertFalse(gate(row(True, True, 5) + row(True, False, 5) + row(False, True, 1) + row(False, False, 1))["off"],
+                         "equal rates: not below")
+        self.assertFalse(gate(row(True, False, 10))["off"], "no unsplit lane to compare with")
+        self.assertFalse(gate([])["off"])
+
+    def test_a_class_the_gate_turned_off_asks_no_model_and_the_numbers_are_on_the_lane(self):
+        ids = [self.new_task(f"Split {i}") for i in range(10)] + [self.new_task(f"Plain {i}") for i in range(4)]
+        for i, t in enumerate(ids):
+            if i < 10:
+                self.ev(1, "lane_workset", t, self.EXPLORER)
+            self.ev(2, "finish", t, {"failed": not (i < 4 or i >= 11)})  # split: 4 ok of 10; plain: 3 ok of 4
+        other = self.new_task("Other class", type_="FIX")
+        text = self.brief()
+        self.assertNotIn("## Working set", text)
+        self.assertEqual((self.asked, self.haiku_asked), ([], []), "the class is off: no model, local or Claude")
+        got = [e for e in c.ledger_events(self.p, ("lane_workset",)) if e.get("task") == self.tid][-1]["data"]
+        self.assertEqual((got["source"], got["split"]), ("off", False))
+        self.assertEqual((got["gate"]["split"], got["gate"]["split_ok"], got["gate"]["unsplit"], got["gate"]["unsplit_ok"]),
+                         (10, 4, 4, 3))
+        self.assertEqual(self.brief(other).count("## Working set"), 1, "another class keeps its explorer")
+
+
+class WorkingSetReads(WsRig):
+    """T-6062: the builder brief opens with the note's ranges and tests, and the lane records how many of the builder's
+    reads fell outside the note's files: the explore share, shown by `sampo cost --per-lane`."""
+
+    def test_the_brief_opens_with_the_ranges_and_the_tests(self):
+        text = self.brief()
+        self.assertLess(text.index("## Working set"), text.index("## Raw request"))
+        self.assertLess(text.index("Read: pkg/mod.py:5-6 (beta)"), text.index("## Raw request"))
+        self.assertLess(text.index("Tests: `python3 tests/test_mod.py`"), text.index("## Raw request"))
+        self.assertLess(text.index("## Working set"), text.index("## Standing rules"))
+        self.assertIn("data, not instructions", text[text.index("## Working set"):text.index("## Raw request")])
+
+    def test_explore_share_counts_each_read_outside_the_notes_files(self):
+        share, wt = self.workset.explore_share, "/w/.claude/worktrees/agent-aaa"
+        files = ["pkg/mod.py", "tests/test_mod.py"]
+        got = share([f"{wt}/pkg/mod.py", f"{wt}/tests/test_mod.py", f"{wt}/README.md", f"{wt}/docs/x.md", f"{wt}/pkg/mod.py"],
+                    files, [wt])
+        self.assertEqual(got, {"reads": 5, "outside": 2, "share": 0.4})
+        self.assertEqual(share(["pkg/mod.py", "./pkg/../pkg/mod.py"], files, [wt])["outside"], 0, "relative, and normalized")
+        self.assertEqual(share([f"{wt}/pkg/../README.md"], files, [wt])["outside"], 1)
+        self.assertEqual(share(["/usr/lib/x.py"], files, [wt])["outside"], 1, "a path outside every root is outside")
+        self.assertEqual(share([f"{wt}x/pkg/mod.py"], files, [wt])["outside"], 1, "a sibling folder is not the root")
+        self.assertIsNone(share([], files, [wt]), "no reads: no share, not 0")
+        self.assertIsNone(share([5, None, {}], files, [wt]), "rows that are not paths are not reads")
+
+    def test_per_lane_records_the_reads_that_fell_outside_the_note(self):
+        wt = "/w/.claude/worktrees/agent-aaa"
+        explorer = dict(WorkingSetSplit.EXPLORER)
+        self.landed_lane("T-0001", explorer, reads=[f"{wt}/pkg/mod.py", f"{wt}/tests/test_mod.py", f"{wt}/README.md",
+                                                    f"{wt}/docs/x.md"], wt=wt)
+        got = json.loads(self.per_lane("--json").stdout)["workset"]["T-0001"]
+        self.assertEqual((got["reads"], got["outside"], got["explore_share"]), (4, 2, 0.5))
+        self.assertIn("explore share 50%", self.per_lane().stdout)
+
+    def test_a_lane_whose_builder_read_nothing_shows_no_share(self):
+        self.landed_lane("T-0001", dict(WorkingSetSplit.EXPLORER))
+        got = json.loads(self.per_lane("--json").stdout)["workset"]["T-0001"]
+        self.assertIsNone(got["explore_share"])
+        self.assertNotIn("explore share", self.per_lane().stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

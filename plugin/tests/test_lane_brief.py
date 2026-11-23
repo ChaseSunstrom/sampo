@@ -522,5 +522,209 @@ class SplitScriptQuoting(ForemanTestCase):
         self.assertFalse(os.path.exists(os.path.join(other, "audits", "T-9001.split.sh")))
 
 
+MOD_PY = ("def alpha(x):\n    return x + 1\n\n\ndef beta(y):\n    return alpha(y) * 2\n\n\nclass Gamma:\n"
+          "    def run(self):\n        return beta(1)\n")
+TEST_MOD_PY = "import unittest\n\n\nclass T(unittest.TestCase):\n    def test_beta(self):\n        self.assertEqual(1, 1)\n"
+LOCAL_STUB = {"name": "stub-local", "kind": "openai", "base_url": "http://127.0.0.1:9/v1", "sessions": 2}
+
+
+class WorkingSet(ForemanTestCase):
+    """T-6062: `sampo lane brief` has a cheap explorer write a working-set note (files, symbols with line ranges, tests):
+    the local model first (one of its session slots), Haiku when the endpoint is down or out of slots, a static note
+    last. Every path, symbol and test is checked against the base before the note is embedded at the start of the
+    builder brief; a note that fails is left out, never repaired and never replaced."""
+
+    repo_seed = ("seed", (("pkg/mod.py", MOD_PY), ("tests/test_mod.py", TEST_MOD_PY)))
+    GOOD = {"ranges": [{"path": "pkg/mod.py", "symbol": "beta"}], "tests": ["python3 tests/test_mod.py"]}
+    DOWN = ValueError("no local model answered: connection refused")
+
+    def setUp(self):
+        super().setUp()
+        from sampo import callcards, ideas, louhi, models, workset
+        self.workset = workset
+        self.fm("init")
+        self.tid = json.loads(self.fm("task", "new", "Tweak beta", "--type", "FEATURE", "--tier", "S", "--scope",
+                                      "pkg/mod.py", "--step", "change `beta` in pkg/mod.py", "--ac",
+                                      "beta doubles :: python3 tests/test_mod.py", "--json").stdout)["id"]
+        self.p = c.find_project(self.repo)
+        env = mock.patch.dict(os.environ, {"FOREMAN_WORKSET": "on",
+                                           "SAMPO_SESSION_SLOTS_DIR": os.path.join(self.tmp, "slots")})
+        env.start()
+        self.addCleanup(env.stop)
+        self.prompts, self.local = [], dict(self.GOOD)  # self.local: the dict the stub model answers, or an exception
+        self.haiku = {"text": json.dumps(self.GOOD), "model": "haiku", "usage": {"input": 900, "output": 60}}
+        self.haiku_calls = []
+
+        def ask(card, prompt):
+            self.prompts.append(prompt)
+            if isinstance(self.local, BaseException):
+                raise self.local
+            text = self.local if isinstance(self.local, str) else json.dumps(self.local)
+            return {"text": text, "model": "stub-local", "usage": {"in": 1200, "out": 80}}
+
+        def haiku(prompt):
+            self.haiku_calls.append(prompt)
+            if isinstance(self.haiku, BaseException):
+                raise self.haiku
+            return self.haiku
+
+        for target, name, new in ((callcards, "_ask", ask), (workset, "_haiku", haiku),
+                                  (models, "registry", lambda: [{"local": True, "profile": dict(LOCAL_STUB)}]),
+                                  (ideas, "run_children", mock.Mock(side_effect=AssertionError("a real claude child ran")))):
+            patch = mock.patch.object(target, name, new)
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def brief(self, **kw):
+        with contextlib.redirect_stdout(io.StringIO()):
+            lanes.builder_brief(self.p, c.find_brief(self.p, self.tid), types.SimpleNamespace(json=True, model=None), **kw)
+        with open(os.path.join(self.p.dir, "audits", f"{self.tid}.builder.md"), encoding="utf-8") as f:
+            return f.read()
+
+    def meta(self):  # the lane's record is its `lane_workset` ledger event (a brief's front matter holds flat text only)
+        return self.event()
+
+    def event(self):
+        got = [e for e in c.ledger_events(self.p, ("lane_workset",)) if e.get("task") == self.tid]
+        return got[-1]["data"] if got else None
+
+    def base(self):
+        return subprocess.run(["git", "-C", self.repo, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+
+    def test_a_local_note_is_validated_and_embedded_before_the_task_text(self):
+        text = self.brief()
+        self.assertIn("## Working set", text)
+        self.assertLess(text.index("## Working set"), text.index("## Raw request"), "the note opens the brief")
+        note = text[text.index("## Working set"):text.index("## Raw request")]
+        self.assertIn("Read: pkg/mod.py:5-6 (beta)", note, "the range comes from the file at base, not from the model")
+        self.assertIn("python3 tests/test_mod.py", note)
+        self.assertEqual(self.haiku_calls, [], "the local model answered: no Claude call")
+        self.assertEqual(len(self.prompts), 1)
+        self.assertIn("Tweak beta", self.prompts[0])
+        m = self.meta()
+        self.assertEqual((m["source"], m["model"], m["local"], m["split"]), ("local", "stub-local", True, True))
+        e = self.event()
+        self.assertEqual((e["input"], e["output"], e["local"], e["source"]), (1200, 80, True, "local"))
+        self.assertEqual(e["files"], ["pkg/mod.py", "tests/test_mod.py"])
+
+    def test_the_endpoint_down_falls_back_to_haiku(self):
+        self.local = self.DOWN
+        text = self.brief()
+        self.assertEqual(len(self.haiku_calls), 1)
+        self.assertIn("## Working set", text)
+        self.assertIn("Read: pkg/mod.py:5-6 (beta)", text)
+        m = self.meta()
+        self.assertEqual((m["source"], m["model"], m["local"]), ("haiku", "haiku", False))
+        self.assertEqual((m["input"], m["output"]), (900, 60))
+        self.assertIn("connection refused", " ".join(self.event()["fell"]))
+
+    def test_out_of_session_slots_falls_back_to_haiku_without_asking_the_endpoint(self):
+        from sampo import louhi
+
+        @contextlib.contextmanager
+        def full(prof, wait=0):
+            yield {"held": False, "waited": 0.0, "gated": True}
+
+        with mock.patch.object(louhi, "_session_slot", full):
+            text = self.brief()
+        self.assertEqual(self.prompts, [], "no slot, no call")
+        self.assertEqual(len(self.haiku_calls), 1)
+        self.assertIn("## Working set", text)
+        self.assertEqual(self.meta()["source"], "haiku")
+        self.assertIn("slot", " ".join(self.event()["fell"]))
+
+    def test_both_down_falls_back_to_a_static_note_of_the_criteria_symbols(self):
+        self.local, self.haiku = self.DOWN, ValueError("claude is not on PATH")
+        text = self.brief()
+        note = text[text.index("## Working set"):text.index("## Raw request")]
+        self.assertIn("Read: pkg/mod.py:5-6 (beta)", note, "the symbol the step names, found by grep")
+        self.assertIn("python3 tests/test_mod.py", note, "the test the criterion's verify names")
+        m = self.meta()
+        self.assertEqual((m["source"], m["model"], m["input"], m["output"]), ("static", "", 0, 0))
+        self.assertTrue(m["split"])
+
+    def test_an_invalid_note_is_dropped_not_repaired_not_replaced(self):
+        self.local = {"ranges": [{"path": "pkg/ghost.py", "symbol": "beta"}], "tests": ["python3 tests/test_mod.py"]}
+        text = self.brief()
+        self.assertNotIn("## Working set", text)
+        self.assertNotIn("ghost", text)
+        self.assertEqual(self.haiku_calls, [], "a model that answered wrongly is not asked again")
+        m = self.meta()
+        self.assertEqual((m["source"], m["split"]), ("dropped", False))
+        self.assertEqual((m["input"], m["output"]), (1200, 80), "the spent tokens are kept")
+        self.assertIn("pkg/ghost.py", " ".join(self.event()["dropped"]))
+
+    def test_validate_checks_every_path_symbol_and_test_mechanically(self):
+        ws, base = self.workset, self.base()
+        got, why = ws.validate(self.repo, base, self.GOOD)
+        self.assertEqual(why, "")
+        self.assertEqual(got["ranges"], [("pkg/mod.py", 5, 6, "beta")])
+        self.assertEqual(got["tests"], ["python3 tests/test_mod.py"])
+        self.assertEqual(got["files"], ["pkg/mod.py", "tests/test_mod.py"])
+        one = lambda r=None, t=None: {"ranges": r if r is not None else self.GOOD["ranges"],  # noqa: E731
+                                      "tests": t if t is not None else self.GOOD["tests"]}
+        bad = {
+            "a path the base lacks": one([{"path": "pkg/ghost.py", "symbol": "beta"}]),
+            "a path out of the tree": one([{"path": "../etc/passwd", "symbol": "beta"}]),
+            "a symbol the file lacks": one([{"path": "pkg/mod.py", "symbol": "nope"}]),
+            "a test that names no test file": one(t=["python3 pkg/mod.py"]),
+            "a test with a second command": one(t=["python3 tests/test_mod.py; touch PWN_WS"]),
+            "a test with a substitution": one(t=["python3 tests/test_mod.py $(touch PWN_WS)"]),
+            "a test with a pipe": one(t=["python3 tests/test_mod.py | tee x"]),
+            "an unbalanced quote": one(t=["python3 tests/test_mod.py -k 'a"]),
+            "a test too long": one(t=["python3 tests/test_mod.py " + "-k x " * 100]),
+            "a note with nothing in it": {"ranges": [], "tests": []},
+            "ranges that are not a list": {"ranges": "pkg/mod.py", "tests": []},
+            "a range that is a string": {"ranges": ["pkg/mod.py:5-6"], "tests": []},
+            "a symbol that is a number": one([{"path": "pkg/mod.py", "symbol": 5}]),
+            "not an object": ["pkg/mod.py"],
+            "too many ranges": one([{"path": "pkg/mod.py", "symbol": "beta"}] * (ws.RANGES_MAX + 1)),
+        }
+        for name, doc in bad.items():
+            with self.subTest(name):
+                got, why = ws.validate(self.repo, base, doc)
+                self.assertIsNone(got)
+                self.assertTrue(why and "\n" not in why, why)
+        got, why = ws.validate(self.repo, base, {"ranges": [{"path": "pkg/mod.py", "symbol": "beta", "start": 1, "end": 999}],
+                                                   "tests": []})
+        self.assertEqual(got["ranges"], [("pkg/mod.py", 5, 6, "beta")], "a range the model wrote is never trusted")
+
+    def test_a_reply_that_is_not_json_is_dropped(self):
+        self.local = "Sure! Here is the working set: pkg/mod.py"
+        self.assertNotIn("## Working set", self.brief())
+        self.assertEqual(self.meta()["source"], "dropped")
+
+    def test_the_note_stays_within_its_token_budget(self):
+        self.assertLessEqual(self.workset.NOTE_MAX, 12000, "3k tokens is about 12k bytes")
+        many = {"ranges": [{"path": "pkg/mod.py", "symbol": s} for s in ("alpha", "beta", "Gamma", "run")] * 3,
+                "tests": ["python3 tests/test_mod.py -k " + "x" * 300]}
+        self.local = many
+        text = self.brief()
+        note = text[text.index("## Working set"):text.index("## Raw request")]
+        self.assertLessEqual(len(note.encode()), self.workset.NOTE_MAX)
+
+    def test_a_resume_asks_no_model_and_writes_no_note(self):
+        text = self.brief(resume_branch="lane/x")
+        self.assertEqual((self.prompts, self.haiku_calls), ([], []))
+        self.assertNotIn("## Working set", text)
+        self.assertIsNone(self.meta())
+
+    def test_switched_off_asks_no_model_and_writes_no_note(self):
+        with mock.patch.dict(os.environ, {"FOREMAN_WORKSET": "off"}):
+            text = self.brief()
+        self.assertEqual((self.prompts, self.haiku_calls), ([], []))
+        self.assertNotIn("## Working set", text)
+        self.assertIsNone(self.meta())
+
+    def test_a_sensitive_project_never_reaches_haiku(self):
+        meta = c.read_meta(self.p)
+        c.write_meta(self.p, {**meta, "sensitive": True})
+        self.local = self.DOWN
+        text = self.brief()
+        self.assertEqual(self.haiku_calls, [], "its code stays off the cloud")
+        self.assertIn("## Working set", text)
+        self.assertEqual(self.meta()["source"], "static")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -396,7 +396,8 @@ class SampoTestCase(unittest.TestCase):
                                                      "FOREMAN_UI_CACHE_S", "FOREMAN_DISK_FREE",
                                                      "FOREMAN_NO_LEFTOVER_SCAN", "FOREMAN_NO_COVERED",
                                                      "FOREMAN_PROCESS_TIER", "FOREMAN_BRIEF_VERIFY",
-                                                     "FOREMAN_BRIEF_VERIFY_S", "FOREMAN_BRIEF_SWEEP_S")}
+                                                     "FOREMAN_BRIEF_VERIFY_S", "FOREMAN_BRIEF_SWEEP_S",
+                                                     "FOREMAN_WORKSET")}
         if not again:
             self._env = env
         # T-4198: registered first, so it runs last: unittest runs tearDown, then the addCleanup functions last added
@@ -416,6 +417,9 @@ class SampoTestCase(unittest.TestCase):
         os.environ["FOREMAN_BRIEF_VERIFY"] = "off"
         os.environ.pop("FOREMAN_BRIEF_VERIFY_S", None)
         os.environ.pop("FOREMAN_BRIEF_SWEEP_S", None)
+        # T-6062: a brief asks the local model for a working-set note: the older tests mean a brief with no explorer in it,
+        # so it is off (test_lane_brief.WorkingSet and test_lanes.WsRig turn it on, with both clients stubbed)
+        os.environ["FOREMAN_WORKSET"] = "off"
         # T-4288: no "Already covered?" note on task new and capture (test_nudges.Covered turns it on): its cache check
         # stats every file of the package, so 630 classes that only made a task depended on all 168 and re-ran on any edit
         os.environ["FOREMAN_NO_COVERED"] = "1"

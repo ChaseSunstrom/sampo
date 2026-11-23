@@ -1513,6 +1513,32 @@ def _replies(path, base=None):
         return None
 
 
+def _reads(path, base):
+    """[file_path] of the Read tool calls in one transcript (a call once per tool_use id), from the same safe file _replies
+    reads; None when it is not under `base`, is over PER_LANE_MAX_BYTES or can't be read."""
+    real = _safe(path, base)
+    if real is None:
+        return None
+    seen = {}
+    try:
+        with open(real, encoding="utf-8", errors="replace") as f:
+            for n, line in enumerate(f):
+                if '"Read"' not in line:
+                    continue
+                try:
+                    e = json.loads(line)
+                except ValueError:
+                    continue
+                m = e.get("message") if isinstance(e, dict) and e.get("type") == "assistant" else None
+                for blk in (m.get("content") if isinstance(m, dict) and isinstance(m.get("content"), list) else ()):
+                    if isinstance(blk, dict) and blk.get("type") == "tool_use" and blk.get("name") == "Read" \
+                            and isinstance(blk.get("input"), dict) and isinstance(blk["input"].get("file_path"), str):
+                        seen[blk.get("id") or (n, len(seen))] = blk["input"]["file_path"]
+    except (OSError, ValueError):
+        return None
+    return list(seen.values())
+
+
 def lead_reply(path, e, since):
     """(key, (ts, usage, model)) when the transcript entry `e` of file `path` is one of the lead's own replies on or after
     `since` (a subagent's file, a non-reply, and an older one are not), else None. The key is the message id: one reply
@@ -1555,13 +1581,19 @@ def per_lane(p, days, now=None, lead_replies=None):
     `[(ts, usage, model)]` that `lead_replies()` returns, trimmed here to the window; None reads them itself."""
     since = _since(days + PER_LANE_LOOKBACK_DAYS)
     floor = _since(days)
-    kinds = ("lane_landed", "lane_new", "lane_builder", "focus", "builder_mark", "subagent", "reviewer_bound")
+    kinds = ("lane_landed", "lane_new", "lane_builder", "focus", "builder_mark", "subagent", "reviewer_bound",
+             "lane_workset")
     events = [e for e in c.ledger_events(p, kinds, since=since) if isinstance(e, dict)]
     root = c.main_worktree(p.root) or p.root  # the lead's transcripts and the trunk are the main checkout's, not a lane's
     ledger, ledger_events, start, bound, began = {}, 0, {}, {}, set()
+    explorer, reads = {}, {}  # T-6062: each lane's last `lane_workset` event, and its builders' Read paths
     for e in events:
         ts, d, kind = str(e.get("ts") or "")[:19], e.get("data") if isinstance(e.get("data"), dict) else {}, e.get("event")
         tids = _tids(e.get("task"))
+        if kind == "lane_workset":  # the explorer's own record: it neither starts a lane nor binds a run
+            for t in tids:
+                explorer[t] = d
+            continue
         if kind == "lane_landed":
             for t in tids:
                 if ts >= floor:
@@ -1619,6 +1651,8 @@ def per_lane(p, days, now=None, lead_replies=None):
                 rec = lanes[t].setdefault(role, _share_new())
                 for usage, model in replies:
                     _share_add(rec, usage, model, 1 / len(mine))
+                if role == "builder" and t in explorer:  # T-6062: the files it read, against the note's
+                    reads.setdefault(t, []).extend(_reads(path, base) or [])
         elif str(e.get("ts") or "")[:19] >= floor or not tids:  # before the window, a run with a task is that lane's
             rec = _share_new()
             for usage, model in replies or ():
@@ -1637,9 +1671,11 @@ def per_lane(p, days, now=None, lead_replies=None):
         if not open_ and ts[:19] >= floor:
             _share_add(unattr["lead"], usage, model)
     lanes = {t: r for t, r in sorted(lanes.items()) if r}
+    from sampo import workset  # T-6062: the explorer's tokens and the explore share, apart from the roles' above
+    ws = {t: w for t in lanes if (w := workset.row(explorer.get(t), reads.get(t)))}
     return {"days": days, "landed": len(landed), "git": git,
             "ledger": {"tasks": len(ledger), "events": ledger_events},
-            "lanes": lanes, "median": _medians(lanes), "unattributed": unattr,
+            "lanes": lanes, "median": _medians(lanes), "unattributed": unattr, "workset": ws,
             "landed_at": {t: landed[t] for t in lanes}}  # T-6060: the day a lane's dollars belong to
 
 
@@ -1676,6 +1712,9 @@ def _per_lane_text(r, base=None):
         out.append(f"  {t} (≈ {_human(sum(equiv(s) for s in roles.values()))}):")
         out += [f"    {role}: {fmt(roles[role])} · ≈ {_human(equiv(roles[role]))}"
                 for role in PER_LANE_ROLES if role in roles]
+        if t in r.get("workset", {}):  # T-6062: the explorer's own line, never added into the builder's
+            from sampo import workset
+            out.append(workset.line(r["workset"][t]))
     if r["median"]:
         out.append("Median per role over the lanes that have it:")
         out += [f"  {role} (n {m['n']}): {fmt(m)} · ≈ {_human(m['equiv'])}" for role, m in r["median"].items()]

@@ -334,6 +334,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmwhich` (T-1699: `sampo which TASK`, the skills, playbooks and commands that… [→ files-lib-8](docs/map/files-lib-8.md)
 - `fmwired` (T-5016: `sampo wired`, the public functions no verb or hook reaches, as file:line rows, from a static… [→ files-lib-8](docs/map/files-lib-8.md)
 - `fmworkflowlint` (T-2564, `sampo/workflowlint.py`): a local actionlint with no install and no network… [→ files-lib-5](docs/map/files-lib-5.md)
+- `fmworkset` (T-6062: `sampo/workset.py`, the builder's explore/edit split: `sampo lane brief` has a cheap explorer write a working-set note (files, symbols with line ranges, tests) that opens the builder brief… [→ files-lib-8](docs/map/files-lib-8.md)
 - `fmworks` (T-3106: `sampo works check FILE...`: each SVG sanitised, rendered headless in light… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmworksgrow` (T-3110: `sampo works grow --grid works --target N`: a type x subject x style x technique grid… [→ files-lib-4](docs/map/files-lib-4.md)
 
