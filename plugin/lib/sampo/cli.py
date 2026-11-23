@@ -13088,6 +13088,8 @@ def _build_parser(only=None):
                                                       "pilot: every returned lane with no reviewed tip (T-5706)")
     s.add_argument("--dry", action="store_true", help="pilot: print each lane's plan (lenses, model) or why it would stop, "
                                                       "and run no reviewer and no accept (T-5706)")
+    s.add_argument("--retry", action="store_true", help="pilot ID: clear one lane's pilot stamp so the next sweep retries "
+                                                        "it, and log it (T-6226)")
     s.add_argument("--max", type=int, default=None, metavar="N", help="pilot --all: at most N returned lanes this run "
                                                                        "(T-5706)")
     s.add_argument("--audit", nargs=3, action="append", metavar=("LENS", "HOW", "RESULT"),

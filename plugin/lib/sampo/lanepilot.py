@@ -26,6 +26,7 @@ import stat
 import subprocess
 import sys
 import time
+import types
 
 from sampo import budget
 from sampo import contract
@@ -1440,6 +1441,23 @@ def _fix_refusal(p, spent=()):
 
 
 ASIDE = "pilot_tips"  # <project dir>/pilot_tips/<task id>: the tip a paid fix left, written without the project lock
+SWEEP_DIR = "lane-pilot-sweep"  # T-6226: <project dir>/lane-pilot-sweep/.lock: held by one `lane pilot --all` run at a time
+_DIGEST = None  # T-6226: the sha256 of this module's bytes, read once per process
+
+
+def _code_digest():
+    """T-6226: a short digest of the pilot code that stamps a tip; a stamp from other code is retried after an exception."""
+    global _DIGEST
+    if _DIGEST is None:
+        try:
+            h = hashlib.sha256()
+            for f in (__file__, os.path.join(os.path.dirname(__file__), "pilotsig.py")):  # T-6226: a pilotsig change starts a sweep too
+                with open(f, "rb") as src:
+                    h.update(src.read())
+            _DIGEST = h.hexdigest()[:12]
+        except OSError:
+            return "unreadable"  # fails closed: matches no stamp, and is not cached, so a later read can succeed
+    return _DIGEST
 
 
 def _aside_path(p, tid):
@@ -1447,24 +1465,82 @@ def _aside_path(p, tid):
 
 
 def _stamp_aside(p, tid, tip):
-    """Write the tip out of band (an atomic file, no project lock); an error is dropped: the brief's own stamp follows."""
+    """Write the tip and the pilot code's digest out of band (an atomic file, no project lock); an error is dropped: the
+    brief's own stamp follows."""
     try:
-        c.write_atomic(_aside_path(p, tid), tip + "\n")
+        c.write_atomic(_aside_path(p, tid), f"{tip} {_code_digest()}\n")
     except OSError:
         pass
 
 
 def _stamped(p, b):
-    """The lane tips the pilot already spent its rounds on: the brief's pilot_tip and the out-of-band stamp."""
-    tips = {b.meta.get("pilot_tip")}
+    """The lane tips the pilot already spent its rounds on: the brief's pilot_tip and the out-of-band stamp. T-6226: a
+    stamp made under other pilot code is not spent when the lane's last pilot outcome was an exception, so the next run
+    retries that tip once (a stamp the pilot's own bug caused must not hold the lane until its builder commits again)."""
+    cur, failed = _code_digest(), b.meta.get("pilot_outcome") == "exception"
+    return {tip for tip, code in _stamp_pairs(p, b) if tip and not (failed and code != cur)}
+
+
+def _stamp_pairs(p, b):
+    """T-6226: the (tip, pilot code) pairs the lane carries: the brief's stamp and the out-of-band one."""
+    stamps = [(b.meta.get("pilot_tip"), b.meta.get("pilot_code") or "")]
     try:
         with open(_aside_path(p, b.id)) as f:
-            tips.add(f.read().strip())
+            parts = f.read().split()
+        if parts:
+            stamps.append((parts[0], parts[1] if len(parts) > 1 else ""))
     except OSError:
         pass
-    tips.discard("")
-    tips.discard(None)
-    return tips
+    return stamps
+
+
+def _spend_retry(p, b, tip):
+    """T-6226: a retry of `tip` under other pilot code spends it before the run starts: both stamps are rewritten to the
+    current digest, so a run that crashes later never leaves a stamp that the next sweep retries again."""
+    from sampo import cli
+    cur = _code_digest()
+    if b.meta.get("pilot_outcome") != "exception" or not any(t == tip and code != cur for t, code in _stamp_pairs(p, b)):
+        return
+
+    def put(x):
+        if x.meta.get("pilot_tip") == tip:
+            x.meta["pilot_code"] = cur
+    pairs = _stamp_pairs(p, b)
+    if len(pairs) > 1 and pairs[1][0] == tip:  # the out-of-band stamp holds this tip: rewrite it under the current code
+        _stamp_aside(p, b.id, tip)
+    cli.mutate(p, b.id, put, "pilot_retry_spent", {"tip": tip[:12], "code": cur})
+
+
+def _record_outcome(p, tid, outcome):
+    """T-6226: the brief's pilot_outcome is the outcome of the last pilot run here (the sweep records it too, not only
+    pilotsig's settle)."""
+    from sampo import cli
+
+    def put(x):
+        x.meta["pilot_outcome"] = str(outcome)[:20]
+    cli.mutate(p, tid, put, "pilot_outcome", {"outcome": str(outcome)[:20]})
+
+
+def _retry(p, tid):
+    """T-6226: `sampo lane pilot ID --retry`: clear one lane's stamp (the brief's and the out-of-band one) and log it, so
+    the next sweep reviews that tip again. Runs nothing itself."""
+    from sampo import cli
+    if not re.fullmatch(r"T-\d+", tid or ""):  # T-6226: the id names a file under pilot_tips, so only a task id gets through
+        raise cli.UsageError(f"fm lane pilot --retry takes a task id (T-n), not {tid!r}")
+    cli.need_brief(p, tid)  # the task must exist before anything is removed
+
+    def clear(x):
+        x.meta.pop("pilot_tip", None)
+        x.meta.pop("pilot_code", None)
+    d = os.path.realpath(os.path.join(p.dir, ASIDE))
+    path = os.path.join(d, tid)
+    if os.path.islink(path):  # a symlink is never followed or removed: its target is not the pilot's file
+        raise c.PolicyError(f"{tid}: its pilot stamp is a symlink, left as it is")
+    if os.path.realpath(os.path.dirname(path)) == d:
+        with contextlib.suppress(OSError):
+            os.remove(path)
+    cli.mutate(p, tid, clear, "pilot_retry", {"by": "sampo lane pilot --retry"})
+    print(f"{tid}: the pilot's stamp is cleared; the next sweep reviews it again")
 
 
 def _hand_back(p, b, tip, asked_at, stuck, fixes, why, done, exc=False, tainted=False, clean=()):
@@ -1478,6 +1554,7 @@ def _hand_back(p, b, tip, asked_at, stuck, fixes, why, done, exc=False, tainted=
 
     def mark(x):
         x.meta["pilot_tip"] = tip
+        x.meta["pilot_code"] = _code_digest()  # T-6226: the pilot code this stamp ran under
         x.meta["pilot_ok"] = list(clean)  # T-6044: the lenses clean at their tip ("lens:tip"): the next run reads only their fix
         if asked:
             x.meta["changes_asked"] = "lane-pilot"
@@ -1542,6 +1619,7 @@ def pilot(p, tid, main):
     why = _busy(gate, p, b, main)
     if why:
         return done("exception", why)
+    _spend_retry(p, b, train._lane_tip(main, b))  # T-6226: a retry spends its tip before any paid step runs
     fixes, note, rounds, spent = 0, "", fix_rounds(), []  # spent: USD of each fix round so far
     while True:
         _reexec_if_code_changed(p)  # T-6169: a round that begins after a module changed re-execs (the ledger keeps the lane)
@@ -1565,6 +1643,7 @@ def pilot(p, tid, main):
         # T-6044: the first read may take only the fix for a lens that was clean at the last stamped tip; after a fix
         # round of this pilot every lens reads the whole diff (the accept needs each one at the new tip, T-5707)
         scopes = {x: ("", whole) for x in claude} if fixes else scopes_for(main, b, claude, before[0], whole, sensitive)
+        res["ran"] = True  # T-6226: a run that reviewed (a gate refusal never gets here): its outcome is recorded
         c.log_event(p, "pilot_review", task=b.id, data={"class": lane_class(b), "effort": effort})  # T-6165: the escape rows' class and effort
         verdicts, findings, why, unparsed = review_cached(p, b, main, before, claude, model, scopes, note, effort)  # not _busy: its lock comes after the reviewers
         for x, (verdict, found) in settled.items():  # T-6089: the local answer that stands, as review() words a Claude one
@@ -1709,17 +1788,31 @@ def answer(r):
 
 def _crashed(tid, e):
     """T-5706 item 6: the row for a lane whose pilot raised: one line, and the sweep goes on to the next lane."""
-    return {"tid": tid, "outcome": "exception", "lenses": [], "findings": [], "model": "", "seconds": 0.0,
+    return {"tid": tid, "outcome": "exception", "lenses": [], "findings": [], "model": "", "seconds": 0.0, "ran": True,
             "reason": " ".join(f"{type(e).__name__}: {e}".split())[:300]}
 
 
 def cmd(p, args, main):
     """fm lane pilot ID | --all [--max N] [--dry] (T-5706): the pilot for one returned lane, or for every returned lane
     whose reviewed tip is not its current tip (the sweep; --max N takes the first N). --dry prints each plan and runs no
-    reviewer and no accept. A lane that raises is its own exception row; the rest still run."""
+    reviewer and no accept. A lane that raises is its own exception row; the rest still run. --retry ID (T-6226) clears
+    that lane's stamp instead."""
     from sampo import cli
     if p.lane:
         raise c.PolicyError(f"fm lane pilot runs from the main checkout ({main}), not from inside a lane")
+    if getattr(args, "retry", False):
+        if not args.id or getattr(args, "all", False):
+            raise cli.UsageError("fm lane pilot --retry takes one task id")
+        return _retry(p, args.id)
+    if getattr(args, "all", False) and not getattr(args, "dry", False) and not getattr(args, "held", False):
+        # T-6226: one sweep at a time: the sweep holds its lock for its whole run, taken without waiting; a held lock
+        # means a sweep is already running, and that is a quiet exit 0
+        try:
+            with c.lock(os.path.join(p.dir, SWEEP_DIR), timeout=0.0):
+                return cmd(p, types.SimpleNamespace(**{**vars(args), "held": True}), main)
+        except c.LockTimeout:
+            print("a lane pilot sweep is already running; it covers every returned lane")
+            return None
     top = getattr(args, "max", None)
     if getattr(args, "all", False):
         if args.id:
@@ -1745,6 +1838,9 @@ def cmd(p, args, main):
             rows.append(run(p, cli.need_brief(p, i), main) if run is plan else run(p, i, main))
         except Exception as e:  # noqa: BLE001 - one lane's crash is its row, not the sweep's end
             rows.append(_crashed(i, e))
+        if run is pilot and rows[-1].get("ran"):  # T-6226: only a run that reviewed or crashed records its outcome; a gate refusal keeps the stored one
+            with contextlib.suppress(Exception):
+                _record_outcome(p, i, rows[-1]["outcome"])
     text = "\n".join(line(r) for r in rows) or "no returned lane awaits a pilot"
     one = getattr(args, "json", False) and not getattr(args, "all", False) and len(rows) == 1
     if one:

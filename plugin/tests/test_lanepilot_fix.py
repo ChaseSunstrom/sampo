@@ -16,6 +16,7 @@ from unittest import mock
 
 from test_lanepilot import PilotCase
 
+from sampo import cli
 from sampo import core as c
 from sampo import lanepilot
 from sampo import lanes
@@ -1698,6 +1699,166 @@ class Round6(FixCase):
         r = self.pilot()
         self.assertEqual(r["outcome"], "exception", r)
         self.assertEqual(self.kinds("fix"), [])
+
+
+class StampRetry(FixCase):
+    """T-6226: a tip stamped under other pilot code whose round ended in an exception is not spent: the next run retries it
+    once. The same code, or a plain changes outcome, stays spent. `--retry` clears one lane's stamp and logs it."""
+
+    def set_stamp(self, tip, code=None, outcome=None):
+        p = c.find_project(self.repo)
+        b = c.find_brief(p, self.tid)
+        b.meta["pilot_tip"] = tip
+        if code is not None:
+            b.meta["pilot_code"] = code
+        if outcome is not None:
+            b.meta["pilot_outcome"] = outcome
+        c.save_brief(p, b)
+
+    def spent(self):
+        p = c.find_project(self.repo)
+        return lanepilot._stamped(p, c.find_brief(p, self.tid))
+
+    def test_a_tip_stamped_under_other_code_after_an_exception_is_not_spent(self):
+        self.set_stamp("abc", code="0ld", outcome="exception")
+        self.assertNotIn("abc", self.spent())
+
+    def test_a_tip_stamped_under_the_same_code_stays_spent(self):
+        self.set_stamp("abc", code=lanepilot._code_digest(), outcome="exception")
+        self.assertIn("abc", self.spent())
+
+    def test_a_plain_changes_outcome_under_other_code_stays_spent(self):
+        self.set_stamp("abc", code="0ld", outcome="changes")
+        self.assertIn("abc", self.spent())
+
+    def test_an_out_of_band_stamp_under_other_code_after_an_exception_is_not_spent(self):
+        self.set_stamp("", code="0ld", outcome="exception")
+        p = c.find_project(self.repo)
+        c.write_atomic(lanepilot._aside_path(p, self.tid), "abc 0ld\n")
+        self.assertNotIn("abc", self.spent())
+        c.write_atomic(lanepilot._aside_path(p, self.tid), f"abc {lanepilot._code_digest()}\n")
+        self.assertIn("abc", self.spent())
+
+    def test_the_next_pilot_run_pays_once_for_a_tip_stamped_under_other_code(self):
+        self.set_stamp(train._lane_tip(self.repo, self.brief()), code="0ld", outcome="exception")
+        r = self.pilot()
+        self.assertNotIn("waiting for the builder's next commit", r["reason"], r)
+        self.assertTrue(self.kinds("review"), "the retry runs its reviewers")
+        self.assertTrue(self.accepted() or self.brief().meta.get("pilot_code") == lanepilot._code_digest(),
+                        "the retry is accepted, or its stamp carries the current code")
+
+    def test_retry_clears_one_lanes_stamp_and_logs_it(self):
+        from types import SimpleNamespace
+        self.set_stamp("abc", code="0ld", outcome="exception")
+        p = c.find_project(self.repo)
+        c.write_atomic(lanepilot._aside_path(p, self.tid), "abc 0ld\n")
+        lanepilot.cmd(p, SimpleNamespace(all=False, id=self.tid, max=None, dry=False, json=False, retry=True), self.repo)
+        self.assertNotIn("pilot_tip", self.brief().meta)
+        self.assertFalse(os.path.exists(lanepilot._aside_path(p, self.tid)))
+        self.assertEqual(self.spent(), set())
+        self.assertEqual([e["task"] for e in self.events("pilot_retry")], [self.tid], "the clear is logged")
+
+    def retry(self, tid):
+        from types import SimpleNamespace
+        p = c.find_project(self.repo)
+        return lanepilot.cmd(p, SimpleNamespace(all=False, id=tid, max=None, dry=False, json=False, retry=True), self.repo)
+
+    def test_retry_never_removes_a_file_outside_pilot_tips(self):
+        p = c.find_project(self.repo)
+        outside = os.path.join(self.tmp, "outside.txt")
+        with open(outside, "w") as f:
+            f.write("keep\n")
+        for tid in ("../../../outside.txt", outside, "T-0001/../../../outside.txt"):
+            with self.assertRaises(Exception):
+                self.retry(tid)
+        self.assertTrue(os.path.exists(outside), "a path outside pilot_tips is never removed")
+
+    def test_retry_refuses_a_symlink_and_leaves_its_target(self):
+        p = c.find_project(self.repo)
+        outside = os.path.join(self.tmp, "target.txt")
+        with open(outside, "w") as f:
+            f.write("keep\n")
+        os.makedirs(os.path.dirname(lanepilot._aside_path(p, self.tid)), exist_ok=True)
+        os.symlink(outside, lanepilot._aside_path(p, self.tid))
+        with self.assertRaises(Exception):
+            self.retry(self.tid)
+        self.assertTrue(os.path.exists(outside), "the symlink's target is left as it is")
+
+    def test_retry_needs_a_task_that_exists(self):
+        with self.assertRaises(Exception):
+            self.retry("T-9999")
+
+    def test_a_land_that_moves_the_pilot_code_starts_one_sweep(self):
+        p = c.find_project(self.repo)
+        blobs = iter([("a", "b"), ("a", "c")])
+        with mock.patch.object(train, "_pilot_code_blobs", lambda main: next(blobs)), \
+                mock.patch.object(train, "_land_checked", lambda *a, **k: None), \
+                mock.patch.object(train, "_scan_failures", lambda p: None), \
+                mock.patch.object(train.subprocess, "Popen", return_value=1) as popen:
+            os.environ.pop("FOREMAN_NO_BACKGROUND", None)
+            train.land(p, self.repo)
+        argv = popen.call_args[0][0]
+        self.assertEqual(argv[-3:], ["lane", "pilot", "--all"])
+        self.assertEqual(popen.call_count, 1, "one sweep per land")
+
+    def test_a_land_that_leaves_the_pilot_code_alone_starts_nothing(self):
+        p = c.find_project(self.repo)
+        with mock.patch.object(train, "_pilot_code_blobs", lambda main: ("a", "b")), \
+                mock.patch.object(train, "_land_checked", lambda *a, **k: None), \
+                mock.patch.object(train, "_scan_failures", lambda p: None), \
+                mock.patch.object(train.subprocess, "Popen", return_value=1) as popen:
+            os.environ.pop("FOREMAN_NO_BACKGROUND", None)
+            train.land(p, self.repo)
+        self.assertEqual(popen.call_count, 0)
+
+    def test_a_sweep_records_its_own_outcome_on_the_brief(self):
+        with mock.patch.object(lanepilot, "pilot", lambda p, i, main: {"tid": i, "outcome": "changes", "reason": "x", "ran": True}):
+            from types import SimpleNamespace
+            p = c.find_project(self.repo)
+            lanepilot.cmd(p, SimpleNamespace(all=False, id=self.tid, max=None, dry=False, json=False), self.repo)
+        self.assertEqual(self.brief().meta.get("pilot_outcome"), "changes")
+
+    def test_a_land_while_paused_starts_no_sweep(self):
+        p = c.find_project(self.repo)
+        blobs = iter([("a", "b"), ("a", "c")])  # the land moved the pilot code, so a sweep would start unpaused
+        with mock.patch.object(train, "_pilot_code_blobs", lambda main: next(blobs)), \
+                mock.patch.object(train, "_land_checked", lambda *a, **k: None), \
+                mock.patch.object(train, "_scan_failures", lambda p: None), \
+                mock.patch.object(train.subprocess, "Popen", return_value=1) as popen, \
+                mock.patch("sampo.pilotsig._off", return_value=True):
+            os.environ.pop("FOREMAN_NO_BACKGROUND", None)
+            train.land(p, self.repo)
+        self.assertEqual(popen.call_count, 0, "a paused project starts no sweep")
+
+    def test_two_sweeps_at_once_the_second_exits_quietly(self):
+        from types import SimpleNamespace
+        p = c.find_project(self.repo)
+        args = SimpleNamespace(all=True, id=None, max=None, dry=False, json=False, retry=False)
+        with c.lock(os.path.join(p.dir, lanepilot.SWEEP_DIR)):  # the first sweep holds its lock for its whole run
+            with mock.patch.object(lanepilot, "pilot", side_effect=AssertionError("a second sweep piloted")):
+                lanepilot.cmd(p, args, self.repo)  # the second sweep exits 0 and runs nothing
+        self.assertTrue(c.lock_held(os.path.join(p.dir, lanepilot.SWEEP_DIR, ".lock")) is False)
+
+    def test_a_retry_that_crashes_mid_run_is_spent_and_the_next_sweep_does_not_retry(self):
+        from types import SimpleNamespace
+        p = c.find_project(self.repo)
+        self.set_stamp(train._lane_tip(self.repo, self.brief()), code="0ld", outcome="exception")
+        args = SimpleNamespace(all=True, id=None, max=None, dry=False, json=False, retry=False)
+        with mock.patch.object(lanepilot, "review", side_effect=RuntimeError("boom")):
+            with self.assertRaises(cli.UsageError):  # the retry runs and raises: its row is the exception
+                lanepilot.cmd(p, args, self.repo)
+        self.assertEqual(self.brief().meta.get("pilot_code"), lanepilot._code_digest(), "the retry spent its tip")
+        with mock.patch.object(lanepilot, "pilot") as again:
+            lanepilot.cmd(p, args, self.repo)
+        self.assertEqual(again.call_count, 0, "the next sweep does not retry the spent tip")
+
+    def test_a_gate_refusal_keeps_the_stored_outcome(self):
+        from types import SimpleNamespace
+        p = c.find_project(self.repo)
+        self.set_stamp(train._lane_tip(self.repo, self.brief()), code=lanepilot._code_digest(), outcome="changes")
+        with self.assertRaises(cli.UsageError):  # the gate refuses: waiting for the builder's next commit
+            lanepilot.cmd(p, SimpleNamespace(all=False, id=self.tid, max=None, dry=False, json=False, retry=False), self.repo)
+        self.assertEqual(self.brief().meta.get("pilot_outcome"), "changes", "a gate refusal does not flip a changes lane")
 
 
 class Pure(unittest.TestCase):

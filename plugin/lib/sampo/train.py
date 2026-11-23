@@ -4010,10 +4010,39 @@ def _note_refusal(p, why):
 
 def land(p, main, batch=None):
     """T-6109: the land, then the failure-class pass whatever the land did: a refusal is a failure line too."""
+    before = _pilot_code_blobs(main)
     try:
         return _land_checked(p, main, batch)
     finally:
         _scan_failures(p)
+        if _pilot_code_blobs(main) != before:  # T-6226: a merge that changed the pilot's code re-runs the sweep, once
+            _start_pilot_sweep(p)
+
+
+PILOT_CODE = ("plugin/lib/sampo/lanepilot.py", "plugin/lib/sampo/pilotsig.py")
+
+
+def _pilot_code_blobs(main):
+    """T-6226: the trunk's blob ids of the pilot's code files ('' when unreadable): a land that moves one starts the sweep."""
+    out = []
+    for f in PILOT_CODE:
+        try:
+            out.append(subprocess.run(["git", "rev-parse", f"HEAD:{f}"], cwd=main, capture_output=True, text=True,
+                                      timeout=30).stdout.strip())
+        except (OSError, subprocess.SubprocessError):
+            out.append("")
+    return tuple(out)
+
+
+def _start_pilot_sweep(p):
+    """T-6226: one detached `sampo lane pilot --all` per land, never while one is already running (its lock is held)."""
+    from sampo import pilotsig, lanepilot  # T-6226: the pilot's own off gates (background, switch, panic, pause) apply here too
+    if pilotsig._off(p) or c.lock_held(os.path.join(p.dir, lanepilot.SWEEP_DIR, ".lock")):
+        return
+    with contextlib.suppress(Exception):
+        with open(os.path.join(p.dir, "pilot-sweep.log"), "ab") as log:
+            subprocess.Popen([os.path.join(c.PLUGIN_ROOT, "bin", "fm"), "lane", "pilot", "--all"], cwd=p.root,
+                             stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
 
 
 def _scan_failures(p):
