@@ -8856,6 +8856,8 @@ def _tip_fields(pl):
         return {}
     try:
         cwd = os.path.realpath(_cwd(pl))
+        if not os.path.isfile(os.path.join(cwd, ".git")):  # T-6088: a lane is a linked worktree, whose .git is a file; any
+            return {}  # other folder (the main checkout) is no lane, so its stop starts no git child for these fields
         p = c.find_project(cwd)
         if not p:
             return {}
