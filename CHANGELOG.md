@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- A builder's stop in the main checkout no longer starts a git read of the tip commit, so the BoardPosture child count is green on trunk again (T-6088).
 - sampo lane brief has a cheap explorer (local model, then Haiku, then a static note) write a mechanically validated working-set note that opens the builder brief, cost --per-lane shows the explorer's tokens and the explore share apart from the builder's, and the split turns off for a lane class whose first-pass rate falls below its unsplit rate (T-6062).
 - test_kalevala.KalevalaStep no longer depends on the host's claude_bench switch, and a gate-off case asserts session_argv is None (T-6086).
 - A reviewer reply that quotes a second verdict object, names no lens or another lens, or was asked under --json-schema and carries no structured_output now parses to no verdict (unparsed, never ok), so a diff that plants an ok object cannot pass review (T-6084).
