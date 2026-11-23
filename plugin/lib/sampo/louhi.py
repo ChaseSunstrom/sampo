@@ -3596,7 +3596,8 @@ def _lanes_drill(base, key):
     (the edit, a note, a commit) and stops where key["stops"] plants it: killed after the edit, at the usage wall, hung,
     its note clashing with one committed on main, or reporting without the edit. The drill then does only what Louhi
     says: fm lane recover's recovery for the cause, the usage window reset (a stand-in clock), the hung session stopped
-    before fm lane recover --agent-stopped, fm lane merge for a lane that ended with its commit; anything asking a person
+    before fm lane recover --agent-stopped, a stand-in review of the tip (T-5968: a lane merges only once reviewed there), then
+    fm lane merge for a lane that ended with its commit; anything asking a person
     (a grant) is recorded as human and the lane left. A relaunched stub resumes at its next step, trusting the lane kept
     its work, so lost work shows in the merged tree. work/lanes.json holds per lane the stop, the first cause named, the
     recoveries, whether it merged and whether every write of the stub is in the merged tree; dup counts patches twice."""
@@ -3665,6 +3666,11 @@ def _lanes_drill(base, key):
             with contextlib.suppress(OSError):
                 killsafe.killpg(pr.pid, 9)
             pr.wait(timeout=30)
+
+    def review(tid):  # T-5968: a lane merges only once reviewed at its tip. The drill stands in for the main thread's review,
+        # which records that the tip was read and not objected to; a red merge is still the trunk gate's refusal to judge
+        if lane_of(tid):
+            fm("task", "audit", tid, "self", "drill: stand-in review of the tip, no objection", "approved: the tip is the lane's commit")
 
     def do(tid, step, d):
         path, i = lane_of(tid), tids.index(tid)
@@ -3776,6 +3782,7 @@ def _lanes_drill(base, key):
                 row["human"] = True
                 continue
             if "fm lane merge" in out or "sampo lane merge" in out:  # ended with its commit: the main thread reviews and merges
+                review(tid)
                 if fm("lane", "merge", tid)[0] == 0:
                     row["merged"] = True
                 continue

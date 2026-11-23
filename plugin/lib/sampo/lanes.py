@@ -1340,7 +1340,9 @@ def brief_contract(id, base, main):
              "This task's values for them:",
              f"- <ID> = {id}", f"- <BASE> = {base}", f"- <MAIN> = {main}",
              f"- Start from the main checkout's commit {base} with `sampo lane start {id}`, in your worktree (the folder "
-             f"you start in)."]
+             f"you start in).",
+             f"- Run your commands unpiped: `sampo task evidence {id} --step N --run \"<cmd>\"` (no `| tail` or `| head`: "
+             f"a pipe returns the last program's exit status, so a red run reads green; read its ✓/✗ line)."]
     return CONTRACT_HEADING + "\n".join(lines) + "\n" + (repo_rules() if repo_here(main) else "")
 
 

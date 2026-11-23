@@ -1175,7 +1175,7 @@ const SampoBoard = (() => {
       mem.L = [];
       mem.quiet = !d.links.length;
       {  // T-6060: Sampo's dollars per landed lane over plain Claude Code's, per day: 1 is native, the dashed line is 10x cheaper
-        const nTop = h - pad - (d.gpu ? 28 : 0) - nh + 12, nBot = nTop + nh - 24, x0 = pad + 4, x1 = w - pad - 60, pts = d.native.pts;
+        const nTop = h - pad - (d.gpu ? 28 : 0) - nh + 12, nBot = nTop + nh - 24, x0 = pad + 4, x1 = w - pad - 60, nat = obj(d.native), pts = Array.isArray(nat.pts) ? nat.pts : [];
         const seen = pts.filter(isFinite), last = seen.length ? seen[seen.length - 1] : null;
         txt(g, "COST VS NATIVE", pad, nTop - 4, T.orange, 7.5, "left", 600);
         if (!seen.length) txt(g, "no landed lane priced yet", pad + 86, nTop - 4, T.dim, 7.5);
@@ -1189,8 +1189,8 @@ const SampoBoard = (() => {
           g.strokeStyle = T.green;
           g.setLineDash([3, 3]);
           g.beginPath();
-          g.moveTo(x0, Y(d.native.target) + 0.5);
-          g.lineTo(x1, Y(d.native.target) + 0.5);
+          g.moveTo(x0, Y(nat.target) + 0.5);
+          g.lineTo(x1, Y(nat.target) + 0.5);
           g.stroke();
           g.setLineDash([]);
           const X = (i) => (pts.length > 1 ? x0 + (x1 - x0) * i / (pts.length - 1) : x1);
@@ -1205,7 +1205,7 @@ const SampoBoard = (() => {
           g.stroke();
           pts.forEach((v, i) => { if (isFinite(v)) { g.beginPath(); g.arc(X(i), Y(v), 1.6, 0, TAU); g.fill(); } });
           txt(g, `${last.toFixed(2)}x`, x1 + 6, Y(last) + 3, T.orange, 7.5);
-          txt(g, `10x ${d.native.target}x`, x1 + 6, Y(d.native.target) + 3, T.green, 7);
+          txt(g, `10x ${nat.target}x`, x1 + 6, Y(nat.target) + 3, T.green, 7);
         }
       }
       {  // the frontier gap: one line per local profile, points behind Claude per run (lower is closer; below 0 beats Claude)

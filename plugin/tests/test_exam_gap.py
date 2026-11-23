@@ -228,7 +228,7 @@ function run(gap, w = 360, h = 230) {
 }
 const empty = run([]), one = run([{name: "p", pts: [4]}]);
 const neg = run([{name: "n", pts: [10, -5, 3]}]);
-const h = 230, pad = 14, gh = 54, top = h - pad - gh + 12, bot = top + gh - 22, hi = 10, lo = -5;
+const h = 230, pad = 14, gapH = 54, nh = 46, gh = gapH + nh, top = h - pad - gh + 12, bot = top + gapH - 22, hi = 10, lo = -5;
 const zero = bot - (bot - top) * (0 - lo) / (hi - lo);
 console.log(JSON.stringify({empty: {text: empty.text}, one: {text: one.text, dots: one.dots},
   neg: {ys: neg.ys, top, bot, zero, bad: neg.bad}}));
