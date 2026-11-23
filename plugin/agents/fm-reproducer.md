@@ -2,7 +2,7 @@
 name: fm-reproducer
 description: Sampo reproducer for a FIX before any fix exists, launched with isolation "worktree" from `sampo lane brief ID`: commits only the smallest failing test, returns the sampo task prove command. Never fixes or merges.
 tools: Read, Grep, Glob, Edit, Write, Bash
-model: sonnet
+model: haiku
 autoCompactWindow: 150000
 color: yellow
 effort: medium

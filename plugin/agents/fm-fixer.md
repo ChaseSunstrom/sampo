@@ -2,7 +2,7 @@
 name: fm-fixer
 description: Sampo fixer for the review findings on one lane, launched with isolation "worktree": checks each finding, fixes the real ones in its worktree test-first, commits on its branch. Never pushes, merges or closes tasks.
 tools: Read, Grep, Glob, Edit, Write, Bash
-model: sonnet
+model: haiku
 effort: medium
 autoCompactWindow: 150000
 color: green

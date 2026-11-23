@@ -139,11 +139,22 @@ def codex_newest(codex_dir=None):
 # ---------------------------------------------------------------- the verb
 
 def cmd_models(args):
-    """sampo models [status | newest on|off | pin NAME|off [--codex] | local off|on]: the setting, and the
-    settings.json it keeps; local off keeps every model served on this machine unused (T-5504)."""
+    """sampo models [status | newest on|off | pin NAME|off [--codex] | local off|on | default [haiku|route]]: the setting,
+    and the settings.json it keeps; local off keeps every model served on this machine unused (T-5504). default (T-6101)
+    is the project's model rule: haiku (the default) or route, the history route's pick."""
     from sampo import models
     from sampo import setup
     w = list(args.words or [])
+    if w[:1] == ["default"] and w[1:] in ([], ["haiku"], ["route"]):
+        p = c.find_project(os.getcwd())
+        if p is None:
+            print("sampo models default: no project here (run it in a repo)", file=__import__("sys").stderr)
+            raise SystemExit(2)
+        if w[1:]:
+            c.update_meta(p, models_default=w[1])
+        print(f"models.default: {c.models_default(p)} (haiku: every builder, reviewer and spawn runs on haiku, sonnet or opus "
+              "only by escalation or an art/UI purpose; route: the history route's pick and its probes)")
+        return
     if w[:1] == ["local"] and w[1:] in ([], ["on"], ["off"]):  # T-5504: models served on this machine, kept off for good
         flag = models.local_flag()
         if w[1:] == ["off"]:

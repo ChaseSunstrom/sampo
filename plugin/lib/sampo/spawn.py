@@ -13,7 +13,7 @@ from sampo import core as c
 # Built-in agent types (Claude Code's own, with no agent file) -> the model they run on. Sampo's own agent types are not
 # here: their `model:` frontmatter in plugin/agents/*.md is the one source (agent_models), so a file and this module can't
 # drift. Sonnet is the floor for an agent that writes or judges; Haiku is for a lookup that returns file:line hits.
-TABLE = {"Explore": "haiku", "claude-code-guide": "haiku", "Plan": "sonnet"}
+TABLE = {"Explore": "haiku", "claude-code-guide": "haiku", "Plan": "haiku"}  # T-6101: haiku is the default everywhere
 AGENTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(os.path.dirname(__file__)))), "agents")
 _agents = None  # {agent type: model} read from AGENTS_DIR once per process (reset() drops it)
 NAMESPACES = c.NAMESPACES  # the plugin's names, the current first: a reader takes every one (never spelled here)
@@ -123,6 +123,33 @@ def fill(tool_input):
         return tool_input
     model = model_for(tool_input.get("subagent_type"))
     return {**tool_input, "model": model} if model else tool_input
+
+
+HAIKU = "haiku"  # T-6101: the default model; a sonnet or opus launch is rewritten to it in the haiku mode
+ESCALATED = re.compile(r"escalated:\s*sonnet\b", re.I)  # the stamp a brief writes for a sonnet builder after two failed rounds
+PURPOSE = re.compile(r"purpose:\s*\"?(ui|design|panels)\b", re.I)  # the stamp for an opus builder on an art or UI brief
+
+
+def family(model):
+    """T-6101: "sonnet" or "opus" for a model name that says one (any case, a full ID like claude-opus-4-1 too), else ""."""
+    name = model.strip().lower() if isinstance(model, str) else ""
+    return "sonnet" if "sonnet" in name else "opus" if "opus" in name else ""
+
+
+def haiku(tool_input, mode):
+    """T-6101: tool_input with its model rewritten to haiku when it asks for sonnet or opus in the haiku mode (the project's
+    `sampo models default`, haiku unless it says route). A sonnet launch whose prompt carries the escalated stamp and an
+    opus launch whose prompt carries an art or UI purpose stay as asked. Any other model, the route mode, the table off or a
+    malformed input returns the very input. Never raises. A model advises: a dearer one is never refused here."""
+    if not isinstance(tool_input, dict) or mode != "haiku" or not enabled():
+        return tool_input
+    fam = family(tool_input.get("model"))
+    if not fam:
+        return tool_input
+    prompt = tool_input.get("prompt") if isinstance(tool_input.get("prompt"), str) else ""
+    if (fam == "sonnet" and ESCALATED.search(prompt)) or (fam == "opus" and PURPOSE.search(prompt)):
+        return tool_input
+    return {**tool_input, "model": HAIKU}
 
 
 def lookup_refusal(tool_input):

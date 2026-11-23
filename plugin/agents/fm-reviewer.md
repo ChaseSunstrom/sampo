@@ -2,7 +2,7 @@
 name: fm-reviewer
 description: Independent read-only reviewer for Sampo audits and L-tier review: one audit lens (intent, adversary, edge, operator, maintainer; design for a UI diff) or a full review of a named diff; returns verified findings only. Never edits.
 tools: Read, Grep, Glob
-model: sonnet
+model: haiku
 autoCompactWindow: 150000
 color: yellow
 effort: high

@@ -3470,6 +3470,16 @@ def set_standing_ship(p, on, why="", by=""):
     return rec
 
 
+def models_default(p):
+    """T-6101: the project's model rule. "haiku" (the default: every builder, reviewer and spawn runs on Haiku, sonnet or
+    opus only by escalation or an art/UI purpose) unless its meta says "route" (`sampo models default route`: the history
+    route's pick and its probes). Unset, unreadable or any other value is haiku."""
+    try:
+        return "route" if read_meta(p).get("models_default") == "route" else "haiku"
+    except Exception:
+        return "haiku"
+
+
 def update_meta(p, **changes):
     with lock(p.dir):
         meta = read_meta(p)

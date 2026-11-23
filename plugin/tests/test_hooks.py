@@ -7076,16 +7076,18 @@ class SpawnChokepoint(HookCase):  # T-5837 (part 2 of T-5768): the Agent branch 
             ti = {"prompt": f"Where is parse_args defined? Also {word} it", "subagent_type": "general-purpose"}
             self.assertNotEqual(self.out_of(self.pre(ti)).get("permissionDecision"), "deny", word)
 
-    def test_spawn_model_an_explicit_model_gets_no_rewrite(self):
-        for model in ("opus", "haiku"):
-            out = self.out_of(self.pre(dict(self.TASK, subagent_type="Explore", model=model)))
-            self.assertNotIn("updatedInput", out, model)
-            self.assertNotEqual(out.get("permissionDecision"), "deny")
-        self.assertEqual(self.spawn_rows(), [], "a typed call with its model is sampo-fast's too: neither path logs it")
-        out = self.out_of(self.pre(dict(self.TASK, model="opus")))  # untyped with a model: no rewrite, still logged
+    def test_spawn_model_a_typed_haiku_is_native_and_a_typed_opus_is_rewritten(self):  # T-6101
+        out = self.out_of(self.pre(dict(self.TASK, subagent_type="Explore", model="haiku")))
         self.assertNotIn("updatedInput", out)
-        self.assertEqual([(r["type"], r["model"], r["filled"]) for r in self.spawn_rows()],
-                         [("general-purpose", "opus", 0)])
+        self.assertNotEqual(out.get("permissionDecision"), "deny")
+        self.assertEqual(self.spawn_rows(), [], "a typed haiku call is sampo-fast's too: neither path logs it")
+        # T-6101: a typed opus call is Python's (agent_ok defers it), rewritten to haiku and logged with what it asked
+        out = self.out_of(self.pre(dict(self.TASK, subagent_type="Explore", model="opus")))
+        self.assertEqual(out["updatedInput"]["model"], "haiku")
+        out = self.out_of(self.pre(dict(self.TASK, model="opus")))  # untyped on opus: rewritten and logged too
+        self.assertEqual(out["updatedInput"]["model"], "haiku")
+        self.assertEqual([(r["type"], r["model"], r["filled"], r.get("asked")) for r in self.spawn_rows()],
+                         [("Explore", "haiku", 1, "opus"), ("general-purpose", "haiku", 1, "opus")])
 
     def test_spawn_model_a_type_the_table_lacks_is_left_alone(self):
         out = self.out_of(self.pre(dict(self.TASK, subagent_type="some-other-agent")))
@@ -7159,18 +7161,19 @@ class SpawnChokepoint(HookCase):  # T-5837 (part 2 of T-5768): the Agent branch 
         self.assertNotIn("scout", reason)
         self.assertEqual(self.spawn_rows(), [])
         ok = self.out_of(self.pre(dict(ti, isolation="worktree", prompt="Fix the retry bug in uploader.py")))
-        self.assertEqual(ok["updatedInput"]["model"], "sonnet")  # fm-fixer's frontmatter model; isolation present
+        self.assertEqual(ok["updatedInput"]["model"], "haiku")  # fm-fixer's frontmatter model (T-6101: haiku); isolation present
 
     def test_spawn_lookup_each_allowed_spawn_logs_its_type_model_and_whether_filled(self):
         from sampo import spawn
         self.pre(dict(self.TASK, subagent_type="sampo:fm-scout"))  # filled from the agent file
-        self.pre(dict(self.TASK, subagent_type="Explore", model="opus"))  # typed with a model: sampo-fast's, no row
+        self.pre(dict(self.TASK, subagent_type="Explore", model="haiku"))  # typed with a model: sampo-fast's, no row
         self.pre(dict(self.TASK))  # untyped, no model: no row to fill, still a spawn
         self.pre(dict(self.TASK, subagent_type="general-purpose", model="sonnet"))  # a general agent: the table's to see
         rows = self.spawn_rows()
         self.assertEqual([(r["type"], r["model"], r["filled"]) for r in rows],
                          [("sampo:fm-scout", spawn.model_for("fm-scout"), 1), ("general-purpose", "", 0),
-                          ("general-purpose", "sonnet", 0)])
+                          ("general-purpose", "haiku", 1)])  # T-6101: the sonnet ask is rewritten and logged with its ask
+        self.assertEqual(rows[2].get("asked"), "sonnet")
         self.assertTrue(all(r.get("session_id") == "sess-1" for r in rows))
 
     def test_spawn_lookup_a_long_or_odd_type_is_clipped_in_the_log(self):

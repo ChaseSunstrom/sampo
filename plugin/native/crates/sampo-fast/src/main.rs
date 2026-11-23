@@ -390,24 +390,26 @@ fn agent_ok(pl: &Obj, state: &Path) -> Option<()> {
         Some(Value::Object(ti)) => ti,
         _ => return None,
     };
-    if !matches!(ti.get("model"), Some(Value::String(m)) if !m.is_empty()) {
+    let Some(Value::String(model)) = ti.get("model") else {
+        return None;
+    };
+    if model.is_empty() {
         return None;
     }
-    // T-5497: hooks.fit_flag adds a note to a call with no type, a blank or general-purpose one, or a Sampo type on Opus:
-    // this file doesn't mirror the note, so only those launches go to Python; any other named type is native
+    // T-6101: a call that names sonnet or opus goes to Python, whatever its type: the spawn rule rewrites it to haiku
+    // unless it carries an escalation or purpose marker. Only a haiku call is native.
+    let model = model.to_lowercase();
+    if model.contains("sonnet") || model.contains("opus") {
+        return None;
+    }
+    // T-5497: hooks.fit_flag adds a note to a call with no type or a blank or general-purpose one: this file doesn't
+    // mirror the note, so only those launches go to Python; any other named type is native
     let Some(Value::String(t)) = ti.get("subagent_type") else {
         return None;
     };
     let t = t.trim();
     if t.is_empty() || t.to_lowercase().contains("general-purpose") {
         return None;
-    }
-    if t.starts_with("sampo:") || t.starts_with("foreman:") {
-        if let Some(Value::String(m)) = ti.get("model") {
-            if m.to_lowercase().contains("opus") {
-                return None;
-            }
-        }
     }
     // T-3902: a horizon in budget.json (budget set --until) makes the weekly pace Python's: this file mirrors only the floor
     if fs::read(state.join("budget.json")).is_ok_and(|b| b.windows(7).any(|w| w == b"\"until\"")) {

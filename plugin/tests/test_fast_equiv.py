@@ -439,6 +439,13 @@ class Agents(Base):
                     ("a blank type gets one", blank, False), ("a Sampo type on Opus gets one", on_opus, False),
                     ("a named type that is not Sampo's has no note: native", explore, True),
                     ("another plugin's type is native", other, True)])
+        # T-6101: a typed call that names sonnet or opus is Python's (the spawn rule rewrites it), whatever the type
+        sonnet_explore = {"payload": {"tool_name": "Agent", "tool_input": {"prompt": "look", "subagent_type": "Explore",
+                                                                            "model": "sonnet"}}}
+        opus_explore = {"payload": {"tool_name": "Agent", "tool_input": {"prompt": "look", "subagent_type": "Explore",
+                                                                         "model": "claude-opus-4-1"}}}
+        self.cases([("T-6101: a sonnet launch of a named type is Python's", sonnet_explore, False),
+                    ("T-6101: an opus launch of a named type is Python's", opus_explore, False)])
         fixer = {"payload": {"tool_name": "Agent", "tool_input": {"prompt": "fix", "subagent_type": "sampo:fm-fixer",
                                                                    "model": "sonnet"}}}
         scout = {"payload": {"tool_name": "Agent", "tool_input": {"prompt": "look", "subagent_type": "sampo:fm-scout",

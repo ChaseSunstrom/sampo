@@ -427,7 +427,7 @@ def run(p, args):
     pilot = bool(getattr(args, "pilot", False))  # T-5706: the pilot reviews an S lane's self lens too
     lenses = [x for x in (args.lens or head_lenses or list(c.DEFAULT_LENSES)) if x != "self" or pilot]
     # T-5841: no --model takes the depth map's (haiku for a light change, sonnet for the rest)
-    model = args.model or (getattr(prep, "depth", None) or {}).get("model") or "sonnet"
+    model = args.model or (getattr(prep, "depth", None) or {}).get("model") or "haiku"  # T-6101: haiku by default
     if not lenses:
         raise cli.UsageError(f"fm audit run: no reviewer lens is left to run for {b.id} (`self` is the main thread's "
                              f"own: fm task audit {b.id} self …); pass --lens with a reviewer lens "

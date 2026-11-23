@@ -50,15 +50,22 @@ LOCAL_MATCH_LINES = 5  # a Claude finding is matched by a local one in the same 
 SALT_FILE = "local-parity.salt"  # T-6089: the secret salt of the sample pick, in project state, created once with mode 0600
 
 
+# T-6101: the pilot's headless reviewers are outside the Haiku default (a `claude -p` child, not an Agent launch), so they
+# keep the models the depth map gave before it: haiku for a trivial or small lane, sonnet from normal up.
+PILOT_MODEL = {"trivial": "haiku", "small": "haiku", "normal": "sonnet", "risky": "sonnet"}
+
+
 def lenses_for(b, sensitive, p=None, names=None, raw=b""):
     """(lenses, model) a lane's review runs with (T-6044): lanes.review_depth's, from the lane's files and diff (the depth
     map and its floors: a protected path, a SECURITY task, SAMPO_REVIEW_DEPTH=full). A sensitive diff always carries the
-    adversary, on sonnet. names None (the diff could not be read) is every lens on sonnet: fail toward more review."""
+    adversary, on sonnet. names None (the diff could not be read) is every lens on sonnet: fail toward more review.
+    The model is PILOT_MODEL's for the tier (T-6101 keeps it off the Haiku default)."""
     from sampo import cli
     if names is None:
         return list(c.DEFAULT_LENSES), "sonnet"
     d = lanes.review_depth(b, names, raw.decode("utf-8", "replace"), p=p, tests_linked=cli._tests_linked(p, b, names))
-    lenses, model = list(d["lenses"]), d["model"]
+    lenses = list(d["lenses"])
+    model = "sonnet" if d["full"] else PILOT_MODEL.get(d["ptier"], "sonnet")
     if sensitive:
         lenses, model = [x for x in c.DEFAULT_LENSES if x in lenses or x == "adversary"], "sonnet"
     return lenses, model

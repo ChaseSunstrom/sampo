@@ -2,7 +2,7 @@
 name: fm-recon
 description: Read-only Sampo recon: maps an unfamiliar code area, researches docs or the web, or audits dependencies; returns a bounded, cited summary. Needs a self-contained brief. Never edits.
 tools: Read, Grep, Glob, WebFetch, WebSearch
-model: sonnet
+model: haiku
 autoCompactWindow: 150000
 color: cyan
 effort: medium

@@ -783,7 +783,7 @@ class Lanes(ForemanTestCase):
                                 "--step", "s", *extra, "--json").stdout)["id"]
             agent = json.loads(self.fm("lane", "brief", tid, "--json").stdout)["agent"]
             self.assertIn(f'effort: "{effort}"', agent)
-            self.assertIn('model: "sonnet"', agent, "T-1796: every builder runs on Sonnet; Opus M lanes were 22% of usage")
+            self.assertIn('model: "haiku"', agent, "T-6101: every builder runs on Haiku by default (the route's Sonnet is `sampo models default route`)")
 
     def test_the_brief_names_haiku_for_a_trivial_or_small_scope_and_the_model_flag_wins(self):
         # T-5714: the process tier (on here; the suite turns it off) picks haiku at medium effort for a docs scope or an S
@@ -802,6 +802,7 @@ class Lanes(ForemanTestCase):
             self.assertIn("builder_model: haiku", open(c.find_brief(c.find_project(self.repo), tid).path).read())
         out = self.fm("lane", "brief", small, "--model", "opus", env=on).stdout
         self.assertIn('model: "opus"', out)
+        self.fm("models", "default", "route")  # T-6101: the history route's pick is the one this check reads
         self.assertIn('model: "sonnet", effort: "high"', self.fm("lane", "brief", code, env=on).stdout, "normal: the route")
         self.assertIn('model: "sonnet"', self.fm("lane", "brief", small, env={"FOREMAN_PROCESS_TIER": "off"}).stdout)
 
@@ -837,6 +838,7 @@ class Lanes(ForemanTestCase):
 
     def test_brief_records_the_model_and_model_flag_overrides(self):
         # T-2291: the named model is recorded on the brief; --model overrides the history's suggestion
+        self.fm("models", "default", "route")  # T-6101: the history route picks here, not the Haiku default
         mk = lambda t: first(self.fm("task", "new", t, "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true",
                                      "--step", "s", "--json").stdout)["id"]
         a, b = mk("Router a"), mk("Router b")
@@ -867,14 +869,14 @@ class Lanes(ForemanTestCase):
         for m in (f"other work ({done}0)", f"child work ({done} part 1)", f"({done} follow-up)",
                   f"Changelog line for {done}"):  # a longer id and a passing mention are not its work
             commit(m)
-        self.assertIn('model: "sonnet"', self.fm("lane", "brief", done).stdout)
+        self.assertIn('model: "haiku"', self.fm("lane", "brief", done).stdout)  # T-6101: the default model
         commit(f"the work ({done})")
         self.assertTrue(refused())
         commit(f'Revert "the work ({done})"')
         self.assertFalse(refused())  # a reverted merge doesn't count
         commit(f"Merge {done}: it again")
         self.assertTrue(refused())
-        self.assertIn('model: "sonnet"', self.fm("lane", "brief", fresh).stdout)
+        self.assertIn('model: "haiku"', self.fm("lane", "brief", fresh).stdout)  # T-6101: the default model
 
     def _dependent(self, dep, title="Dependent"):  # T-5725: a planned S task that depends_on `dep`
         self.fm("lane", "max", "20")
@@ -4151,11 +4153,15 @@ class SelfChangeGate(ForemanTestCase):
 
 
 class RouteBase(ForemanTestCase):
-    """T-2353: seeded lane histories for the probe-down route (closed S tasks with a builder model, fates passed in)."""
+    """T-2353: seeded lane histories for the probe-down route (closed S tasks with a builder model, fates passed in).
+    T-6101: MODE is the project's models_default (`sampo models default`): route for the history route these tests pin."""
+    MODE = "route"
+
     def setUp(self):
         super().setUp()
         self.fm("init")
         self.p = c.find_project(self.repo)
+        c.update_meta(self.p, models_default=self.MODE)
         self.n, self.outs = 0, {}
 
     def lane(self, model, bad=False, probe=False, tier="S"):
@@ -7283,6 +7289,158 @@ class WorkingSetReads(WsRig):
         got = json.loads(self.per_lane("--json").stdout)["workset"]["T-0001"]
         self.assertIsNone(got["explore_share"])
         self.assertNotIn("explore share", self.per_lane().stdout)
+
+
+class HaikuDefault(RouteBase):
+    """T-6101: Haiku is the default Claude model wherever Sampo picks one. The builder route answers haiku with or without
+    a history (a sonnet rework gap no longer picks opus), opus only for an explicit art or UI purpose; the depth map, the
+    lens reviewer, the spawn table and the Sampo agent files answer haiku; a sonnet or opus Agent launch in bypassPermissions
+    is rewritten to haiku (sonnet stays only when the brief escalated it); a local lane and the explorer's local call stay
+    local; a second failed round on one task is the one reason to brief sonnet, logged with it."""
+    MODE = "haiku"
+
+    def round(self, tid, n):
+        """One review round that failed: its findings reported, then the builder returned to apply them."""
+        c.log_event(self.p, "finding", task=tid, data={"verdict": "reported", "file": "a.py", "text": f"finding {n}"})
+        c.log_event(self.p, "subagent", task=tid, data={"agent_type": "sampo:fm-builder", "agent_id": f"a{n}"})
+
+    def pl(self, model, mode="bypassPermissions", prompt="build it"):
+        return {"tool_input": {"subagent_type": "sampo:fm-builder", "prompt": prompt, "model": model},
+                "permission_mode": mode}
+
+    def rule(self, pl):
+        from sampo import hooks
+        with mock.patch.object(hooks, "_event"):
+            return hooks._spawn_rule(pl)
+
+    def test_the_builder_route_answers_haiku_with_no_history(self):
+        self.assertEqual(slanes.model_route(self.p, "S", self.outs)[0], "haiku")
+        self.assertEqual(self.route()[0], "haiku")
+
+    def test_a_sonnet_rework_gap_does_not_pick_opus_by_default(self):
+        self.lanes("opus", 5)
+        self.lanes("sonnet", 6, bad=5)
+        self.assertEqual(self.route()[0], "haiku")
+
+    def test_only_an_explicit_art_or_ui_purpose_picks_opus(self):
+        self.assertEqual(slanes.route(self.p, "S", outs=self.outs, art=True)[0], "opus")
+        self.assertEqual(slanes.route(self.p, "S", outs=self.outs)[0], "haiku")
+
+    def test_an_s_lane_briefed_local_stays_local_with_the_haiku_default(self):
+        self.fm("lane", "max", "20")
+        tid = first(self.fm("task", "new", "Local S", "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true",
+                            "--step", "s", "--scope", "made.txt", "--json").stdout)["id"]
+        self.fm("task", "set", tid, "approved=true", check=False)
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(slanes, "local_profile", return_value="jarvis"), contextlib.redirect_stdout(out), \
+                contextlib.redirect_stderr(err):
+            slanes.builder_brief(self.p, c.find_brief(self.p, tid), argparse.Namespace(model="local", json=True))
+        self.assertEqual(json.loads(out.getvalue())["model"], "local")
+
+    def test_the_explorers_local_call_stays_local_with_the_haiku_default(self):
+        from sampo import workset
+        tid = self.lane("haiku")
+        calls = []
+        stub = {"text": "{}", "model": "stub-local", "usage": {}}
+        with mock.patch.object(workset, "on", return_value=True), \
+                mock.patch.object(workset, "class_gate", return_value={"off": False}), \
+                mock.patch.object(workset, "_tracked", return_value=[]), \
+                mock.patch.object(workset, "_prompt", return_value="explore"), \
+                mock.patch.object(workset, "_local", side_effect=lambda prompt: calls.append("local") or stub), \
+                mock.patch.object(workset, "_haiku", side_effect=lambda prompt: calls.append("haiku") or stub), \
+                mock.patch.object(workset, "validate", return_value=({"ranges": [], "tests": [], "files": []}, "")):
+            got = workset.explore(self.p, c.find_brief(self.p, tid), self.repo, "HEAD", [])
+        self.assertEqual(calls, ["local"], "the local model answers first and Haiku is not asked")
+        self.assertEqual((got["source"], got["local"]), ("local", True))
+
+    def test_every_depth_answers_haiku_and_the_headless_pilot_keeps_its_own_models(self):
+        from sampo import lanepilot
+        self.assertEqual(set(slanes.DEPTH_MODEL.values()), {"haiku"})
+        # the pilot's `claude -p` reviewers are headless children, outside the default: they keep sonnet from normal up
+        self.assertEqual(lanepilot.lenses_for(None, False)[1], "sonnet")
+        self.assertEqual(lanepilot.lenses_for(None, True)[1], "sonnet")
+        self.assertEqual(lanepilot.PILOT_MODEL, {"trivial": "haiku", "small": "haiku", "normal": "sonnet", "risky": "sonnet"})
+
+    def test_the_spawn_table_and_the_sampo_agent_files_answer_haiku(self):
+        from sampo import spawn
+        self.assertEqual(set(spawn.TABLE.values()), {"haiku"})
+        self.assertEqual(set(spawn.agent_models().values()), {"haiku"})
+        self.assertEqual(spawn.model_for("Plan"), "haiku")
+
+    def test_the_audit_run_falls_back_to_haiku(self):
+        src = read_text(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib", "sampo", "auditrun.py"))
+        self.assertIn('or "haiku"', src)
+        self.assertNotIn('or "sonnet"', src)
+
+    def test_a_sonnet_launch_in_bypass_is_rewritten_to_haiku_and_every_other_field_is_kept(self):
+        got = self.rule(self.pl("sonnet"))
+        self.assertEqual(got["permissionDecision"], "allow")
+        self.assertEqual(got["updatedInput"], {"subagent_type": "sampo:fm-builder", "prompt": "build it", "model": "haiku"})
+
+    def test_the_same_sonnet_launch_in_another_mode_is_left_alone(self):
+        self.assertIsNone(self.rule(self.pl("sonnet", mode="default")))
+
+    def test_an_opus_launch_without_an_art_or_ui_purpose_is_rewritten(self):
+        self.assertEqual(self.rule(self.pl("opus"))["updatedInput"]["model"], "haiku")
+        self.assertIsNone(self.rule(self.pl("opus", prompt='purpose: "ui" a new panel')))  # the purpose names opus
+
+    def test_a_sonnet_launch_the_brief_escalated_is_left_alone(self):
+        self.assertIsNone(self.rule(self.pl("sonnet", prompt="escalated: sonnet (2 failed rounds)")))
+
+    def test_one_failed_round_writes_no_escalation_and_a_second_writes_its_reason(self):
+        tid = self.lane("haiku")
+        b = c.find_brief(self.p, tid)
+        self.assertIsNone(slanes.escalation(self.p, b))
+        self.round(tid, 1)
+        self.assertIsNone(slanes.escalation(self.p, b))
+        self.round(tid, 2)
+        model, why = slanes.escalation(self.p, b)
+        self.assertEqual(model, "sonnet")
+        self.assertIn("2 failed rounds", why)
+
+    def test_the_second_failed_round_briefs_sonnet_and_logs_the_reason(self):
+        self.fm("lane", "max", "20")
+        tid = first(self.fm("task", "new", "Escalate S", "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true",
+                            "--step", "s", "--scope", "made.txt", "--json").stdout)["id"]
+        self.fm("task", "set", tid, "approved=true", check=False)
+        self.round(tid, 1)
+        self.round(tid, 2)
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            slanes.builder_brief(self.p, c.find_brief(self.p, tid), argparse.Namespace(model=None, json=True))
+        self.assertEqual(json.loads(out.getvalue())["model"], "sonnet")
+        logged = [e for e in c.ledger_tail(self.p, 400, kinds=("lane_escalate",)) if e.get("task") == tid]
+        self.assertTrue(logged and "2 failed rounds" in json.dumps(logged[-1].get("data")), logged)
+
+
+class HaikuSwitch(RouteBase):
+    """T-6101: `sampo models default haiku|route`, one project key. route restores the builder route's pick by history
+    and the probes, and the Agent hook's rewrite stops with it; haiku (the default when the key is unset) is the rest."""
+    MODE = "haiku"
+
+    def test_route_restores_the_routes_pick_and_haiku_is_the_default_again(self):
+        self.lanes("opus", 5)
+        self.lanes("sonnet", 6, bad=5)
+        self.fm("models", "default", "route")
+        self.assertEqual(c.read_meta(self.p).get("models_default"), "route")
+        self.assertEqual(self.route()[0], "opus", "the rework gap picks opus, as the route did before T-6101")
+        self.fm("models", "default", "haiku")
+        self.assertEqual(c.read_meta(self.p).get("models_default"), "haiku")
+        self.assertEqual(self.route()[0], "haiku")
+
+    def test_an_unset_switch_is_haiku(self):
+        c.update_meta(self.p, models_default=None)
+        self.lanes("opus", 5)
+        self.lanes("sonnet", 6, bad=5)
+        self.assertEqual(self.route()[0], "haiku")
+
+    def test_route_mode_turns_the_agent_hook_rewrite_off(self):
+        from sampo import hooks
+        self.fm("models", "default", "route")
+        pl = {"tool_input": {"subagent_type": "sampo:fm-builder", "prompt": "build it", "model": "sonnet"},
+              "permission_mode": "bypassPermissions", "cwd": str(self.repo)}
+        with mock.patch.object(hooks, "_event"):
+            self.assertIsNone(hooks._spawn_rule(pl))
 
 
 if __name__ == "__main__":

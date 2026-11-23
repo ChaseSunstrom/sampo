@@ -658,6 +658,16 @@ def _project_cwd(pl):
     return lane or _cwd(pl)
 
 
+def _models_mode(pl):
+    """T-6101: the project's model rule for this call: "haiku" (the default, and the answer when no project is found or the
+    lookup fails) or "route" (`sampo models default route`). Never raises."""
+    try:
+        p = c.find_project(_project_cwd(pl))
+        return c.models_default(p) if p else "haiku"
+    except Exception:
+        return "haiku"
+
+
 def _clean(s, limit=120):
     return re.sub(r"[\x00-\x1f\x7f;]", " ", str(s))[:limit]
 
@@ -4112,7 +4122,7 @@ def _spawn_rule(pl):
         why = spawn.lookup_refusal(ti)
         if why:
             return {"permissionDecision": "deny", "permissionDecisionReason": why}
-        new = spawn.fill(ti)
+        new = spawn.haiku(spawn.fill(ti), _models_mode(pl))  # T-6101: sonnet or opus becomes haiku in the haiku mode
         if not isinstance(new, dict):
             return None
         want = new is not ti
@@ -4121,8 +4131,10 @@ def _spawn_rule(pl):
         filled = want and pl.get("permission_mode") == "bypassPermissions"
         kind, model = ti.get("subagent_type"), ti.get("model")
         # sampo-fast decides a typed call that names its model (agent_ok in main.rs) and cannot write this row: so the
-        # same calls are unlogged here, and the log reads alike whichever path decided (a spawn the table could change)
-        native = (isinstance(kind, str) and kind and "general-purpose" not in kind and isinstance(model, str) and model)
+        # same calls are unlogged here, and the log reads alike whichever path decided (a spawn the table could change).
+        # T-6101: a sonnet or opus call is Python's whatever its type (agent_ok defers it), so it is logged here
+        native = (isinstance(kind, str) and kind and "general-purpose" not in kind and isinstance(model, str) and model
+                  and not spawn.family(model))
         sid = pl.get("session_id")
         if not native:
             ev = {"kind": "spawn", "session_id": sid if isinstance(sid, str) else None,
@@ -4130,6 +4142,8 @@ def _spawn_rule(pl):
                   "model": _clean(new.get("model") or "", 60), "filled": int(filled)}
             if want and not filled:
                 ev["reason"] = "not bypass"
+            if isinstance(model, str) and model and new.get("model") != model:
+                ev["asked"] = _clean(model, 60)  # T-6101: the model the launch named before the rewrite to haiku
             _event(ev)
         return {"permissionDecision": "allow", "updatedInput": new} if filled else None
     except Exception:

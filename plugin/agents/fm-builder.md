@@ -2,7 +2,7 @@
 name: fm-builder
 description: Sampo builder for one S/M task, launched with isolation "worktree" from `sampo lane brief ID`: works test-first, returns a commit on its branch. Never pushes, merges or closes tasks.
 tools: Read, Grep, Glob, Edit, Write, Bash
-model: sonnet
+model: haiku
 effort: high
 autoCompactWindow: 150000
 # T-5680: builder turns in the automation data (~/.cache/claude-ops/automation-builders.md) run p90 161, max 315, so the

@@ -10,8 +10,9 @@ from sampo import core as c
 from sampo import spawn
 
 AGENTS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "agents")
-HAIKU = ("fm-scout", "fm-resolver", "Explore", "claude-code-guide")  # fm-resolver follows its agent file (haiku)
-SONNET = ("fm-builder", "fm-reviewer", "fm-recon", "fm-fixer", "fm-reproducer", "Plan")
+HAIKU = ("fm-scout", "fm-resolver", "Explore", "claude-code-guide", "Plan")  # fm-resolver follows its agent file (haiku)
+# The fm-* agents and Plan all default to haiku now (T-6101): their files and the TABLE say so.
+AGENT_FILES = ("fm-builder", "fm-reviewer", "fm-recon", "fm-fixer", "fm-reproducer")
 
 
 def spawn_of(type_=None, prompt="Where is cmd_x defined?", **more):
@@ -33,14 +34,14 @@ class Fill(unittest.TestCase):
         for t in HAIKU:
             with self.subTest(t=t):
                 self.assertEqual(spawn.fill(spawn_of(t))["model"], "haiku")
-        for t in SONNET:
+        for t in AGENT_FILES:
             with self.subTest(t=t):
-                self.assertEqual(spawn.fill(spawn_of(t))["model"], "sonnet")
+                self.assertEqual(spawn.fill(spawn_of(t))["model"], "haiku")
 
     def test_fill_reads_sampo_and_foreman_namespaced_types(self):
         for ns in ("sampo", "foreman"):
             self.assertEqual(spawn.fill(spawn_of(ns + ":fm-scout"))["model"], "haiku")
-            self.assertEqual(spawn.fill(spawn_of(ns + ":fm-builder"))["model"], "sonnet")
+            self.assertEqual(spawn.fill(spawn_of(ns + ":fm-builder"))["model"], "haiku")
         self.assertEqual(spawn.model_for("sampo:fm-scout"), "haiku")
         self.assertEqual(spawn.model_for("fm-scout"), "haiku")
 
@@ -165,7 +166,7 @@ class AgentFiles(unittest.TestCase):
                 with self.subTest(bad=bad), mock.patch.object(spawn, "AGENTS_DIR", bad):
                     spawn.reset()
                     self.assertEqual(spawn.fill(spawn_of("Explore"))["model"], "haiku")
-                    self.assertEqual(spawn.fill(spawn_of("Plan"))["model"], "sonnet")
+                    self.assertEqual(spawn.fill(spawn_of("Plan"))["model"], "haiku")
                     tin = spawn_of("fm-scout")
                     self.assertIs(spawn.fill(tin), tin)
                     self.assertIsNone(spawn.model_for("fm-builder"))

@@ -145,11 +145,15 @@ class AgentCalls(unittest.TestCase):
 
     def test_agent_ok_defers_a_call_with_no_model(self):
         self.assertRegex(self.body, r'ti\.get\("model"\)')
-        self.assertRegex(self.body, r'(?s)ti\.get\("model"\).{0,120}!m\.is_empty\(\).{0,40}return None')
+        self.assertRegex(self.body, r'(?s)ti\.get\("model"\).{0,120}model\.is_empty\(\).{0,40}return None')
+
+    def test_agent_ok_defers_a_sonnet_or_opus_call_of_any_type(self):  # T-6101: the spawn rule rewrites those to haiku
+        self.assertRegex(self.body, r'(?s)model\.contains\("sonnet"\) \|\| model\.contains\("opus"\) \{\s*return None')
+        self.assertLess(self.body.index('contains("sonnet")'), self.body.index('"general-purpose"'))
 
     def test_agent_ok_defers_a_call_with_no_type_or_a_general_purpose_one(self):
         # a missing type, a blank one (T-5497 trims it) and a general-purpose one (any case) all return None
-        self.assertRegex(self.body, r'(?s)ti\.get\("subagent_type"\) else \{ return None \}')
+        self.assertRegex(self.body, r'(?s)ti\.get\("subagent_type"\) else \{\s*return None;?\s*\}')
         self.assertRegex(self.body, r'(?s)t\.is_empty\(\) \|\| t\.to_lowercase\(\)\.contains\("general-purpose"\).{0,40}return None')
 
     def test_agent_ok_asks_before_it_reads_any_state(self):

@@ -1442,11 +1442,12 @@ AGENT_HEAD = 'Agent — subagent_type: "sampo:fm-builder", isolation: "worktree"
 RECOVERIES_MAX = 2  # T-2354: a lane that stops a third time is blocked for a person, not resumed again
 
 
-def agent_prompt(path):
+def agent_prompt(path, marks=""):
     """T-5594: the launch prompt names the brief and the one call that opens the builder. `sampo lane start ID` focuses
-    the task and takes its scope leases, so the builder needs no preamble calls: both go in its first message."""
+    the task and takes its scope leases, so the builder needs no preamble calls: both go in its first message. T-6101:
+    marks (the escalated or purpose stamps the Agent hook reads) lead the prompt."""
     tid = os.path.basename(path).split(".")[0]  # audits/T-0001.builder.md
-    return (f'prompt: "Read {path} and run sampo lane start {tid} in your first message, both calls in one turn, '
+    return (f'prompt: "{marks}Read {path} and run sampo lane start {tid} in your first message, both calls in one turn, '
             f'then work the task it describes."')
 
 
@@ -3096,7 +3097,7 @@ def reviewer_findings(msg, cap=30, fixes=False):
 # core.required_audits stays the close gate's map: what it asks is always covered by what runs here (a test pins it).
 DEPTH_LENSES = {"trivial": ("intent", "adversary"), "small": ("intent", "adversary"),
                 "normal": ("intent", "adversary", "edge"), "risky": c.DEFAULT_LENSES}
-DEPTH_MODEL = {"trivial": "haiku", "small": "haiku", "normal": "sonnet", "risky": "sonnet"}
+DEPTH_MODEL = {"trivial": "haiku", "small": "haiku", "normal": "haiku", "risky": "haiku"}  # T-6101: haiku by default
 # a path with a whole segment or name stem of guard(s), hook(s), secret(s), auth, exec(s), land or landlock (set off by a
 # slash, dot, dash, underscore or the path's ends): what gates, hooks, secrets, login, command running and the land touch.
 # authors.py, landing/ and execution.py are other words. Prose and a tests folder's files never count here.
@@ -3865,8 +3866,11 @@ def _lanes(p, tier, outs):
 
 
 def model_route(p, tier, outs=None):
-    """T-2291: (model, line): sonnet, unless over the last 20 lane-built closed tasks of this tier sonnet's rework rate
-    (a later FIX or revert, a lost outcome, a baseline red naming it) is 0.3+ above opus's, 5+ samples each."""
+    """T-6101: (model, line): haiku, the default; the history route below is the `sampo models default route` mode. T-2291:
+    that route answers sonnet, unless over the last 20 lane-built closed tasks of this tier sonnet's rework rate (a later
+    FIX or revert, a lost outcome, a baseline red naming it) is 0.3+ above opus's, 5+ samples each."""
+    if c.models_default(p) != "route":
+        return "haiku", f"{tier} lanes on haiku, the default (sampo models default route restores the history route)"
     from sampo import outcomes
     outs = outs if outs is not None else outcomes.outcomes(p)
     n, bad = collections.Counter(), collections.Counter()
@@ -3935,13 +3939,18 @@ def _transition(p, tier, expect, new, decision, why):
     return True
 
 
-def route(p, tier, tid=None, outs=None, racing=False):
+def route(p, tier, tid=None, outs=None, racing=False, art=False):
     """(model, line, probe) for the next lane of this tier: the pick, or its probe one model down. A probe lane is task
     `tid` when the hash names it, the pick reworks 0.1 or less over 5+ lanes, no probe reworked in the last 5 closes and
     no revert is still quiet. 5+ probes (last 10) reworking within 0.1 of the pick's rate promote the cheaper model
-    (provisional until the long-horizon run confirms it). A racing task is never a probe."""
+    (provisional until the long-horizon run confirms it). A racing task is never a probe. T-6101: in the default (haiku)
+    mode there is no probe and no promotion: the pick is haiku, or opus for an art or UI purpose (art)."""
     from sampo import outcomes
     outs = outs if outs is not None else outcomes.outcomes(p)
+    if c.models_default(p) != "route":
+        if art:
+            return "opus", f"{tier} lane for an art or UI purpose: opus (T-6101: the one purpose that picks it)", False
+        return (*model_route(p, tier, outs), False)
     base, line = model_route(p, tier, outs)
     lanes = _lanes(p, tier, outs)
     st = route_state(p).get(tier) or {}
@@ -3994,6 +4003,42 @@ def plan_model(b):
     pt = c.plan_ptier(b)[0]
     pick = light_model(pt)
     return (*pick, f"ptier {pt}") if pick else None
+
+
+ESCALATE_ROUNDS = 2  # T-6101: a Haiku builder's second failed review round on one task briefs sonnet for the next builder
+
+
+def art_purpose(b):
+    """T-6101: the purpose that may take opus: "design", "ui" or "panels" when the brief's title asks for a new look, a
+    screen change or a panel (ui_request's classes); "" for any other (a readme or an ordinary change)."""
+    k = c.ui_request(b.title)
+    return k if k in ("design", "ui", "panels") else ""
+
+
+def failed_rounds(p, tid):
+    """T-6101: the review rounds task `tid` has failed: each run of 'reported' findings that a builder's return (a
+    fm-builder subagent row) answers. Read from the ledger's last 5000 lines, so an older round can fall out of it."""
+    rounds, open_round = 0, False
+    for e in c.ledger_tail(p, 5000, kinds=("finding", "subagent")):
+        if e.get("task") != tid:
+            continue
+        data = e.get("data") if isinstance(e.get("data"), dict) else {}
+        if e.get("event") == "finding" and data.get("verdict") == "reported":
+            if not open_round:
+                rounds, open_round = rounds + 1, True
+        elif e.get("event") == "subagent" and str(data.get("agent_type") or "").endswith("fm-builder"):
+            open_round = False
+    return rounds
+
+
+def escalation(p, b):
+    """T-6101: (model, reason) for the next builder of brief b once its Haiku builder has failed ESCALATE_ROUNDS review
+    rounds: sonnet, the reason naming the rounds ("2 failed rounds"). None before that, and always None in the route mode,
+    which picks its own model."""
+    if c.models_default(p) == "route":
+        return None
+    n = failed_rounds(p, b.id)
+    return ("sonnet", f"{n} failed rounds") if n >= ESCALATE_ROUNDS else None
 
 
 def confirm_routes(p, res):
@@ -5682,10 +5727,14 @@ def builder_brief(p, b, args, resume_branch=None, after="", stacked=None, check=
             x.append_log(f"builder brief past the {OWN_CAP}-char cap ({own} chars), briefed anyway: {c.fit(oversize, 300)}")
     effort = "medium" if b.tier == "S" else "high"
     light = plan_model(b)  # T-5714: a trivial or small change by its scope: haiku at medium effort, unless --model says
+    purpose = art_purpose(b)  # T-6101: an art or UI brief is the one that may take opus; every other route answers haiku
     if light:  # a light lane skips the route: it promotes no model and fills no probe window
         chosen, effort, route, probe = light[0], light[1], f"{light[2]}: {light[0]} at {light[1]} effort", False
     else:
-        chosen, route, probe = _route(p, b.tier, tid=b.id, racing=bool(racing))
+        chosen, route, probe = _route(p, b.tier, tid=b.id, racing=bool(racing), art=bool(purpose))
+    esc = escalation(p, b) if chosen == "haiku" and not getattr(args, "model", None) else None  # T-6101
+    if esc:  # the Haiku builder failed two review rounds on this task: sonnet for the next one (local-first may still take it)
+        chosen, route, probe = "sonnet", f"escalated to sonnet after {esc[1]} on this task's review (T-6101)", False
     local, fell = None, ""
     if getattr(args, "model", None) == LOCAL:  # T-5884: a JARVIS profile that answers, else sonnet with the reason logged
         local = local_profile(p)
@@ -5706,6 +5755,11 @@ def builder_brief(p, b, args, resume_branch=None, after="", stacked=None, check=
     paused = paused if chosen != LOCAL else ""  # T-5884: a local run spends no Claude usage: the hold does not apply to it
     if paused:  # T-5562: the hook rewrites a launch to haiku while the hold lasts; the printed call says so up front
         chosen, route, probe = budget.HELD_MODEL, f"{budget.HELD_MODEL} while usage is ahead of pace ({paused})", False
+    escalated = esc[1] if esc and chosen == "sonnet" else ""  # T-6101: the reason the brief and the ledger carry
+    if escalated:
+        c.log_event(p, "lane_escalate", task=b.id, data={"model": "sonnet", "why": f"{escalated} on this task's review"})
+    marks = (f"escalated: sonnet ({escalated}). " if escalated else "") + \
+        (f"purpose: {purpose}. " if chosen == "opus" and purpose else "")  # the Agent hook lets these two through
     cli.mutate(p, b.id, mark, "lane_builder", {"path": path, "chars": len(text)})  # T-2368: fm lane stats
     if ws:  # T-6062: the explorer's own record, apart from the builder's: its model, tokens, files and what fell or dropped
         c.log_event(p, "lane_workset", task=b.id, data={k: ws[k] for k in (
@@ -5719,7 +5773,7 @@ def builder_brief(p, b, args, resume_branch=None, after="", stacked=None, check=
     # except a trivial or small change by its scope (docs, tests, a claimed S), which runs on haiku at medium effort.
     # T-0779: and its effort follows the tier: medium for small well-specified diffs, high for M
     model = f', model: "{chosen}", effort: "{effort}"'
-    agent = f'{AGENT_HEAD}{model}, {agent_prompt(path)}'
+    agent = f'{AGENT_HEAD}{model}, {agent_prompt(path, marks)}'
     if own > OWN_CAP:  # T-6047: written past the cap (--oversize or a resume): the warning names the cap, not "split it"
         warns.append(f"{b.id}'s own sections are {own} chars, past the {OWN_CAP} cap: briefed anyway ({oversize})")
     elif own > OWN_MAX:  # T-2517: from OWN_MAX up to the cap: advice, the brief is written
