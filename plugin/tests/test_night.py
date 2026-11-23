@@ -105,8 +105,8 @@ class Night(ForemanTestCase):
         self.assertIn("second session", names)
         self.assertLessEqual(sum(j["usd"] for j in out["jobs"]), out["limit"])
         tight = json.loads(self.fm("night", "--dry-run", "--max-usd", "0.001", "--json").stdout)
-        self.assertEqual([j["name"] for j in tight["jobs"]], ["scout", "dream", "spar", "cold files", "compost", "consolidate",
-                                                          "fits usage", "fits repeats"])  # T-1071, T-0950, T-0665, T-0660, T-3499: only free jobs fit
+        self.assertEqual([j["name"] for j in tight["jobs"]], ["scout", "dream", "failure classes", "spar", "cold files",
+                                                          "compost", "consolidate", "fits usage", "fits repeats"])  # only free jobs fit (T-6109: its own job)
         self.assertTrue(tight["skipped"])  # what didn't fit is named
         tid = json.loads(self.fm("task", "new", "x", "--type", "CLEAN", "--tier", "S", "--ac", "ok :: true", "--step", "a",
                                  "--json").stdout)["id"]

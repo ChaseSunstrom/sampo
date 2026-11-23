@@ -362,5 +362,142 @@ class Friction(ForemanTestCase):
         self.assertNotIn("dropped body", friction._example({"cmd": "cat f <<'EOF'\ndropped body\nEOF"}, {})[0])
 
 
+class FailureClasses(ForemanTestCase):  # T-6109: the land, ship and local logs' failure lines, filed as classes headless
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        from sampo import core as c
+        self.p = c.find_project(self.repo)
+
+    def log(self, name, *lines):  # a stub log: the land or ship appends a line, the way it does in the state folder
+        with open(os.path.join(self.p.dir, name), "a", encoding="utf-8") as f:
+            f.write("".join(line + "\n" for line in lines))
+
+    def open_classes(self):
+        from sampo import core as c
+        return [b for b in c.load_briefs(self.p) if b.meta.get("source") == "self" and b.status not in c.CLOSED
+                and b.title.startswith("Repeated failure:")]
+
+    def body(self, b):
+        with open(b.path, encoding="utf-8") as f:
+            return f.read()
+
+    def test_two_land_logs_with_the_same_parked_class_file_one_task_and_a_third_instance_appends(self):
+        from unittest import mock
+        from sampo import friction
+        with mock.patch.object(friction, "_local_label", return_value=None) as label:
+            self.log("land.log", "10:00:01 refused: parked: conflicts with lanes.py (T-5707)")
+            friction.scan(self.p)
+            self.assertEqual(self.open_classes(), [], "one instance is not a class yet")
+            self.log("land.log", "11:00:02 refused: parked: conflicts with lanepilot.py (T-6061)")
+            friction.scan(self.p)
+            tasks = self.open_classes()
+            self.assertEqual(len(tasks), 1, "a class seen twice files one task")
+            self.assertIn("parked", tasks[0].title)
+            text = self.body(tasks[0])
+            self.assertIn("T-5707", text)  # both instances, named in the task
+            self.assertIn("T-6061", text)
+            self.log("land.log", "12:00:03 refused: parked by an earlier land (T-6090)")
+            friction.scan(self.p)
+            tasks = self.open_classes()
+            self.assertEqual([b.id for b in tasks], [tasks[0].id], "a third instance joins the open task")
+            self.assertEqual(len(tasks), 1)
+            self.assertIn("T-6090", self.body(tasks[0]))
+            label.assert_not_called()  # every line matched a row: the local model is never asked
+
+    def test_a_line_that_matches_no_class_files_nothing_while_the_local_model_is_down(self):
+        from unittest import mock
+        from sampo import friction
+        with mock.patch.object(friction, "_local_label", side_effect=ValueError("no local model is configured here")):
+            for _ in range(2):
+                self.log("land.log", "09:00:00 error: frobnicator exploded in step 4")
+            friction.scan(self.p)
+        self.assertEqual(self.open_classes(), [])
+
+    def test_a_home_path_in_an_instance_is_redacted_in_the_task_body(self):
+        from unittest import mock
+        from sampo import friction
+        with mock.patch.object(friction, "_local_label", return_value=None):
+            self.log("land.log", "08:00:00 refused: parked: conflicts with /home/exampleuser/work/lanes.py (T-5707)",
+                     "08:05:00 refused: parked: conflicts with /home/exampleuser/work/lanepilot.py (T-6061)")
+            friction.scan(self.p)
+        tasks = self.open_classes()
+        self.assertEqual(len(tasks), 1)
+        text = self.body(tasks[0])
+        self.assertNotIn("exampleuser", text)
+        self.assertNotIn("/home/", text)
+        self.assertIn("lanes.py", text)  # the file name stays: only the home folder is redacted
+
+    def test_the_nightly_run_files_the_classes_and_the_due_pass_clears(self):
+        from sampo import friction
+        self.fm("friction", "--every", "1")
+        tid = first(self.fm("task", "new", "tidy", "--type", "CLEAN", "--tier", "S", "--ac", "ok :: true", "--step", "a",
+                            "--focus", "--json").stdout)["id"]
+        self.fm("task", "finish", tid, "--run", "true", "--audit", "self check")
+        self.assertTrue(friction.due(self.p), "one closed task is due for a pass of one")
+        self.log("land.log", "07:00:01 refused: parked: conflicts with lanes.py (T-5707)",
+                 "07:30:01 refused: parked: conflicts with lanepilot.py (T-6061)")
+        self.fm("friction", "--failures")  # the nightly job's verb: the classes are filed, and the pass is recorded
+        self.assertEqual(len(self.open_classes()), 1)
+        self.assertFalse(friction.due(self.p), "the headless pass clears the due line")
+
+    def test_the_land_end_starts_a_detached_scan_and_never_waits_on_it(self):
+        import time
+        from unittest import mock
+        from sampo import train
+        child = mock.MagicMock(pid=424242)  # a stub child: its pid is never signalled
+        child.wait.side_effect = lambda *a, **k: time.sleep(5)  # a slow scan, if the land waited on it
+        with mock.patch.dict(os.environ), mock.patch.object(train.subprocess, "Popen", return_value=child) as popen:
+            os.environ.pop("FOREMAN_NO_BACKGROUND", None)
+            t0 = time.monotonic()
+            train._scan_failures(self.p)
+            elapsed = time.monotonic() - t0
+        self.assertLess(elapsed, 2.5, "the land returns without waiting for the scan")
+        child.wait.assert_not_called()
+        child.communicate.assert_not_called()
+        self.assertTrue(popen.call_args.kwargs["start_new_session"])
+        self.assertIn("--failures", popen.call_args.args[0])
+
+    def test_a_land_that_refuses_still_starts_the_scan(self):
+        from unittest import mock
+        from sampo import core as c, train
+        with mock.patch.object(train, "_land_checked", side_effect=c.PolicyError("paused")), \
+                mock.patch.object(train, "_scan_failures") as scan:
+            with self.assertRaises(c.PolicyError):
+                train.land(self.p, "main")
+        scan.assert_called_once()
+
+    def test_a_slow_model_call_is_cut_at_the_budget(self):
+        import time
+        from unittest import mock
+        from sampo import friction, models
+        seen = []
+
+        def stalls(prof, messages, timeout=None, **kw):  # a server that honours its timeout: it stalls until then
+            seen.append(timeout)
+            time.sleep(timeout)
+            raise models.ModelError("stalled")
+
+        local = [{"local": True, "profile": {"name": "stub", "kind": "openai"}}]
+        with mock.patch.object(models, "registry", return_value=local), \
+                mock.patch.object(models, "for_purpose", side_effect=lambda profs, purpose: profs), \
+                mock.patch.object(models, "complete", side_effect=stalls):
+            t0 = time.monotonic()
+            with self.assertRaises(ValueError):
+                friction._local_label("frobnicator exploded", 2)
+            elapsed = time.monotonic() - t0
+        self.assertEqual(len(seen), 1)
+        self.assertLessEqual(seen[0], 2, "the call's timeout is the budget left, not the server's 120 s cap")
+        self.assertLess(elapsed, 4)
+
+    def test_ship_log_refusal_and_timeout_lines_name_their_classes(self):
+        from sampo import friction
+        self.assertEqual(friction._row("00:14:16 refused: testing 3 commits on origin main, a snapshot of the head"),
+                         "ship testing refused")
+        self.assertEqual(friction._row("00:15:57 subprocess.TimeoutExpired: Command timed out after 67.0 seconds"),
+                         "ship timed out")
+        self.assertEqual(friction._row("09:00:00 refused: parked: conflicts with lanes.py (T-5707)"), "parked")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -108,6 +108,7 @@ def jobs(p, warn=None):
     from sampo import outside
     meta, out = c.read_meta(p), [("scout", ["scout", "--slow"], 0.0)]  # T-0950: free to look: work nobody asked for
     out.append(("dream", ["dream"], 0.0))  # T-0665: free: the day's failures as tripwire candidates
+    out.append(("failure classes", ["friction", "--failures"], 0.0))  # T-6109: free: the logs' failures filed as classes
     out.append(("spar", ["spar", "--capture", "--budget", "120"], 0.0))  # T-3281: free: hook fuzz, idle priority, crashes filed as FIX
     out.append(("cold files", ["map", "--cold", "--capture"], 0.0))  # T-0660: free: hot files nobody has read
     from sampo import replay

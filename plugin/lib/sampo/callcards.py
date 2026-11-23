@@ -982,8 +982,9 @@ MODEL_CALLS = 8  # the model-step calls one Session may make: a chain of model s
 INLINE = 200  # an input this short, on one line, stays in the prompt's sentence; any other is data between markers
 
 
-def _ask(card, prompt):
-    """One local model's answer to prompt: {text, model, usage}, or ValueError saying why none answered. Only profiles
+def _ask(card, prompt, budget=None):
+    """One local model's answer to prompt: {text, model, usage}, or ValueError saying why none answered. budget (T-6109):
+    seconds the whole call may take, when a caller has less than MODEL_TIMEOUT left; no more than that is ever waited. Only profiles
     on this machine (models.registry's local ones: never a paid API or the claude CLI), the ones that serve the
     'structured' job first, each given what is left of MODEL_TIMEOUT, up to three; the card's output schema goes to a
     server that takes one. The parent calls this: the jail has no sockets."""
@@ -992,7 +993,7 @@ def _ask(card, prompt):
     if not local:
         raise ValueError("no local model is configured here (a server on this machine in models.json, or ollama)")
     messages = [{"role": "system", "content": MODEL_SYSTEM}, {"role": "user", "content": prompt}]
-    end, failed = time.monotonic() + MODEL_TIMEOUT, []
+    end, failed = time.monotonic() + (MODEL_TIMEOUT if budget is None else min(MODEL_TIMEOUT, max(0, budget))), []
     # for_purpose falls back to every profile when all are specialists: a coder or an image model isn't asked for JSON
     able = [p for p in models.for_purpose(local, "structured") if "structured" in (p.get("purposes") or ["structured"])]
     if not able:

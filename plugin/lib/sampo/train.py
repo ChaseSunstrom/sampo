@@ -3969,6 +3969,26 @@ def _note_refusal(p, why):
 
 
 def land(p, main, batch=None):
+    """T-6109: the land, then the failure-class pass whatever the land did: a refusal is a failure line too."""
+    try:
+        return _land_checked(p, main, batch)
+    finally:
+        _scan_failures(p)
+
+
+def _scan_failures(p):
+    """T-6109: the land end's failure-class pass, as a detached `fm friction --failures` whose output goes to the
+    project's friction-failures.log. The land never waits on it, and a failure in starting it never fails the land. A
+    pass already running (its lock held) is not doubled."""
+    if os.environ.get("FOREMAN_NO_BACKGROUND") or c.lock_held(os.path.join(p.dir, "failure-classes")):
+        return
+    with contextlib.suppress(Exception):
+        with open(os.path.join(p.dir, "friction-failures.log"), "ab") as log:
+            subprocess.Popen([os.path.join(c.PLUGIN_ROOT, "bin", "fm"), "friction", "--failures"], cwd=p.root,
+                             stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+
+
+def _land_checked(p, main, batch=None):
     """T-3500: every finished lane waiting on a merge (lanes.awaiting_merge) through `train`, `batch` at a time (one
     that conflicts with the branch is parked before any criteria or gate run); each landed lane is removed and its task
     closed from its brief's Close fields through sampo task finish's own checks; the rest are parked (lane_stop and a

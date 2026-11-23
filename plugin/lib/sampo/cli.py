@@ -11443,6 +11443,8 @@ def _build_parser(only=None):
     g.add_argument("--reject", metavar="TEXT", help="a dead end: later digests skip lines with TEXT (T-0471)")
     g.add_argument("--minutes", action="store_true", help="minutes lost in the last week, by kind (T-0959)")
     g.add_argument("--classes", action="store_true", help="today's refusals by class: count and whether it repeated (T-2992)")
+    g.add_argument("--failures", action="store_true", help="file the failure lines of the land, ship and local logs as "
+                   "classes, headless, then record the pass (T-6109)")
     s.add_argument("--why", help="--reject: why it's a dead end")
 
     s = add("gatemap", lazy("sampo.gatemap", "cmd_gatemap"), tier=("Reports", 1045),
