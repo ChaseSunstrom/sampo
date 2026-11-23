@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- `sampo task ac ID edit N "TEXT"` takes the new criterion text after its number, as `ac add` does, instead of failing with unrecognized arguments (T-6027).
 - sampo shot --height H sets the viewport's height and --full shoots the whole page below the fold (getLayoutMetrics + captureBeyondViewport, up to 16384 px) in the viewport shot, every frame and the poster (T-6029).
 - The close resolves a docs-impact bare file name or path suffix to its one doc the task touched and writes that path into the brief, so such a lane no longer waits for a hand close (T-6026).
 - The credential guard refuses, never allows, a search whose link walk, glob, path decoding or argument size hits a cap, and the hook's Grep/Glob prefilter builds its link roots from the expanded path (~, $HOME) and mirrors every cap as an escalation (T-6019).
