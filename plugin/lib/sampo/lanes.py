@@ -661,25 +661,42 @@ def split_criteria(b, cap=OWN_CAP):
 def _split_script(p, b, parts):
     """T-6047: the sh script that makes the chained tasks, written beside the brief: each `sampo task new` quoted, part k's
     --depends the id the line part k-1 printed, part 1 keeping the task's own scope and dependencies. Its path."""
-    q, n = shlex.quote, len(parts)
-    sampo = q(os.path.join(c.PLUGIN_ROOT, "bin", "sampo"))
+    n, red = len(parts), c.redact
+    # T-6074: every brief-derived value is redacted FIRST and quoted after, and the joined script is written as is: a secret
+    # pattern run over the quoted script reads across a closing quote (a value 'password=' quoted is password='"'"'x...: the
+    # pattern misses it and the secret lands on disk) and can drop a quote, turning the rest of a field into shell
+    q = lambda v: shlex.quote(red(v))  # noqa: E731
+    sampo = shlex.quote(os.path.join(c.PLUGIN_ROOT, "bin", "sampo"))
     lines = ["#!/bin/sh", f"# T-6047: {b.id} split into {n} chained lanes (written by sampo lane brief {b.id}); run it with sh"]
     for k, part in enumerate(parts, 1):
-        argv = [sampo, "-p", q(p.slug), "task", "new", q(f"{b.title} (part {k}/{n})"), "--type", q(b.type), "--tier", q(b.tier)]
-        for flag, vals in (("--scope", [q(s) for s in b.meta.get("scope") or []]),
-                           ("--depends", [f'"$P{k - 1}"'] if k > 1 else [q(d) for d in b.meta.get("depends_on") or []])):
-            argv += [x for v in vals for x in (flag, v)]
+        # (flag-or-word, value) pairs: a value is quoted, the one after the previous part's id is "$P{k-1}" (no brief text)
+        words = [("", "task"), ("", "new"), ("", f"{b.title} (part {k}/{n})"), ("--type", b.type), ("--tier", b.tier)]
+        words += [("--scope", s) for s in b.meta.get("scope") or []]
+        words += [("--depends", None)] if k > 1 else [("--depends", d) for d in b.meta.get("depends_on") or []]
         for flag, text in (("--raw", b.section("Raw request")), ("--interpretation", b.section("Interpretation")),
                            ("--approach", b.section("Approach (options → choice → why)"))):
             if text.strip():
-                argv += [flag, q(text.strip())]
-        argv += [x for a in part["acs"] for x in ("--ac", q(a.text))] + [x for s in part["steps"] for x in ("--step", q(s.text))]
+                words.append((flag, text.strip()))
+        words += [("--ac", a.text) for a in part["acs"]] + [("--step", s.text) for s in part["steps"]]
+        argv, want = [sampo, "-p", shlex.quote(p.slug)], []
+        for flag, v in words:
+            if flag:
+                argv.append(flag)
+            argv.append(f'"$P{k - 1}"' if v is None else q(v))
+            want += ([flag] if flag else []) + (["$P%d" % (k - 1)] if v is None else [red(v)])
         lines += [f"O{k}=$({' '.join(argv)}) || exit 1", f"P{k}=${{O{k}%% *}}", f'echo "part {k}/{n}: $P{k}"']
-    lines.append(f"echo 'now drop the whole task: sampo task drop {b.id}'")
+        # the argv must read back, word for word, as the redacted values: a line that doesn't is never written
+        try:
+            back = shlex.split(" ".join(argv))
+        except ValueError:
+            back = None
+        if back is None or back[3:] != want:
+            raise c.PolicyError(f"{b.id}: the split script's part {k} does not read back as its own words: not written")
+    lines.append(f"echo {shlex.quote(f'now drop the whole task: sampo task drop {b.id}')}")
     path = os.path.join(p.dir, "audits", f"{b.id}.split.sh")
     with c.lock(p.dir):
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        c.write_atomic(path, c.redact("\n".join(lines)) + "\n")
+        c.write_atomic(path, "\n".join(lines) + "\n")
     return path
 
 

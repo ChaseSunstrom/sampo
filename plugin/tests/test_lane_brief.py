@@ -7,9 +7,11 @@ import io
 import json
 import os
 import re
+import shlex
 import subprocess
 import types
 import unittest
+from unittest import mock
 
 from helpers import ForemanTestCase
 
@@ -172,6 +174,88 @@ class SizeCap(ForemanTestCase):
         out = self.refused(shared)
         self.assertIn("every part repeats them", out)
         self.assertNotIn("nothing to split by", out)
+
+
+class SplitScriptQuoting(ForemanTestCase):
+    """T-6074: the split script quotes already-redacted values and is never redacted again: brief text never runs as shell,
+    and a secret next to a quote is still redacted (a pattern run over the quoted script misses password='x')."""
+
+    SECRET = "hunter2hunter2"
+    TOKEN = "ghp_" + "Ab1" * 8  # a made-up token shape
+
+    def brief(self):
+        sec = {"Raw request": f"don't leak password='{self.SECRET}' or $(touch PWN_RAW)\nsecond line `touch PWN_BT`; touch PWN_SEMI",
+               "Interpretation": f"token: \"{self.TOKEN}\" it's \\ done", "Approach (options → choice → why)": "x'; touch PWN_APP; '"}
+        return types.SimpleNamespace(
+            id="T-9001", title="Fix $(touch PWN_TITLE) `touch PWN_T2`; touch PWN_T3 it's", type="FIX", tier="S",
+            meta={"scope": ["a b;touch PWN_SC", "c'd"], "depends_on": ["T-1; touch PWN_DEP"]}, section=lambda name: sec.get(name, ""))
+
+    def parts(self):
+        t = types.SimpleNamespace
+        key = "-----BEGIN PRIVATE KEY-----"
+        return [{"acs": [t(text=f"ac1 password='{self.SECRET}'"), t(text=key), t(text="between $(touch PWN_AC) `touch PWN_AC2`; x"),
+                         t(text="-----END PRIVATE KEY-----")], "steps": [t(text="step '; touch PWN_ST; ' \"q\"")]},
+                {"acs": [t(text="://u:p'w$(touch PWN_URL)@host and 'tail")], "steps": [t(text="plain step")]}]
+
+    def written(self):
+        stub = os.path.join(self.tmp, "plug", "bin")
+        os.makedirs(stub)
+        log = os.path.join(self.tmp, "argv.log")
+        with open(os.path.join(stub, "sampo"), "w") as f:
+            f.write(f'#!/bin/sh\nprintf "%s\\0" "$@" >> {log}\nprintf "\\001" >> {log}\n'
+                    f'echo x >> {log}.n\necho "T-90$(wc -l < {log}.n | tr -d " ") made"\n')
+        os.chmod(os.path.join(stub, "sampo"), 0o755)
+        p = types.SimpleNamespace(slug="proj", dir=os.path.join(self.tmp, "pdir"))
+        with mock.patch.object(c, "PLUGIN_ROOT", os.path.join(self.tmp, "plug")):
+            return lanes._split_script(p, self.brief(), self.parts()), log
+
+    def test_values_are_redacted_then_quoted_and_the_script_runs_none_of_them(self):
+        path, log = self.written()
+        with open(path) as f:
+            script = f.read()
+        self.assertNotIn(self.SECRET, script, "the secret next to a quote is redacted")
+        self.assertNotIn(self.TOKEN, script)
+        self.assertIn("[REDACTED]", script)
+        work = os.path.join(self.tmp, "work")
+        os.makedirs(work)
+        r = subprocess.run(["sh", path], cwd=work, capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual([x for x in os.listdir(work) if x.startswith("PWN")], [], "brief text ran as shell")
+        self.assertEqual([x for x in os.listdir(self.tmp) if x.startswith("PWN")], [])
+        with open(log, "rb") as f:
+            calls = [x.decode().split("\0")[:-1] for x in f.read().split(b"\x01")[:-1]]
+        self.assertEqual(len(calls), 2, calls)
+        flat = "\n".join("\0".join(x) for x in calls)
+        self.assertNotIn(self.SECRET, flat)
+        self.assertNotIn(self.TOKEN, flat)
+        b, parts = self.brief(), self.parts()
+        red = c.redact
+        first = calls[0]
+        self.assertEqual(first[:5], ["-p", "proj", "task", "new", red(f"{b.title} (part 1/2)")])
+        self.assertEqual(first[first.index("--scope") + 1], red("a b;touch PWN_SC"))
+        self.assertEqual(first[first.index("--depends") + 1], "T-1; touch PWN_DEP", "part 1 keeps the task's own depends")
+        self.assertEqual(first[first.index("--raw") + 1], red(b.section("Raw request").strip()))
+        self.assertEqual(first[first.index("--approach") + 1], "x'; touch PWN_APP; '")
+        acs = [first[i + 1] for i, x in enumerate(first) if x == "--ac"]
+        self.assertEqual(acs, [red(a.text) for a in parts[0]["acs"]], "each field alone: no pattern ran across two of them")
+        self.assertEqual([first[i + 1] for i, x in enumerate(first) if x == "--step"], [parts[0]["steps"][0].text])
+        second = calls[1]
+        self.assertEqual(second[second.index("--depends") + 1], "T-901", "part 2 follows the id part 1 printed")
+        self.assertEqual([second[i + 1] for i, x in enumerate(second) if x == "--scope"], ["a b;touch PWN_SC", "c'd"])
+        self.assertEqual([second[i + 1] for i, x in enumerate(second) if x == "--ac"], [red(parts[1]["acs"][0].text)])
+
+    def test_every_command_line_reads_back_with_shlex_and_a_misquoted_value_is_never_written(self):
+        path, _ = self.written()
+        with open(path) as f:
+            script = f.read()
+        words = shlex.split(script, comments=True)  # raises on an unbalanced quote anywhere
+        self.assertIn("exit", words)
+        self.assertEqual(script.count("\nO1=$("), 1)
+        other = os.path.join(self.tmp, "pdir2")
+        p = types.SimpleNamespace(slug="proj", dir=other)
+        with mock.patch.object(lanes.shlex, "quote", lambda v: v), self.assertRaises(c.PolicyError):
+            lanes._split_script(p, self.brief(), self.parts())
+        self.assertFalse(os.path.exists(os.path.join(other, "audits", "T-9001.split.sh")))
 
 
 if __name__ == "__main__":

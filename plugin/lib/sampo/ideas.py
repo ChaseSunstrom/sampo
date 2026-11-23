@@ -747,7 +747,7 @@ def correction_clusters(p, ledger=None):
         said = c.fit(c.plain(group[-1][0]), 160)
         pattern = "(?i)^" + "".join(rf"(?=[\s\S]*\b{re.escape(x)})" for x in shape)  # as fm rule add --from-veto
         out.append({"words": shape, "count": len(group), "said": said, "type": classify(" ".join(shape)),
-                    "suggest": f"fm rule add {shlex.quote(pattern)} --warn --why {shlex.quote(said)}"})
+                    "suggest": f"fm rule add {shlex.quote(pattern)} --warn --why {shlex.quote(c.redact(said))}"})  # T-6074: redacted, then quoted
     return out
 
 
