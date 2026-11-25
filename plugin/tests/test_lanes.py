@@ -7096,6 +7096,88 @@ class FoldFollowUp(_LaneRepo):
         self.assertIn("landed lanes", self.fm("triggers", "--follow-share").stdout)
 
 
+class PlanDraftWritable(_LaneRepo):
+    """T-6297: a plan refusal's skeleton is a git-ignored draft under .fm-scratch/plans, never under state/ (the Ward
+    refuses every write there): the path both hints print is that draft, and the lead's Edit of it passes the guard."""
+
+    def refusal(self):
+        tid = json.loads(self.fm("task", "new", "Draft plan", "--type", "FIX", "--tier", "M", "--raw", "draft plan",
+                                 "--ac", "it works", "--step", "do it", "--json").stdout)["id"]
+        r = self.fm("lane", "brief", tid, check=False)
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        return tid, r.stderr + r.stdout
+
+    def decision(self, path):
+        out = self.hook("PreToolUse", {"tool_name": "Edit", "tool_input": {"file_path": path, "old_string": "x",
+                                                                          "new_string": "y"}}).stdout
+        try:
+            return (json.loads(out or "{}").get("hookSpecificOutput") or {}).get("permissionDecision"), out
+        except ValueError:
+            return None, out
+
+    def test_the_skeleton_is_a_git_ignored_draft_under_fm_scratch(self):
+        tid, text = self.refusal()
+        path = os.path.realpath(re.search(r"(\S*PLANS\.json)", text).group(1))
+        draft = os.path.join(os.path.realpath(self.repo), ".fm-scratch", "plans", f"{tid}.PLANS.json")
+        self.assertEqual(path, draft, text)
+        self.assertTrue(os.path.isfile(path), path)
+        self.git(self.repo, "check-ignore", "-q", path)  # exits non-zero when git would track the draft
+
+    def test_the_lead_can_edit_the_draft_and_the_state_file_stays_guarded(self):
+        tid, text = self.refusal()
+        # the lead's session has a planned task in focus (the guard refuses an edit with no active task, which is not
+        # what this checks); the refused task itself can't be focused until its plan is filled in
+        other = json.loads(self.fm("task", "new", "Planned", "--type", "FEATURE", "--tier", "M", "--ac", "ok :: true",
+                                   "--step", "s", "--interpretation", "Reading 1: a. Reading 2: b.",
+                                   "--approach", "1) a; fails if: x 2) use what exists: b; fails if: y 3) do less: c; "
+                                   "fails if: z Choice 1 (80%): a", "--json").stdout)["id"]
+        self.fm("focus", other)
+        path = re.search(r"(\S*PLANS\.json)", text).group(1)
+        verdict, out = self.decision(path)
+        self.assertNotEqual(verdict, "deny", out)
+        state_file = os.path.join(c.find_project(self.repo).dir, "plans", f"{tid}.PLANS.json")
+        self.assertEqual(self.decision(state_file)[0], "deny", "control: the Ward still refuses a write under state/")
+
+
+class ResumeCarriesFindings(_LaneRepo):
+    """T-6297: a builder sent back after changes_asked gets the review's open findings in full, lens and severity
+    included, in its resume brief: the lead no longer pastes `sampo lane fixes` output (that prints 300 characters)."""
+
+    LONG = ("the cap is never read: config.load() runs after the first call, so the cap it sets is lost before the "
+            "call reads it; every later call in the same process drops it too, and the test that would show it is absent; "
+            "the fix round needs every word of this, since a 300-character print cut it off mid-sentence")
+
+    def test_the_resume_brief_carries_each_open_finding_in_full(self):
+        tid, _path = Lanes.stopped_builder(self)
+        p = c.find_project(self.repo)
+        c.log_event(p, "finding", task=tid, data={"lens": "adversary", "severity": "HIGH", "file": "a.py:3",
+                                                  "text": self.LONG, "verdict": "reported"})
+        self.assertGreater(len(self.LONG), 300)
+        out = self.fm("lane", "resume", tid).stdout
+        brief = open(re.search(r"builder brief (\S+\.builder\.md)", out).group(1), encoding="utf-8").read()
+        self.assertIn("Review findings to fix", brief)
+        self.assertIn(self.LONG, brief, "the whole text, not the 300-character print")
+        self.assertIn("adversary", brief)
+        self.assertIn("HIGH", brief)
+        self.assertIn("a.py:3", brief)
+
+    def test_a_flood_of_findings_is_bounded_and_names_the_command_for_the_rest(self):
+        tid, _path = Lanes.stopped_builder(self)
+        p = c.find_project(self.repo)
+        for i in range(30):  # 30 findings of 400 characters: more than the brief's section room
+            c.log_event(p, "finding", task=tid, data={"lens": "edge", "severity": "MED", "file": f"f{i}.py:1",
+                                                      "text": f"{i:02d} " + "x" * 400, "verdict": "reported"})
+        out = self.fm("lane", "resume", tid).stdout
+        brief = open(re.search(r"builder brief (\S+\.builder\.md)", out).group(1), encoding="utf-8").read()
+        section = brief[brief.index("## Review findings to fix"):]
+        section = section[:section.index("\n## ") if "\n## " in section[1:] else len(section)]
+        self.assertLessEqual(len(section), slanes.FINDINGS_MAX_CHARS + 1000, "the section is bounded")
+        # fixes_for keeps the newest FIXES_MAX (20) of the 30: f0..f9 are not in the brief, f10 leads it
+        self.assertNotIn("f0.py:1", section, "the oldest findings fall past the newest-20 window")
+        self.assertIn("f10.py:1", section, "the first kept finding is always in")
+        self.assertIn(f"`sampo lane fixes {tid}` prints them", section, "the rest are named, with the command")
+
+
 class PatchIdentity(unittest.TestCase):  # T-6025: a review is carried by the exact bytes of a commit's change, whitespace included
     def setUp(self):
         self.tmp = tempfile.mkdtemp()

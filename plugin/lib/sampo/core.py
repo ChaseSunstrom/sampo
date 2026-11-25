@@ -7364,15 +7364,38 @@ def plan_skeleton(b, gaps):
 
 
 def write_plan_skeleton(p, entries):
-    """The skeleton files for the entries (one per task that still has a gap): {id: path}. Each task has its own
-    <ID>.PLANS.json under the project's plans folder, replaced whole on each refusal, so two sessions refused on
+    """The skeleton files for the entries (one per task that still has a gap): {id: path}. T-6297: each is a draft in
+    the project's .fm-scratch/plans folder, never under state/ (the Ward refuses every write there, so the lead could
+    not fill it in). Each task has its own <ID>.PLANS.json, replaced whole on each refusal, so two sessions refused on
     different tasks never overwrite one shared file."""
     out = {}
     for e in entries:
-        path = os.path.join(p.dir, "plans", f"{e['id']}.PLANS.json")
+        path = os.path.join(p.root, ".fm-scratch", "plans", f"{e['id']}.PLANS.json")
         write_atomic(path, json.dumps([e], indent=2, ensure_ascii=False) + "\n", durable=False)
         out[e["id"]] = path
+    if out:
+        _keep_scratch_out_of_git(p.root)
     return out
+
+
+def _keep_scratch_out_of_git(root):
+    """T-6297: .fm-scratch/ is git-ignored: one anchored line in the repo's own info/exclude (never .gitignore), added
+    once. Outside a git repo there is nothing to ignore, so nothing is written."""
+    where = _git(root, "rev-parse", "--git-path", "info/exclude", fail="").strip()
+    if not where:
+        return
+    where = os.path.join(root, where)
+    try:
+        with open(where, encoding="utf-8") as f:
+            have = f.read()
+    except OSError:
+        have = ""
+    line = "/.fm-scratch/"
+    if line in have.splitlines():
+        return
+    os.makedirs(os.path.dirname(where), exist_ok=True)
+    with open(where, "a", encoding="utf-8") as f:
+        f.write(("" if not have or have.endswith("\n") else "\n") + line + "\n")
 
 
 STAGES = ("planning", "ready", "executing", "verifying", "documenting", "auditing", "closing")  # stage()'s order
