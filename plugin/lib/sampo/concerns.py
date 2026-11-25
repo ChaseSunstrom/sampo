@@ -22,6 +22,7 @@ reopens the closed task (or captures a linked FIX when the close is old or there
 the real surface", and `surface_gaps` is the one gate: that task cannot close on unit-test evidence alone. The meaning
 of "the same concern" is what fold already decides; nothing here reads the words of a message."""
 import contextlib
+import functools
 import hashlib
 import json
 import os
@@ -57,6 +58,11 @@ SURFACE_CMDS = (("sampo", "smoke"), ("fm", "smoke"), ("sampo", "shot"), ("fm", "
                 ("fm", "concerns", "show"), ("sampo", "stories"), ("fm", "stories"), ("sampo", "flow"), ("fm", "flow"),
                 ("curl",), ("wget",))
 PATHS_GATE_FROM = "2026-11-18T00:00:00Z"  # T-5026: a task closed before the user-visible-paths gate shipped could not have had the run
+# T-5240 (T-4322 c5): the renderer table, Sampo's own page builders: an edit to one of these is a page the user looks at
+# even though core.ui_paths (markup, styles, components) does not list it. Each entry counts only where the file exists.
+RENDERERS = ("plugin/lib/sampo/live.py", "plugin/lib/sampo/board.py", "plugin/lib/sampo/page.py",
+             "plugin/lib/sampo/panels.py", "plugin/lib/sampo/stories.py", "site/pages.py", "site/build.py")
+PAGE_SCRIPTS = ("plugin/web/**/*.js", "site/*.js")  # the page scripts the pages load (glob: see _glob_match)
 _SMOKE_RUN = re.compile(r"(?:^|[\s/=;&|(])(?:sampo|fm)\s+smoke\b")  # a listed command that is itself the smoke verb
 
 
@@ -1213,19 +1219,65 @@ def _touched_files(p, tid):
     return dict(hit[1].get(tid, {}))
 
 
+@functools.lru_cache(maxsize=256)
+def _glob_re(pattern):
+    """A glob as a regex over a whole path: `**/` is any number of directories (none too), `**` anything, `*` and `?` one
+    directory's name or character."""
+    out, i = [], 0
+    while i < len(pattern):
+        if pattern.startswith("**/", i):
+            out.append("(?:.*/)?")
+            i += 3
+        elif pattern.startswith("**", i):
+            out.append(".*")
+            i += 2
+        else:
+            ch = pattern[i]
+            out.append("[^/]*" if ch == "*" else "[^/]" if ch == "?" else re.escape(ch))
+            i += 1
+    return re.compile("".join(out))
+
+
+def _glob_match(pattern, path):
+    """T-5240: whether a path matches a glob (see _glob_re)."""
+    return _glob_re(pattern).fullmatch(path) is not None
+
+
+def _surface_globs(p):
+    """T-5240: the project's meta surface_paths globs (a list of strings; [] when none, or when meta can't be read: the
+    close gates fail open, as _touched_files does)."""
+    try:
+        globs = c.read_meta(p).get("surface_paths")
+    except Exception:
+        _log_error("surface_paths")
+        return []
+    return [g for g in globs if isinstance(g, str) and g] if isinstance(globs, list) else []
+
+
+def _renders(f, globs):
+    """T-5240 (T-4322 c5): whether a file is a page the user looks at beyond core.ui_paths: one of the renderer table's
+    page builders, a page script, or a path the project's meta surface_paths names. Tests never count."""
+    if c._NOT_UI.search(f.lower()):
+        return False
+    return f in RENDERERS or any(_glob_match(g, f) for g in (*PAGE_SCRIPTS, *globs))
+
+
 def user_facing(p, b):
     """T-5026: the paths of a task that the user would look at (core.ui_paths: markup, styles, components, TUI screens;
-    never tests): its scope entries and the files the hooks attributed to its edits. Paths decide, never the words of a
-    title. An edit list that can't be read leaves the scope's answer."""
+    never tests): its scope entries and the files the hooks attributed to its edits. T-5240: and the renderer table's page
+    builders, the page scripts and the meta surface_paths globs. Paths decide, never the words of a title. An edit list
+    that can't be read leaves the scope's answer."""
     scope = [s for s in b.meta.get("scope") or [] if isinstance(s, str)]
     try:
         touched = list(_touched_files(p, b.id))
     except Exception:
         _log_error("user_facing")
         touched = []
+    files = list(dict.fromkeys(scope + touched))
     # terminal UI (TUI screens, mods' hooks, statuslines) is not a page a surface command can look at (core._need_tui)
-    return [f for f in c.ui_paths(list(dict.fromkeys(scope + touched)))
-            if not (c._UI_TUI.search(f.lower()) or c._UI_OTHER.search(f))]
+    ui = set(f for f in c.ui_paths(files) if not (c._UI_TUI.search(f.lower()) or c._UI_OTHER.search(f)))
+    globs = _surface_globs(p)
+    return [f for f in files if f in ui or _renders(f, globs)]
 
 
 def _last_ui_edit(p, b, files):
