@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- Tests: two lands back to back while one slow ship runs merge before it ends and share one more push (T-5067).
 - sampo run hands each finished lane to the lane pilot (review, then the accept queues it into the land train) instead of holding it as unreviewed and running an hour-long gate per lane; with the pilot off, the old serial merge stays (T-6480).
 - When `sampo run` has a free slot and fills none, it prints why, once per change: how many queued tasks are held for no scope, open dependencies, no plan, the L tier, waiting on you, or files a running lane holds (T-6487).
 - `sampo run` marks a finished lane's session as its builder's return before the lane pilot reviews it, so the pilot no longer refuses every run lane with "its builder has not returned" (T-6490).
