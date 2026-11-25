@@ -604,6 +604,7 @@ def _run_pool(p, args, models, log, skip, told, fit, n, left, fails=0):
     live, merging, lanes, done_ids = {}, {}, {}, set()  # live: watcher future -> (brief, path, proc, out, t0)
     finished, limited = 0, False
     stall_s = getattr(args, "stall", 20) * 60
+    serving = bool(c.read_meta(p).get("serve"))
 
     def watch(proc, path, deadline):
         code, why = _watch(proc, path, deadline, stall_s)
@@ -698,6 +699,13 @@ def _run_pool(p, args, models, log, skip, told, fit, n, left, fails=0):
                 avoid = skip | {b.id for b in running} | done_ids | waiting
                 head = _next_runnable(p, avoid, told, fit)
                 batch = _batch(p, head, avoid, room, running) if head else []
+                if head and not batch and serving and not _batch(p, head, avoid, 1, []):
+                    # T-6409: a head no lane will ever take (no scope, L, held): beside serve there is no main-checkout
+                    # session for it, so skip it and pick again, or the pool returns and is called for it forever
+                    skip.add(head.id)
+                    print(f"{head.id}: no lane can take it (needs S/M, planned, a scope, nothing pending); "
+                          "skipped this run", flush=True)
+                    continue
                 if len(batch) > 1 or live:
                     print(f"running {len(live) + len(batch)} at once: "
                           f"{', '.join(x.id for x in [b for b, *_ in live.values()] + batch)}", flush=True)

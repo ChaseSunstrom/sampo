@@ -382,6 +382,15 @@ class Run(RunCase):
         self.assertNotEqual(p.returncode, 0)
         self.assertIn("fm serve", p.stderr)
 
+    def test_beside_serve_a_task_no_lane_can_take_is_skipped_not_spun_on(self):
+        # T-6409: an unscoped head made the lane pool pick nothing, return, and be called again for the same head forever
+        a = self.task("one")
+        self.fm("serve", env=self.env())
+        self.stub("claude", self.finisher)
+        p = self.run_fm(check=False)
+        self.assertIn(f"{a}: no lane can take it", p.stdout)
+        self.assertNotIn("claude ", self.called())
+
 
 class RunRoute(RunCase):
     """T-2353: fm run with no --models and none kept gives each session the per-tier route's model, and says so."""
