@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- The Sampo pane and band redraw about once a second while Claude works and repaint what moves by blit, cutting the mod's motion cost to a fraction of a core (T-5546).
 - lane pilot --all reviews up to PILOT_SWEEP_MAX returned lanes at once, each in its own process, and picks up lanes retried mid-sweep (T-6331).
 - fm ui --json runs in under 1 s warm instead of 23 s, as unproven rollups lint each verify command once and test files are read once per process (T-6335).
 - A builder now writes five LENSES lines about its own diff (cost at scale, error and fail closed, races, the test that fails without the change, untrusted input), which are stored on its brief and printed in the review brief under 'Builder's own lens pass' (T-5724).
