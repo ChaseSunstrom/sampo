@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- The lane pilot's fix session can now edit its own finished lane: the brief gate admits a done, unlanded task only for the pilot's own headless session pinned to that lane, and a shell command may not set FOREMAN_DRIVE_TASK, so the pilot's fix rounds commit instead of changing nothing (T-6521).
 - test_night's NightLong, Stranger and StrangerGuards fixtures turn claude_bench on for their own fixture project, and one test each checks the gate off refuses naming '! sampo claude-bench on', ending the trunk red from T-5584 (T-5856).
 - The CloseFields test now asserts fm-fixer and fm-resolver trailing lines are recorded, following core.EDITING_AGENTS instead of listing them as non-recording (T-5854).
 - Tests: two lands back to back while one slow ship runs merge before it ends and share one more push (T-5067).
