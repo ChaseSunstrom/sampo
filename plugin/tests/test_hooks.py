@@ -4282,6 +4282,152 @@ class DriveTaskLane(HookCase):  # T-6521: the lane pilot's fix session edits its
         self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
 
 
+class HeadlessReadScope(HookCase):  # T-6533 review: a headless pilot session reads only its lane, its scratch and its task's brief
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        import tempfile
+        from sampo import ideas
+        self.scratch = tempfile.mkdtemp(prefix="fm-pilot-", dir=ideas.safe_root())  # the folder ideas.fresh_cwd("pilot") makes
+        self.addCleanup(shutil.rmtree, self.scratch, True)
+        self.outside = os.path.join(self.repo, "outside.py")
+        with open(self.outside, "w") as f:
+            f.write("secret = 1\n")
+
+    def lane(self):
+        tid = self.task("Lane read", focus=False)
+        lane = os.path.join(self.repo + ".lanes", tid)
+        subprocess.run(["git", "-C", self.repo, "worktree", "add", "-q", "-b", f"foreman/{tid}", lane], check=True)
+        self.fm("focus", tid, cwd=lane)
+        with open(os.path.join(lane, "x.py"), "w") as f:
+            f.write("x = 1\n")
+        return tid, lane
+
+    def pilot(self, lane):
+        """The env of the lane pilot's headless claude for `lane`: the headless marker, and the lane pinned to its main checkout."""
+        return {"FOREMAN_PILOT_HEADLESS": "1", "FOREMAN_PILOT_LANE": lane, "FOREMAN_PILOT_MAIN": os.path.realpath(self.repo)}
+
+    def call(self, tool, ti, cwd, env):
+        return self.hook("PreToolUse", {"tool_name": tool, "cwd": cwd, "tool_input": ti}, env=env)
+
+    def refused(self, proc):
+        return self.out_of(proc).get("permissionDecision") == "deny"
+
+    def test_a_headless_read_outside_the_lane_is_refused(self):
+        tid, lane = self.lane()
+        env = self.pilot(lane)
+        for tool, ti, cwd in (("Read", {"file_path": self.outside}, lane),
+                              ("Read", {"file_path": self.outside}, self.repo),
+                              ("Grep", {"pattern": "secret", "path": self.repo}, lane),
+                              ("Glob", {"pattern": "*.py", "path": self.repo}, lane),
+                              ("Glob", {"pattern": "../*.py"}, lane),
+                              ("Glob", {"pattern": "/etc/*"}, lane),
+                              ("LS", {"path": self.repo}, lane)):
+            p = self.call(tool, ti, cwd, env)
+            self.assertTrue(self.refused(p), (tool, ti, cwd, p.stdout + p.stderr))
+            self.assertIn("headless", self.out_of(p).get("permissionDecisionReason", ""), tool)
+
+    def test_a_headless_read_inside_the_lane_or_its_scratch_is_allowed(self):
+        tid, lane = self.lane()
+        env = self.pilot(lane)
+        with open(os.path.join(self.scratch, "a.txt"), "w") as f:
+            f.write("a\n")
+        for tool, ti, cwd in (("Read", {"file_path": os.path.join(lane, "x.py")}, lane),
+                              ("Grep", {"pattern": "x", "path": lane}, lane),
+                              ("Glob", {"pattern": "**/*.py"}, lane),
+                              ("Read", {"file_path": os.path.join(self.scratch, "a.txt")}, self.scratch),
+                              ("Grep", {"pattern": "a"}, self.scratch)):
+            p = self.call(tool, ti, cwd, env)
+            self.assertFalse(self.refused(p), (tool, ti, cwd, p.stdout + p.stderr))
+
+    def test_a_headless_symlink_in_the_lane_that_points_out_is_refused(self):
+        tid, lane = self.lane()
+        os.symlink(self.outside, os.path.join(lane, "link.py"))
+        p = self.call("Read", {"file_path": os.path.join(lane, "link.py")}, lane, self.pilot(lane))
+        self.assertTrue(self.refused(p), p.stdout + p.stderr)
+
+    def test_a_headless_read_of_the_lanes_own_brief_files_is_allowed_and_no_other_task_s(self):
+        tid, lane = self.lane()
+        other = self.task("Other", focus=False)
+        p = self.project()
+        os.makedirs(os.path.join(p.dir, "audits"), exist_ok=True)
+        mine = [os.path.join(p.dir, "audits", f"{tid}.{kind}.md") for kind in ("builder", "conflict")]
+        theirs = os.path.join(p.dir, "audits", f"{other}.builder.md")
+        for path in mine + [theirs]:
+            with open(path, "w") as f:
+                f.write("brief\n")
+        env = self.pilot(lane)
+        for path in mine:
+            self.assertFalse(self.refused(self.call("Read", {"file_path": path}, lane, env)), path)
+        self.assertTrue(self.refused(self.call("Read", {"file_path": theirs}, lane, env)), "another task's brief is outside")
+
+    def test_a_session_that_is_not_the_pilots_headless_claude_is_unaffected(self):
+        tid, lane = self.lane()
+        for env in ({}, {"FOREMAN_PILOT_LANE": lane, "FOREMAN_PILOT_MAIN": os.path.realpath(self.repo)}):
+            p = self.call("Read", {"file_path": self.outside}, self.repo, env)
+            self.assertFalse(self.refused(p), (env, p.stdout + p.stderr))
+
+    def test_a_headless_session_with_no_pinned_lane_reads_nothing(self):
+        tid, lane = self.lane()
+        env = self.pilot(lane)
+        del env["FOREMAN_PILOT_MAIN"]  # the marker with no pin names no lane: no read is inside one
+        self.assertTrue(self.refused(self.call("Read", {"file_path": os.path.join(lane, "x.py")}, lane, env)))
+
+    def test_a_headless_glob_that_escapes_the_lane_by_braces_brackets_or_tilde_is_refused(self):  # T-6533 review round 2
+        tid, lane = self.lane()
+        env = self.pilot(lane)
+        real = os.path.realpath(self.repo)
+        for tool, ti in (("Glob", {"pattern": "{..,x}/secret", "path": lane}),
+                         ("Glob", {"pattern": "{../..,x}/*", "path": lane}),
+                         ("Glob", {"pattern": "{/home,x}/*", "path": lane}),
+                         ("Glob", {"pattern": "{" + real + ",x}/*", "path": lane}),
+                         ("Glob", {"pattern": "[/]" + real.lstrip("/") + "/*.py", "path": lane}),
+                         ("Glob", {"pattern": "[.][.]/*", "path": lane}),
+                         ("Glob", {"pattern": "sub/~/x", "path": lane}),
+                         ("Glob", {"pattern": "$HOME/*", "path": lane}),
+                         ("Glob", {"pattern": "%2e%2e/*", "path": lane}),
+                         ("Glob", {"pattern": "..\\..\\*", "path": lane}),
+                         ("Grep", {"pattern": "secret", "path": lane, "glob": "{..,x}/secret"}),
+                         ("Grep", {"pattern": "secret", "path": lane, "glob": "../*"}),
+                         ("Grep", {"pattern": "secret", "path": lane, "glob": "[/]*"})):
+            p = self.call(tool, ti, lane, env)
+            self.assertTrue(self.refused(p), (tool, ti, p.stdout + p.stderr))
+            # a glob that reaches the home folder is the Ward's credential refusal, which answers first: either reason
+            reason = self.out_of(p).get("permissionDecisionReason", "")
+            self.assertTrue("headless" in reason or "Ward" in reason, (tool, ti, reason))
+        p = self.call("Glob", {"pattern": "~/*", "path": lane}, lane, env)
+        self.assertTrue(self.refused(p), p.stdout + p.stderr)
+
+    def test_a_headless_glob_with_braces_inside_the_lane_is_allowed(self):
+        tid, lane = self.lane()
+        os.makedirs(os.path.join(lane, "sub", "a"))
+        env = self.pilot(lane)
+        for tool, ti in (("Glob", {"pattern": "{x,y}.py", "path": lane}),
+                         ("Glob", {"pattern": "sub/{a,b}/*.py", "path": lane}),
+                         ("Glob", {"pattern": "{sub,x}/**", "path": lane}),
+                         ("Grep", {"pattern": "x", "path": lane, "glob": "{x,y}.py"})):
+            p = self.call(tool, ti, lane, env)
+            self.assertFalse(self.refused(p), (tool, ti, p.stdout + p.stderr))
+
+    def test_a_headless_session_reads_its_own_task_s_briefs_only(self):  # T-6533 review round 2: not every brief of the lane
+        from sampo import cli
+        tid, lane = self.lane()
+        other = self.task("Same lane too", focus=False)
+        p = self.project()
+        cli.mutate(p, other, lambda x: x.meta.__setitem__("lane", os.path.realpath(lane)), "lane_new", {"path": lane})
+        os.makedirs(os.path.join(p.dir, "audits"), exist_ok=True)
+        mine = os.path.join(p.dir, "audits", f"{tid}.builder.md")
+        theirs = os.path.join(p.dir, "audits", f"{other}.builder.md")
+        for path in (mine, theirs):
+            with open(path, "w") as f:
+                f.write("brief\n")
+        unnamed = dict(self.pilot(lane), FOREMAN_DRIVE_TASK="")  # no task named: two tasks hold this lane, so neither brief
+        self.assertTrue(self.refused(self.call("Read", {"file_path": mine}, lane, unnamed)), "two tasks, none named")
+        named = dict(self.pilot(lane), FOREMAN_DRIVE_TASK=tid)
+        self.assertFalse(self.refused(self.call("Read", {"file_path": mine}, lane, named)), "the named task's brief")
+        self.assertTrue(self.refused(self.call("Read", {"file_path": theirs}, lane, named)), "another task's brief, same lane")
+
+
 class DesignNudge(HookCase):
     """T-1514: a task's first UI edit in a repo with no DESIGN.md gets one note naming the design-direction playbook;
     once per task, never a block."""

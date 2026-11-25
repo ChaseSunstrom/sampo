@@ -801,6 +801,7 @@ def _claude_env(lane=None, agent="", drive_task=None):
         env[c.PILOT_MAIN_ENV] = os.path.realpath(own)
     if agent in c.ns_names("fm-resolver") or _unmerged(lane):
         env["SAMPO_LANE_CHILD"] = "1"
+    env.pop("FOREMAN_DRIVE_TASK", None)  # T-6533 review: an inherited task is no task of this run
     if drive_task:  # T-6533: the fix session's own task, as its run has it (lanepilot._fix_session_env)
         env["FOREMAN_DRIVE_TASK"] = drive_task
     return env

@@ -76,7 +76,7 @@ const MS_EPOCH: f64 = 1e11; // T-4669: budget.MS_EPOCH
 const MIRRORS: [(&str, &str); 31] = [
     ("hooks.run", "e9a5910273f5"),
     ("hooks._run", "f17c9b9f44d8"),
-    ("hooks._pre_tool_use", "a4942e13a1ec"),
+    ("hooks._pre_tool_use", "6cecd64f4118"),
     ("hooks._credential_like", "08fce2b10d8f"),
     ("hooks._credential_read", "6ed174ed2226"),
     ("hooks._outline_first", "a2870fe5cde5"),
@@ -230,6 +230,10 @@ fn knobs() -> bool {
         || ["NOW", "HOST", "FAULT_LANE"].iter().any(|k| set(k))
         || std::env::var_os("SAMPO_HOOK_MODULES").is_some_and(|v| !v.is_empty())
         || std::env::var_os("PYTHON_CPU_COUNT").is_some()
+        // T-6533 review: a headless pilot session's reads are scoped by hooks._headless_scope_denial, which this file doesn't
+        // mirror: any value of either marker name (core.headless_pilot reads FOREMAN_'s, a SAMPO_ one may be mirrored to it)
+        || std::env::var_os("FOREMAN_PILOT_HEADLESS").is_some()
+        || std::env::var_os("SAMPO_PILOT_HEADLESS").is_some()
         || names
             .iter()
             .any(|k| raw(&format!("SAMPO_{k}")) || raw(&format!("FOREMAN_{k}")))

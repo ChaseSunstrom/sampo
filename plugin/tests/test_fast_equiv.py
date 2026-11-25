@@ -364,6 +364,18 @@ class Reads(Base):
             ("a state path that isn't UTF-8", read(file_path=small), False, {"FOREMAN_STATE": "{home}/st\udcff"}),
         ])
 
+    def test_a_headless_pilot_sessions_small_read_goes_to_python(self):
+        """T-6533 review round 2: sampo-fast allowed a small Read natively before hooks.py's headless scope could refuse it,
+        so a headless pilot session read a small file outside its lane (a .env) untouched. Its marker sends the call to
+        Python; with no marker the same read stays native (the control)."""
+        outside = os.path.join(self.tmp, "outside.env")
+        with open(outside, "w") as f:
+            f.write("TOKEN=1\n")
+        read = {"tool_name": "Read", "tool_input": {"file_path": outside}}
+        pilot = {"FOREMAN_PILOT_HEADLESS": "1", "FOREMAN_PILOT_LANE": self.repo, "FOREMAN_PILOT_MAIN": self.repo}
+        self.assertTrue(self.pair(read), "control: a small read with no marker is native")
+        self.assertFalse(self.pair(read, env=pilot), "a headless pilot session's read is Python's to judge")
+
     def test_proc_and_letter_case_reads_go_to_the_guard(self):
         """T-5987: /proc/<pid>/environ|mem|maps|fd/N reports length 0, so a native read let it through; and a credential
         folder or file in another letter case (~/.SSH, .NETRC) matched neither prefilter. Both defer, both agree."""

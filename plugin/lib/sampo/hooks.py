@@ -3794,6 +3794,109 @@ def _credential_like(path):
     return False
 
 
+# T-6533 review: a headless pilot session (the lane pilot's fix, resolver and builder runs) reads its lane, its task's audit
+# briefs and its own scratch folder, and nothing else. Bypass permissions stop Claude Code refusing a read outside the project,
+# so the guard refuses it here, on each path the call names (realpath, so a symlink out of the lane lands outside).
+_HEADLESS_PATH_KEYS = {"Read": "file_path", "Glob": "pattern", "Grep": "path", "LS": "path", "LSP": "filePath",
+                       "NotebookRead": "notebook_path", "ReadMcpResourceTool": "uri"}
+
+
+def _within(path, root):
+    """Whether the real path is the root or inside it. An empty path (one that can't be resolved) is inside nothing."""
+    return bool(path) and (path == root or path.startswith(root.rstrip(os.sep) + os.sep))
+
+
+def _abs_path(raw, base):
+    raw = os.path.expanduser(str(raw or ""))
+    return os.path.realpath(os.path.join(base, raw) if raw else base)
+
+
+def _pilot_scratch(real):
+    """The scratch folder a headless pilot run starts in (ideas.fresh_cwd("pilot"): fm-pilot-* under the safe root)."""
+    from sampo import ideas
+    return os.path.dirname(real) == os.path.realpath(ideas.safe_root()) and os.path.basename(real).startswith("fm-pilot-")
+
+
+def _lane_briefs(lane):
+    """The real paths of the builder and conflict briefs of the lane's own task, the ones the lane pilot's fix, resolver
+    and builder runs read (fix_prompt, _conflict_prompt, _headless's prompt). The own task is FOREMAN_DRIVE_TASK when the
+    session names one (every pilot run does); without one it is the lane's task only when exactly one task holds the lane.
+    Several tasks and no named one: no brief."""
+    out = set()
+    p = c.find_project(lane)
+    if not p:
+        return out
+    owned = [b for b in c.load_briefs(p) if str(b.meta.get("lane") or "") and os.path.realpath(str(b.meta["lane"])) == lane]
+    drive = os.environ.get("FOREMAN_DRIVE_TASK") or ""
+    if drive:
+        owned = [b for b in owned if b.id == drive]
+    elif len({b.id for b in owned}) != 1:
+        owned = []
+    for b in owned:
+        for kind in ("builder", "conflict"):
+            out.add(os.path.realpath(os.path.join(p.dir, "audits", f"{b.id}.{kind}.md")))
+    return out
+
+
+def _headless_glob_ok(pat):
+    """Whether a glob a headless pilot session runs has no escape the static-prefix check can't follow: _GLOB_ESCAPES (a ..,
+    a [class], a {alternative} led by / . ~ $, an absolute, URI, %, $ or \\ form) is refused; a leading ~/ is the home folder,
+    any other ~ is refused; a brace group with a / or .. in it is refused. What is left has every brace alternative a plain
+    name under the folder its static prefix names, which _headless_paths checks."""
+    rest = pat[2:] if pat.startswith("~/") else pat
+    return not (_GLOB_ESCAPES.search(rest) or "~" in rest or re.search(r"\{[^{}]*(?:/|\.\.)[^{}]*\}", rest))
+
+
+def _headless_paths(tool, ti, cwd):
+    """(real path, shown) for each path a Read or search call names; a missing path is the cwd. A glob that climbs with ..
+    names no path (it can't be followed), and a URI that isn't a file names none: both are outside every root. A Grep's
+    glob filters the files under its path, and its static prefix is checked as a Glob's is."""
+    raw = str(ti.get(_HEADLESS_PATH_KEYS[tool]) or "")
+    if tool == "Glob":
+        if not _headless_glob_ok(raw):
+            return [("", raw)]
+        pat = os.path.expanduser(raw)
+        m = _GLOBBY.search(pat)
+        keep = os.path.dirname(pat[:m.start()]) if m else pat  # the folder the glob walks, or the file it names
+        return [(_abs_path(keep, _abs_path(ti.get("path"), cwd)), raw)]
+    if tool == "Grep" and ti.get("glob"):
+        return [(_abs_path(raw, cwd), raw)] + _headless_paths("Glob", {"pattern": ti.get("glob"), "path": raw}, cwd)
+    if tool == "ReadMcpResourceTool":
+        if raw.startswith("file://"):
+            raw = raw[len("file://"):]
+        elif _SCHEME_RX.match(raw):
+            return [("", raw)]
+    return [(_abs_path(raw, cwd), raw)]
+
+
+def _headless_scope_denial(pl):
+    """T-6533 review: the refusal of a Read or search call that reaches outside a headless pilot session's roots (its pinned
+    lane, its lane's briefs, its own scratch cwd), or None. Not a headless pilot: None. A headless pilot with no pinned lane
+    has no lane root, so it reads only its scratch and nothing else."""
+    tool = pl.get("tool_name", "")
+    if tool not in _HEADLESS_PATH_KEYS or not c.headless_pilot():
+        return None
+    cwd = os.path.realpath(_cwd(pl))
+    lane = c.headless_lane()
+    ti = pl.get("tool_input") if isinstance(pl.get("tool_input"), dict) else {}
+    scratch = briefs = None  # looked up only for a path the lane doesn't hold: most reads are in the lane
+    for path, shown in _headless_paths(tool, ti, cwd):
+        if lane and _within(path, lane):
+            continue
+        if scratch is None:
+            scratch = _pilot_scratch(cwd)
+        if scratch and _within(path, cwd):
+            continue
+        if briefs is None:
+            briefs = _lane_briefs(lane) if lane else set()
+        if path in briefs:
+            continue
+        where = shown or "a path it cannot resolve"
+        return ("Sampo: a headless pilot session reads only its lane, its task's audit briefs and its own scratch folder, "
+                f"and this {tool} reaches {where}, outside them, so it is refused.")
+    return None
+
+
 def _credential_read(pl):
     """T-1224: the guard's refusal of a Read of a credential, or None. Only a credential-like path imports the guard
     and looks the task up (for a grant), so a guard broken mid-edit never stops an ordinary read; for that path a broken
@@ -4413,6 +4516,8 @@ def _pre_tool_use(raw):
         if tool == "Read":  # T-0724: its own hook entry, which never blocks a read on failure
             try:  # T-1224: but a credential read is the guard's, and that check fails closed
                 d = _credential_read(pl)
+                if not d:  # T-6533 review: a headless pilot session reads only its own roots (bypass doesn't refuse it)
+                    d = _headless_scope_denial(pl)
             except Exception:
                 log_error("PreToolUse", _tb())
                 d = ("Ward: the credential-read check failed (sampo doctor shows the error), so this read is "
@@ -4476,7 +4581,7 @@ def _pre_tool_use(raw):
         if tool not in GUARDED:
             if tool in _SEARCH_TOOLS or _MCP_FILE_RX.fullmatch(tool):  # T-5987: Read's check, for the tools that search
                 try:
-                    d = _credential_search(pl)
+                    d = _credential_search(pl) or _headless_scope_denial(pl)  # T-6533 review: the headless scope, as Read's
                 except Exception:
                     log_error("PreToolUse", _tb())
                     d = ("Ward: the credential-search check failed (sampo doctor shows the error), so this call is "

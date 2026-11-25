@@ -448,6 +448,13 @@ class HeadlessEdit(LaneCase):
         self.assertIn("blocked", said("Bash", command=f"echo x > {state_file}"), "a shell write into Sampo state")
 
 
+class DriveTaskEnv(LaneCase):  # T-6533 review: a FOREMAN_DRIVE_TASK the pilot's own env carries is not passed to a run with no task
+    def test_an_inherited_drive_task_is_dropped_unless_a_task_is_given(self):
+        with mock.patch.dict(os.environ, {"FOREMAN_DRIVE_TASK": "T-1"}):
+            self.assertNotIn("FOREMAN_DRIVE_TASK", pilotsig._claude_env(self.lane, "sampo:fm-resolver"))
+            self.assertEqual(pilotsig._claude_env(self.lane, "sampo:fm-resolver", "T-2").get("FOREMAN_DRIVE_TASK"), "T-2")
+
+
 class LaneConfig(LaneCase):
     """T-5970 (security): a lane lives inside the repo and a builder writes its files, so a run with the lane (or the repo) as
     cwd loads the lane's CLAUDE.md, root or nested, and is steered by it. `--setting-sources user` keeps the lane's settings
