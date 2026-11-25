@@ -729,5 +729,30 @@ class IntegrateThroughPilot(ForemanTestCase):
         self.assertIn("merged into", how)
 
 
+class HeldBack(ForemanTestCase):
+    """T-6487: an idle pool slot says why the queue fills none, one tally over every queued task."""
+
+    def test_each_queued_task_is_counted_under_what_holds_it(self):
+        from sampo import core as c
+        from sampo import serve
+        self.fm("init")
+        self.fm("task", "new", "scoped", "--type", "FEATURE", "--tier", "S", "--scope", "a.py", "--ac", "ok :: true",
+                "--step", "a")
+        self.fm("task", "new", "unscoped", "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true", "--step", "a")
+        self.fm("task", "new", "big", "--type", "FEATURE", "--tier", "L", "--scope", "b.py", "--ac", "ok :: true",
+                "--step", "a")
+        self.fm("task", "new", "same file", "--type", "FEATURE", "--tier", "S", "--scope", "a.py", "--ac", "ok :: true",
+                "--step", "a")
+        p = c.find_project(self.repo)
+        running = [c.find_brief(p, "T-0001")]
+        held = serve._held_back(p, set(), running)
+        self.assertIn("1 no scope", held)
+        self.assertIn("1 L tier", held)
+        self.assertIn("1 files overlap a lane", held)
+        self.assertNotIn("T-0001", held)
+        self.assertIn("1 held this run", serve._held_back(p, {"T-0002"}, running))
+        self.assertEqual(serve._held_back(p, set(), []).count("free"), 1, serve._held_back(p, set(), []))
+
+
 if __name__ == "__main__":
     unittest.main()

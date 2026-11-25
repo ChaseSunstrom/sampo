@@ -481,6 +481,30 @@ def _batch(p, head, skip, n, running=None):
     return batch
 
 
+def _held_back(p, skip, running):
+    """T-6487: why the queue fills no free slot, as one tally line ("" for an empty queue): each queued task counted
+    once, under the first reason _batch would refuse it, so an idle pool says what to fix (plan, scope, land, wait)."""
+    briefs = c.load_briefs(p)
+    by_id, meta = {b.id: b for b in briefs}, c.read_meta(p)
+    pending, autonomy = c.pending_tasks(meta), c.effective_autonomy(p, meta)
+    run_ids = {b.id for b in running}
+    pairs, hubs = _pairs(p), _hubs(p)
+    taken = [h for b in running for h in _footprint(b.meta.get("scope") or [], pairs, hubs)]
+    tally = {}
+    for b in c.order_queue(c.lane_view(briefs, p.lane))[0]:
+        if b.id in run_ids:
+            continue
+        why = ("held this run" if b.id in skip else "L tier" if b.tier not in ("S", "M")
+               else "unplanned" if b.status != "planned" else "no scope" if not b.meta.get("scope")
+               else "waits on you" if c.waits_on_user(b, pending, autonomy, p.root)
+               else "deps open" if not all(d in by_id and by_id[d].status in c.CLOSED for d in c._deps(b))
+               else "files overlap a lane" if any(_overlap(g, h) for g in _footprint(b.meta["scope"], pairs, hubs)
+                                                  for h in taken)
+               else "free")
+        tally[why] = tally.get(why, 0) + 1
+    return ", ".join(f"{n} {why}" for why, n in sorted(tally.items(), key=lambda kv: -kv[1]))
+
+
 def _session_cmd(p, b, args, models):
     """T-1773: what works one task: a claude -p session, or fm code --task on the runner fm run --runner names."""
     if getattr(args, "runner", None):
@@ -751,6 +775,7 @@ def _run_pool(p, args, models, log, skip, told, fit, n, left, fails=0):
 
     watch_pool, merge_pool = ThreadPoolExecutor(max_workers=max(1, n)), ThreadPoolExecutor(max_workers=1)
     from sampo import lanes as slanes
+    last_held = ""  # T-6487: the last hold-back tally printed
     unlanded, idle = set(), 0  # unlanded: finished tasks whose lane was kept, not merged: what waits on them waits on
     resumes, resumed = [], set()  # T-6442: (brief, kept lane) to start again in place; tasks resumed this run
     for b, path in _kept_lanes(p, skip):  # lanes earlier runs kept with work go first
@@ -782,6 +807,14 @@ def _run_pool(p, args, models, log, skip, told, fit, n, left, fails=0):
                     print(f"{head.id}: no lane can take it (needs S/M, planned, a scope, nothing pending); "
                           "skipped this run", flush=True)
                     continue
+                if room > 0 and not batch:  # T-6487: a free slot nothing fills says why, once per change
+                    try:
+                        held = _held_back(p, avoid, running)
+                    except Exception as e:  # noqa: BLE001 - a tally never stops the run
+                        held = f"unreadable ({type(e).__name__})"
+                    if held != last_held:
+                        last_held = held
+                        print(f"fm run: {room} slot(s) free, none filled; queue: {held or 'empty'}", flush=True)
                 if len(batch) > 1 or live:
                     print(f"running {len(live) + len(batch)} at once: "
                           f"{', '.join(x.id for x in [b for b, *_ in live.values()] + batch)}", flush=True)
