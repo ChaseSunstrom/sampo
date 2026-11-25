@@ -546,12 +546,12 @@ class FixInClaudeFolder(FixCase):
         # the walls read the folder through claude.config_dir(): CLAUDE_CONFIG_DIR when set, else ~/.claude under HOME
         top = os.path.realpath(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, top, True)
-        cfg = os.path.join(top, "cfg")
-        os.makedirs(os.path.join(cfg, "lanes", "x"))
+        safe_cfg = self.safe_config_dir()  # T-6020: a config dir a headless child accepts, not one under /tmp
+        os.makedirs(os.path.join(safe_cfg, "lanes", "x"))
         repo = os.path.join(top, "repo", ".claude", "worktrees", "agent-1")
         os.makedirs(repo)
-        with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": cfg}):
-            self.assertEqual(lanepilot._claude_root(os.path.join(cfg, "lanes", "x")), cfg)
+        with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": safe_cfg}):
+            self.assertEqual(lanepilot._claude_root(os.path.join(safe_cfg, "lanes", "x")), safe_cfg)
             self.assertEqual(lanepilot._claude_root(repo), os.path.join(top, "repo", ".claude"))
             self.assertIsNone(lanepilot._claude_root(os.path.join(top, "plain")))
         with mock.patch.dict(os.environ, {"HOME": top}):

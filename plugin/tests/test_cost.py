@@ -496,9 +496,9 @@ class LeadCacheRead(HookCase):
         self.assertIn("no compact", text)
 
 
-class PerLane(HookCase):
-    """T-5950: `sampo cost --per-lane`: per landed lane the four token kinds of its lead, builder, reviewer and fixer
-    shares, a median per role, a saved baseline to compare against, and the runs that fit no lane shown."""
+class LaneCostBase(HookCase):
+    """T-6323: the lane-cost fixture that PerLane and ByEffort share: setUp, the helpers and the rig, and no tests, so
+    each class that extends it runs only its own tests (T-3815)."""
 
     def setUp(self):
         super().setUp()
@@ -579,6 +579,11 @@ class PerLane(HookCase):
 
     def per_lane(self, *flags):
         return self.fm_json("cost", "--per-lane", *flags, env={"CLAUDE_CONFIG_DIR": self.cfg})
+
+
+class PerLane(LaneCostBase):
+    """T-5950: `sampo cost --per-lane`: per landed lane the four token kinds of its lead, builder, reviewer and fixer
+    shares, a median per role, a saved baseline to compare against, and the runs that fit no lane shown."""
 
     def test_per_lane_splits_each_landed_lane_by_role(self):
         self.rig()
@@ -804,7 +809,7 @@ class PerLane(HookCase):
         self.assertIn("0 lane(s) landed", proc.stdout)
 
 
-class ByEffort(PerLane):
+class ByEffort(LaneCostBase):
     """T-6124: `sampo cost --by-effort`: per role and effort, the lanes, the thinking share of the output tokens, the
     first-pass rate and the review rounds, so a lowered effort can be read against its quality."""
 
@@ -836,7 +841,7 @@ class VsNative(HookCase):
     """T-6060: `sampo cost --vs-native`: dollars per landed lane by role (each token kind at its model family's price, a
     local model at zero), the plain Claude Code reference with its source and n, the ratio and the 10x line."""
 
-    at, ev, reply, write, run_file, merge, stop = (PerLane.__dict__[k] for k in (
+    at, ev, reply, write, run_file, merge, stop = (LaneCostBase.__dict__[k] for k in (
         "at", "ev", "reply", "write", "run_file", "merge", "stop"))
     SONNET, OPUS, HAIKU, LOCAL = "claude-sonnet-4-5", "claude-opus-4-7", "claude-haiku-4-5", "qwen3:30b"
 
