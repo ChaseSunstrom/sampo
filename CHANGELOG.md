@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- The CloseFields test now asserts fm-fixer and fm-resolver trailing lines are recorded, following core.EDITING_AGENTS instead of listing them as non-recording (T-5854).
 - Tests: two lands back to back while one slow ship runs merge before it ends and share one more push (T-5067).
 - A blocked task is freed by the next sweep tick once its last wait closes, not at the next hour: the review records each kept task's open waits and a new block or a waited-on close makes the review due at once (T-5227).
 - A page the user looks at now closes only with a real-surface run: Sampo's page builders (live, board, page, panels, stories, site pages and build), page scripts under plugin/web and site, and a project's meta surface_paths globs (T-5240).
