@@ -2499,6 +2499,44 @@ class Lanes(ForemanTestCase):
         self.assertNotIn(".env", self.git("show", "--name-only", "--format=", f"foreman/{tid}"))
 
 
+class BriefCarriesSteers(ForemanTestCase):  # T-6354: a 'steer:' log line logged after planning reaches the builder's brief
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+
+    def task(self):
+        return first(self.fm("task", "new", "x", "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true",
+                             "--step", "s", "--json").stdout)["id"]
+
+    def brief_text(self, tid):
+        with open(first(self.fm("lane", "brief", tid, "--json").stdout)["path"]) as f:
+            return f.read()
+
+    def test_a_steer_logged_after_planning_reaches_the_brief_above_the_steps_newest_first(self):
+        tid = self.task()
+        self.fm("task", "log", tid, "steer: one process per lane, not a thread")
+        self.fm("task", "log", tid, "steer: the newer steer wins")
+        text = self.brief_text(tid)
+        self.assertIn("## Steers (newest wins over the steps)", text)
+        self.assertLess(text.index("## Steers"), text.index("## Steps"), "above the steps")
+        steers = text.split("## Steers (newest wins over the steps)", 1)[1].split("\n## ", 1)[0]
+        self.assertIn("one process per lane, not a thread", steers)
+        self.assertLess(steers.index("the newer steer wins"), steers.index("one process per lane"), "newest first")
+
+    def test_a_brief_without_a_steer_has_no_steers_section(self):
+        self.assertNotIn("## Steers", self.brief_text(self.task()))
+
+    def test_the_steers_block_is_capped_to_the_brief_budget_and_keeps_the_newest(self):
+        tid = self.task()
+        for i in range(12):
+            self.fm("task", "log", tid, f"steer: number {i:02d} " + "x" * 300)
+        text = self.brief_text(tid)
+        steers = text.split("## Steers (newest wins over the steps)", 1)[1].split("\n## ", 1)[0]
+        self.assertLessEqual(len(steers.encode("utf-8")), slanes.STEERS_MAX + 200, "the block is capped")
+        self.assertIn("number 11", steers, "the newest steer is kept")
+        self.assertNotIn("number 00", steers, "the oldest is cut first")
+
+
 class BuilderGates(unittest.TestCase):
     def test_builders_run_affected_tests_and_leave_the_full_gates_to_the_merge(self):
         # T-0806: two lanes and the main thread ran three full gate runs at once (load 74): tests timed out, lanes

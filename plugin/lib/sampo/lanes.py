@@ -5361,6 +5361,26 @@ def resume_state(p, b, base, branch, room=RESUME_MAX):
     return _cut_to("\n".join(lines), room, cut) if lines else ""
 
 
+STEERS_MAX = 1200  # T-6354: the brief's "## Steers" section, bytes; the newest steers are kept, the oldest cut first
+STEERS_LINE = 240  # T-6354: characters of one steer the section names it with
+
+
+def steers_block(b, room=STEERS_MAX):
+    """T-6354: the task's `steer:` log lines, newest first, as the brief's "## Steers" section above the steps (a steer
+    logged after planning overrides the steps). Cut to `room` bytes; the older steers go first. Empty when none."""
+    out, used = [], 0
+    for line in reversed([l for l in b.section("Log").splitlines() if l.startswith("- ")]):
+        text = re.sub(r"^- \S+\s*", "", line)
+        if not text.startswith("steer:"):
+            continue
+        item = f"- {c.fit(c.redact(c.plain(text)), STEERS_LINE)}"
+        if used + len(item.encode("utf-8")) + 1 > room:
+            break
+        out.append(item)
+        used += len(item.encode("utf-8")) + 1
+    return ["## Steers (newest wins over the steps)", *out, ""] if out else []
+
+
 CARDS_MAX = 400  # T-5605: the brief's "## Calling cards" section, characters (about 100 tokens)
 CARDS_PURPOSE = 80  # the characters of a card's purpose the section names it with
 CARDS_HEAD = ("## Calling cards", "Call one in place of a hand search: `sampo card call NAME key=value`.")
@@ -5882,6 +5902,8 @@ def builder_brief(p, b, args, resume_branch=None, after="", stacked=None, check=
     ws_at = len(parts)  # T-6062: the explorer's working-set note opens the brief, before the task's own sections
     for name in ("Raw request", "Interpretation", "Acceptance criteria", "Non-goals", "Approach (options → choice → why)",
                  "Race", "Steps"):  # Race: a race's b side is told to take another approach (T-1069)
+        if name == "Steps":  # T-6354: a steer logged after planning overrides the steps: its section sits just above them
+            parts += steers_block(b)
         body = b.section(name).strip()
         if name == "Acceptance criteria" and true_now and red_now:  # T-6063: the criteria already true on HEAD are not work
             body = reduced
