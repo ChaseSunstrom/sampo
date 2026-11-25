@@ -7869,5 +7869,18 @@ class UsageCutoff(ForemanTestCase):
         self.assertEqual(bud.hours_to_cap(100.0, 1.0), 0.0)
 
 
+class ReviewDepthDoc(unittest.TestCase):
+    """T-6164 LOW: the review_depth docstring names haiku at every tier, as DEPTH_MODEL does (T-6101), never sonnet."""
+
+    def test_the_docstring_names_haiku_at_every_tier(self):
+        from sampo import lanes
+        doc = lanes.review_depth.__doc__
+        self.assertEqual(set(lanes.DEPTH_MODEL.values()), {"haiku"}, "the model the code gives every tier")
+        for clause in ("trivial and small intent + adversary on haiku", "normal adds edge on haiku",
+                       "risky all five on haiku", "gives all five lenses on haiku"):
+            self.assertIn(clause, doc)
+        self.assertNotIn("sonnet", doc, "no tier, and not the full-depth switch, is named on sonnet")
+
+
 if __name__ == "__main__":
     unittest.main()

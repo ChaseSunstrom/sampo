@@ -3217,10 +3217,11 @@ def review_depth(b, files, diff, p=None, tests_linked=None):
     """T-5841: how deep brief b's review of this change goes, as {"ptier", "scored", "full", "lenses", "model", "why"}
     (scored: the process tier before the floors, the one the close gate follows; full: SAMPO_REVIEW_DEPTH=full). Pure on its inputs
     (p only feeds the derived floor, floor_for; none reads no findings). The lenses come from the process tier
-    (DEPTH_LENSES: trivial and small intent + adversary on haiku, normal adds edge on sonnet, risky all five, in
-    DEFAULT_LENSES order). Floors: a protected path (guard, hooks, secrets, auth, exec, land; a doc or a tests-folder file
-    is not one) or a SECURITY task is risky; a file a finding on a trivial or small lane named is normal at least;
-    SAMPO_REVIEW_DEPTH=full gives all five lenses on sonnet whatever the tier says."""
+    (DEPTH_LENSES: trivial and small intent + adversary on haiku, normal adds edge on haiku, risky all five on haiku, in
+    DEFAULT_LENSES order; the model is DEPTH_MODEL, haiku at every tier, T-6101). Floors: a protected path (guard, hooks,
+    secrets, auth, exec, land; a doc or a tests-folder file is not one) or a SECURITY task is risky; a file a finding on a
+    trivial or small lane named is normal at least; SAMPO_REVIEW_DEPTH=full gives all five lenses on haiku whatever the tier
+    says."""
     files = [str(f) for f in (files or [])]
     ptier, why = c.ptier_now(b, files if files or diff else None, diff, tests_linked)
     why, scored = list(why), ptier

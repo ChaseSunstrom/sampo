@@ -215,6 +215,18 @@ def lane_diff(main, tip, since=""):
     return [x.decode("utf-8", "replace") for x in names.split(b"\0") if x], raw
 
 
+def trunk_entered(main, prior, tip):
+    """T-6303: whether the lane merged trunk in after the reviewed tip (a merge commit in prior..tip). Then prior..tip names
+    trunk's own files too, so a fix round reads the lane's whole diff (HEAD...tip, whose merge base is the trunk commit the
+    lane last took in) instead. True as well when git can't say: the whole diff is the safe read."""
+    if not re.fullmatch(r"[0-9a-f]{40,64}", prior or "") or not tip:
+        return True
+    try:
+        return bool(_git_bytes(main, "rev-list", "--merges", f"{prior}..{tip}").strip())
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return True
+
+
 def cache_path(p):
     return os.path.join(p.dir, "lanepilot_verdicts.json")
 
@@ -403,7 +415,7 @@ def scopes_for(main, b, lenses, tip, whole, sensitive):
         ancestor = train._git(main, "merge-base", "--is-ancestor", prior, tip, timeout=SENSITIVE_TIMEOUT, proc=True).returncode == 0
     except Exception:
         return scopes
-    if not ancestor:
+    if not ancestor or trunk_entered(main, prior, tip):  # T-6303: trunk merged in after prior is not the fix: the whole diff
         return scopes
     names, delta = lane_diff(main, tip, since=prior)
     if names and delta:
