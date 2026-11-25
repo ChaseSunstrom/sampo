@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- lane pilot --all reviews up to PILOT_SWEEP_MAX returned lanes at once, each in its own process, and picks up lanes retried mid-sweep (T-6331).
 - fm ui --json runs in under 1 s warm instead of 23 s, as unproven rollups lint each verify command once and test files are read once per process (T-6335).
 - A builder now writes five LENSES lines about its own diff (cost at scale, error and fail closed, races, the test that fails without the change, untrusted input), which are stored on its brief and printed in the review brief under 'Builder's own lens pass' (T-5724).
 - A task's scope now covers the test modules its criteria name, in the folder that criterion names, and the repo map's test links to scoped files, read from a map of the current version only, so scope drift, fm edit and the hook scope note agree (T-6299).
