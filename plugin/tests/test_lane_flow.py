@@ -2,11 +2,15 @@
 ledger already holds, and fm lane list shows them as the gap before each stage."""
 import json
 import os
+import time
 
 from helpers import ForemanTestCase
+from test_lane_land import report
+from test_lanepilot import PilotCase
 
 from sampo import core as c
 from sampo import lanes as slanes
+from sampo import train
 
 DAY = "2026-11-20T"
 
@@ -90,3 +94,90 @@ class StageTimes(ForemanTestCase):
         self.write(*self.whole_lane(tid)[3:5])
         text = self.fm("lane", "list").stdout
         self.assertIn("built 12m, reviewed 3m, accepted 60s, landed 40m", text)
+
+
+class LiveFlow(PilotCase):
+    """T-5840: in a live project a builder's return runs the whole chain with no main-thread call: the detached pilot
+    reviews, a clean lane is accepted, the accept spawns the land, and the land closes the task. Findings stop it at the
+    pilot. A gated project still runs its check stage before anything queues."""
+
+    def setUp(self):
+        super().setUp()
+        self.fm("lane", "mode", "live")
+        # the hook matches a lane by its agent-<id> path, which this test lane does not have: a link to it does
+        self.link = os.path.join(self.tmp, "agent-a1b2c3d4")
+        os.symlink(os.path.join(self.tmp, "lane1"), self.link)
+        x = self.brief()
+        x.meta["lane"] = self.link
+        # PilotCase stamped the return itself: the hook marks a return only when the stamp changes, so clear it here and let
+        # the hook's own SubagentStop write the builder_mark the stages read
+        x.meta.pop("builder_returned", None)
+        c.save_brief(c.find_project(self.repo), x)
+
+    def background_on(self):
+        os.environ.pop("FOREMAN_NO_BACKGROUND", None)  # PilotCase's patch.dict restores it at cleanup
+
+    def hook_return(self):
+        """The builder's own stop. spar.py's payload names the agent bare (fm-builder), which the namespace check of
+        pilotsig.returned never matches; Claude Code sends the namespaced name, so that is the one sent here."""
+        r = self.hook("SubagentStop", {"session_id": "spar", "agent_type": "sampo:fm-builder", "stop_hook_active": False,
+                                       "agent_id": "a1b2c3d4", "last_assistant_message": report(self.tid, "Lane 1")})
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def wait(self, done, what, limit=240):
+        end = time.monotonic() + limit
+        while not done():
+            if time.monotonic() > end:
+                b = self.brief()
+                log = os.path.join(c.find_project(self.repo).dir, "pilot.log")
+                tail = open(log, encoding="utf-8", errors="replace").read()[-1500:] if os.path.exists(log) else "no log"
+                self.fail(f"{what} within {limit} s: status {b.status}, stages {self.stages()}, "
+                          f"pilot pid {b.meta.get('pilot_pid')}, pilot.log: {tail}")
+            time.sleep(0.5)
+
+    def stage_list(self):
+        return slanes.stage_times(c.find_project(self.repo), self.tid)
+
+    def stages(self):
+        return [s["stage"] for s in self.stage_list()]
+
+    def test_clean_return_reviews_lands_closes(self):
+        self.background_on()
+        t0 = time.monotonic()
+        self.hook_return()
+        self.wait(lambda: self.brief().status in c.CLOSED, "the lane closes")
+        chain = time.monotonic() - t0
+        self.assertEqual(self.brief().meta.get("pilot_outcome"), "accepted")
+        self.assertLessEqual({"adversary", "intent"}, set(self.audits()), "the clean lenses are recorded on the lane")
+        self.assertTrue(self.accepted())
+        self.assertEqual(self.stages(), ["built", "reviewed", "accepted", "landed", "closed"])
+        ats = [s["at"] for s in self.stage_list()]
+        self.assertEqual(ats, sorted(ats), "the stages are in the order they happened")
+        self.assertLess(chain, 240, "the chain's wall time per return")
+
+    def test_findings_stop_flow(self):
+        self.background_on()
+        os.environ["STUB_BAD_LENS"] = "adversary"  # that lens reports a HIGH finding on every round
+        self.addCleanup(os.environ.pop, "STUB_BAD_LENS", None)
+        self.hook_return()
+        self.wait(lambda: self.brief().meta.get("pilot_done_for"), "the pilot reports")
+        b = self.brief()
+        self.assertNotEqual(b.meta.get("pilot_outcome"), "accepted", b.meta)
+        self.assertEqual(b.meta.get("changes_asked"), "lane-pilot", "the lane is marked for its builder")
+        self.assertFalse(self.accepted(), "no accept ran")
+        self.assertNotIn("accepted", self.stages())
+        self.assertNotIn("landed", self.stages(), "no land was spawned")
+        self.assertNotIn("closed", self.stages())
+        self.assertNotIn(b.status, c.CLOSED)
+
+    def test_gated_project_unchanged(self):
+        self.fm("lane", "mode", "gated")  # setUp says live: this project is the gated one
+        self.assertFalse(train.live_mode(c.find_project(self.repo)))
+        self.hook_return()  # FOREMAN_NO_BACKGROUND is on: no detached pilot starts, the return is stamped only
+        self.assertEqual(self.stages(), ["built"])
+        self.pilot()  # the lane pilot verb, in process: the reviewers run, then accept runs its check stage first
+        self.assertEqual(self.audits(), ["adversary", "intent"], "the pilot still reviews a gated lane")
+        self.assertTrue(self.brief().meta.get("check_state"), "accept ran its check stage (the claim sets check_state) before anything queued")
+        self.assertNotIn("landed", self.stages(), "the check is not started, so nothing queues")
+        self.assertNotIn("closed", self.stages())
+        self.assertNotIn(self.brief().status, c.CLOSED)
