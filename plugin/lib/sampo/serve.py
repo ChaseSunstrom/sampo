@@ -944,6 +944,15 @@ def _integrate(p, tid, path):
 def _via_pilot(p, tid, path, pilotsig):
     """T-6480: the lane pilot's outcome as the run's line. accepted: queued into the land train (which merges, closes
     and removes the lane); anything else keeps the lane and names why."""
+    from sampo import cli
+
+    def back(x):  # T-6490: the run's session is the builder; only SubagentStop stamped this, so the gate refused every run lane
+        x.meta["builder_returned"] = c.now()
+        x.append_log("fm run: its session returned; the lane pilot reviews it")
+    try:
+        cli.mutate(p, tid, back, "run_return", {"lane": str(path)})
+    except Exception as e:
+        return f"kept in {path}: {type(e).__name__} marking its session returned"
     try:
         got = pilotsig._verb(p, tid)
     except Exception as e:  # noqa: BLE001 - a pilot that can't run keeps the lane, never ends the run

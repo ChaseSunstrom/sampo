@@ -708,6 +708,17 @@ class IntegrateThroughPilot(ForemanTestCase):
         self.assertNotIn("not reviewed", how)
         self.assertFalse(os.path.exists(os.path.join(self.repo, "x.py")), "serve merges nothing itself: the train does")
 
+    def test_the_runs_session_counts_as_its_builders_return_for_the_pilots_gate(self):
+        """T-6490: only the SubagentStop hook stamps builder_returned; a run session has none, so the real pilot refused
+        every run lane ('its builder has not returned'). The stubbed verb above hid it: this asks the real gate."""
+        from sampo import core as c
+        from sampo import lanepilot, lanes
+        self.via_pilot({"tid": "T-0001", "outcome": "accepted", "rounds": 1, "why": ""})
+        p = c.find_project(self.repo)
+        b = c.find_brief(p, "T-0001")
+        self.assertTrue(lanes._builder_returned(b), b.meta)
+        self.assertNotIn("has not returned", lanepilot.gate(p, b, self.repo))
+
     def test_changes_keep_the_lane_with_the_reason(self):
         how, path = self.via_pilot({"tid": "T-0001", "outcome": "changes", "rounds": 1, "why": "edge: off by one"})
         self.assertTrue(how.startswith("kept in"), how)
