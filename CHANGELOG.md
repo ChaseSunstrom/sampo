@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- PowerShell guard: comma path lists are judged per element, native flags and sort output flags are checked, and Env: dumps are refused, quoted or wildcard (T-6018 fix round) (T-6092).
 - A steer logged after planning reaches the builder brief, above the steps, newest first and capped (T-6354).
 - A lane pilot's fix session on a finished lane under a Claude folder now runs with its permission prompts skipped, because the guard probe gets the task's drive id, and every headless pilot session reads only its lane, its scratch folder and its own task's briefs: the guard refuses out-of-lane reads and brace or tilde globs, and the fast path hands pilot sessions to Python (T-6533).
 - sampo/reach.py: needs(root, a, b) sorts a diff into what a running session must do (now, reload, restart, read) and code_id names the plugin code at a commit (T-5197).
