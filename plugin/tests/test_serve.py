@@ -377,13 +377,18 @@ class Run(RunCase):
     def test_refuses_while_serve_runs_here(self):
         self.task("one")
         self.fm("serve", env=self.env())
-        p = self.run_fm(check=False)
+        # T-6399: beside a serving session a run works in lanes (test_parallel); a measured run needs the main checkout
+        p = self.run_fm("--max-usd", "5", check=False)
         self.assertNotEqual(p.returncode, 0)
         self.assertIn("fm serve", p.stderr)
 
 
 class RunRoute(RunCase):
     """T-2353: fm run with no --models and none kept gives each session the per-tier route's model, and says so."""
+    def setUp(self):
+        super().setUp()
+        self.fm("models", "default", "route")  # T-6101: these pin the history route, not the Haiku default
+
     def claudes(self):
         return [l for l in self.called().splitlines() if l.startswith("claude ")]
 

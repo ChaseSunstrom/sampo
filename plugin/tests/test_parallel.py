@@ -59,6 +59,29 @@ class Parallel(ForemanTestCase):
         self.assertEqual(self.git("worktree", "list").count("\n"), 1, "the lanes are removed")
         self.assertIn("merged", out)
 
+    def serving(self):
+        from sampo import core as c
+        c.update_meta(c.find_project(self.repo), serve={"unit": "foreman-serve-x.service", "mode": None})
+
+    def test_beside_a_serving_session_even_one_task_runs_in_a_lane(self):
+        # T-6399: the Remote Control session owns the main checkout, so the runner works beside it only in lanes
+        self.serving()
+        self.task("one", "work-T-0001.txt")
+        out = self.fm("run", env=self.env()).stdout
+        starts = [ln for ln in self.sessions() if ln.startswith("start")]
+        self.assertEqual(len(starts), 1, self.sessions())
+        self.assertIn(".lanes/", starts[0], "never the main checkout the serving session works in")
+        self.assertIn("work T-0001", self.git("log", "--format=%s"))
+        self.assertIn("merged", out)
+
+    def test_beside_a_serving_session_a_measured_run_is_refused(self):
+        self.serving()
+        self.task("one", "work-T-0001.txt")
+        p = self.fm("run", "--max-usd", "5", check=False, env=self.env())
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("lanes", p.stdout + p.stderr)
+        self.assertEqual(self.sessions(), [], "a measured run works the main checkout, so none starts")
+
     def test_tasks_that_could_collide_run_one_at_a_time(self):
         self.task("one", "work-*")
         self.task("two", "work-*")  # the same files

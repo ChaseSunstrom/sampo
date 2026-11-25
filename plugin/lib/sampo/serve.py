@@ -1063,9 +1063,7 @@ def cmd_run(args):
             raise c.PolicyError("the sandbox is on but this host can't run it (needs bubblewrap that starts, plus "
                                 "socat; or sandbox-exec): fm sandbox off, or fm run --no-sandbox")
         print(f"sandbox: on ({', '.join(_sandbox_domains(p)) or 'no network'})")
-    if c.read_meta(p).get("serve"):
-        raise c.PolicyError(f"fm serve is running Remote Control for {p.slug}; a second writer would collide. Send "
-                            f"work to that session, or fm serve stop first")
+    serving = bool(c.read_meta(p).get("serve"))  # T-6399: the Remote Control session owns the main checkout
     lockf = open(os.path.join(p.dir, "run.lock"), "w")
     try:
         fcntl.flock(lockf, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -1109,6 +1107,10 @@ def cmd_run(args):
         if not cap >= 0:
             raise cli.UsageError("--max-usd must be a number ≥ 0")
         args.parallel = 1  # lanes' sessions aren't measured, so a capped run goes one at a time
+    if serving and args.parallel == 1 and (cap is not None or stall_usd is not None or contract.tracks_usd(p)):
+        raise c.PolicyError(f"fm serve is running Remote Control for {p.slug}, so fm run works beside it only in lanes, "
+                            f"and a measured run (--max-usd, --stall-usd or a USD contract) works the main checkout: "
+                            f"drop the cap, or fm serve stop first")
     while finished < args.max:
         if c.panicked():  # T-0436: before the first session and between every two
             fail(c.PAUSED)
@@ -1133,7 +1135,7 @@ def cmd_run(args):
         width = min(args.parallel, _pool_cap(p), args.max - finished)
         batch = _batch(p, b, skip, width)
         beat(p, "run", args.timeout * 60, " ".join(x.id for x in batch))
-        if len(batch) > 1:  # T-0167: independent tasks at once, each in its lane, merged back one by one
+        if len(batch) > 1 or serving:  # T-0167: independent tasks at once, each in its lane, merged back one by one
             if args.parallel > width < args.max - finished:
                 print(f"lanes at once: {width} (fm lane max N raises it, up to 100)", flush=True)
             try:  # T-3294: a rolling pool: the next task starts when any lane ends
