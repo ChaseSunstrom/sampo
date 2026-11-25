@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- sampo cost --sessions names each part of the lead's context over its budget per call, from plugin/data/lead-context-budget.json (T-6310).
 - Gated express lanes ready at one train boundary now train together in one train with one gate run, ahead of the ordinary lanes, instead of one train each (T-6307).
 - The cost tests' ByEffort class no longer reruns PerLane's tests, so the suite hygiene check is green on trunk again (T-6323).
 - Plan skeletons are written to .fm-scratch/plans (git-ignored, writable under the Ward) and a resume brief carries the open review findings in full (T-6297).
