@@ -1670,8 +1670,12 @@ def _lane_focus(p, sid, lane=None):
             try:
                 err = proc.communicate(timeout=max(end - time.monotonic(), 0.05))[1] or ""
             except subprocess.TimeoutExpired:
-                c.kill_group(proc)  # its git children too; the flocks they held go with them
-                proc.wait()
+                c.kill_group(proc, 15)  # its git children too; TERM first, so git removes its index.lock (review)
+                try:
+                    proc.wait(timeout=LANE_START_GRACE_S)
+                except subprocess.TimeoutExpired:
+                    c.kill_group(proc)
+                    proc.wait()
                 proc.stderr.close()
     act = c.active_brief_fast(p, lane)
     if not act or act.id != tid:
@@ -1682,6 +1686,214 @@ def _lane_focus(p, sid, lane=None):
         return None, _lane_hint(lane, branch, hits, f" Sampo tried, but sampo focus {tid} didn't finish in time here."), tasks
     c.log_event(p, "auto_focus", task=tid, data={"lane": lane, "branch": branch}, session=sid)
     return f"Sampo focused {tid}, this lane's task, so this edit goes ahead (no sampo focus needed).", "", tasks
+
+
+LANE_START_S = 10.0  # T-6158: the auto-start's child, capped (the PreToolUse hook's own timeout is 20 s)
+LANE_START_GRACE_S = 2.0  # T-6158 review: after TERM, the child's group gets this long to clean up (git's index.lock) before KILL
+LANE_START_RETRY_S = 60.0  # T-6158: a refused, timed-out or unrunnable start is not run again inside this window (at most once a minute)
+
+
+def _lane_start_memo(p, key, entry=None):
+    """T-6158: the auto-start's memo, one JSON file in the project's state folder: key (session and lane) -> {"at": the
+    attempt's time, "refusal": the refusal's text or ""}. With entry, records it and drops the entries past the retry
+    window; without, returns the key's entry while it is inside the window, else None. An unreadable file reads as
+    empty (one more start, never an error). With entry, returns whether it was recorded: a start whose attempt can't be
+    recorded doesn't run, or every call would pay for a child."""
+    path = os.path.join(p.dir, "lane-start-memo.json")
+    try:
+        with open(path) as f:
+            memo = json.load(f)
+    except (OSError, ValueError):
+        memo = {}
+    memo = memo if isinstance(memo, dict) else {}
+    now = time.time()
+
+    def fresh(v):
+        try:
+            return isinstance(v, dict) and now - float(v["at"]) < LANE_START_RETRY_S
+        except (KeyError, TypeError, ValueError):
+            return False
+    if entry is None:
+        return memo.get(key) if fresh(memo.get(key)) else None
+    memo = {k: v for k, v in memo.items() if fresh(v)}
+    memo[key] = dict(entry, at=now)
+    try:
+        c.write_atomic(path, json.dumps(memo, sort_keys=True), durable=False)
+    except OSError:
+        log_error("PreToolUse", _tb())
+        return False
+    return True
+
+
+def _start_words(p, lane, words=None):
+    """T-6158 (review): the auto start's words for a lane, kept until its first call. SubagentStart runs the start before
+    the builder's first call and gets the words back; it records them here, and the first call that finds the start
+    recorded takes them, once. With words, records them and returns ""; without, returns the lane's pending words and
+    clears them. Bounded at 1500 characters; an unwritable file loses the words, never a call."""
+    path = os.path.join(p.dir, "lane-start-words.json")
+    try:
+        with open(path) as f:
+            pending = json.load(f)
+    except (OSError, ValueError):
+        pending = {}
+    pending = pending if isinstance(pending, dict) else {}
+    if words is None:
+        if lane not in pending:
+            return ""
+        got = str(pending.pop(lane) or "")
+    else:
+        pending[lane] = str(words)[:1500]
+        got = ""
+    try:
+        c.write_atomic(path, json.dumps(pending, sort_keys=True), durable=False)
+    except OSError:
+        log_error("PreToolUse", _tb())
+    return got
+
+
+def _lane_head(lane):
+    """T-6158: the lane's HEAD commit read from its git files, no child (the memo's key: a fast-forward moves it, so the
+    refusal it answered is gone at once). A worktree's .git is a file naming its git dir; HEAD there is a sha or a ref,
+    which is read from the git dir, then the common dir (a branch's ref lives there), then packed-refs. "" when unreadable."""
+    try:
+        gd = os.path.join(lane, ".git")
+        if os.path.isfile(gd):
+            with open(gd, encoding="utf-8", errors="replace") as f:
+                gd = os.path.join(lane, f.read().strip().removeprefix("gitdir:").strip())
+        with open(os.path.join(gd, "HEAD"), encoding="utf-8", errors="replace") as f:
+            head = f.read().strip()
+        if not head.startswith("ref:"):
+            return head[:64]
+        ref = head[4:].strip()
+        common = gd
+        try:
+            with open(os.path.join(gd, "commondir"), encoding="utf-8", errors="replace") as f:
+                common = os.path.join(gd, f.read().strip())
+        except OSError:
+            pass
+        for d in (gd, common):
+            try:
+                with open(os.path.join(d, ref), encoding="utf-8", errors="replace") as f:
+                    return f.read().strip()[:64]
+            except OSError:
+                continue
+        with open(os.path.join(common, "packed-refs"), encoding="utf-8", errors="replace") as f:
+            for line in f:
+                sha, _, name = line.strip().partition(" ")
+                if name == ref:
+                    return sha[:64]
+    except OSError:
+        pass
+    return ""
+
+
+def _lane_start_wait(p, lane, key):
+    """T-6158 review: a call that finds another process's start in flight (its memo marked, no record yet) waits for that
+    start's record, up to LANE_START_S, and returns its words; a refusal it records is returned as that refusal. Only a
+    start that records neither is refused, with a message that is not memoed, so the next call looks again. Never a pass."""
+    end = time.monotonic() + LANE_START_S
+    while True:
+        act = c.active_brief_fast(p, lane)
+        if act and act.meta.get("lane_started"):
+            return "", False, _start_words(p, lane)
+        hit = _lane_start_memo(p, key)
+        if hit and hit.get("refusal"):
+            return str(hit["refusal"]), False, ""
+        if time.monotonic() >= end:
+            return (f"Sampo: the lane's start is still running, so nothing was focused yet. Retry this call in a moment; "
+                    f"sampo lane start ID shows why."), False, ""
+        time.sleep(0.1)
+
+
+def _locks_left_by_kill(lane):
+    """T-6158 review: a start's git that ignored TERM and was KILLed runs no cleanup, so index.lock or HEAD.lock can be
+    left in the lane's git dir, and every git call there is refused after. Both are removed, but only when no git process
+    works in or on that git dir (a live one keeps its lock; a process table that can't be read removes none)."""
+    from sampo import lanes as slanes
+    gd = slanes._gitdir_of(lane)
+    if not gd or slanes.git_pids([gd, lane]) != []:
+        return
+    for name in ("index.lock", "HEAD.lock"):
+        try:
+            os.unlink(os.path.join(gd, name))
+        except OSError:
+            pass
+
+
+def _lane_start_first(p, pl):
+    """T-6158: a lane session's call in its lane, with no start record (lane_started on the brief) on the lane's one
+    task, runs `sampo lane start` for that task in a child process: the base check, the focus and the scope's leases,
+    so the builder never runs it. The record makes every later call, and an explicit lane start, a no-op. Returns
+    (refusal, started): the refusal's text when the start was refused (the call is denied with it), else ""; started
+    is True when the start ran. A start that times out or can't run is refused like a refusal (the explicit
+    lane start is the way out). A refusal or a timeout is memoed per session, lane and the lane's HEAD for
+    LANE_START_RETRY_S: the calls inside that window get the same answer with no second child, and a `git merge
+    --ff-only <base>` that moves the HEAD clears it at once. A call outside a lane, or in a lane whose start is
+    recorded, costs no child and no brief load. The third value is the start's own words (the brief's path, the notes:
+    main moved, leases not taken, and the steps) when it ran, else "": the builder is shown them (the hook's context)."""
+    lane = getattr(p, "lane", None)
+    if not lane:
+        return "", False, ""
+    act = c.active_brief_fast(p, lane)
+    if act and act.meta.get("lane_started"):
+        return "", False, _start_words(p, lane)  # the words SubagentStart kept for the first call (review)
+    key = f"{pl.get('session_id') or ''}|{lane}|{_lane_head(lane)}"
+    hit = _lane_start_memo(p, key)
+    if hit and hit.get("refusal"):
+        return str(hit["refusal"]), False, ""
+    if hit:  # T-6158 review: an attempt marked before its child ran, not recorded yet: a start in flight, waited for
+        return _lane_start_wait(p, lane, key)
+    tasks = _lane_tasks(p, lane)
+    if tasks and len(tasks[1]) > 1:  # review: no one task to start, so the call is refused, never let through unchecked
+        return (f"Sampo: this lane holds {len(tasks[1])} tasks, so its start can't pick one: run sampo lane start ID "
+                f"for the task you work. Nothing was focused."), False, ""
+    if not tasks or len(tasks[1]) != 1:
+        return "", False, ""
+    tid = tasks[1][0]
+    b = next((x for x in c.load_briefs(p) if x.id == tid), None)
+    if b is None or b.meta.get("lane_started"):
+        return "", False, ""
+    if not _lane_start_memo(p, key, {"refusal": ""}):  # marked before the child runs: a hook killed midway still counts
+        return "", False, ""
+    end = time.monotonic() + LANE_START_S
+    try:
+        proc = subprocess.Popen([os.path.join(c.PLUGIN_ROOT, "bin", "fm"), "lane", "start", tid], cwd=lane,
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True, start_new_session=True,
+                                env=dict(os.environ, FOREMAN_SESSION_ID=pl.get("session_id") or "", SAMPO_LANE_CHILD="1"))
+    except OSError:
+        log_error("PreToolUse", _tb())
+        refusal = f"Sampo: the lane's start for {tid} could not run. Nothing was focused; sampo lane start {tid} shows why."
+        _lane_start_memo(p, key, {"refusal": refusal})
+        return refusal, False, ""
+    try:
+        out, err = proc.communicate(timeout=max(end - time.monotonic(), 0.05))
+    except subprocess.TimeoutExpired:
+        c.kill_group(proc, 15)  # TERM first: git removes its index.lock on TERM, never on KILL (review: no stale lock)
+        try:
+            proc.wait(timeout=LANE_START_GRACE_S)
+        except subprocess.TimeoutExpired:
+            c.kill_group(proc)  # it ignored TERM: its git children too
+            proc.wait()
+            _locks_left_by_kill(lane)  # KILL runs no cleanup: a git it killed may have left its lock files behind
+        for pipe in (proc.stdout, proc.stderr):
+            if pipe:
+                pipe.close()
+        refusal = (f"Sampo: the lane's start for {tid} did not finish in {LANE_START_S:g} s. Nothing was focused; "
+                   f"sampo lane start {tid} shows why.")
+        log_error("PreToolUse", f"lane start for {tid} did not finish in time: its calls are refused "
+                                f"(sampo lane start {tid} is the way out)")
+        _lane_start_memo(p, key, {"refusal": refusal})  # the window's calls get the same refusal, no second child
+        return refusal, False, ""
+    out, err = out or "", err or ""
+    if proc.returncode:
+        why = c.fit(re.sub(r"^(?:sampo|fm): (refused: )?", "", c.plain((err.strip().splitlines() or [""])[0])), 300)
+        refusal = (f"Sampo: the lane's start for {tid} was refused" + (f": {why}" if why else "") +
+                   f". Nothing was focused; sampo lane start {tid} shows why.")
+        _lane_start_memo(p, key, {"refusal": refusal})  # the window's calls get the same refusal, no second child
+        return refusal, False, ""
+    words = c.fit(c.plain_lines(out.strip()), 1500)  # bounded: the steps of a long brief are in the brief file too
+    return "", True, (f"Sampo started your lane for {tid} (you run no start call):\n{words}" if words else "")
 
 
 REQUEST_HEAD = c.lazy(r"(?im)^#{1,3}\s*request\s+\d+\b[^\n]*$")
@@ -4283,6 +4495,7 @@ def _pre_tool_use(raw):
                                                          "permissionDecisionReason": report}}))
                 print(report, file=sys.stderr)
                 return 2
+        start_note = ""  # T-6158: the lane's auto start's own words, shown once as context
         try:
             import fmguard as guard
             ctx, p, act, found, block = _guard_decision(pl, guard)
@@ -4292,6 +4505,17 @@ def _pre_tool_use(raw):
             guard = _committed("fmguard")
             if guard is None:
                 raise
+            ctx, p, act, found, block = _guard_decision(pl, guard)
+        refusal, started, start_note = _lane_start_first(p, pl)  # T-6158: a lane's first call starts its lane, before the brief check
+        # a refused start (a worktree behind the base) must leave the way out open: the merge and the explicit start
+        cmd = str((pl.get("tool_input") or {}).get("command") or "")
+        if refusal and re.match(r"\s*(?:git\s+merge\s+--ff-only\b|(?:sampo|fm|\S*/fm)\s+lane\s+start\b)", cmd):
+            refusal = ""
+        if refusal:
+            print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                                     "permissionDecisionReason": refusal}}))
+            return 0
+        if started:  # the start focused the task: the guard decides again on the task it made
             ctx, p, act, found, block = _guard_decision(pl, guard)
         used = next((d for cat, d in found if cat == "plugin"), None) if not block and act else None
         if used is not None and "plugin" in ctx.allow:
@@ -4464,6 +4688,13 @@ def _pre_tool_use(raw):
                                                      "permissionDecisionReason": second}}))
             print(second, file=sys.stderr)
             return 2
+    if p and tool in FILE_TOOLS:  # T-6158: a builder's first edit of its scope's symbol takes its lease before it lands
+        try:  # outside the leases.json gate below: the first lease is what creates that file
+            from sampo import bus
+            ti = pl.get("tool_input") or {}
+            bus.auto_take(pl, p, os.path.normpath(os.path.join(_cwd(pl), ti.get("file_path") or ti.get("notebook_path") or "")))
+        except Exception:
+            log_error("PreToolUse", _tb())
     if p and tool in FILE_TOOLS and os.path.exists(os.path.join(c.state_dir(), "bus", "leases.json")):  # T-0708
         # another session's lease on the function this edit lands in
         try:
@@ -4527,7 +4758,8 @@ def _pre_tool_use(raw):
         notes = _notes_within([(name, b) for name, b in builders if name not in off])  # T-4932: a stage each; T-5076
         # T-5076 review: the snapshot's line is never held back as "already said": a second unsaved discard in the session
         # has the same words, and the model must still be told its work wasn't saved
-        note = " ".join(_said_once(pl, list(filter(None, [made, saved, slow, warn, rule_note] + notes)), keep=(saved,)))
+        note = " ".join(_said_once(pl, list(filter(None, [start_note, made, saved, slow, warn, rule_note] + notes)),
+                                   keep=(saved, start_note)))  # T-6158: the start's words are said once, never held back
         mark("said")
         emit = dict({"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": note}} if note else {},
                     **({"systemMessage": user_rule} if user_rule else {}))
@@ -8857,15 +9089,23 @@ def subagent_start(pl):
     _event({"kind": "subagent_start", "session_id": pl.get("session_id"), "agent_id": pl.get("agent_id"),
             "agent_type": pl.get("agent_type")})
     _mark_builder(pl, False)  # T-3145: a resumed builder works again
+    try:  # T-6158: the lane starts when the builder launches, before its first call; a refusal stays memoed for PreToolUse
+        p = c.find_project(_project_cwd(pl))
+        if p and getattr(p, "lane", None):
+            _, _, words = _lane_start_first(p, pl)
+            if words:  # review: the start's words go to the lane's first call, which shows them once
+                _start_words(p, p.lane, words)
+    except Exception:
+        log_error("SubagentStart", _tb())
     return None
 
 
 # T-4139: the shapes the harness passes, told to every subagent before its first command (a builder has them in its
 # contract). Same text as the fm-builder.md block (test_builder's PassingShapes keeps the two equal).
 PASSING_SHAPES = ("**Passing shapes:** the harness refuses `bash -c`, heredocs, `cd X &&`, `export`, `sed`, and `git -C` "
-                  "or a $VAR path. These pass: `sampo task evidence ID --ac N` alone (runs criterion N's verify); "
-                  "`sampo task evidence ID --step N --run-file .fm-scratch/check.sh` (a script you Write, for compound "
-                  "checks); plain `git`; `.venv/bin/python`; `env NAME=v cmd`; Edit.")
+                  "or a $VAR path. These pass: a check script you Write to `.fm-scratch/` and run by its path (for "
+                  "compound checks; the brief names the evidence call that takes it); plain `git`; `.venv/bin/python`; "
+                  "`env NAME=v cmd`; Edit.")
 
 
 def _worktree_agent(pl):

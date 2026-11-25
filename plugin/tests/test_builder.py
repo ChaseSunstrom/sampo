@@ -33,7 +33,7 @@ class Agent(ForemanTestCase):
         for tool in ("Edit", "Write", "Bash", "Read"):
             self.assertIn(tool, tools)
         self.assertNotIn("Agent", tools)  # it never launches agents of its own
-        for rule in ("sampo focus", "worktree", "never push", "never merge", "sampo task evidence", "git commit"):
+        for rule in ("sampo focus", "worktree", "never push", "never merge", "git commit"):  # T-6158: no evidence verb
             self.assertIn(rule, text.lower() if rule.islower() else text)
         flat = " ".join(text.split())
         self.assertIn("Create `.fm-scratch/` files", flat)  # T-2294: the Write tool, not a heredoc
@@ -47,10 +47,11 @@ class Brief(_Tasks):
         """Lanes landed 'left for a hand close: no red→green proof': the contract names the verb, in the agent file and in
         the contract text contract() renders for a real id (the one a brief carries when its agent lacks the rules)."""
         flat = " ".join(read_text(os.path.join(PLUGIN, "agents", "fm-builder.md")).split())
-        self.assertIn("For a FIX record `sampo task prove <ID>", flat)
+        self.assertIn("For a FIX the brief says whether Sampo records its red→green proof", flat)  # T-6158
+        self.assertNotIn("sampo task prove", flat)  # T-6158: the rules name no bookkeeping verb, the brief gives the call
         from sampo import lanes as slanes
         copy = " ".join(slanes.contract("T-9", "abc123", "/main").split())
-        self.assertIn("For a FIX record `sampo task prove T-9 --run", copy)
+        self.assertNotIn("sampo task prove", copy)
         self.assertIn("lane accept", copy)  # why: the close refuses a FIX with no proof
 
     def test_the_contract_has_a_code_start_card(self):  # T-5682: the brief's map first, then a card, then a range
@@ -99,7 +100,8 @@ class Brief(_Tasks):
         self.assertEqual(brief.count(slanes.CONTRACT_HEADING), 1)
         section = brief.split(slanes.CONTRACT_HEADING, 1)[1]
         flat = " ".join(section.split())
-        self.assertIn(f"Start from the main checkout's commit {head} with `sampo lane start {tid}`", flat)
+        self.assertIn(f"Start from the main checkout's commit {head}, in your worktree", flat)  # T-6158: no start call
+        self.assertNotIn("sampo lane start", flat)
         for key, value in (("<ID>", tid), ("<BASE>", head), ("<MAIN>", self.repo)):
             self.assertIn(f"{key} = {value}", flat, "the legend gives the real values")
         self.assertNotIn("Never run the heavy repo-shape modules", flat)
@@ -129,7 +131,8 @@ class Brief(_Tasks):
         self.assertEqual(brief.count(slanes.CONTRACT_HEADING), 1)
         self.assertIn(full, flat, "the brief's contract is contract()'s text")
         self.assertIn("Never push, never merge another branch", flat)
-        self.assertIn(f"Start from the main checkout's commit {head} with `sampo lane start {tid}`", flat)
+        self.assertIn(f"Start from the main checkout's commit {head}, in your worktree", flat)
+        self.assertNotIn(f"commit {head} with `sampo lane start", flat)  # T-6158: the start bullet names no start call
 
     def test_a_brief_in_a_project_with_the_test_runner_carries_the_repo_rules(self):  # T-5595
         """The Sampo-repo-only rules (the repo-shape modules, run.py's --deadline) reach a builder whose project has
@@ -146,8 +149,9 @@ class Brief(_Tasks):
         tid = self.task("Parse dates")
         res = json.loads(self.fm("lane", "brief", tid, "--json").stdout)
         brief = read_text(res["path"])
-        for part in ("Parse dates works", "python3 -c 'print(1)'", "build it", f"sampo lane start {tid}"):
+        for part in ("Parse dates works", "python3 -c 'print(1)'", "build it"):
             self.assertIn(part.lower(), brief.lower())
+        self.assertNotIn("sampo lane start", brief.lower())  # T-6158: the first call starts the lane
         self.assertIn("never push", read_text(os.path.join(PLUGIN, "agents", "fm-builder.md")).lower(), "the rules are the agent's")
         self.assertIn('isolation: "worktree"', res["agent"])
         self.assertIn("sampo:fm-builder", res["agent"])
@@ -206,7 +210,7 @@ class Brief(_Tasks):
         tid = self.task("Changelog")
         agent = read_text(os.path.join(PLUGIN, "agents", "fm-builder.md"))  # T-5595: the rule is the agent's
         self.assertIn("Don't edit CHANGELOG.md", agent)
-        self.assertIn("changelog line", agent)
+        self.assertIn("CHANGELOG (one sentence", agent)  # T-6158: the keys are named, written as trailers in the last commit
         self.assertIn("final report", agent)
 
     def test_builder_model_follows_the_tier(self):
@@ -214,6 +218,7 @@ class Brief(_Tasks):
         # 22% of a week's usage); the main thread still reviews, merges and re-verifies; T-6101: haiku is the default
         # for every tier, and sonnet is only the escalation after two Haiku failures
         small, mid = self.task("Small one"), self.task("Mid one", tier="M")
+        # T-6101 made haiku the default for every builder route (sonnet only after two failed rounds): the line reads haiku
         for tid in (small, mid):
             self.assertIn('model: "haiku"', json.loads(self.fm("lane", "brief", tid, "--json").stdout)["agent"])
 
@@ -233,22 +238,23 @@ class Brief(_Tasks):
         self.fm("lane", "brief", three)
 
 
-    def test_the_launch_prompt_opens_with_read_and_lane_start(self):  # T-5594: no preamble calls before the work
+    def test_the_launch_prompt_reads_the_brief_and_names_no_start(self):  # T-6158: the first call starts the lane
         tid = self.task("Parse dates")
         res = json.loads(self.fm("lane", "brief", tid, "--json").stdout)
-        self.assertIn(f'prompt: "Read {res["path"]} and run sampo lane start {tid} in your first message', res["agent"])
-        self.assertIn("both calls in one turn, then work the task", res["agent"])
+        self.assertIn(f'prompt: "Read {res["path"]} and work the task it describes."', res["agent"])
+        self.assertNotIn("lane start", res["agent"])
 
     def test_the_contract_leaves_leases_to_lane_start(self):  # T-5594: lane start takes the scope, SubagentStop drops it
         from sampo import lanes as slanes
         flat = " ".join(read_text(os.path.join(PLUGIN, "agents", "fm-builder.md")).split())
         self.assertNotIn("read it first", flat, "the brief is read in the same first message as lane start")
         self.assertNotIn("Before editing, claim what you plan to change", flat)
-        self.assertIn("lane start took the leases on your scope files", flat)
-        self.assertIn("sampo lease take FILE[::SYMBOL]", flat, "a file outside the scope is still taken by hand")
+        self.assertIn("its start took the leases on your scope files", flat)  # T-6158: the first call's start
+        self.assertIn("your first edit of one of its symbols takes that symbol's lease (T-6158)", flat)  # review: in scope only
+        self.assertIn("A file outside the scope is not taken for you: take it first with `sampo lease take FILE[::SYMBOL]`", flat)
         copy = " ".join(slanes.contract("T-9", "abc123", "/main").split())
         self.assertNotIn("Before editing, claim what you plan to change", copy)
-        self.assertIn("lane start took the leases on your scope files", copy)
+        self.assertIn("its start took the leases on your scope files", copy)
 
 
 class Flow(_Tasks):
@@ -797,15 +803,15 @@ class PassingShapes(_Tasks):
         text = read_text(os.path.join(PLUGIN, "agents", "fm-builder.md"))
         contract = text.split("break none of it:\n", 1)[1].split("\n\nReport in", 1)[0]
         self.assertIn(self.block(), contract)
-        for shape in ("--ac", "--run-file", "git -C", ".venv/bin/python", "env NAME=v"):
+        for shape in (".fm-scratch/", "git -C", ".venv/bin/python", "env NAME=v"):  # T-6158: Sampo records the evidence
             self.assertIn(shape, self.block())
-        self.assertIn("1500 characters", contract)  # T-5598: the report cap is a rule, so the brief's copy carries it
+        self.assertIn("3000 characters", contract)  # T-5598: the report cap is a rule, so the brief's copy carries it (T-6162: 3000)
 
     def test_the_lane_brief_leaves_the_passing_shapes_to_the_agent(self):  # T-5595: the agent file carries them once
         tid = self.task("Shaped")
         brief = read_text(json.loads(self.fm("lane", "brief", tid, "--json").stdout)["path"])
         self.assertNotIn(self.block(), brief, "the brief does not repeat the agent's shapes")
-        self.assertIn("sampo lane start " + tid, brief)
+        self.assertNotIn("sampo lane start", brief)  # T-6158: the first call starts the lane, the brief names no start
 
     def test_passing_shapes_go_to_a_subagent_in_a_managed_worktree_only(self):
         # T-4139: a subagent in a linked worktree of a managed project is told the shapes; one in the main checkout (a

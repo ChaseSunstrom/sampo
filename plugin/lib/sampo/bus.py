@@ -407,21 +407,34 @@ def _write_leases(data):
     c.write_atomic(os.path.join(_dir(), "leases.json"), json.dumps(data, indent=1))
 
 
+LINES_MAX = 2_000_000  # the characters _lines reads; a file at or past it is cut (conflict fails closed on that)
+
+
 def _lines(path):
     try:
         with open(path, encoding="utf-8", errors="replace") as f:
-            return f.read(2_000_000)
+            return f.read(LINES_MAX)
     except OSError:
         return None
 
 
 def _region(text, snippet):
     """(first, last) 0-based lines of snippet in text, or None."""
-    i = text.find(snippet) if snippet else -1
-    if i < 0:
-        return None
-    a = text.count("\n", 0, i)
-    return a, a + snippet.count("\n")
+    found = _regions(text, snippet)
+    return found[0] if found else None
+
+
+def _regions(text, snippet, every=False):
+    """(first, last) 0-based lines of each occurrence of snippet in text: the first only, or all of them when every (an
+    Edit's replace_all rewrites each one, so each is a region the edit lands in). Every occurrence counts (review: a cap
+    let an edit past the 1000th match through unseen); the newlines are counted once, forward, so the scan is linear."""
+    out, i, a, at = [], (text.find(snippet) if snippet else -1), 0, 0
+    while 0 <= i:
+        a += text.count("\n", at, i)
+        at = i
+        out.append((a, a + snippet.count("\n")))
+        i = text.find(snippet, i + 1) if every else -1
+    return out
 
 
 def _indent(s):
@@ -463,9 +476,11 @@ def span(text, name):
 
 
 def _edits(tool, ti):
+    """(old, new, replace_all) per edit of an Edit or MultiEdit call."""
     if tool == "MultiEdit":
-        return [(e.get("old_string"), e.get("new_string")) for e in ti.get("edits") or [] if isinstance(e, dict)]
-    return [(ti.get("old_string"), ti.get("new_string"))] if tool == "Edit" else []
+        return [(e.get("old_string"), e.get("new_string"), bool(e.get("replace_all")))
+                for e in ti.get("edits") or [] if isinstance(e, dict)]
+    return [(ti.get("old_string"), ti.get("new_string"), bool(ti.get("replace_all")))] if tool == "Edit" else []
 
 
 def after_edit(pl, p, path):
@@ -478,7 +493,7 @@ def after_edit(pl, p, path):
         names = ["*"]
     else:
         text = _lines(path) or ""
-        names = {n for _, new in _edits(tool, pl.get("tool_input") or {})
+        names = {n for _, new, _ in _edits(tool, pl.get("tool_input") or {})
                  if (r := _region(text, new)) and (n := enclosing(text, r, outer=True))}
     if not names:
         return
@@ -588,14 +603,42 @@ def scope_targets(p, b):
     return out
 
 
-def take_scope(p, task_id, targets, seconds=LEASE_S):
+def auto_take(pl, p, path):
+    """T-6158: a builder's first edit of a symbol its focused task's scope names takes that symbol's lease before the edit
+    lands, under the task id and tagged "scope" (as lane start's take does), so the builder never takes it by hand. Only
+    free symbols are taken: one another live session holds stays with conflict, which refuses the edit as before. Writes
+    only when it takes something, and an edit outside every scope target does nothing."""
+    from sampo import cli
+    if not p.lane:  # a builder's lane only: the main checkout's focused task is the lead's, and its edits take no lease
+        return
+    act = c.active_brief_fast(p, p.lane)  # T-6158 speed: only a brief whose frontmatter is active is parsed, never all
+    if not act or not os.path.isfile(path):
+        return
+    rel = os.path.relpath(path, p.root)
+    targets = [(f, s) for f, s in scope_targets(p, act) if f == rel]
+    if not targets:
+        return
+    ti = pl.get("tool_input") or {}
+    if pl.get("tool_name") == "Write":
+        names = {"*"}
+    elif (text := _lines(path)) is None or len(text) >= LINES_MAX:
+        names = {"*"}  # T-6158 review: cut at LINES_MAX or unreadable: the symbol the edit replaces is past what we read
+    else:
+        names = {n for old, _, every in _edits(pl.get("tool_name"), ti)  # the text the edit replaces: still in the file
+                 for r in _regions(text, old, every) if (n := enclosing(text, r, outer=True))}
+    want = [(f, s) for f, s in targets if s in names or s == "*" or "*" in names]
+    if want:
+        take_scope(p, act.id, want, me=_me(pl))
+
+
+def take_scope(p, task_id, targets, seconds=LEASE_S, me=None):
     """T-5594: a builder's `sampo lane start` takes the task's concrete scope files (scope_targets' pairs) as its session's
     leases under the task id, so it never takes them by hand, and tags them "scope" so the return drops them alone. A
     target another live session holds (on an overlapping symbol, or the whole file, or a session's lease under another
     task) isn't taken: those come back as (name, holder) pairs, as preclaim's do. The lane's own pre-claim is not a
     holder. One lock, one write; a second start re-takes the same keys."""
     from sampo import cli
-    me, taken, held = _sid(cli.session()) or "user", [], []
+    me, taken, held = _sid(me) or _sid(cli.session()) or "user", [], []
     with c.lock(_dir()):
         data = _leases()
         for f, sym in targets:
@@ -727,15 +770,22 @@ def conflict(pl, p, path):
     rel = os.path.relpath(path, p.root)
     # T-1138: a lane's pre-claim (lane-<id>) is advisory: lanes edit separate worktrees and the merge settles overlaps;
     # blocking stalled a parallel builder on a 5,000-line shared file. Explicit leases (fm lease take) still deny.
-    held = [v for v in _leases().values() if v["project"] == p.slug and v["file"] == rel and v["session"] != sid
+    # T-6158: builder lanes of one lead share its session id, so in a lane a lease under another task is held whoever's session
+    act = c.active_brief_fast(p, p.lane) if p.lane else None
+    held = [v for v in _leases().values() if v["project"] == p.slug and v["file"] == rel
+            and (v["session"] != sid or (act and v.get("task") and v["task"] != act.id))
             and not v.get("advisory") and not v["session"].startswith("lane-")]
     if not held:
         return None
-    text = _lines(path) or ""
-    regions = [r for old, _ in _edits(tool, pl.get("tool_input") or {}) if (r := _region(text, old))]
+    text = _lines(path)
+    # T-6158 review: a file cut at LINES_MAX (or unreadable) has symbols and matches past the cut that we can't see, so
+    # it counts as a conflict with any lease held on it, never as a pass
+    cut = text is None or len(text) >= LINES_MAX
+    text = text or ""
+    regions = [r for old, _, every in _edits(tool, pl.get("tool_input") or {}) for r in _regions(text, old, every)]
     for v in held:
         s = None if v["symbol"] == "*" else span(text, v["symbol"])
-        hit = tool in ("Write", "NotebookEdit") or v["symbol"] == "*" or (
+        hit = tool in ("Write", "NotebookEdit") or v["symbol"] == "*" or cut or (
             s and any(r[0] <= s[1] and s[0] <= r[1] for r in regions))
         if hit:
             left = int((v["until"] - time.time()) // 60) + 1

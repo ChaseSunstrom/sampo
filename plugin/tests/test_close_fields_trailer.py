@@ -247,6 +247,6 @@ class ContractAsksForTrailers(ForemanTestCase):
         tells the builder to put its close lines in its last commit's message, so a land can close the lane with no hand
         step."""
         flat = " ".join(lanes.contract("T-9", "abc123", "/main").split())
-        self.assertIn("your last commit carries the same lines as trailers", flat)
-        self.assertIn('-m "CHANGELOG: …" -m "TITLE: …"', flat)
-        self.assertIn("a fix commit after it need not repeat them", flat)
+        self.assertIn("Write each as a `KEY: text` trailer line in your last commit's message", flat)  # T-6158
+        self.assertIn("CHANGELOG (one sentence", flat)
+        self.assertIn("Sampo adds a title-only set at precheck when your commits carry none", flat)

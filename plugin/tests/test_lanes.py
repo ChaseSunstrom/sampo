@@ -21,6 +21,7 @@ from unittest import mock
 
 import test_lane_train as tlt
 from helpers import CALM_HOST, ForemanTestCase, read_text, valid_m_plan
+from test_hooks import HookCase, parse
 
 from sampo import core as c
 from sampo import cli as slanes_cli
@@ -949,7 +950,7 @@ class Lanes(ForemanTestCase):
         self.git("commit", "-q", "--allow-empty", "-m", "its own work", cwd=wt)
         again = self.fm("lane", "start", tid, cwd=wt).stdout
         self.assertNotIn("main moved on", again)
-        self.assertIn(f"built on {dep}", again)
+        self.assertIn("nothing to do", again)  # T-6158: a lane started once is started: the second call is a no-op success
 
     def test_stacked_base_names_a_finished_dependency_s_tip_and_lane_start_brings_it_in(self):  # T-5725: T-5708 called a verb T-5706 adds
         dep, dpath = self.finished_builder()
@@ -964,7 +965,7 @@ class Lanes(ForemanTestCase):
         rules = text.rpartition(slanes.CONTRACT_HEADING)[2]
         self.assertRegex(rules, rf"Start from the main checkout's commit {tip}\b", "the dependency's tip is the base")
         self.assertIn(f"Built on {dep}", rules, "the contract says it too: lane start reads it there")
-        self.assertIn("lane start", flat)
+        self.assertIn("Sampo brings it into your worktree at your first call", flat)  # T-6158
         self.assertEqual(c.find_brief(c.find_project(self.repo), tid).meta.get("big_base"), tip,
                          "its own commits are the ones past the tip (finished_lanes, recovery)")
         wt = os.path.join(self.tmp, "builder-wt")
@@ -2192,6 +2193,16 @@ class Lanes(ForemanTestCase):
         brief = read_text(os.path.join(c.find_project(self.repo).dir, "audits", f"{tid}.builder.md"))
         self.assertIn(f"git merge foreman/{tid}", brief)
         self.assertNotIn(f"fm lane recover {tid}", self.fm("next").stdout, "its new process is recorded")
+
+    def test_resume_clears_the_start_record_so_the_new_builders_first_call_starts_its_lane(self):  # T-6158
+        tid, path = self.stopped_builder()
+        p = c.find_project(self.repo)
+        b = c.find_brief(p, tid)
+        b.meta["lane_started"] = "2026-11-20T10:00:00Z"  # the old builder's start: a new builder's lane has none
+        c.save_brief(p, b)
+        self.fm("lane", "resume", tid)
+        meta = json.loads(self.fm("task", "show", tid, "--json").stdout)["meta"]
+        self.assertNotIn("lane_started", meta)
 
     def fixes_lane(self, agent="abc12345", findings=True):
         """T-5477: a briefed lane whose folder is a harness builder worktree (agent-<id>), with two reported findings."""
@@ -5599,7 +5610,7 @@ class LaneStart(_LaneRepo):
         path, brief = self.lane_with_brief(main_commit_between=True)
         base = self.git(self.repo, "rev-parse", "HEAD").strip()
         text = read_text(brief)
-        self.assertIn(f"Start from the main checkout's commit {base} with `sampo lane start T-0001`", text)
+        self.assertIn(f"Start from the main checkout's commit {base}, in your worktree", text)  # T-6158: no start call named
         self.assertNotIn("Never run the heavy repo-shape modules", text, "the short contract carries no rules copy")
         r = self.fm("lane", "start", "T-0001", cwd=path, check=False)
         self.assertNotEqual(r.returncode, 0)
@@ -5644,7 +5655,9 @@ class LaneStart(_LaneRepo):
         self.assertEqual(mine, ["plugin/a.py"], r.stdout)
         self.assertIn("Leases: took plugin/a.py", r.stdout)
         d = json.loads(self.fm("lane", "start", "T-0001", "--json", cwd=path).stdout)
-        self.assertEqual(d["leases"], ["plugin/a.py"], "a second start re-takes the same lease: no duplicate")
+        self.assertTrue(d["already"], "T-6158: a second start is a no-op success")
+        mine = sorted(v["file"] for v in sbus._leases().values() if v["task"] == "T-0001")
+        self.assertEqual(mine, ["plugin/a.py"], "a second start takes no duplicate lease")
 
     def test_start_takes_the_scope_leases_but_not_one_another_session_holds(self):  # T-5594
         from sampo import bus as sbus
@@ -5672,12 +5685,13 @@ class LaneStart(_LaneRepo):
         self.assertEqual(self.active(path), "T-0001")
         self.assertIn("leases not taken: ", r.stdout)
         d = json.loads(self.fm("lane", "start", "T-0001", "--json", cwd=path).stdout)
-        self.assertEqual(d["leases"], ["plugin/a.py"], "the next start, with the lock free, takes it")
+        self.assertTrue(d["already"], "T-6158: the start stands; the first edit of the file takes the lease")
 
     def test_the_builder_contract_names_lane_start(self):
         from sampo import lanes as slanes
         flat = " ".join(slanes.contract("T-9", "abc123", "/main").split())
-        self.assertIn("sampo lane start T-9", flat)
+        self.assertIn("Your first call starts the lane", flat)  # T-6158: Sampo runs the start, the rules name no start call
+        self.assertNotIn("sampo lane start T-9", flat)
 
 
 class DefectClassesCached(ForemanTestCase):
@@ -6582,7 +6596,8 @@ class LocalBuilderTimeRun(tcode.CodeCase):
     NEW = {"file": "test_new.py", "content": "import calc\nassert calc.add(2, 3) == 5, calc.add(2, 3)\nprint('ok')\n"}
 
     def brief(self, verify="python3 check_calc.py"):
-        a = ["task", "new", "make calc.add add", "--type", "FIX", "--tier", "S", "--json", "--step", "fix calc.add and test it",
+        # T-6158: a FEATURE: its red run says "no test matches", which is no red proof, so a FIX would ask for one more round
+        a = ["task", "new", "make calc.add add", "--type", "FEATURE", "--tier", "S", "--json", "--step", "fix calc.add and test it",
              "--ac", f"calc.add adds :: {verify}"]
         return json.loads(self.fm(*a).stdout)["id"]
 
@@ -8692,6 +8707,577 @@ class RedFirstGate(ForemanTestCase):
         self.assertEqual((out["red"], out["red_ok"], out["plain"], out["plain_ok"]), (2, 1, 2, 2))
         self.assertEqual((out["red_turns"], out["plain_turns"]), (50, 40))
         self.assertIn("red-first 1 of 2 first-passed", redfirst.line(out))
+
+
+class BuilderChores(HookCase):  # T-6158: Sampo does a builder's bookkeeping; the builder only reads, edits and runs tests
+    """A criterion's verify runs red on the base at brief time and green at the lane's precheck, and Sampo records both as
+    evidence; a builder's first edit of its scope's symbol takes that lease; a symbol another live session holds is still
+    refused; and the brief names none of the bookkeeping verbs."""
+    # the lease verb, which the first-edit take replaces. The step evidence and FIX prove lines are dropped only where
+    # Sampo records them (the covered steps, the FIX proof): test_a_covered_step... below.
+    BOOKKEEPING = ("sampo lease take", "sampo lane start", "sampo task evidence", "sampo task prove", "CHANGELOG:", "TITLE:")
+    MOD ="def f(x):\n    a = x + 1\n    return a\n\n\ndef g(y):\n    b = y * 2\n    return b\n"
+
+    def setUp(self):
+        super().setUp()
+        # the pilot's own env (a headless builder's shell) would confine every hook path to no lane: this class's fixture is a main repo
+        patch = mock.patch.dict(os.environ)
+        patch.start()
+        self.addCleanup(patch.stop)
+        for k in ("FOREMAN_PILOT_HEADLESS", "FOREMAN_PILOT_LANE", "FOREMAN_PILOT_MAIN"):
+            os.environ.pop(k, None)
+        self.fm("init")
+
+    def ev_lines(self, tid):
+        p = c.find_project(self.repo)
+        return [ln for b in c.load_briefs(p) if b.id == tid for ln in b.evidence()]
+
+    def write_mod(self, text):
+        path = os.path.join(self.repo, "mod.py")
+        with open(path, "w") as f:
+            f.write(text)
+        return path
+
+    def test_the_brief_names_none_of_the_bookkeeping_verbs(self):
+        # the brief's contract for a FIX whose steps and proof Sampo records, as builder_brief builds it
+        text = " ".join(slanes.brief_contract("T-9", "abc123", self.repo, steps=[1], covered=[1], proof=True).split())
+        for verb in self.BOOKKEEPING:
+            self.assertNotIn(verb, text)
+
+    def started_lane(self, title, **kw):  # a lane whose start (and so its base) is recorded: what the builder's first call does
+        tid = self.lane_task(title, **kw)
+        lane = json.loads(self.fm("lane", "new", tid, "--json").stdout)["path"]
+        self.fm("lane", "start", tid, cwd=lane)
+        return tid, lane
+
+    def commit_work(self, lane, name="work.txt", msg="work"):
+        with open(os.path.join(lane, name), "w") as f:
+            f.write("work\n")
+        subprocess.run(["git", "-C", lane, "add", name], check=True)
+        subprocess.run(["git", "-C", lane, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", msg], check=True)
+
+    def tip(self, lane):
+        return subprocess.run(["git", "-C", lane, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+
+    def test_add_trailers_refuses_a_lane_with_no_commit_of_its_own_or_a_dirty_tree(self):
+        tid, lane = self.started_lane("Refused trailer chore")
+        b = self.brief_of(tid)
+        before = self.tip(lane)
+        self.assertFalse(slanes.add_trailers(b, lane))  # nothing of its own past the base: the tip would be trunk's
+        self.assertEqual(self.tip(lane), before)
+        self.commit_work(lane)
+        with open(os.path.join(lane, "work.txt"), "a") as f:
+            f.write("edited, not committed\n")  # a tracked file edited: an amend would sweep nothing in, but the tree is the builder's
+        before = self.tip(lane)
+        self.assertFalse(slanes.add_trailers(b, lane))
+        self.assertEqual(self.tip(lane), before)
+        subprocess.run(["git", "-C", lane, "checkout", "--", "work.txt"], check=True)
+        self.assertTrue(slanes.add_trailers(b, lane))  # clean, with a commit of its own: written
+        self.assertNotEqual(self.tip(lane), before)
+        self.assertFalse(slanes.add_trailers(b, lane))  # a second call finds them
+
+    def test_add_trailers_never_amends_an_accepted_or_reviewed_lane(self):  # accepted_tip / reviewed_tip name the judged commit
+        for key in ("accepted_at", "accepted_tip", "reviewed_tip"):
+            tid, lane = self.started_lane(f"Judged {key} chore")
+            self.commit_work(lane)
+            b = self.brief_of(tid)
+            b.meta[key] = "x"
+            before = self.tip(lane)
+            self.assertFalse(slanes.add_trailers(b, lane), key)
+            self.assertEqual(self.tip(lane), before, key)
+
+    def test_a_precheck_adds_the_close_trailers_when_the_builder_wrote_none(self):  # item 4
+        tid, lane = self.started_lane("Trailer chore")
+        self.commit_work(lane)
+        self.fm("lane", "precheck", tid)
+        got = slanes.lane_trailers(lane, None, tid)
+        self.assertEqual(got.get("title"), f"Trailer chore ({tid})")
+        self.assertTrue(got.get("changelog", "").endswith(f"({tid})."), got)
+        tip = subprocess.run(["git", "-C", lane, "rev-parse", "HEAD"], capture_output=True, text=True).stdout
+        self.fm("lane", "precheck", tid)  # a second precheck leaves the commit alone and records no ✗ step line
+        self.assertEqual(tip, subprocess.run(["git", "-C", lane, "rev-parse", "HEAD"], capture_output=True, text=True).stdout)
+        self.assertFalse(any("not run at precheck" in ln for ln in self.ev_lines(tid)), self.ev_lines(tid))
+
+    def test_a_no_test_run_on_the_base_is_no_red_proof(self):  # exit 5: the test is not written yet there
+        b = c.Brief.__new__(c.Brief)
+        green = "- `cmd` → exit 0 [ran] (ac 1)"
+        for red in ("- `cmd` → ✗ exit 5 [ran] (ac 1)",  # pytest: no test collected
+                    "- `cmd` → ✗ exit 1 · run.py: no test matches 'X' [ran] (ac 1)",  # plugin/tests/run.py: the selector found none
+                    "- `cmd` → ✗ exit 1 · ModuleNotFoundError: No module named 'test_new' [ran] (ac 1)",  # unittest: no such module
+                    "- `cmd` → ✗ exit 1 · Failed to import test module: test_new [ran] (ac 1)",
+                    "- `cmd` → ✗ exit 1 · Ran 0 tests in 0.000s [ran] (ac 1)"):
+            with mock.patch.object(c.Brief, "evidence", return_value=[red, green]):
+                self.assertIsNone(b.red_green_cmd(), red)
+        with mock.patch.object(c.Brief, "evidence", return_value=[  # a real red (a test that ran and failed) still counts
+                "- `cmd` → ✗ exit 1 · FAIL: test_x [ran] (ac 1)", green]):
+            self.assertEqual(b.red_green_cmd(), "cmd")
+
+    def test_the_builder_rules_name_none_of_the_bookkeeping_verbs(self):  # the rules section: Sampo does these now
+        agent = " ".join(read_text(os.path.join(os.path.dirname(__file__), "..", "agents", "fm-builder.md")).split())
+        rules = agent.split("break none of it:")[1].split("Report in")[0]
+        for verb in self.BOOKKEEPING:
+            self.assertNotIn(verb, rules)
+
+    def test_a_brief_records_each_criterion_red_on_base_as_evidence(self):
+        tid = first(self.fm("task", "new", "Red chore", "--type", "FEATURE", "--tier", "S", "--ac",
+                            "red :: sh -c 'exit 3'", "--step", "s", "--json").stdout)["id"]
+        self.fm("lane", "brief", tid, "--json", env={"FOREMAN_BRIEF_VERIFY": "on"}, check=False)
+        ev = self.ev_lines(tid)
+        self.assertTrue(any("(ac 1)" in ln and "✗ exit 3" in ln for ln in ev), ev)
+
+    def test_a_precheck_records_each_green_criterion_as_evidence(self):
+        tid = first(self.fm("task", "new", "Green chore", "--type", "FEATURE", "--tier", "S", "--ac",
+                            "ok :: sh -c 'exit 0'", "--step", "s", "--json").stdout)["id"]
+        lane = json.loads(self.fm("lane", "new", tid, "--json").stdout)["path"]
+        with open(os.path.join(lane, "work.txt"), "w") as f:
+            f.write("work\n")
+        subprocess.run(["git", "-C", lane, "add", "work.txt"], check=True)
+        subprocess.run(["git", "-C", lane, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "work"],
+                       check=True)
+        self.fm("lane", "precheck", tid)
+        ev = self.ev_lines(tid)
+        self.assertTrue(any("(ac 1)" in ln and "exit 0" in ln and "[ran]" in ln for ln in ev), ev)
+
+    def test_a_criterion_a_precheck_skips_as_already_passed_is_still_recorded_once(self):  # lane_passed: never dropped
+        tid, lane = self.started_lane("Reused chore")
+        self.commit_work(lane)
+        tree = subprocess.run(["git", "-C", lane, "rev-parse", "HEAD^{tree}"], capture_output=True, text=True).stdout.strip()
+        # the criterion already passed on this tree (an earlier gate's record), with no evidence line of its own on the brief
+        passed = json.dumps({"tree": tree, "cmds": ["sh -c 'exit 0'"]})
+        p = c.find_project(self.repo)
+        from sampo import cli
+        cli.mutate(p, tid, lambda x: x.meta.__setitem__("lane_passed", passed), "lane_precheck")
+        self.fm("lane", "precheck", tid)
+        self.fm("lane", "precheck", tid)  # a second one finds that line already there
+        ev = [ln for ln in self.ev_lines(tid) if "(ac 1)" in ln]
+        self.assertEqual(len([ln for ln in ev if "reused" in ln and "exit 0" in ln]), 1, ev)
+        self.assertFalse(any("[ran]" in ln and "reused" not in ln for ln in ev), ev)  # it was not run again
+
+    def test_a_builders_first_edit_of_its_scope_symbol_takes_the_lease_before_it_lands(self):  # no start: only the edit takes it
+        from sampo import bus
+        tid = self.lane_task("Scoped chore", scope=["mod.py::f"])
+        lane = json.loads(self.fm("lane", "new", tid, "--json").stdout)["path"]
+        self.fm("focus", tid, cwd=lane)  # the brief is the active one, as a lane start leaves it, but takes no lease
+        path = os.path.join(lane, "mod.py")
+        with open(path, "w") as f:
+            f.write(self.MOD)
+        p = c.find_project(lane)
+        self.assertEqual(p.lane, lane)
+        bus.auto_take({"tool_name": "Edit", "session_id": "sess-a", "tool_input": {
+            "file_path": path, "old_string": "a = x + 1", "new_string": "a = x + 2"}}, p, path)
+        mine = [v for v in bus._leases().values() if v["session"] == "sess-a"]
+        self.assertEqual([(v["symbol"], v["task"], v.get("by")) for v in mine], [("f", tid, "scope")], mine)
+
+    def test_a_builders_first_edit_of_a_file_past_the_read_cap_still_takes_its_scope_lease(self):  # review: sibling of the cap
+        from sampo import bus
+        tid = self.lane_task("Big scoped chore", scope=["big.py::f"])
+        lane = json.loads(self.fm("lane", "new", tid, "--json").stdout)["path"]
+        self.fm("focus", tid, cwd=lane)
+        path = os.path.join(lane, "big.py")
+        with open(path, "w") as f:  # the symbol f sits past the characters _lines reads: the lease can't be found by name
+            f.write("x = 1\n" * (bus.LINES_MAX // 6 + 1) + self.MOD)
+        p = c.find_project(lane)
+        bus.auto_take({"tool_name": "Edit", "session_id": "sess-a", "tool_input": {
+            "file_path": path, "old_string": "a = x + 1", "new_string": "a = x + 2"}}, p, path)
+        mine = [v for v in bus._leases().values() if v["session"] == "sess-a"]
+        self.assertEqual([(v["symbol"], v["task"], v.get("by")) for v in mine], [("f", tid, "scope")], mine)
+
+    def test_a_symbol_another_live_session_holds_is_still_refused_and_not_taken(self):
+        from sampo import bus
+        path = self.write_mod(self.MOD.replace("x + 1", "x + 2"))
+        self.task("Held chore", type_="FEATURE", scope=["mod.py::f"], steps=("s",))
+        self.hook("PostToolUse", {"tool_name": "Edit", "session_id": "sess-b", "tool_response": {}, "tool_input": {
+            "file_path": path, "old_string": "x + 1", "new_string": "x + 2"}})
+        r = self.hook("PreToolUse", {"tool_name": "Edit", "session_id": "sess-a", "tool_input": {
+            "file_path": path, "old_string": "a = x + 2", "new_string": "a = x"}})
+        self.assertEqual((parse(r) or {}).get("hookSpecificOutput", {}).get("permissionDecision"), "deny", r.stdout)
+        self.assertFalse([v for v in bus._leases().values() if v["session"] == "sess-a"])
+
+    def test_in_a_lane_a_lease_the_same_session_holds_under_another_task_still_refuses(self):  # lanes of one lead share its sid
+        from sampo import bus
+        tid, lane = self.started_lane("Conflict chore")
+        with open(os.path.join(lane, "mod.py"), "w") as f:
+            f.write(self.MOD)
+        p = c.find_project(lane)
+        self.assertEqual(p.lane, lane)
+        edit = {"tool_name": "Edit", "session_id": "sess-lead", "tool_input": {
+            "file_path": os.path.join(lane, "mod.py"), "old_string": "a = x + 1", "new_string": "a = x + 2"}}
+        bus.take_scope(p, "T-0099", [("mod.py", "f")], me="sess-lead")  # a sibling lane's builder, the same session id
+        msg = bus.conflict(edit, p, os.path.join(lane, "mod.py"))
+        self.assertIsNotNone(msg)  # held by another task's lease, whoever's session it is
+        # the same session's lease under THIS lane's own task is its own: no conflict
+        bus.release(p, "T-0099")
+        bus.take_scope(p, tid, [("mod.py", "f")], me="sess-lead")
+        self.assertIsNone(bus.conflict(edit, p, os.path.join(lane, "mod.py")))
+        # outside a lane (the lead in the main checkout) the same session's other-task lease is not a conflict
+        bus.release(p, tid)
+        main_p = c.find_project(self.repo)
+        self.assertIsNone(main_p.lane)
+        with open(os.path.join(self.repo, "mod.py"), "w") as f:
+            f.write(self.MOD)
+        bus.take_scope(main_p, "T-0099", [("mod.py", "f")], me="sess-lead")
+        self.assertIsNone(bus.conflict(dict(edit, tool_input=dict(edit["tool_input"], file_path=os.path.join(self.repo, "mod.py"))),
+                                       main_p, os.path.join(self.repo, "mod.py")))
+
+    def lane_task(self, title, steps=("s",), ac="ok :: sh -c 'exit 0'", type_="FEATURE", scope=None):
+        args = ["task", "new", title, "--type", type_, "--tier", "S", "--ac", ac]
+        for s in steps:
+            args += ["--step", s]
+        for s in scope or []:
+            args += ["--scope", s]
+        return first(self.fm(*args, "--json").stdout)["id"]
+
+    def brief_of(self, tid):
+        return next(b for b in c.load_briefs(c.find_project(self.repo)) if b.id == tid)
+
+    def brief_text(self, tid):
+        return read_text(os.path.join(c.find_project(self.repo).dir, "audits", f"{tid}.builder.md"))
+
+    def test_a_lane_sessions_first_call_starts_its_lane_and_a_second_start_is_a_no_op(self):  # auto-start (item 2)
+        tid = self.lane_task("Started chore")
+        lane = json.loads(self.fm("lane", "new", tid, "--json").stdout)["path"]
+        self.assertFalse(self.brief_of(tid).meta.get("lane_started"))
+        self.hook("PreToolUse", {"tool_name": "Bash", "session_id": "sess-lane", "cwd": lane,
+                                 "tool_input": {"command": "ls"}})
+        self.assertTrue(self.brief_of(tid).meta.get("lane_started"))
+        again = self.fm("lane", "start", tid, cwd=lane, check=False)
+        self.assertEqual(again.returncode, 0, again.stderr)
+
+    def start_stub(self, returncode=0, err=""):  # a Popen never started: no pid, so nothing it is given reaches a kill
+        proc = mock.Mock(returncode=returncode)
+        proc.communicate.return_value = ("", err)
+        return proc
+
+    def lane_and_project(self, title):
+        tid = self.lane_task(title)
+        lane = json.loads(self.fm("lane", "new", tid, "--json").stdout)["path"]
+        p = c.find_project(lane)
+        self.assertEqual(p.lane, lane)
+        return tid, p, {"session_id": "sess-lane", "tool_name": "Bash", "tool_input": {"command": "ls"}}
+
+    def test_ten_calls_after_a_refused_start_run_one_child(self):  # T-6158: the refusal is memoed per session and lane
+        from sampo import hooks
+        tid, p, pl = self.lane_and_project("Refused chore")
+        stub = self.start_stub(1, "sampo: refused: the base moved\n")
+        with mock.patch.object(hooks.subprocess, "Popen", return_value=stub) as popen:
+            outs = [hooks._lane_start_first(p, pl) for _ in range(10)]
+        self.assertEqual(popen.call_count, 1)
+        self.assertLessEqual(stub.communicate.call_args.kwargs["timeout"], hooks.LANE_START_S)
+        self.assertIn("was refused", outs[0][0])
+        self.assertEqual({o for o in outs}, {outs[0]})  # every call gets the same answer
+        self.assertFalse(self.brief_of(tid).meta.get("lane_started"))
+
+    def test_a_refusal_is_retried_at_most_once_a_minute(self):  # T-6158 (lead's answer 2): 60 s, then one more child
+        import time
+        from sampo import hooks
+        _, p, pl = self.lane_and_project("Retry chore")
+        self.assertEqual(hooks.LANE_START_RETRY_S, 60)
+        with mock.patch.object(hooks.subprocess, "Popen", return_value=self.start_stub(1, "sampo: refused: x\n")) as popen:
+            hooks._lane_start_first(p, pl)
+            with mock.patch.object(hooks.time, "time", return_value=time.time() + 59):
+                hooks._lane_start_first(p, pl)
+            self.assertEqual(popen.call_count, 1)
+            with mock.patch.object(hooks.time, "time", return_value=time.time() + 61):
+                hooks._lane_start_first(p, pl)
+        self.assertEqual(popen.call_count, 2)
+
+    def test_a_move_of_the_lanes_head_clears_the_refusal_memo_at_once(self):  # `git merge --ff-only BASE` is the way out
+        from sampo import hooks
+        tid, p, pl = self.lane_and_project("Merged chore")
+        with mock.patch.object(hooks.subprocess, "Popen", return_value=self.start_stub(1, "sampo: refused: behind\n")) as popen:
+            first = hooks._lane_start_first(p, pl)
+            hooks._lane_start_first(p, pl)
+            self.assertEqual(popen.call_count, 1)  # the same HEAD: the memo answers
+            self.commit_work(p.lane)  # the lane's HEAD moves (what the fast-forward does): inside the 60 s window
+            again = hooks._lane_start_first(p, pl)
+        self.assertEqual(popen.call_count, 2)
+        self.assertIn("was refused", first[0] + again[0])
+
+    def test_the_starts_own_words_come_back_for_the_builder_to_see(self):  # the brief's path, main moved, leases, steps
+        from sampo import hooks
+        _, p, pl = self.lane_and_project("Words chore")
+        words = "Brief: /x/T-1.builder.md\nmain moved on after the brief was written: builds on HEAD\nLeases: none\nSteps:\n1. [ ] s\n"
+        stub = self.start_stub()
+        stub.communicate.return_value = (words, "")
+        with mock.patch.object(hooks.subprocess, "Popen", return_value=stub) as popen:
+            refusal, started, notes = hooks._lane_start_first(p, pl)
+        self.assertEqual((refusal, started), ("", True))
+        self.assertEqual(popen.call_args.kwargs["stdout"], subprocess.PIPE)  # read, not thrown away
+        for part in ("Brief: /x/T-1.builder.md", "main moved on", "Leases: none", "1. [ ] s"):
+            self.assertIn(part, notes)
+
+    def test_a_refused_start_denies_the_call_but_leaves_the_merge_open_and_the_next_start_shows_its_notes(self):
+        tid = self.lane_task("Behind chore")
+        old = subprocess.run(["git", "-C", self.repo, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+        subprocess.run(["git", "-C", self.repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "--allow-empty", "-qm",
+                        "main moves on"], check=True)
+        head = subprocess.run(["git", "-C", self.repo, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+        self.fm("lane", "brief", tid, check=False)  # the brief's base is main's new tip
+        lane = json.loads(self.fm("lane", "new", tid, "--json").stdout)["path"]
+        subprocess.run(["git", "-C", lane, "reset", "-q", "--hard", old], check=True)  # a worktree made from an older default branch
+        call = lambda cmd: self.hook("PreToolUse", {"tool_name": "Bash", "session_id": "sess-behind", "cwd": lane,
+                                                    "tool_input": {"command": cmd}})
+        out = self.out_of(call("ls"))
+        self.assertEqual(out.get("permissionDecision"), "deny")  # the _pre_tool_use deny branch
+        self.assertIn("was refused", out.get("permissionDecisionReason", ""))
+        self.assertFalse(self.brief_of(tid).meta.get("lane_started"))
+        self.assertNotIn("was refused", self.out_of(call(f"git merge --ff-only {head}")).get("permissionDecisionReason", ""))
+        subprocess.run(["git", "-C", lane, "merge", "--ff-only", "-q", head], check=True)
+        got = call("ls")  # the HEAD moved: the memo no longer answers, so the start runs now, inside the minute
+        self.assertNotEqual(self.out_of(got).get("permissionDecision"), "deny", got.stdout)
+        self.assertTrue(self.brief_of(tid).meta.get("lane_started"))
+        ctx = self.ctx_of(got)
+        self.assertIn("Sampo started your lane", ctx)
+        self.assertIn("Steps:", ctx)
+
+    def test_a_timed_out_start_is_not_run_again_inside_the_window(self):  # T-6158: the child is killed, once
+        from sampo import hooks
+        _, p, pl = self.lane_and_project("Slow chore")
+        stub = self.start_stub()
+        stub.communicate.side_effect = subprocess.TimeoutExpired("sampo", 10)
+        with mock.patch.object(hooks.subprocess, "Popen", return_value=stub) as popen, \
+                mock.patch.object(c, "kill_group") as kill:
+            outs = [hooks._lane_start_first(p, pl) for _ in range(10)]
+        self.assertEqual(popen.call_count, 1)
+        kill.assert_called_once_with(stub, 15)  # TERM first: git removes its index.lock on TERM, never on KILL (review)
+        self.assertEqual(outs, [outs[0]] * 10)
+        self.assertIn("did not finish", outs[0][0])  # a timed-out start refuses the call: it never goes ahead unchecked
+        self.assertFalse(outs[0][1])
+
+    def test_a_timed_out_start_is_stopped_with_term_and_the_lock_is_left_to_git(self):  # review: no KILL on the first try
+        from sampo import hooks
+        _, p, pl = self.lane_and_project("Term chore")
+        stub = self.start_stub()
+        stub.communicate.side_effect = subprocess.TimeoutExpired("sampo", 10)
+        stub.wait.side_effect = [subprocess.TimeoutExpired("sampo", 2), 0]  # TERM did not end it: then KILL
+        with mock.patch.object(hooks.subprocess, "Popen", return_value=stub), \
+                mock.patch.object(c, "kill_group") as kill:
+            hooks._lane_start_first(p, pl)
+        self.assertEqual([x.args[1:] for x in kill.call_args_list], [(15,), ()])
+
+    def test_a_lane_with_two_tasks_refuses_its_first_call_and_starts_none(self):  # review: no one task to start, so refused
+        from sampo import cli, hooks
+        _, p, pl = self.lane_and_project("Pair chore")
+        other = self.lane_task("Pair other")
+        cli.mutate(p, other, lambda x: x.meta.__setitem__("lane", p.lane), "lane_new")
+        with mock.patch.object(hooks.subprocess, "Popen", side_effect=AssertionError("a start ran for two tasks")) as popen:
+            refusal, started, words = hooks._lane_start_first(p, pl)
+        popen.assert_not_called()
+        self.assertIn("holds 2 tasks", refusal)
+        self.assertEqual((started, words), (False, ""))
+
+    def test_a_call_that_finds_a_start_in_flight_waits_for_its_record_and_never_passes(self):  # review: no pass while it runs
+        import threading
+        from sampo import cli, hooks
+        tid, p, pl = self.lane_and_project("Inflight chore")
+        self.fm("focus", tid, cwd=p.lane)
+        key = f"{pl['session_id']}|{p.lane}|{hooks._lane_head(p.lane)}"
+        hooks._lane_start_memo(p, key, {"refusal": ""})  # another process's attempt, marked before its child ran
+
+        def record():  # the child finishes during the wait: its words, then its record land (a timer, not a patched sleep)
+            hooks._start_words(p, p.lane, "Sampo started your lane: step 1")
+            cli.mutate(p, tid, lambda x: x.meta.__setitem__("lane_started", "now"), "lane_start")
+        timer = threading.Timer(0.3, record)
+        timer.start()
+        try:
+            with mock.patch.object(hooks.subprocess, "Popen", side_effect=AssertionError("a child ran")):
+                got = hooks._lane_start_first(p, pl)
+        finally:
+            timer.join()
+        self.assertEqual(got, ("", False, "Sampo started your lane: step 1"))
+
+    def test_an_in_flight_start_that_never_records_refuses_without_a_memo(self):  # the wait ends: refused, not memoed
+        from sampo import hooks
+        _, p, pl = self.lane_and_project("Stuck chore")
+        key = f"{pl['session_id']}|{p.lane}|{hooks._lane_head(p.lane)}"
+        hooks._lane_start_memo(p, key, {"refusal": ""})
+        with mock.patch.object(hooks, "LANE_START_S", 0.2), \
+                mock.patch.object(hooks.subprocess, "Popen", side_effect=AssertionError("a child ran")):
+            refusal, started, _ = hooks._lane_start_first(p, pl)
+        self.assertIn("still running", refusal)
+        self.assertFalse(started)
+        self.assertEqual(hooks._lane_start_memo(p, key).get("refusal"), "")  # the next call looks again
+
+    def test_a_start_killed_with_kill_leaves_no_index_or_head_lock_in_the_lane(self):  # review: KILL runs no git cleanup
+        from sampo import hooks, lanes as slanes
+        _, p, pl = self.lane_and_project("Locked chore")
+        gd = slanes._gitdir_of(p.lane)
+        for name in ("index.lock", "HEAD.lock"):  # what a git killed mid-write leaves
+            with open(os.path.join(gd, name), "w") as f:
+                f.write("")
+        stub = self.start_stub()
+        stub.communicate.side_effect = subprocess.TimeoutExpired("sampo", 10)
+        stub.wait.side_effect = [subprocess.TimeoutExpired("sampo", 2), 0]  # TERM did not end it: KILL
+        with mock.patch.object(hooks.subprocess, "Popen", return_value=stub), mock.patch.object(c, "kill_group"):
+            hooks._lane_start_first(p, pl)
+        self.assertFalse(any(os.path.exists(os.path.join(gd, n)) for n in ("index.lock", "HEAD.lock")))
+
+    def test_a_file_past_the_read_cap_with_a_lease_held_on_its_symbol_is_a_conflict(self):  # review: no pass on unseen text
+        from sampo import bus
+        tid, lane = self.started_lane("Big chore")
+        path = os.path.join(lane, "big.py")
+        with open(path, "w") as f:  # the symbol f sits past the characters _lines reads
+            f.write("x = 1\n" * (bus.LINES_MAX // 6 + 1) + self.MOD)
+        p = c.find_project(lane)
+        bus.take_scope(p, "T-0099", [("big.py", "f")], me="sess-b")
+        edit = {"tool_name": "Edit", "session_id": "sess-a", "tool_input": {
+            "file_path": path, "old_string": "a = x + 1", "new_string": "a = x + 2"}}
+        self.assertIsNotNone(bus.conflict(edit, p, path))
+
+    def test_every_occurrence_of_a_replace_all_is_a_region(self):  # review: no 1000-occurrence cap on the regions
+        from sampo import bus
+        self.assertEqual(len(bus._regions("x\n" * 1500, "x", every=True)), 1500)
+        self.assertEqual(bus._regions("a\nb\na\n", "a", every=True), [(0, 0), (2, 2)])
+
+    def test_the_start_words_wait_for_the_builders_first_call(self):  # review: SubagentStart's words reach the first call
+        from sampo import hooks
+        _, p, _ = self.lane_and_project("Words chore")
+        self.assertEqual(hooks._start_words(p, p.lane), "")
+        hooks._start_words(p, p.lane, "Sampo started your lane: step 1")
+        self.assertEqual(hooks._start_words(p, p.lane), "Sampo started your lane: step 1")
+        self.assertEqual(hooks._start_words(p, p.lane), "")  # said once
+
+    def test_an_unwritable_memo_runs_no_child(self):  # T-6158: no memo, no start: every call paying a child is the cost
+        from sampo import hooks
+        _, p, pl = self.lane_and_project("Unwritable chore")
+        with mock.patch.object(hooks.subprocess, "Popen") as popen, \
+                mock.patch.object(c, "write_atomic", side_effect=OSError("read-only")):
+            outs = [hooks._lane_start_first(p, pl) for _ in range(3)]
+        popen.assert_not_called()
+        self.assertEqual(outs, [("", False, "")] * 3)
+
+    def test_a_memo_hit_is_a_file_read_and_no_child(self):  # T-6158: timed with timeit, the memo-hit path
+        import timeit
+        from sampo import hooks
+        _, p, pl = self.lane_and_project("Timed chore")
+        with mock.patch.object(hooks.subprocess, "Popen", return_value=self.start_stub(1, "sampo: refused: x\n")):
+            hooks._lane_start_first(p, pl)
+        with mock.patch.object(hooks.subprocess, "Popen", side_effect=AssertionError("a memo hit ran a child")):
+            per = min(timeit.repeat(lambda: hooks._lane_start_first(p, pl), number=20, repeat=3)) / 20
+        self.assertLess(per, 0.05)
+
+    def test_the_launch_line_and_the_brief_name_no_lane_start(self):  # item 2: the builder is not told to start
+        self.assertNotIn("lane start", slanes.agent_prompt("/x/audits/T-1.builder.md"))
+        self.assertNotIn("sampo lane start", slanes.brief_contract("T-9", "abc123", self.repo))
+
+    def test_a_precheck_records_a_covered_steps_evidence_as_step_evidence(self):  # item 3
+        tid = self.lane_task("Step chore", steps=("Run AC 1 green",))
+        lane = json.loads(self.fm("lane", "new", tid, "--json").stdout)["path"]
+        with open(os.path.join(lane, "work.txt"), "w") as f:
+            f.write("work\n")
+        subprocess.run(["git", "-C", lane, "add", "work.txt"], check=True)
+        subprocess.run(["git", "-C", lane, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "work"],
+                       check=True)
+        self.fm("lane", "precheck", tid)
+        ev = self.ev_lines(tid)
+        self.assertTrue(any("(step 1)" in ln and "exit 0" in ln and "[ran]" in ln for ln in ev), ev)
+
+    def test_a_covered_step_whose_criterion_is_red_at_precheck_gets_a_red_step_record(self):  # lead's answer 3
+        tid = self.lane_task("Red covered chore", ac="red :: sh -c 'exit 1'", steps=("Run AC 1 green",))
+        lane = json.loads(self.fm("lane", "new", tid, "--json").stdout)["path"]
+        with open(os.path.join(lane, "work.txt"), "w") as f:
+            f.write("work\n")
+        subprocess.run(["git", "-C", lane, "add", "work.txt"], check=True)
+        subprocess.run(["git", "-C", lane, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "work"],
+                       check=True)
+        self.fm("lane", "precheck", tid, check=False)
+        ev = self.ev_lines(tid)
+        self.assertTrue(any("(step 1)" in ln and "criterion 1" in ln and "✗" in ln for ln in ev), ev)
+        self.assertFalse(any("(step 1)" in ln and "[ran]" in ln and "✗" not in ln for ln in ev), ev)
+
+    def test_a_brief_asks_for_no_step_evidence_call_even_for_a_step_naming_no_criterion(self):  # T-6158: the stub's "s"
+        tid = self.lane_task("Mixed chore", steps=("Run AC 1 green", "Write the note"))
+        self.fm("lane", "brief", tid, check=False)
+        text = self.brief_text(tid)
+        self.assertNotIn("--step N --run", text)
+        self.assertNotIn("sampo task evidence", text)
+        self.assertIn("names no criterion", text)  # step 2 is reported in the builder's final message
+        self.assertNotIn("sampo lane start", text)
+
+    def test_a_stub_lane_whose_only_step_is_s_gets_no_evidence_call(self):  # T-6158 review: the test helper's default step
+        tid = self.lane_task("Stub chore", steps=("s",))
+        self.fm("lane", "brief", tid, check=False)
+        text = self.brief_text(tid)
+        self.assertNotIn("sampo task evidence", text)
+        self.assertNotIn("--step N --run", text)
+
+    def test_a_brief_with_every_step_covered_drops_the_step_evidence_line(self):  # item 3
+        tid = self.lane_task("Covered chore", steps=("Run AC 1 green",))
+        self.fm("lane", "brief", tid, check=False)
+        self.assertNotIn("--step N --run", self.brief_text(tid))
+
+    def test_a_fix_whose_red_and_green_sampo_records_drops_the_prove_line(self):  # item 3
+        tid = self.lane_task("Fixed chore", type_="FIX", ac="fixed :: sh -c 'test -f work.txt'", steps=("Write the note",))
+        self.fm("lane", "brief", tid, check=False, env={"FOREMAN_BRIEF_VERIFY": "on"})
+        self.assertTrue(any("(ac 1)" in ln and "✗ exit 1" in ln for ln in self.ev_lines(tid)), self.ev_lines(tid))
+        self.assertNotIn("sampo task prove", self.brief_text(tid))
+
+    def test_a_fix_with_no_brief_time_red_keeps_the_prove_line(self):  # item 3: nothing for Sampo to record
+        tid = self.lane_task("Unproved chore", type_="FIX", ac="fixed :: sh -c 'test -f work.txt'", steps=("Write the note",))
+        self.fm("lane", "brief", tid, check=False, env={"FOREMAN_BRIEF_VERIFY": "off"})
+        self.assertIn("sampo task prove", self.brief_text(tid))
+
+    def test_a_lead_edit_never_loads_briefs(self):  # item 1: the speed gate
+        from sampo import bus
+        path = self.write_mod(self.MOD)
+        self.task("Lead chore", type_="FEATURE", scope=["mod.py::f"], steps=("s",))
+        p = c.find_project(self.repo)
+        self.assertIsNone(p.lane)
+        pl = {"tool_name": "Edit", "session_id": "sess-lead", "tool_input": {
+            "file_path": path, "old_string": "a = x + 1", "new_string": "a = x + 2"}}
+        with mock.patch.object(c, "load_briefs", side_effect=AssertionError("a lead edit loaded the briefs")) as lb:
+            bus.auto_take(pl, p, path)
+        lb.assert_not_called()
+
+    def test_the_precheck_shape_check_runs_the_env_classified_class(self):  # item 4
+        from sampo import train
+        self.assertIn("test_run::EnvClassified", train._shape_selectors(" ".join(slanes._RETURN_SHAPE)))
+
+    def test_the_precheck_scan_hands_test_docs_test_left_out_and_env_classified_to_the_run(self):  # T-6158 review: item 4
+        from sampo import train
+        tid, lane = self.started_lane("Scan run chore")
+        self.commit_work(lane)
+        branch = subprocess.run(["git", "-C", lane, "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True,
+                                text=True).stdout.strip()
+        trunk = subprocess.run(["git", "-C", self.repo, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+        with mock.patch.object(train, "_shape_run", return_value=("green", "")) as run:
+            slanes._return_shape(lane, branch, trunk, tid)
+        self.assertTrue(run.called, "the precheck ran no standard scan")
+        classes = run.call_args.args[2].split()
+        for scan in ("test_docs", "test_left_out", "test_run.EnvClassified"):
+            self.assertIn(scan, classes)
+
+    def test_a_replace_all_edit_is_a_conflict_on_a_held_symbol_it_rewrites_anywhere(self):  # T-6158 review: adversary
+        from sampo import bus
+        text = "def f(x):\n    a = x + 1\n    return a\n\n\ndef g(y):\n    b = x + 1\n    return b\n"
+        self.assertEqual(len(bus._regions(text, "x + 1", every=True)), 2)
+        self.assertEqual(len(bus._regions(text, "x + 1")), 1)
+        path = self.write_mod(text)
+        p = c.find_project(self.repo)
+        bus.take_scope(p, "T-0099", [("mod.py", "g")], me="sess-b")  # another session holds g
+        pl = {"tool_name": "Edit", "session_id": "sess-a", "tool_input": {
+            "file_path": path, "old_string": "x + 1", "new_string": "x + 2"}}
+        self.assertIsNone(bus.conflict(pl, p, path))  # the first occurrence is in f, which nobody holds
+        pl["tool_input"]["replace_all"] = True
+        self.assertIsNotNone(bus.conflict(pl, p, path))  # replace_all also rewrites g
+
+    def test_a_lead_edit_in_the_main_checkout_takes_no_lease_on_the_focused_tasks_scope(self):  # T-6158 review: edge
+        from sampo import bus
+        path = self.write_mod(self.MOD)
+        self.task("Lead lease chore", type_="FEATURE", scope=["mod.py::f"], steps=("s",))
+        p = c.find_project(self.repo)
+        self.assertIsNone(p.lane)
+        bus.auto_take({"tool_name": "Edit", "session_id": "sess-lead", "tool_input": {
+            "file_path": path, "old_string": "a = x + 1", "new_string": "a = x + 2"}}, p, path)
+        self.assertFalse([v for v in bus._leases().values() if v["session"] == "sess-lead"])
+
+    def test_a_subagent_start_in_a_lane_starts_the_lane_before_the_first_call(self):  # T-6158 review: intent
+        tid = self.lane_task("Launch chore")
+        lane = json.loads(self.fm("lane", "new", tid, "--json").stdout)["path"]
+        self.assertFalse(self.brief_of(tid).meta.get("lane_started"))
+        self.hook("SubagentStart", {"session_id": "sess-launch", "agent_id": "a1", "agent_type": "sampo:fm-builder",
+                                    "cwd": lane})
+        self.assertTrue(self.brief_of(tid).meta.get("lane_started"))
 
 
 if __name__ == "__main__":

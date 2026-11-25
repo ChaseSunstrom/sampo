@@ -48,7 +48,7 @@ class ReportCap(unittest.TestCase):
                 self.assertNotIn(".fm-scratch/report", body, "no report file: the harness refuses the write")
         builder = _body(os.path.join(AGENTS, "fm-builder.md"))
         self.assertIn("trailer", builder.split("\n\nReport in")[0], "the close lines go on the tip commit")
-        self.assertIn("sampo task evidence", builder, "the evidence lives in state")
+        self.assertIn("Evidence already lives in state", builder, "the evidence lives in state")  # T-6158: Sampo records it
 
     def test_the_builder_report_paragraph_still_splits_the_contract(self):
         # lanes.contract and the contract tests cut the rules at "\n\nReport in": the cap line must keep that opening

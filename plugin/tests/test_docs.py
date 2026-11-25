@@ -1444,7 +1444,8 @@ class MapLineSplit(unittest.TestCase):
             why = lanes._return_shape(wt, "lane", trunk, "T-9")
         self.assertIn("repo-shape", why)
         self.assertIn("MapShards", why)
-        self.assertEqual(seen[0][0], "test_docs test_left_out", "only the two cheap repo-shape classes run at return")
+        self.assertEqual(seen[0][0], "test_docs test_left_out test_run.EnvClassified",
+                         "only the cheap repo-shape classes run at return (T-6158: and the env-classified run)")
         self.assertEqual(self.git(wt, "rev-parse", "HEAD"), before, "the lane's worktree is left as it was")
         self.assertEqual(self.git(wt, "status", "--porcelain"), "")
 

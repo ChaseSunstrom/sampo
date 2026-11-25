@@ -916,6 +916,9 @@ def start(p, args):
     held = str(b.meta.get("lane") or "")
     if held and os.path.realpath(held) != os.path.realpath(p.root):
         raise c.PolicyError(f"{b.id} belongs to lane {held}, not this one ({p.root}): start the task this lane is for")
+    if b.meta.get("lane_started"):  # T-6158: started already (the first call's auto start, or an earlier one): no-op success
+        return cli.out(args, {"id": b.id, "focused": False, "already": b.meta["lane_started"]},
+                       f"{b.id}: its lane was started at {b.meta['lane_started']}: nothing to do")
     from sampo import landlock
     landlock.anchor_lane(p.root)  # T-5974: no record of this worktree's git layout yet: made now, before the build (never replaced)
     path = os.path.join(p.dir, "audits", f"{b.id}.builder.md")
@@ -982,6 +985,8 @@ def start(p, args):
     shown = path if os.path.isfile(path) else None
     text = (seen.getvalue().rstrip() + "\n" if seen.getvalue().strip() else "") + (
         f"Brief: {shown}\n" if shown else "") + "".join(f"{n}\n" for n in notes) + leases + "Steps:\n" + "\n".join(steps)
+    stamp = c.now()  # T-6158: the start record: the first call's auto start and an explicit start after it are no-ops
+    cli.mutate(p, b.id, lambda x: x.meta.__setitem__("lane_started", stamp), "lane_start", {"lane": p.root})
     return cli.out(args, {"id": b.id, "focused": True, "brief": shown, "base": base, "notes": notes, "steps": steps,
                           "leases": taken, "leases_held": [{"file": f, "holder": w} for f, w in leases_held],
                           "leases_error": lease_err,
@@ -1007,7 +1012,7 @@ def _new_lane(p, b, main, branch, spike=False):
         x.meta["lane"] = path
         if spike:
             x.meta["lane_spike"] = True
-        for k in ("base", "base_tree", "paused_tree"):  # its start point is taken in the lane, at focus
+        for k in ("base", "base_tree", "paused_tree", "lane_started"):  # its start point is taken in the lane, at focus
             x.meta.pop(k, None)
         x.append_log(f"lane: {path} on {branch}")
     cli.mutate(p, b.id, give, "lane_new", {"path": path, "branch": branch})
@@ -1227,7 +1232,14 @@ def cmd_lane(args):
             raise cli.UsageError(f"{b.id} has no builder to recover (fm lane brief {b.id})")
         return recover(p, b, main, args)
     if args.action == "precheck":  # T-3444: a queue runner checks the next lanes while one merge lands
-        tree = _verify(b, p)
+        runs = []
+        try:
+            tree = _verify(b, p, runs=runs)
+        except CriterionRed:  # T-6158: a covered step of the red criterion gets a ✗ record naming it, then the refusal
+            record_steps(p, b, runs, _lane_tree(b.meta["lane"], b.meta.get("lane_branch") or branch))
+            raise
+        record_runs(p, b, runs, "lane precheck", tree)  # T-6158: the green runs on the lane's tree are the evidence
+        record_steps(p, b, runs, tree)  # T-6158: and the steps their criteria verify are evidenced by them
         if not tree or _lane_tree(b.meta["lane"], b.meta.get("lane_branch") or branch) != tree:  # review: say so
             raise c.PolicyError(f"{b.id}: every criterion is green, but nothing was recorded: the lane has tracked "
                                 "edits or isn't on its branch's tip, so a pass there isn't what merges (commit, then "
@@ -1333,19 +1345,35 @@ def contract(id, base, main):
     return CONTRACT_HEADING + rules
 
 
-def brief_contract(id, base, main):
+def brief_contract(id, base, main, steps=(), covered=(), proof=None):
     """T-5595: the brief's contract. The rules are the agent definition's, which every builder loads, so the brief gives
     this task's values and base; the repo-only rules come only where repo_here(main). An agent file with no rules mark
-    gives the whole contract() text instead, so a builder is never left without rules."""
+    gives the whole contract() text instead, so a builder is never left without rules. T-6158: steps are the task's
+    step numbers and covered those whose evidence Sampo records (step_criteria), so the step line is asked for only
+    for the rest; proof is None for a task that isn't a FIX, True when Sampo records its red→green proof, else False."""
     if CONTRACT_MARK not in agent_text():
         return contract(id, base, main)
+    covered = sorted(set(covered))
+    left = [n for n in steps if n not in covered]
     lines = ["The rules are the agent definition's (sampo:fm-builder, your system prompt): they are not repeated here. "
              "This task's values for them:",
              f"- <ID> = {id}", f"- <BASE> = {base}", f"- <MAIN> = {main}",
-             f"- Start from the main checkout's commit {base} with `sampo lane start {id}`, in your worktree (the folder "
-             f"you start in).",
-             f"- Run your commands unpiped: `sampo task evidence {id} --step N --run \"<cmd>\"` (no `| tail` or `| head`: "
-             f"a pipe returns the last program's exit status, so a red run reads green; read its ✓/✗ line)."]
+             f"- Start from the main checkout's commit {base}, in your worktree (the folder you start in). Sampo starts "
+             f"the lane at your first call, and checks the base then: you run no start call."]
+    if covered:
+        lines.append(f"- Sampo records the evidence of step{'s' if len(covered) > 1 else ''} "
+                     f"{', '.join(map(str, covered))}, each from the criteria it names (their verify runs at precheck): "
+                     f"you record no evidence for {'them' if len(covered) > 1 else 'it'}.")
+    if left:  # T-6158: no evidence call is asked of the builder: a step naming no criterion gets its result in the report
+        lines.append(f"- Step{'s' if len(left) > 1 else ''} {', '.join(map(str, left))} name{'' if len(left) > 1 else 's'} "
+                     f"no criterion, so Sampo records no evidence for {'them' if len(left) > 1 else 'it'}: give "
+                     f"{'each one' if len(left) > 1 else 'its'} result in your final report.")
+    if proof is True:
+        lines.append("- Sampo records this FIX's proof (its red on the base at brief time, its green at precheck): no "
+                     "prove is needed from you.")
+    elif proof is False:
+        lines.append(f"- This FIX's proof: `sampo task prove {id} --run \"<your test cmd>\"` once the fix is in (red on "
+                     f"the base, green here).")
     return CONTRACT_HEADING + "\n".join(lines) + "\n" + (repo_rules() if repo_here(main) else "")
 
 
@@ -1448,12 +1476,10 @@ RECOVERIES_MAX = 2  # T-2354: a lane that stops a third time is blocked for a pe
 
 
 def agent_prompt(path, marks=""):
-    """T-5594: the launch prompt names the brief and the one call that opens the builder. `sampo lane start ID` focuses
-    the task and takes its scope leases, so the builder needs no preamble calls: both go in its first message. T-6101:
-    marks (the escalated or purpose stamps the Agent hook reads) lead the prompt."""
-    tid = os.path.basename(path).split(".")[0]  # audits/T-0001.builder.md
-    return (f'prompt: "{marks}Read {path} and run sampo lane start {tid} in your first message, both calls in one turn, '
-            f'then work the task it describes."')
+    """The launch prompt names the brief. T-6158: the lane is started by the builder's first call (the lane hook runs
+    `sampo lane start` for it), so the prompt names no start call. T-6101: marks (the escalated or purpose stamps the
+    Agent hook reads) lead the prompt."""
+    return f'prompt: "{marks}Read {path} and work the task it describes."'
 
 
 # T-2354: why a lane's builder came back without its work merged → the one recovery for that cause. {id} is the task,
@@ -2405,7 +2431,7 @@ def resume(p, b, main, args, ended=False, recover=None, after=""):
 
     def reset(x):
         # T-5850 review: the old builder's report marks go with it; a new builder's lane has none until it reports
-        for k in ("lane", "lane_branch", "builder", "builder_proc", "lane_stop",
+        for k in ("lane", "lane_branch", "builder", "builder_proc", "lane_stop", "lane_started",
                   "accepted_at", "builder_returned", "reviewed_tip", "accepted_tip"):  # T-5968: a new builder's lane has no review
             x.meta.pop(k, None)
         if recover:
@@ -2542,7 +2568,7 @@ def race(p, b, main, args):
             nids.append(nid)
             nb = c.Brief.parse(b.render())
             nb.path, nb.meta["id"], nb.meta["race_of"], nb.meta["status"] = None, nid, b.id, "planned"
-            for k in ("lane", "lane_branch", "builder", "builder_proc", "base", "base_tree", "paused_tree", "race",
+            for k in ("lane", "lane_branch", "builder", "builder_proc", "base", "base_tree", "paused_tree", "lane_started", "race",
                       "race_checks", "race_sides", "race_option"):
                 nb.meta.pop(k, None)
             if opt:
@@ -5503,7 +5529,8 @@ def real_run(cmd, out):
 def verify_at_head(p, b, main, deadline=None):
     """T-6063: each open criterion's verify command run in a clean detached checkout of `main`'s HEAD (made here, removed
     after: the files in the main checkout, untracked or changed, are not HEAD and no verify's own writes reach it):
-    ([(n, cmd, result)] green, [n] red, tree, sha), or None when the checkout can't be made. Green is exit 0 from a real
+    ([(n, cmd, result)] green, [(n, cmd, result)] red, tree, sha), or None when the checkout can't be made. A red
+    criterion's result is its run's evidence (T-6158), None when it never ran. Green is exit 0 from a real
     test run (real_run): zero tests, a -k that matched nothing, a timeout, `true`, `test -f`, grep and echo are red
     (run_command's judge, then real_run), and so is a criterion with no verify command, one the guard refuses, a full
     gate run (too long for a brief) and one that finds the budget spent (`deadline`, a monotonic time, is a sweep's)."""
@@ -5517,7 +5544,7 @@ def verify_at_head(p, b, main, deadline=None):
         return None
     tmp = c.scratch_tree("sampo-brief-", main)  # T-4735: the owned scratch root, locked while this lives
     wt = os.path.join(tmp, "wt")
-    green, red, seen, t0 = [], [], {}, time.monotonic()
+    green, red, seen, ran, t0 = [], [], {}, {}, time.monotonic()
     end = min(t0 + BRIEF_VERIFY_TOTAL_S, deadline) if deadline is not None else t0 + BRIEF_VERIFY_TOTAL_S
     try:
         if _git(main, "worktree", "add", "-q", "--detach", wt, sha).returncode:
@@ -5526,18 +5553,19 @@ def verify_at_head(p, b, main, deadline=None):
         for n, cmd in b.verify_cmds(unchecked=True):
             left = end - time.monotonic()
             if not cmd or cli.FULL_CHECK.match(cmd.strip()) or left <= 0:
-                red.append(n)
+                red.append((n, cmd, None))
                 continue
             if cmd not in seen:
                 try:
                     cli.guard_stored(p, b, cmd)
                     code, out = c.run_command(wt, cmd, min(c.load_scaled(cap), left))
                     ok = code == 0 and not c.never_ran(cmd, code, out) and real_run(cmd, out)
-                    seen[cmd] = c.run_result(code, out, cmd) if ok else None
+                    ran[cmd] = c.run_result(code, out, cmd)
+                    seen[cmd] = ran[cmd] if ok else None
                 except (c.PolicyError, OSError):
                     seen[cmd] = None
             if seen[cmd] is None:
-                red.append(n)
+                red.append((n, cmd, ran.get(cmd)))
             else:
                 green.append((n, cmd, seen[cmd]))
     finally:
@@ -5546,6 +5574,108 @@ def verify_at_head(p, b, main, deadline=None):
         _git(main, "worktree", "prune")
         c.scratch_release(tmp)
     return green, red, tree, sha
+
+
+def add_trailers(b, lane):
+    """T-6158: when no commit of the lane carries this task's close lines, its tip commit is amended with them, built from
+    the brief (its title; LESSON, WHY-NOT-CAUGHT, NUMBERS and DOCS say the builder gave none), so the builder writes none and the land closes
+    from them. True when written; False when the builder's own are there, the lane is gone or the amend failed (the
+    close then asks for them as before). Idempotent: a second precheck finds them. Refused (False) when the lane has no
+    commit of its own past its recorded base (the tip would be trunk's), when its tip is a merge, when tracked files are
+    edited, and once the lane is accepted or reviewed: the amend moves the tip, and accepted_tip and reviewed_tip name the
+    commit the review judged, so the trailers are written at the builder's return, before the review, never after."""
+    m = b.meta
+    if m.get("accepted_at") or m.get("accepted_tip") or m.get("reviewed_tip"):
+        return False
+    base = str(m.get("base") or "")
+    if not lane or not os.path.isdir(lane) or not re.fullmatch(r"[0-9a-f]{7,64}", base):
+        return False
+    if lane_trailers(lane, base, b.id):
+        return False
+    own = _git(lane, "rev-list", "--count", "--no-merges", f"{base}..HEAD")
+    if own.returncode or own.stdout.strip() in ("", "0") or _git(lane, "rev-parse", "-q", "--verify", "HEAD^2").returncode == 0:
+        return False
+    if _git(lane, "status", "--porcelain", "--untracked-files=no").stdout.strip():
+        return False
+    msg = _git(lane, "log", "-1", "--format=%B").stdout.rstrip()
+    ch, why = close_line(b.title, "changelog", b.id)
+    tl, why2 = close_line(b.title, "title", b.id)
+    if not msg or why or why2:
+        return False
+    # T-6158 review: the brief no longer asks the builder for LESSON or WHY-NOT-CAUGHT (Sampo can't know them from the
+    # diff), so their defaults are written here too; a builder's own lines in the commit it made are kept as they are
+    body = (f"{msg}\n\nCHANGELOG: {ch}\nTITLE: {tl}\nLESSON: none: not stated by the builder\n"
+            "NUMBERS: none: not measured by the builder\nDOCS: none: not stated by the builder\n"
+            "WHY-NOT-CAUGHT: none: not stated by the builder\n")
+    return _git(lane, "commit", "--amend", "-q", "--no-verify", "-m", body).returncode == 0
+
+
+def record_runs(p, b, runs, via, tree=None):
+    """T-6158: each criterion's verify run (runs: [(n, cmd, result)]) is recorded on the brief as its evidence, so the red
+    it starts from (at brief time, on HEAD) and the green it ends on (at precheck, in the lane) are both on the record
+    and the builder never writes them. `tree` stamps a green run with the tree it passed on, as close_already_true does."""
+    from sampo import cli
+    if via == "lane precheck":  # the green precheck is where Sampo also writes the commit's close trailers
+        add_trailers(b, b.meta.get("lane"))
+    runs = [r for r in runs if not _recorded(b, f"(ac {r[0]}) ", r[1], r[2], tree)]
+    if not runs:
+        return
+
+    def record(x):
+        for n, cmd, result in runs:
+            x.add_evidence(cmd, result, ac=n, tree=tree, ran=True)
+    cli.mutate(p, b.id, record, "evidence", {"ac": [n for n, _, _ in runs], "via": via})
+
+
+REUSED = "exit 0 · reused: passed on this lane tree before"  # T-6158: a criterion lane_passed already holds for the tree
+
+
+def _recorded(b, tag, cmd, result, tree):
+    """T-6158: a reused pass (REUSED) whose line is already on the brief for this tree: a second precheck adds none."""
+    if not str(result).startswith(REUSED) or not tree:
+        return False
+    return any(ln.startswith(f"- {tag}`{cmd}`") and f"[tree {tree}]" in ln for ln in b.evidence())
+
+
+def step_criteria(b):
+    """T-6158: {step number: the criteria it names} for each step whose text names criteria (AC n, criterion n) and
+    all of them have a verify command: those steps are the ones Sampo records the evidence of (at precheck, from their
+    criteria's green runs), so the brief doesn't ask the builder for their step lines."""
+    ran = {n for n, v in b.verify_cmds(unchecked=True) if v}
+    out = {}
+    for s in b.steps():
+        named = {int(m) for m in re.findall(r"\b(?:AC|criterion|criteria)\s*(\d+)\b", s.text, re.I)}
+        if named and named <= ran:
+            out[s.n] = sorted(named)
+    return out
+
+
+def record_steps(p, b, runs, tree=None):
+    """T-6158: a covered step (step_criteria) is evidenced by its criteria's runs at precheck: all green, each run is
+    recorded under the step's number, so the step is done on the record. A criterion not green makes the step's record
+    a ✗ one naming the criterion (its red run, or that it was not run), so the step is never silently uncovered: only
+    those ✗ records go in for that step, no green one beside them."""
+    from sampo import cli
+    green = {n: (cmd, r) for n, cmd, r in runs if "✗" not in r}
+    red = {n: (cmd, r) for n, cmd, r in runs if "✗" in r}
+    cmds = dict(b.verify_cmds(unchecked=True))
+
+    todo = []  # (step, [(criterion, command, result)])
+    for s, acs in step_criteria(b).items():
+        if all(n in green for n in acs):
+            items = [(n, *green[n]) for n in acs if not _recorded(b, f"(step {s}) ", green[n][0], green[n][1], tree)]
+            if items:
+                todo.append((s, items))
+        elif any(n in red for n in acs):  # a criterion not run at all (a second precheck on a tree it already passed) is no ✗
+            todo.append((s, [(n, red[n][0], f"criterion {n}: {red[n][1]}") for n in acs if n in red]))
+    if not todo:
+        return
+
+    def record(x):
+        for s, items in todo:
+            for n, cmd, result in items:
+                x.add_evidence(cmd, result, step=s, tree=tree, ran=True)
+    cli.mutate(p, b.id, record, "evidence", {"step": [s for s, _ in todo], "via": "lane precheck"})
 
 
 def close_already_true(p, b, main, green, tree, sha):
@@ -5642,6 +5772,7 @@ def builder_brief(p, b, args, resume_branch=None, after="", stacked=None, check=
         main = c.main_worktree(p.root) or p.root
         if (res := verify_at_head(p, b, main, getattr(args, "verify_deadline", None))) is not None:
             true_now, red_now, tree, head = res
+            record_runs(p, b, [(n, cmd, r) for n, cmd, r in red_now if r], "brief-time verify on HEAD")  # T-6158
             if true_now and not red_now:
                 sha = close_already_true(p, b, main, true_now, tree, head)
                 return cli.out(args, {"id": b.id, "closed": True, "path": "", "agent": "", "model": "", "route": "",
@@ -5773,7 +5904,7 @@ def builder_brief(p, b, args, resume_branch=None, after="", stacked=None, check=
         parts += [f"## Built on {stack[0]}",
                   f"{b.id} depends on {', '.join(stack[2])}, whose finished lane has not landed: your base `{base}` is the tip "
                   f"of {stack[0]}'s lane, which has the code your steps call (the contract below names it as <BASE>). "
-                  f"`sampo lane start {b.id}` brings it into your worktree: a fast-forward, or a merge when main moved on "
+                  f"Sampo brings it into your worktree at your first call: a fast-forward, or a merge when main moved on "
                   f"(it stops and names both commits if the merge conflicts). Build on that work, never re-author it; "
                   f"{stack[0]} lands before this branch, and your commits are the ones past `{base[:12]}`.", ""]
     held, create = cited_missing(p, main, base, b)  # T-4928: a file only an unlanded branch has is a dependency
@@ -5898,10 +6029,14 @@ def builder_brief(p, b, args, resume_branch=None, after="", stacked=None, check=
     parts += ["## Standing rules", "Checked before the merge (sampo check --affected runs their tests); break none:",
               *STANDING, *[f"- {d}: {t}" for d, t in standing_decisions(p)], ""]
     parts += cargo_brief(p)  # T-4575
-    parts.append(brief_contract(b.id, base, p.root))
+    # T-6158: the steps Sampo records the evidence of (their criteria's green runs at precheck) and a FIX's proof, which
+    # Sampo records when the brief-time red ran here and its green comes at precheck: the contract asks for neither
+    proof = bool(b.type == "FIX" and any(r and "✗" in r and not c._NO_TEST_RED.search(r) for _, _, r in (red_now or [])))  # a test not written yet is no red
+    parts.append(brief_contract(b.id, base, p.root, steps=[s.n for s in b.steps()], covered=list(step_criteria(b)),
+                                proof=proof if b.type == "FIX" else None))
     if stack:  # T-5725: lane start reads this line (BUILT_ON): the base is a dependency's tip, merged when HEAD isn't behind it
         parts.append(f"- {BUILT_ON_MARK} {stack[0]} (unlanded lane): the base above is that lane's tip, not main's commit. "
-                     f"`sampo lane start {b.id}` fast-forwards your worktree to it, or merges it when main moved on (the "
+                     f"Sampo fast-forwards your worktree to it at your first call, or merges it when main moved on (the "
                      f"merge the builder rules allow for a Built on line, T-5725); a conflict stops it: report both "
                      f"commits.")
     path =os.path.join(p.dir, "audits", f"{b.id}.builder.md")
@@ -6015,7 +6150,7 @@ def builder_brief(p, b, args, resume_branch=None, after="", stacked=None, check=
                  "claude_tokens": 0,
                  "claude_tokens_basis": localruns.CLAUDE_TOKENS_BASIS}  # T-6061 review: the zero is inferred, and said so
     # T-6063: the brief-time run's answer, for the caller
-    ran = {"green": [n for n, _, _ in true_now], "red": red_now} if red_now is not None else {}
+    ran = {"green": [n for n, _, _ in true_now], "red": [n for n, _, _ in red_now]} if red_now is not None else {}
     return cli.out(args, {"id": b.id, "path": path, "agent": agent, "model": chosen, "route": route, "out": out + [b.id], "warnings": warns, **extra, **ran},
                      "".join(f"{w}\n" for w in warns) +
                      f"{b.id}: builder brief {path}\n  model {chosen}: {route}\n  launch: {agent}"
@@ -6405,7 +6540,7 @@ def _secretish(lane, rel):
     return out
 
 
-_RETURN_SHAPE = ("test_docs", "test_left_out")  # T-6103: the repo-shape classes a lane's merge with trunk must keep green
+_RETURN_SHAPE = ("test_docs", "test_left_out", "test_run.EnvClassified")  # T-6103: the repo-shape classes a lane's merge with trunk must keep green (T-6158: the env-classified test run too, dot form: `::` is refused there)
 _RETURN_SHAPE_WALL_S = 300  # T-6103: a precheck's cap on those runs; a cut is no verdict (the land's gate runs them)
 
 
@@ -6466,7 +6601,7 @@ class CriterionRed(c.PolicyError):
         self.n = n
 
 
-def _verify(b, p=None, only=None, skip=()):
+def _verify(b, p=None, only=None, skip=(), runs=None):
     """T-3629: only=N re-runs that criterion alone (the train's single rerun of a red one). T-3809: `skip` (criterion
     numbers) are left to the train's gate, which runs their modules on the merged tree: not run here.
     T-0948: re-run each criterion's verify command in the lane's worktree (the runner and timeout fm task evidence
@@ -6494,6 +6629,8 @@ def _verify(b, p=None, only=None, skip=()):
     for n, cmd in cmds:
         if cmd in passed:
             print(f"sampo: criterion {n} passed on this lane tree ({tree[:9]}) before: reused", file=sys.stderr)
+            if runs is not None:  # T-6158: a reused pass is still the criterion's green: recorded (once per tree), not dropped
+                runs.append((n, cmd, f"{REUSED} ({tree[:9]})"))
             continue
         cap = c.load_scaled(1200)  # T-3418: 600 timed out whole-module criteria at load 20 (load_scaled only stretches past 1/CPU)
         code, out = c.run_command(wt, cmd, cap)
@@ -6505,10 +6642,14 @@ def _verify(b, p=None, only=None, skip=()):
                                 f"{b.id} --unverified \"<reason>\" waives it, logged)")
         if code:
             first = c.first_error_line(out)  # T-3411
+            if runs is not None:  # T-6158: the red run too: precheck records its covered step as ✗
+                runs.append((n, cmd, c.run_result(code, out, cmd)))
             raise CriterionRed(f"{b.id}: criterion {n} is red in {wt}: `{cmd}` → exit {code}"
                                + (f"\nfirst error: {first}" if first else "") + "\n"
                                + "\n".join(out.rstrip().splitlines()[-15:]) + f"\nFix it on the branch, then merge "
                                f"(fm lane merge {b.id} --unverified \"<reason>\" waives it, logged)", n)
+        if runs is not None:  # T-6158: the green run, for the caller to record as the brief's evidence
+            runs.append((n, cmd, c.run_result(code, out, cmd)))
         if tree and p is not None and _lane_tree(wt, branch) == tree:  # review: the run may have rewritten files
 
             def keep(x, cmd=cmd):  # merged with a concurrent precheck's passes on the same tree
@@ -8927,7 +9068,7 @@ def remove(p, b, main, drop=None, keep=False, ended=None):
     kept = list(have) if keep else [x for x in have if _git(main, "branch", "-d", x).returncode]
 
     def take_back(x):
-        for k in ("lane", "lane_branch", "builder", "builder_proc", "lane_passed"):  # the builder slot comes back too
+        for k in ("lane", "lane_branch", "builder", "builder_proc", "lane_passed", "lane_started"):  # the builder slot comes back too
             if not (k == "lane_branch" and x.meta.get(k) in kept):  # T-1071: an unmerged branch stays findable
                 x.meta.pop(k, None)
         for k in _train._CHECK_KEYS:  # T-4286: a check of a lane that is gone claims nothing

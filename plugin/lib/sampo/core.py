@@ -1977,11 +1977,12 @@ def _drop_racy_pyc(root):
                 continue
 
 
-def kill_group(proc):
+def kill_group(proc, sig=9):
     """T-1094: kill a child started with start_new_session and everything it started (its process group); the leader
-    alone when the group is gone or isn't ours to signal. Never raises: the child may have exited first."""
+    alone when the group is gone or isn't ours to signal. Never raises: the child may have exited first. sig: 9 by
+    default; a caller that wants its children to clean up sends 15 first (git removes its index.lock on TERM, not KILL)."""
     try:
-        killsafe.killpg(proc.pid, 9)  # T-5900: nothing is signalled for a pid that is not a plain int above 1
+        killsafe.killpg(proc.pid, sig)  # T-5900: nothing is signalled for a pid that is not a plain int above 1
     except OSError:
         try:
             proc.kill()
@@ -4673,6 +4674,9 @@ _HYPO_RE = lazy(r"^- H(\d+) \[(open|ruled out|confirmed)\] (.*)$")
 _EV_RE = lazy(r"^-\s+\((step|ac)\s+(\d+)\)")
 _AUDIT_RE = lazy(r"^-\s+\(audit\s+([a-z]+)\)")
 _TREE_MARK = lazy(r"\[tree ([0-9a-f]+)\]")
+# T-6158: a ✗ run on the base where no test ran at all is no red proof: pytest's exit 5, run.py's "no test matches <name>"
+# (exit 1), and a unittest module that is not there ("Failed to import test module", "No module named", "NO TESTS RAN")
+_NO_TEST_RED = lazy(r"` → ✗ exit 5\b|Failed to import test module|ModuleNotFoundError: |No module named|\(never ran: ")  # T-6158: the rest of 'no test ran' is _NO_TEST's (with its cached-run carve-out)
 _RAN_MARK = " [ran]"  # evidence fm produced by running the command (fm task evidence --run, fm check)
 CLOSE_PENDING, CLOSE_COMMITTED = "land: close commit pending", "land: close committed"  # T-5368: the Log's marks of a land close's two phases
 _INCONCLUSIVE = " [inconclusive]"  # T-0255: a run that neither proves nor disproves: kept, never counted
@@ -5586,6 +5590,8 @@ class Brief:
             if _RAN_MARK not in line or "`" not in line:
                 continue
             cmd = line.split("`", 2)[1]
+            if _NO_TEST.search(line) or _NO_TEST_RED.search(line):  # T-6158: no test ran (a test not written yet on the base): not a red proof
+                continue
             if "` → ✗ exit" in line or "` → red as expected" in line:  # T-1893: --expect-fail's red run counts
                 failed.add(cmd)
             elif cmd in failed:
