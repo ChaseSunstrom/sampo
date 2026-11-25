@@ -676,5 +676,58 @@ class IntegrateHolds(ForemanTestCase):
             self.assertEqual(self.git("status", "--porcelain", cwd=path).strip(), "", "the lane is not left half-rebased")
 
 
+class IntegrateThroughPilot(ForemanTestCase):
+    """T-6480: with the pilot on, a run's finished lane goes to sampo lane pilot (review, accept, land train), not to
+    serve's own unreviewed hold and hour-long serial gate. Its outcome is what the run reports."""
+    git, lane = IntegrateHolds.git, IntegrateHolds.lane  # its helpers, not its tests
+
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        self.fm("task", "new", "one", "--type", "FEATURE", "--tier", "S", "--scope", "x.py", "--ac", "ok :: true", "--step", "a")
+
+    def via_pilot(self, answer, rc=0):
+        from unittest import mock
+        from sampo import core as c
+        from sampo import pilotsig, serve
+        stub = os.path.join(self.repo, ".stub-pilot.py")
+        with open(stub, "w") as f:
+            f.write(f"import sys\nprint('log line')\nprint({json.dumps(json.dumps(answer))})\nsys.exit({rc})\n")
+        path = self.lane()
+        p = c.find_project(self.repo)
+        b = c.find_brief(p, "T-0001")
+        b.meta.pop("accepted_tip", None)  # unreviewed: serve's own path would hold it
+        c.save_brief(p, b)
+        with mock.patch.dict(os.environ, {pilotsig.VERB_ENV: stub}), mock.patch.object(pilotsig, "_off", return_value=False):
+            return serve._integrate(p, "T-0001", path), path
+
+    def test_an_accepted_lane_is_queued_into_the_train(self):
+        how, path = self.via_pilot({"tid": "T-0001", "outcome": "accepted", "rounds": 1, "why": ""})
+        self.assertTrue(how.startswith("accepted"), how)
+        self.assertIn("land train", how)
+        self.assertNotIn("not reviewed", how)
+        self.assertFalse(os.path.exists(os.path.join(self.repo, "x.py")), "serve merges nothing itself: the train does")
+
+    def test_changes_keep_the_lane_with_the_reason(self):
+        how, path = self.via_pilot({"tid": "T-0001", "outcome": "changes", "rounds": 1, "why": "edge: off by one"})
+        self.assertTrue(how.startswith("kept in"), how)
+        self.assertIn("off by one", how)
+        self.assertTrue(os.path.isdir(path))
+
+    def test_an_exception_keeps_the_lane(self):
+        how, path = self.via_pilot({"tid": "T-0001", "outcome": "exception", "rounds": 0, "why": "gate red"}, rc=1)
+        self.assertTrue(how.startswith("kept in"), how)
+        self.assertIn("gate red", how)
+
+    def test_pilot_off_keeps_the_serial_path(self):
+        from unittest import mock
+        from sampo import core as c
+        from sampo import pilotsig, serve
+        path = self.lane()
+        with mock.patch.object(pilotsig, "_off", return_value=True):
+            how = serve._integrate(c.find_project(self.repo), "T-0001", path)
+        self.assertIn("merged into", how)
+
+
 if __name__ == "__main__":
     unittest.main()

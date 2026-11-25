@@ -810,7 +810,7 @@ def _run_pool(p, args, models, log, skip, told, fit, n, left, fails=0):
                         how = fut.result()
                     except Exception as e:  # one bad merge keeps its lane; the other sessions go on
                         how = f"kept in {lanes.get(after.id, '?')}: {type(e).__name__} while integrating ({str(e)[:120]})"
-                    if how.startswith(("merged", "nothing to merge")):
+                    if how.startswith(("merged", "nothing to merge", "accepted")):  # T-6480: the train lands it
                         finished += 1
                     else:
                         unlanded.add(after.id)
@@ -889,7 +889,12 @@ def _lane_has_work(p, path):
 
 def _integrate(p, tid, path):
     """One finished lane into the main checkout, serially: rebase it on the main branch, run the gates there, then a
-    fast-forward and fm lane rm. Any doubt keeps the lane and its branch, and says why."""
+    fast-forward and fm lane rm. Any doubt keeps the lane and its branch, and says why. T-6480: with the pilot on, the
+    lane goes to sampo lane pilot instead (headless review, then the accept queues it into the land train, which gates
+    once per batch and bisects): serve's own path held every unreviewed lane and ran an hour-long gate per lane."""
+    from sampo import pilotsig
+    if not pilotsig._off(p):
+        return _via_pilot(p, tid, path, pilotsig)
     try:
         return _integrate_lane(p, tid, path)
     except Exception as e:  # a slow gate or git: keep it, finish the others (T-4785: any error, never ending the loop)
@@ -901,6 +906,21 @@ def _integrate(p, tid, path):
         # path or a line of git output, so it is named by class
         return f"kept in {path}: {type(e).__name__} while integrating" + (
             f" ({str(e)[:120]})" if isinstance(e, (OSError, subprocess.SubprocessError)) else "")
+
+
+def _via_pilot(p, tid, path, pilotsig):
+    """T-6480: the lane pilot's outcome as the run's line. accepted: queued into the land train (which merges, closes
+    and removes the lane); anything else keeps the lane and names why."""
+    try:
+        got = pilotsig._verb(p, tid)
+    except Exception as e:  # noqa: BLE001 - a pilot that can't run keeps the lane, never ends the run
+        return f"kept in {path}: {type(e).__name__} while piloting"
+    outcome, why = got.get("outcome"), " ".join(str(got.get("why") or "").split())[:200]
+    if outcome == "accepted":
+        return "accepted: reviewed by the lane pilot and queued into the land train"
+    if outcome == "absent":
+        return f"kept in {path}: the lane pilot is not installed; sampo lane land takes it"
+    return f"kept in {path}: lane pilot {outcome or 'gave no outcome'}" + (f": {why}" if why else "")
 
 
 def _main_moved(git, root, branch):
