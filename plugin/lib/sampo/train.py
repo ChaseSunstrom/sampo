@@ -3883,6 +3883,15 @@ def _park_kind(why):
     return "refused", ""
 
 
+def clash_files(why):
+    """T-5513: the files a conflict reason names ('conflicts with X: a.py, b.py (why)'), for the lane_stop event the
+    park writes (fm lanes' trend counts them): [] for any other reason. The "K left out" item of a cut list is no file."""
+    if not why.startswith("conflicts with") or ": " not in why:
+        return []
+    names = re.sub(r" \([^()]*\)$", "", why.partition(": ")[2]).split(", ")
+    return [n.strip() for n in names if n.strip() and not re.match(r"\d+ left out", n.strip())][:50]
+
+
 def _overlap_split(main, ids, by):
     """T-6102: (ids, late): `ids` cut before its first lane that overlaps an earlier lane of the batch (lane_overlap: both add
     a def, or both touch a file, hub files aside), the cut lanes in `late` in order. A lane git can't read is paired with
@@ -4684,7 +4693,7 @@ def _land_trains(p, main, batch, owed, closer=None):
         if marked.get(i) == (w, tip_):
             return
         kind, arg = _park_kind(w)
-        lanes.stop_mark(p, i, kind, arg, log=f"land: parked: {c.fit(w, 300)}", tip=tip_)
+        lanes.stop_mark(p, i, kind, arg, log=f"land: parked: {c.fit(w, 300)}", tip=tip_, files=clash_files(w))
         marked[i] = (w, tip_)
 
     def note_park(pairs):  # T-4252: one line per lane left out, as it happens; plain() keeps a gate's output to one line

@@ -10250,7 +10250,7 @@ def _all_parsers(parser):
 
 # T-0094/T-1144: fm help's tiers, everyday first; every command is in exactly one (test_help holds that).
 # Filled by build_parser from each add(..., tier=(title, order)): tiers by their lowest order, commands by order
-# then registration; a new command declares its own and edits nothing here.
+# then name (T-5513: two commands may share an order); a new command declares its own and edits nothing here.
 HELP_TIERS = []
 
 
@@ -13304,7 +13304,8 @@ def _build_parser(only=None):
     s = add("uninstall-user", lazy("sampo.setup", "cmd_uninstall"), tier=("Internal (hooks and installer)", 1340), help="undo install-user from the manifest")
     s.add_argument("--dry-run", action="store_true")
     by_title = {}
-    for _, title, name in sorted(tiered, key=lambda t: t[0]):  # stable: ties keep registration order
+    # T-5513: a tie in position is ordered by name, not by which command registered first
+    for _, title, name in sorted(tiered, key=lambda t: (t[0], t[2])):
         by_title.setdefault(title, []).append(name)
     HELP_TIERS[:] = [(t, " ".join(n)) for t, n in by_title.items()]
     return ap

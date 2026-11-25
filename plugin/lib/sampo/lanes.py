@@ -1475,11 +1475,12 @@ def recovery_text(cause, tid, detail=""):
     return STOP_CAUSES[cause][1].format(id=tid, reset=detail or "its reset time", grant=detail or "<category>")
 
 
-def stop_mark(p, tid, kind, arg="", log="", tip=""):
+def stop_mark(p, tid, kind, arg="", log="", tip="", files=()):
     """Where the lane's last `fm lane merge` ended (conflict, refused, guard + its category, merged), on the brief: a busy
     ledger can't push it out of a tail. Reset when the lane is taken back; fm task unblock clears it on a blocked task
     (it refuses a done one: there, a new lane commit lifts a park that names its tip, T-3994). `log`: a line
-    for the brief's Log (T-3500: why sampo lane land parked it). `tip`: the lane commit that verdict judged (T-3994)."""
+    for the brief's Log (T-3500: why sampo lane land parked it). `tip`: the lane commit that verdict judged (T-3994).
+    `files` (T-5513): a conflict's files, on its lane_stop event, so the conflicts can be counted by file."""
     from sampo import cli
     stamp = f"{kind} {c.now()} {arg}".strip()
 
@@ -1493,7 +1494,7 @@ def stop_mark(p, tid, kind, arg="", log="", tip=""):
             x.meta.pop("lane_stop_tip", None)
         if log:
             x.append_log(log)
-    cli.mutate(p, tid, mark, "lane_stop", {"kind": kind, "arg": arg})
+    cli.mutate(p, tid, mark, "lane_stop", {"kind": kind, "arg": arg, **({"files": list(files)[:50]} if files else {})})
 
 
 def parked(b):
@@ -3060,7 +3061,10 @@ def hot_files(p, b, days=30, times=2):
     if not scope:
         return []
     seen = {}
-    for e in c.ledger_events(p, ["lane_conflict"], since=c.iso(time.time() - days * 86400)):
+    # T-5513: lane_stop kind=conflict now records the unmerged files, so they count here too
+    for e in c.ledger_events(p, ["lane_conflict", "lane_stop"], since=c.iso(time.time() - days * 86400)):
+        if e.get("event") == "lane_stop" and (e.get("data") or {}).get("kind") != "conflict":
+            continue
         if e.get("task") != b.id:  # a lane's own retries (fm lane resume) aren't a trend
             for f in (e.get("data") or {}).get("files") or []:
                 seen.setdefault(f, set()).add(e.get("task"))
@@ -4535,8 +4539,10 @@ def brief_ready(p, args):
     """T-3293: `fm lane brief --ready` briefs every planned S/M task that is ready now, each through builder_brief so
     every gate of the one-task brief holds: deps closed, no open lane, nothing waiting on the user, up to the free
     builder slots (or --limit N, never more than the slots). A task whose scope names a file another brief in this batch
-    already names is skipped, and so is one whose scope names a file a builder already out (working) holds (T-5479:
-    "scope overlaps T-N"); a racing task is exempt, both its sides edit the same files by design. A refusal for the whole batch (the slots, the cap, host strain, the budget) stops the batch:
+    already names is skipped, and so is one whose scope names a file an open unmerged lane holds (T-5479: a builder
+    out; T-5513: also a finished lane waiting on its merge, or a stalled one, from any earlier batch: "scope overlaps
+    T-N"); a racing task is exempt, both its sides edit the same files by design. A refusal for the whole batch (the
+    slots, the cap, host strain, the budget) stops the batch:
     the rest are "not tried" with that reason. Prints one block of launch lines and each skipped task with its reason;
     --json returns the briefs as a list the lead turns into parallel Agent calls. T-5478: ready S tasks of one type that
     name the same file go first into one batch host (at most 4, kept S; --no-batch turns it off), so one builder takes
@@ -4607,8 +4613,10 @@ def brief_ready(p, args):
     except ValueError:
         sweep_s = BRIEF_SWEEP_S
     sweep_end = time.monotonic() + sweep_s
+    # T-5513: every open unmerged lane holds its scope, one that waits on a merge too
+    open_ids = set(working) | set(_waiting) | set(_stalled)
     for x in briefs:  # T-5479: a builder already out holds its scope: a planned task that overlaps it waits for its lane
-        if x.id in working:
+        if x.id in open_ids:
             for path in concrete(x):
                 claimed.setdefault(path, x.id)
     memo = {}  # a task's not_ready answer, asked once (the batch pass and the loop below share it)
@@ -7007,6 +7015,8 @@ def merge(p, b, main, unverified=None):
         _git(main, "merge", "--abort")
         if clashed:  # T-1161: after the abort, so a failed ledger write can't leave main mid-merge
             c.log_event(p, "lane_conflict", task=b.id, data={"files": clashed[:50], "branch": branch})
+            c.log_event(p, "lane_stop", task=b.id,  # T-5513: the conflict's files on the stop, as the gated path records them
+                        data={"kind": "conflict", "arg": "", "files": clashed[:50]})
 
         def restore(x):  # the aborted merge takes its base back: the task still starts where it did
             for k in keys:
@@ -7069,7 +7079,7 @@ def _merge_gated(p, b, main, branch, tip, files):
                                                            "branch": branch})
                 if kind == "conflict":
                     brief = _gated_conflict(p, b, main, branch, tip)
-                stop_mark(p, b.id, kind, arg)
+                stop_mark(p, b.id, kind, arg, files=train.clash_files(why))
             raise c.PolicyError(f"{b.id}: the merge gate (a train of one) refused {branch}; nothing was merged: {why}"
                                 + (f"\nConflict brief: {brief}" if brief else "")) from e
         raise

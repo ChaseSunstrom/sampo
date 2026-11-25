@@ -37,7 +37,11 @@ class HelpRegistrations(unittest.TestCase):
             sites = re.findall(r'\btier=\("[^"]+", (\d+)\)', f.read())
         commands = len({id(p) for p in sub.choices.values()})  # an alias (status) is its command's parser
         self.assertEqual(len(sites), commands - len(instr.TOOLS) + 1, "every registration site read")
-        self.assertEqual(sorted({p for p in sites if sites.count(p) > 1}, key=int), [], "positions shared")
+        # T-5513: a position may tie (two sites can both say 760): the order is total anyway, ties by name, so every
+        # build lists the tiers the same way
+        before = list(cli.HELP_TIERS)
+        cli.build_parser()
+        self.assertEqual(cli.HELP_TIERS, before, "the same order on every build")
 
 
 class OutJson(unittest.TestCase):

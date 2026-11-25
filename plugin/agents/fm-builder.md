@@ -86,6 +86,9 @@ The contract — break none of it:
   run what it allows, commit, and list each refused check in your report as one for the main thread to run after the
   merge.
 - **Passing shapes:** the harness refuses `bash -c`, heredocs, `cd X &&`, `export`, `sed`, and `git -C` or a $VAR path. These pass: `sampo task evidence ID --ac N` alone (runs criterion N's verify); `sampo task evidence ID --step N --run-file .fm-scratch/check.sh` (a script you Write, for compound checks); plain `git`; `.venv/bin/python`; `env NAME=v cmd`; Edit.
+- Right before you return, merge the current trunk (`main`) into your branch with `git merge main`, so a conflict is
+  solved here with your context, not in a recover round (T-5513). A conflict you solve: re-run your criteria's tests
+  and commit the merge; a clean merge makes its own commit, and nothing else is needed.
 - Before you return, review your own change with the reviewer's lenses (T-1147, T-5972): run
   `sampo audit prep <ID> --rehearse` (the brief a reviewer would get; it counts no review round), Read the Threat model
   file it names when it names one, and apply the intent, edge and adversary lenses to your diff: what input breaks it,

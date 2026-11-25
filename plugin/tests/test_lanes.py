@@ -1307,6 +1307,24 @@ class Lanes(ForemanTestCase):
         self.assertNotIn(planned, {x["id"] for x in out["briefed"]})
         self.assertEqual({x["id"]: x["reason"] for x in out["skipped"]}[planned], f"scope overlaps {running}")
 
+    def test_brief_ready_open_lane_overlap(self):  # T-5513: a briefed lane holds its scope until it merges
+        mk = lambda t, typ: first(self.fm("task", "new", t, "--type", typ, "--tier", "S", "--ac", "ok :: true",  # noqa: E731
+                                          "--step", "s", "--json").stdout)["id"]
+        self.fm("lane", "max", "3")
+        earlier = mk("Open lane a", "FEATURE")
+        self.fm("task", "set", earlier, "scope=plugin/lib/sampo/lanes.py")
+        self.assertEqual([x["id"] for x in json.loads(self.fm("lane", "brief", "--ready", "--json").stdout)["briefed"]],
+                         [earlier])
+        later = mk("Later b", "FIX")  # a different type, so the batch does not host it with the earlier task
+        self.fm("task", "set", later, "scope=plugin/lib/sampo/lanes.py")
+        p = c.find_project(self.repo)
+        b = c.find_brief(p, earlier)
+        b.meta["builder_returned"] = c.now()  # its builder returned: the lane waits on its merge, still open
+        c.save_brief(p, b)
+        out = json.loads(self.fm("lane", "brief", "--ready", "--json").stdout)
+        self.assertNotIn(later, {x["id"] for x in out["briefed"]}, out)
+        self.assertEqual({x["id"]: x["reason"] for x in out["skipped"]}[later], f"scope overlaps {earlier}")
+
     def test_brief_ready_race_exempt(self):  # T-5479: a racing task is briefed beside a running lane that shares its file
         mk = lambda t: first(self.fm("task", "new", t, "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true",  # noqa: E731
                                      "--step", "s", "--json").stdout)["id"]
@@ -5289,6 +5307,29 @@ class MergeTrain(tlt.TrainCase):
         self.assertIn(f"left out {ids[1]}", out)
         self.assertIn(f"left out {ids[2]}: conflicts with an earlier lane in the train: same.txt", out)
         self.assertFalse(os.path.exists(os.path.join(self.repo, "BREAK")))
+
+    def test_conflict_records_the_conflicting_files_on_the_lane_stop_event(self):  # T-5513: the trend counts these
+        first, second = self.lane(1, "same.txt", "one\n"), self.lane(2, "same.txt", "three\n")
+        self.fm("lane", "merge", first)
+        r = self.fm("lane", "merge", second, check=False)  # one id: the merge gate of a train of one refuses the clash
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        p = c.find_project(self.repo)
+        stops = [e for e in c.ledger_events(p, ["lane_stop"]) if e.get("task") == second]
+        self.assertTrue(stops, "a lane stopped by a conflict writes its lane_stop event: " + r.stdout + r.stderr)
+        self.assertEqual(stops[-1].get("data", {}).get("kind"), "conflict", stops[-1])
+        self.assertIn("same.txt", stops[-1].get("data", {}).get("files") or [], stops[-1])
+
+    def test_plain_conflict_records_the_files_when_the_project_has_no_checks(self):  # T-5513: the bare merge path too
+        first, second = self.lane(1, "same.txt", "one\n"), self.lane(2, "same.txt", "three\n")
+        self.fm("check", "rm", "1")  # no checks: `lane merge` takes the plain path, not the train of one
+        self.fm("lane", "merge", first)
+        r = self.fm("lane", "merge", second, check=False)
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        p = c.find_project(self.repo)
+        stops = [e for e in c.ledger_events(p, ["lane_stop"]) if e.get("task") == second]
+        self.assertTrue(stops, "a plain conflict writes its lane_stop event too: " + r.stdout + r.stderr)
+        self.assertEqual(stops[-1].get("data", {}).get("kind"), "conflict", stops[-1])
+        self.assertIn("same.txt", stops[-1].get("data", {}).get("files") or [], stops[-1])
 
     def test_all_trains_the_finished_lanes_only_with_one_gate_run(self):
         done = [self.lane(1, "a.txt", when=OLD), self.lane(2, "b.txt", when=OLD)]
