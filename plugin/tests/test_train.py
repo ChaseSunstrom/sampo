@@ -521,8 +521,8 @@ class CodeStampReexec(unittest.TestCase):
 
 class ExpressTrainsTogether(ExpressBase):
     """T-5726: live, the express lanes (performance, security, urgent) named --first train together as one train, capped
-    at an explicit --batch; T-5857: the ordinary lanes ride in that train, after them; gated, each still trains alone
-    (T-5023)."""
+    at an explicit --batch; T-5857: the ordinary lanes ride in that train, after them; T-6307: gated too, the express
+    lanes ready at one boundary train together (one gate run), with no ordinary lane in that train (T-5023)."""
 
     def test_express_live_lanes_train_together_ahead_of_the_ordinary_ones(self):
         ids = self.made(5)
@@ -589,13 +589,14 @@ class ExpressTrainsTogether(ExpressBase):
         order, r = self._two_express_five_ordinary()
         self.assertEqual(self.trains(r), [", ".join(order)], r.stderr)
 
-    def test_express_gated_lanes_still_train_alone(self):
+    def test_express_gated_lanes_train_together_ahead_of_the_ordinary_ones(self):
+        # T-6307: gated, the express lanes ready here are one train (one gate run); the ordinary lanes are another
         ids = self.made(4)
         self.fm("task", "set", ids[1], "type=PERFORMANCE")
         self.fm("task", "set", ids[3], "type=SECURITY")
         self.queue(ids[0], ids[1], ids[3])
         r = self.land("--batch", "4")
-        self.assertEqual(self.trains(r), [ids[1], ids[3], f"{ids[0]}, {ids[2]}"], r.stderr)
+        self.assertEqual(self.trains(r), [f"{ids[1]}, {ids[3]}", f"{ids[0]}, {ids[2]}"], r.stderr)
 
     def test_express_live_log_line_says_it_trains_with_the_other_express_lanes(self):
         ids = self.made(3)
@@ -605,6 +606,32 @@ class ExpressTrainsTogether(ExpressBase):
         r = self.land("--batch", "3")
         self.assertIn(f"{ids[1]} is express (performance, security or urgent): it trains next, first in the train, ahead of the ordinary lanes",
                       r.stderr)
+
+
+class ExpressBatch(ExpressBase):
+    """T-6307: express lanes (performance, security, urgent) ready at one train boundary ride one train together, ahead
+    of the ordinary lanes, with one gate run for that train, gated (the default) as well as live. On 2026-11-25 07:28-07:55
+    four express lanes rode four one-lane trains of ~9 min of gate each (36 min serial)."""
+
+    def test_two_express_lanes_ready_at_one_boundary_land_in_one_train_with_one_gate_run(self):
+        ids = self.made(4)
+        self.fm("task", "set", ids[1], "type=PERFORMANCE")
+        self.fm("task", "set", ids[3], "priority=urgent")
+        self.queue(ids[1], ids[3])
+        r = self.land()
+        # the express pair is one train (one gate run) and the ordinary pair the next: 2 gate runs, not 3 (one per express lane)
+        self.assertEqual(self.trains(r), [f"{ids[1]}, {ids[3]}", f"{ids[0]}, {ids[2]}"], r.stderr)
+        self.assertEqual(self.gate_runs(), 2, r.stdout + r.stderr)
+        self.assertEqual([self.brief(t).status for t in ids], ["done"] * 4, r.stdout + r.stderr)
+
+    def test_express_batch_is_capped_at_an_explicit_batch_and_the_ordinary_lanes_follow(self):
+        ids = self.made(4)
+        self.fm("task", "set", ids[2], "type=PERFORMANCE")
+        self.fm("task", "set", ids[3], "type=SECURITY")
+        self.queue(ids[2], ids[3])
+        r = self.land("--batch", "2")
+        self.assertEqual(self.trains(r), [f"{ids[2]}, {ids[3]}", f"{ids[0]}, {ids[1]}"], r.stderr)
+        self.assertEqual(self.gate_runs(), 2, r.stdout + r.stderr)
 
 
 class InsertionUnionLib(AffectedBase):

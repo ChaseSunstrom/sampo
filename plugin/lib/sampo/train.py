@@ -4192,7 +4192,9 @@ def land_key(b, pipe=False):
 
 def is_express(b, pipe=False):
     """T-5023: a performance fix, a security fix or an urgent lane (the ones land_key sorts first): named --first, it
-    trains next and alone, a batch of one, so no ordinary lane's gate holds it back. The gate itself is never skipped.
+    trains next, ahead of the ordinary lanes, so no ordinary lane's gate holds it back. The gate itself is never skipped.
+    T-6307: gated, the express lanes ready at one boundary train together as one train (one gate run, capped at the
+    batch) with no ordinary lane in it; each still ahead of the ordinary lanes, and a red one bisects as in any train.
     T-5726: in live mode the express lanes at the head train together instead (one train; T-5848: all of them, an explicit --batch aside);
     T-5857/T-5932: and the ordinary ready lanes ride in that same train after them (the live default is uncapped, one
     train for all: a live gate costs the same at any size); under an explicit --batch smaller than the express count
@@ -4868,7 +4870,7 @@ def _land_trains(p, main, batch, owed, closer=None):
     waiting = set(lanes.awaiting_merge(p, briefs)) - set(landed)
     sort(x for x in briefs if x.id in waiting)
     seen = set(waiting) | set(landed)
-    alone = set()  # T-5023: the express lanes taken from --first: each trains as a batch of one (T-5857: live, they lead the one train)
+    alone = set()  # T-5023: the express lanes taken from --first, which lead the queue (T-5857, T-6307: they train together, ahead of the ordinary lanes)
     carry = _restart_carry(p)  # T-5023: a restarted land's queue: its lanes are promoted only if they were before
     first_taken = set()  # T-4013: every --first id this land took (`asked` is the ship request's flag, not this)
     retried, slow_retried = 0, False  # T-5793: the train's refusals by a close that held trunk, in a row; one after a long wait
@@ -4902,13 +4904,13 @@ def _land_trains(p, main, batch, owed, closer=None):
                 sort(b for b in now if b.id in late)
                 seen |= late
             front = [t for t in jump if t in ready]
-            # T-5023: express lanes lead the queue and train alone; a restart's queue (first iteration only) carries
+            # T-5023: express lanes lead the queue and train together (T-6307); a restart's queue (first iteration only) carries
             # the lanes that were express then, and no ordinary-by-name lane turns express because it waited there
             fast = [t for t in front if is_express(by[t], t in pipes) and (t not in carried["ready"] or t in carried["alone"])]
             for t in fast:
                 if t not in alone:
                     print(f"sampo lane land: {t} is express (performance, security or urgent): it trains next, "
-                          + ("first in the train, ahead of the ordinary lanes" if live_mode(p) else "alone"),
+                          + ("first in the train, ahead of the ordinary lanes" if live_mode(p) else "with the other express lanes ready here, ahead of the ordinary lanes"),
                           file=sys.stderr, flush=True)  # T-5857: live, the ordinary lanes ride behind them
             alone.update(fast)
             front = fast + [t for t in front if t not in fast]
@@ -4922,7 +4924,7 @@ def _land_trains(p, main, batch, owed, closer=None):
         for t in (t for t in ready if t in pipes and t not in alone):  # T-5735: named or not, a pipeline fix is express
             alone.add(t)
             print(f"sampo lane land: {t} touches the pipeline (its own modules): it trains first, "
-                  + ("first in the train, ahead of the ordinary lanes" if live_mode(p) else "alone"),
+                  + ("first in the train, ahead of the ordinary lanes" if live_mode(p) else "with the other express lanes ready here, ahead of the ordinary lanes"),
                   file=sys.stderr, flush=True)
         ready.sort(key=lambda t: t not in alone)  # T-5023: stable; a held express lane sorted back in leads again
         if ready and trains:  # T-4767: a lane waits out the trains before it: its check is read again at this one's start
@@ -4937,13 +4939,18 @@ def _land_trains(p, main, batch, owed, closer=None):
                 continue
             break
         # T-5444: live, one train for all. T-5023: gated, an express lane at the head leaves the ordinary lanes' train and
-        # trains alone; T-5857/T-5932: live the express lanes only lead (sorted first, merged first) and the ordinary
+        # trains with the express lanes ready here (T-6307: one train, one gate run, capped at the batch); T-5857/T-5932: live the express lanes only lead (sorted first, merged first) and the ordinary
         # ready lanes behind them fill the train: the live default is uncapped (T-5848), an explicit --batch caps it
         # (ordinary-led trains too), and when that batch is no larger than the express count one slot goes to the first
         # ordinary lane, so an express stream never starves the queue (24 ordinary lanes waited out an hour of
         # one-to-three-lane express trains, each with its own gate); a red lane is bisected as in any train
         live = live_mode(p)
-        cut = max(1, min(asked_batch or len(ready), len(ready))) if live else 1 if ready[0] in alone else batch
+        if live:
+            cut = max(1, min(asked_batch or len(ready), len(ready)))
+        elif ready[0] in alone:  # T-6307: gated, the express lanes ready here train together (one gate run), no ordinary lane in it
+            cut = max(1, min(batch, next((i for i, t in enumerate(ready) if t not in alone), len(ready))))
+        else:
+            cut = batch
         ids, ready = ready[:cut], ready[cut:]
         if live and asked_batch and asked_batch >= 2 and all(t in alone for t in ids):
             if (o := next((i for i, t in enumerate(ready) if t not in alone), None)) is not None:

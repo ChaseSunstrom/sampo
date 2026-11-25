@@ -1,5 +1,5 @@
-"""T-5023: an express lane (PERFORMANCE, SECURITY or urgent) named in a land's --first queue trains next and alone, a
-batch of one, ahead of the ordinary lanes queued before it. land_key already sorted such lanes first, but a --first queue
+"""T-5023: an express lane (PERFORMANCE, SECURITY or urgent) named in a land's --first queue trains next, ahead of the
+ordinary lanes queued before it (T-6307: with the other express lanes ready at that boundary, one train, not a batch of one). land_key already sorted such lanes first, but a --first queue
 is FIFO and a batch of 20 carried them with the ordinary lanes' gate. Without --first the order is unchanged."""
 # map-links: plugin/lib/sampo/train.py
 import os
@@ -51,13 +51,14 @@ class ExpressLand(ExpressBase):
         self.assertEqual(self.trains(r), [ids[2], f"{ids[0]}, {ids[1]}"], r.stderr)
         self.assertEqual([self.brief(t).status for t in ids], ["done"] * 3, r.stdout + r.stderr)
 
-    def test_security_and_urgent_lanes_each_train_alone_before_the_ordinary_ones(self):
+    def test_security_and_urgent_lanes_train_together_before_the_ordinary_ones(self):
+        # T-6307: gated, the express lanes ready here train together (one gate run), the ordinary lanes after them
         ids = self.made(4)
         self.fm("task", "set", ids[1], "type=SECURITY")
         self.fm("task", "set", ids[3], "priority=urgent")
         self.queue(ids[0], ids[1], ids[2], ids[3])
         r = self.land("--batch", "4")
-        self.assertEqual(self.trains(r), [ids[1], ids[3], f"{ids[0]}, {ids[2]}"], r.stderr)
+        self.assertEqual(self.trains(r), [f"{ids[1]}, {ids[3]}", f"{ids[0]}, {ids[2]}"], r.stderr)
 
     def test_an_express_lane_still_trains_ahead_of_the_ordinary_ones_when_the_project_is_live(self):
         # T-5444: live mode trains every ready lane as one train; T-5857: an express lane at the head leads that
@@ -101,13 +102,14 @@ class ExpressLand(ExpressBase):
         r = self.land("--batch", "3")
         self.assertEqual(self.trains(r)[0], f"{ids[3]}, {ids[4]}, {ids[0]}", r.stderr)
 
-    def test_t5848_gated_express_lanes_still_train_alone_with_no_batch_given(self):
+    def test_t5848_gated_express_lanes_train_together_with_no_batch_given(self):
+        # T-6307: the two express lanes are one train (one gate run), the ordinary lane after them
         ids = self.made(3)
         for t in ids[:2]:
             self.fm("task", "set", t, "type=PERFORMANCE")
         self.queue(*ids[:2])
         r = self.land()
-        self.assertEqual(self.trains(r), [ids[0], ids[1], ids[2]], r.stderr)
+        self.assertEqual(self.trains(r), [f"{ids[0]}, {ids[1]}", ids[2]], r.stderr)
 
     def test_without_first_the_batch_is_unchanged(self):
         ids = self.made(3)
@@ -131,8 +133,10 @@ class ExpressLand(ExpressBase):
         # gate of train 1: e gets a commit with no check (held at train 2's start); gate of train 2: its check is green
         self.fm("check", "add", f"if [ ! -e {m1} ]; then touch {m1}; git -C {late} commit -q --allow-empty -m late; "
                 f"elif [ ! -e {m2} ]; then touch {m2}; {sys.executable} {script}; fi")
-        r = self.land("--batch", "2", check=False)
-        self.assertEqual(self.trains(r), [x, f"{a}, {b}", e, d], r.stderr)
+        # T-6307: at batch 1 the express pair is not one train: e is held at train 2's start, then readmitted and trains
+        # alone ahead of b (one lane per train), so the held express lane still leads the rest once its check is green
+        r = self.land("--batch", "1", check=False)
+        self.assertEqual(self.trains(r), [x, a, e, b, d], r.stderr)
 
     def test_an_ordinary_first_queue_still_trains_as_one_batch(self):
         ids = self.made(3)
