@@ -9638,6 +9638,75 @@ def _sinks(p, zeros, trees):
     return hits, ("\n" + text if text else ""), ""
 
 
+def _others_merged_in(p, b):
+    """T-6313: (the paths other tasks' landings brought into trunk since this task's focus, left out of its audit diff;
+    a note on what was kept in or not filtered, or ''). Only a lane_landed record attributes a landing to another task,
+    and git checks the record: its tip must be a merge commit on HEAD's first-parent history since the focus, and that
+    merge's first parent must be the record's base. A record that fails the check, brings in a file this task's ledger touched, or can't be read, is
+    ignored (its files stay in) and never drops the filter for the others. A merge no record names stays in the diff
+    and the note counts it (fail toward review). Kept whatever the records say: this task's ledger touches, its
+    uncommitted files, and the files of its own commits (those no left-out landing holds)."""
+    base = b.meta.get("base")
+    first = c._git(p.root, "rev-list", "--max-count=1", f"{base}..HEAD", timeout=60, fail=None) if base else None
+    if first is None:
+        return [], "git could not list the commits since the focus"
+    if not first.strip():
+        return [], ""  # HEAD has not moved since the focus: no landing can be in the diff
+    rows = c._git(p.root, "log", "--first-parent", "--merges", "--format=%H %P", f"{base}..HEAD", timeout=60, fail=None)
+    if rows is None:
+        return [], "git could not list the merges since the focus"
+    merges = {}  # a merge on the first-parent line (a landing's tip) -> (its first parent, its second parent)
+    for row in rows.splitlines():
+        shas = row.split()
+        if len(shas) == 3:
+            merges[shas[0]] = (shas[1], shas[2])
+    landed, theirs, bad = {}, set(), 0  # the merges left out -> the files they brought in, the merges this task's records own
+    ledger = set(c.task_touches(p, b.id))  # T-6313: the files this task's own edits touched
+    for e in c.ledger_events(p, ("lane_landed",)):
+        data = e.get("data") if isinstance(e.get("data"), dict) else {}
+        tip, start, tasks = data.get("tip"), data.get("base"), data.get("tasks")
+        if not (isinstance(tip, str) and tip in merges):
+            continue  # a record whose tip is no merge on this history landed nothing into this diff
+        parent = merges[tip][0]
+        # a record names what the landing brought in only if its side commits name its tasks and never this task
+        subjects = c._git(p.root, "log", "--no-merges", "--format=%s", f"{parent}..{merges[tip][1]}", timeout=60, fail=None)
+        named = [set(re.findall(r"T-\d+", s)) for s in (subjects or "").splitlines()]
+        if not (start == parent and isinstance(tasks, list) and tasks and all(isinstance(t, str) for t in tasks)
+                and named and all(n & set(tasks) for n in named) and (b.id in tasks or not any(b.id in n for n in named))):
+            bad += 1  # a record git does not bear out, or an unreadable one: its files stay in
+            continue
+        # subjects are free text and a record is only as good as its writer: a landing that brings in a file this
+        # task's own edits touched is this task's change, so the record is ignored and every file stays in
+        brought = c._git(p.root, "diff", "--name-only", "--no-renames", parent, tip, timeout=60, fail=None)
+        if brought is None or ledger & set(brought.splitlines()):
+            bad += 1
+            continue
+        if b.id in tasks:
+            theirs.add(tip)  # this task's own landing: its files are its own change
+        else:
+            landed[tip] = brought
+    unrecorded = len(set(merges) - theirs - set(landed))
+    notes = []
+    if unrecorded:
+        notes.append(f"{unrecorded} merge(s) since the focus have no lane_landed record and were kept in")
+    if bad:
+        notes.append(f"{bad} lane_landed record(s) did not match the merge they name, or brought in a file this task "
+                     "touched, and were ignored")
+    if not landed:
+        return [], "; ".join(["no lane_landed record of another task since the focus", *notes])
+    left = set()
+    for brought in landed.values():
+        left |= set(brought.splitlines())
+    own = c._git(p.root, "log", "--no-merges", "--no-renames", "--name-only", "--format=", f"{base}..HEAD", "--not",
+                 *(merges[t][1] for t in landed), timeout=60, fail=None)
+    dirty = c._git(p.root, "diff", "--name-only", "--no-renames", "HEAD", timeout=60, fail=None)
+    untracked = c._git(p.root, "ls-files", "--others", "--exclude-standard", timeout=60, fail=None)
+    if own is None or dirty is None or untracked is None:
+        return [], "git could not list this task's own files"
+    mine = ledger | set(own.splitlines()) | set(dirty.splitlines()) | set(untracked.splitlines())
+    return sorted(f for f in left if f not in mine), "; ".join(notes)
+
+
 def cmd_audit(args):
     """fm audit prep ID: freeze the diff since the task started and print one reviewer brief per lens."""
     import subprocess
@@ -9667,7 +9736,10 @@ def cmd_audit(args):
     if not tree:
         raise UsageError("sampo audit prep needs a git repository")
     branch, upto = b.meta.get("lane_branch"), "working tree, untracked files included"
+    own_only, skipped = not args.base, ""  # T-6313: the working tree's diff leaves out what other tasks' merges brought in
     if branch and not args.base and c._git(p.root, "rev-parse", "--verify", "-q", f"refs/heads/{branch}", fail=None):
+        own_only = False
+        skipped = "the filter for other tasks' merged files did not run: a lane task's diff is its branch's own commits"
         # T-0718: a builder's work is on its branch: from where it left main, not main's own commits since
         tip = _merged_lane_tip(p, b)
         if tip:  # T-3972: once merged, merge-base HEAD branch is the tip: an empty diff; judge its own merge (T-3968)
@@ -9683,6 +9755,12 @@ def cmd_audit(args):
                 from sampo import lanepilot  # T-6303: trunk merged in after since is not the fix: the lane's own diff from its fork
                 if not lanepilot.trunk_entered(p.root, since, branch):
                     base, upto = since, f"branch {branch}, the fix since {since[:9]}"
+    left_out, why = _others_merged_in(p, b) if own_only else ([], "")  # T-6313
+    if why:  # T-6313: the reviewer is told what the diff may hold of other tasks' files
+        upto += f"; other tasks' merged files {'kept in' if left_out else 'NOT left out'}: {why}"
+    if skipped:
+        upto += f"; {skipped}"
+    spec =["--", ".", *(f":(exclude,literal){f}" for f in left_out)] if left_out else []
     pairs = [(base, tree)]
     # T-1296: edits not yet committed in this checkout belong to the task as well, but only while it is this
     # checkout's own task (T-1579: a lane task's review shouldn't carry whatever the main checkout is working on)
@@ -9703,7 +9781,7 @@ def cmd_audit(args):
             ids.append(got.strip())
         try:
             r = subprocess.run(["git", "-C", p.root, "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
-                                "diff", "--no-ext-diff", "--no-textconv", *ids],
+                                "diff", "--no-ext-diff", "--no-textconv", *ids, *spec],
                                capture_output=True, text=True, errors="replace", timeout=300)
         except subprocess.TimeoutExpired:
             raise UsageError(f"git diff {a[:12]} took over 5 minutes; narrow it with --base <a later rev>")

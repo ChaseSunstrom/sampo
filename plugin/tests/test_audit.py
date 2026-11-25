@@ -1470,3 +1470,198 @@ class FromReview(ForemanTestCase):
         p = self.fm("task", "audit", self.tid, "--from-review", path)
         self.assertEqual(len(self.audit_rows()), 2, "accepting the same review twice records it once")
         self.assertIn("already recorded", p.stdout)
+
+
+class OwnFilesOnly(PrepBase):
+    """T-6313: a main-thread task's audit diff leaves out the files other tasks' landings brought into trunk since its
+    focus. Only a lane_landed record attributes a landing to another task, and git checks it: the record's tip is a
+    merge commit on HEAD's first-parent history since the focus, and its first parent is the record's base. A merge no record names, and a record git does not bear out, leave their files in the diff."""
+
+    def git(self, *a):
+        return subprocess.run(["git", "-C", self.repo, "-c", "user.email=t@t", "-c", "user.name=t", *a],
+                              check=True, capture_output=True, text=True).stdout
+
+    def sha(self):
+        return self.git("rev-parse", "HEAD").strip()
+
+    def commit(self, rel, text, subject):
+        self.write(rel, text)
+        self.git("add", rel)
+        self.git("commit", "-qm", subject)
+
+    def land(self, rel, text, subject, tasks=None):
+        """a --no-ff merge of a side branch holding one commit into trunk, the lane_landed record `sampo lane merge`
+        writes for `tasks` (none: a direct git merge, no record): the record's tip is the merge commit itself and its
+        base the merge's first parent; (the trunk commit it moved from, the merge)"""
+        self.sides = getattr(self, "sides", 0) + 1
+        trunk = self.git("rev-parse", "--abbrev-ref", "HEAD").strip()
+        start, side = self.sha(), f"side{self.sides}"
+        self.git("checkout", "-qb", side)
+        self.commit(rel, text, subject)
+        self.git("checkout", "-q", trunk)
+        self.git("merge", "--no-ff", "-q", "-m", subject, side)
+        tip = self.sha()
+        if tasks:
+            self.landed(start, tip, tasks)
+        return start, tip
+
+    def landed(self, base, tip, tasks):  # the record `sampo lane merge` writes once trunk moved base -> tip
+        c.log_event(c.find_project(self.repo), "lane_landed", task=",".join(tasks), data={"base": base, "tip": tip, "tasks": tasks})
+
+    def touched(self, rel):  # the hooks' record of this task editing rel
+        c.log_event(c.find_project(self.repo), "touched", task=self.tid, data={"file": os.path.join(self.repo, rel)})
+
+    def audit(self):
+        """(the diff a reviewer reads, the brief's text)"""
+        _, text = self.brief()
+        with open(os.path.join(c.find_project(self.repo).dir, "audits", f"{self.tid}.diff")) as f:
+            return f.read(), text
+
+    def test_a_task_focused_before_a_recorded_landing_diffs_its_own_files_only(self):
+        self.prep()  # focused at the start commit
+        self.land("other.py", "y = 2\n", "Merge T-9999: another task's work", ["T-9999"])
+        self.write("a.py", "x = 1\n")  # this task's own edit, not yet committed
+        diff, text = self.audit()
+        self.assertIn("a.py", diff, "the task's own uncommitted edit")
+        self.assertNotIn("other.py", diff, "the file another task's landing brought in is not this task's change")
+        self.assertNotIn("NOT left out", text)
+
+    def test_a_direct_merge_of_this_tasks_own_commit_with_no_record_keeps_its_files(self):  # T-6313 review: HIGH
+        self.prep()
+        self.land("mine.py", "z = 1\n", "Add my work (no task id in this subject)")  # `git merge feature`, no record
+        self.write("a.py", "x = 1\n")
+        diff, text = self.audit()
+        self.assertIn("mine.py", diff, "only a lane_landed record makes a merge another task's: this one stays in")
+        self.assertIn("a.py", diff)
+        self.assertIn("1 merge(s) since the focus have no lane_landed record", text)
+
+    def test_a_direct_merge_whose_subject_names_another_task_is_still_kept_without_a_record(self):  # T-6313 review: HIGH
+        self.prep()
+        self.land("other.py", "y = 2\n", "Merge T-9999: no record was written")
+        self.write("a.py", "x = 1\n")
+        diff, text = self.audit()
+        self.assertIn("other.py", diff, "a subject is text anyone can write: no record, no attribution")
+        self.assertIn("NOT left out", text)
+
+    def test_a_record_whose_tip_is_a_plain_commit_is_ignored_and_the_others_still_filter(self):  # T-6313 review: adversary
+        self.prep()
+        start = self.sha()
+        self.commit("forged.py", "f = 1\n", "Fix a (T-6313)")  # this lane's own commit on trunk, no merge
+        self.landed(start, self.sha(), ["T-9999"])  # a record whose tip is no merge's second parent
+        self.land("third.py", "z = 3\n", "Merge T-9998: a real landing", ["T-9998"])
+        self.write("a.py", "x = 1\n")
+        diff, _ = self.audit()
+        self.assertIn("forged.py", diff, "a forged record leaves nothing out")
+        self.assertNotIn("third.py", diff, "a forged record never drops the filter for a real landing")
+
+    def test_a_record_whose_base_is_not_the_merges_first_parent_is_ignored(self):  # T-6313 review: adversary
+        self.prep()
+        start = self.sha()
+        self.commit("pre.py", "p = 1\n", "Add pre (T-6313)")
+        _, tip = self.land("other.py", "y = 2\n", "Add the other work")
+        self.landed(start, tip, ["T-9999"])  # the merge's first parent is not `start`
+        self.write("a.py", "x = 1\n")
+        diff, _ = self.audit()
+        self.assertIn("other.py", diff, "the record's base does not match the merge: ignored")
+
+    def test_a_commit_naming_a_task_whose_landing_holds_other_files_keeps_its_own_file(self):  # T-6313 review: adversary
+        self.prep()
+        self.land("third.py", "z = 3\n", "Merge T-9998: another landing", ["T-9998"])  # the record holds third.py
+        self.commit("other.py", "y = 2\n", "Fix other.py (T-9998)")  # this lane's own commit, its subject names T-9998
+        self.write("a.py", "x = 1\n")
+        diff, _ = self.audit()
+        self.assertNotIn("third.py", diff, "the recorded landing's own file")
+        self.assertIn("other.py", diff, "a subject naming a task does not make a file that task's landing did not bring in its")
+
+    def test_a_file_a_recorded_landing_brought_in_stays_when_this_task_touched_it(self):
+        self.prep()
+        self.land("other.py", "y = 2\n", "Merge T-9999: another task's work", ["T-9999"])
+        self.touched("other.py")  # this task's ledger edited it too
+        self.write("a.py", "x = 1\n")
+        diff, _ = self.audit()
+        self.assertIn("other.py", diff, "this task's ledger touched it: its change too")
+
+    def test_a_record_whose_landing_brings_a_file_this_task_touched_is_ignored(self):  # T-6313 review: adversary
+        self.prep()
+        trunk, start = self.git("rev-parse", "--abbrev-ref", "HEAD").strip(), self.sha()
+        self.git("checkout", "-qb", "side1")
+        self.commit("own.py", "o = 1\n", "Fix own.py (T-9999)")
+        self.commit("third.py", "z = 3\n", "Fix third.py (T-9999)")
+        self.git("checkout", "-q", trunk)
+        self.git("merge", "--no-ff", "-q", "-m", "Merge T-9999: two files", "side1")
+        self.landed(start, self.sha(), ["T-9999"])  # a record that would drop third.py as another task's
+        self.touched("own.py")  # this task's ledger edited own.py: the landing names this task's own change
+        self.write("a.py", "x = 1\n")
+        diff, text = self.audit()
+        self.assertIn("own.py", diff)
+        self.assertIn("third.py", diff, "a record whose landing holds this task's file is not attributed at all")
+        self.assertIn("did not match the merge", text)
+
+    def test_a_task_commit_on_a_file_a_landing_brought_in_keeps_it(self):
+        self.prep()
+        self.land("other.py", "y = 2\n", "Merge T-9999: another task's work", ["T-9999"])
+        self.commit("other.py", "y = 3\n", "Tweak other.py")  # this lane's own commit after the landing, a plain subject
+        self.write("a.py", "x = 1\n")
+        diff, _ = self.audit()
+        self.assertIn("other.py", diff, "this lane's own commit changed it after the landing: its change too")
+
+    def test_a_landing_recorded_for_this_task_is_its_own_change(self):
+        self.prep()
+        self.land("other.py", "y = 2\n", "Merge T-9999: work this task landed", [self.tid])
+        self.write("a.py", "x = 1\n")
+        diff, text = self.audit()
+        self.assertIn("other.py", diff, "a landing that names this task is its own")
+        self.assertNotIn("have no lane_landed record", text)
+
+    def test_a_record_naming_no_tasks_shows_the_whole_diff_and_says_why(self):  # T-6313 review: unreadable is not "theirs"
+        self.prep()
+        start, tip = self.land("other.py", "y = 2\n", "Merge T-9999: another task's work")
+        c.log_event(c.find_project(self.repo), "lane_landed", task="T-9999", data={"base": start, "tip": tip})
+        self.write("a.py", "x = 1\n")
+        diff, text = self.audit()
+        self.assertIn("other.py", diff)
+        self.assertIn("NOT left out", text)
+
+    def test_no_landing_since_the_focus_shows_the_whole_diff_and_says_why(self):
+        self.prep()
+        self.commit("other.py", "y = 2\n", "Add the other work")  # no merge, no record: git says it is this lane's own
+        self.write("a.py", "x = 1\n")
+        diff, text = self.audit()
+        self.assertIn("other.py", diff, "with no landing nothing is known to be another task's: the whole diff")
+        self.assertIn("no lane_landed record of another task since the focus", text)
+
+    def test_a_detached_head_still_leaves_out_a_recorded_landing(self):
+        self.prep()
+        self.land("other.py", "y = 2\n", "Merge T-9999: another task's work", ["T-9999"])
+        self.git("checkout", "-q", "--detach")
+        self.write("a.py", "x = 1\n")
+        diff, _ = self.audit()
+        self.assertIn("a.py", diff)
+        self.assertNotIn("other.py", diff)
+
+    def test_a_lane_task_header_says_the_filter_did_not_run(self):  # T-6313 review: intent
+        self.prep()
+        self.git("branch", "foreman/x")
+        p = c.find_project(self.repo)
+        b = c.find_brief(p, self.tid)
+        b.meta["lane_branch"] = "foreman/x"
+        c.save_brief(p, b)
+        _, text = self.audit()
+        self.assertIn("did not run", text)
+
+    def test_a_git_that_cannot_list_the_commits_is_reported_not_silent(self):
+        from unittest import mock
+        self.prep()
+        self.land("other.py", "y = 2\n", "Merge T-9999: another task's work", ["T-9999"])
+        self.write("a.py", "x = 1\n")
+        p = c.find_project(self.repo)
+        b = c.find_brief(p, self.tid)
+        real = c._git
+
+        def no_rev_list(root, *a, **k):
+            return None if a[:1] == ("rev-list",) else real(root, *a, **k)
+
+        with mock.patch.object(c, "_git", side_effect=no_rev_list):
+            left_out, why = cli._others_merged_in(p, b)
+        self.assertEqual(left_out, [])
+        self.assertTrue(why, "git could not list the commits: the caller must say the whole diff is shown")
