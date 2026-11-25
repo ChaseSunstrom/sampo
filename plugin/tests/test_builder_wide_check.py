@@ -65,6 +65,35 @@ class BuilderHook(Calm):
     def builder(self, cmd):
         return self.pre(cmd, agent_id="a42cb51b932d1111a", agent_type="sampo:fm-builder")
 
+    def test_a_headless_runner_workers_wide_check_in_a_lane_is_refused(self):
+        # T-6441: sampo run's claude -p workers carry no agent_id, only FOREMAN_DRIVE_TASK; each ran the whole suite in
+        # its lane while the run's merge (serve._integrate) runs the gates again on the rebased lane
+        for cmd in ("sampo check --affected", "sampo check"):
+            r = self.hook("PreToolUse", {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": self.path, "session_id": "sess-b"}, env={"FOREMAN_DRIVE_TASK": self.tid})
+            self.assertEqual(r.returncode, 2, (cmd, r.stdout, r.stderr))
+            why = json.loads(r.stdout)["hookSpecificOutput"]["permissionDecisionReason"]
+            self.assertEqual(len(why.splitlines()), 1, why)
+            for need in ("sampo run", "plugin/tests/run.py", "-k"):
+                self.assertIn(need, why, cmd)
+
+    def test_the_worker_refusal_reads_the_drive_env_and_the_lane(self):
+        pl = {"tool_name": "Bash", "tool_input": {"command": "sampo check --affected"}, "cwd": self.path}
+        old = os.environ.pop("FOREMAN_DRIVE_TASK", None)
+        self.addCleanup(lambda: os.environ.__setitem__("FOREMAN_DRIVE_TASK", old) if old else os.environ.pop("FOREMAN_DRIVE_TASK", None))
+        self.assertIsNone(hooks._builder_check_deny(pl, fmguard))
+        os.environ["FOREMAN_DRIVE_TASK"] = self.tid
+        self.assertEqual(c.lane_top(self.path), os.path.realpath(self.path))
+        self.assertEqual(hooks._builder_check_deny(pl, fmguard)[0], "deny")
+        self.assertIsNone(hooks._builder_check_deny(dict(pl, cwd=self.repo), fmguard))
+
+    def test_a_headless_worker_outside_a_lane_or_a_plain_session_may_run_the_wide_check(self):
+        # the one-at-a-time sampo run works in the main checkout: there its own check is the gate
+        main = self.hook("PreToolUse", {"tool_name": "Bash", "tool_input": {"command": "sampo check --affected"},
+                                        "cwd": self.repo, "session_id": "sess-b"}, env={"FOREMAN_DRIVE_TASK": self.tid})
+        self.assertNotIn("sampo run", main.stdout + main.stderr)
+        plain = self.pre("sampo check --affected")
+        self.assertNotIn("sampo run", plain.stdout + plain.stderr)
+
     def test_a_fixers_own_wide_check_is_refused_too(self):  # T-5681 review: the editing set, not fm-builder alone
         for cmd in ("sampo check --affected", "sampo check"):
             r = self.pre(cmd, agent_id="a42cb51b932d1111a", agent_type="sampo:fm-fixer")

@@ -5162,10 +5162,22 @@ def _builder_check_deny(pl, fmguard):
     The signal is the hook payload's: only a subagent's own calls carry an agent_id, and its agent_type says it is a
     builder. The CLI can't tell: the train's accept check, the main thread's hand runs, a headless run and every lane
     fixture in the tests run it in a lane too, with no agent_id (nor does a PreToolUse payload exist for them)."""
-    if pl.get("tool_name") != "Bash" or not pl.get("agent_id") or pl.get("agent_type") not in c.EDITING_AGENT_NAMES:
+    if pl.get("tool_name") != "Bash":
+        return None
+    builder = pl.get("agent_id") and pl.get("agent_type") in c.EDITING_AGENT_NAMES
+    # T-6441: sampo run's claude -p worker has no agent_id, only FOREMAN_DRIVE_TASK; in a lane, the run's merge
+    # (serve._integrate) runs the gates on the rebased lane, so its own whole-suite run was a second one each lane.
+    # In the main checkout (the one-at-a-time run) its own check is the gate, so it stays.
+    worker = not builder and os.environ.get("FOREMAN_DRIVE_TASK") and c.lane_top(pl.get("cwd") or "")
+    if not (builder or worker):
         return None
     why = []
     if _runs_wide_check((pl.get("tool_input") or {}).get("command") or "", fmguard, cwd=pl.get("cwd"), why=why):
+        if worker:
+            return ("deny", (f"Sampo: {why[0]}, so it counts as the wide check; " if why else "Sampo: ") + "a sampo run "
+                            "worker never runs sampo check --affected or the full sampo check in its lane: sampo run "
+                            "runs the gates once when it merges the lane; run your own tests instead: python3 "
+                            "plugin/tests/run.py test_<module> [-k <slice>], then sampo task finish (T-6441).")
         return ("deny", (f"Sampo: {why[0]}, so it counts as the wide check; " if why else "Sampo: ") + "never run sampo check --affected or the full sampo check in a builder lane: the main "
                         "thread runs the affected check once at sampo lane accept, one lane at a time; run your own "
                         "tests instead: python3 plugin/tests/run.py test_<module> [-k <slice>] (T-4514); a CLEAN task's "
