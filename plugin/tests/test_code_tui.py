@@ -1561,7 +1561,9 @@ class Review(Classic, unittest.TestCase):
         for e in RUN[:5]:
             app.feed(e)
         killed = []
-        with unittest.mock.patch.object(os, "killpg", lambda pid, sig: killed.append(pid)):
+        from sampo import killsafe  # T-6095: the guard refuses a pid not started here; the stub's pid is declared started (T-6183)
+        with unittest.mock.patch.dict(killsafe._STARTED, {999999: None}), \
+                unittest.mock.patch.object(os, "killpg", lambda pid, sig: killed.append(pid)):
             app.key("s")
             self.assertEqual(killed, [], "T-1348: a live run asks for a second press")
             app.key("s")

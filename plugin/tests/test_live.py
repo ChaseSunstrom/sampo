@@ -1324,7 +1324,9 @@ class Act(ForemanTestCase):  # T-3026: POST /api/act, with the same-uid peer the
     def test_a_timeout_kills_the_whole_process_group(self):
         child = mock.Mock(pid=4242)
         child.wait.side_effect = [live.subprocess.TimeoutExpired("x", 1), 0]
-        with mock.patch.object(live.subprocess, "Popen", return_value=child) as popen, mock.patch.object(live.os, "killpg") as kill:
+        from sampo import killsafe  # T-6095: the guard refuses a pid not started here; the stub declares its child started (T-6183)
+        with mock.patch.dict(killsafe._STARTED, {4242: None}), \
+                mock.patch.object(live.subprocess, "Popen", return_value=child) as popen, mock.patch.object(live.os, "killpg") as kill:
             self.assertEqual(live._run(["resume", "-p", "x"], self.p), 124)
         self.assertTrue(popen.call_args.kwargs["start_new_session"])
         kill.assert_called_once_with(4242, live.signal.SIGKILL)

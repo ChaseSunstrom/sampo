@@ -11,7 +11,7 @@ from unittest import mock
 
 from helpers import ForemanTestCase
 
-from sampo import pilotsig
+from sampo import killsafe, pilotsig
 
 
 def git(cwd, *args):
@@ -534,7 +534,8 @@ class KillGroupPid(ForemanTestCase):
     MagicMock converts to 1 (__index__), so a test's stub once ended the whole desktop session three times."""
 
     def test_only_a_plain_int_pid_over_one_reaches_killpg(self):
-        with mock.patch.object(pilotsig.os, "killpg") as killpg:
+        # T-6095: the guard also refuses a plain int this process did not start, so the stub declares its child started (T-6157, T-6183)
+        with mock.patch.object(pilotsig.os, "killpg") as killpg, mock.patch.dict(killsafe._STARTED, {4242: None}):
             for pid in (mock.MagicMock(), mock.Mock(), None, True, "77", 0, 1, -1):
                 pilotsig._kill_group(mock.Mock(pid=pid))
             killpg.assert_not_called()
