@@ -9668,23 +9668,19 @@ def _others_merged_in(p, b):
         if not (isinstance(tip, str) and tip in merges):
             continue  # a record whose tip is no merge on this history landed nothing into this diff
         parent = merges[tip][0]
-        # a record names what the landing brought in only if its side commits name its tasks and never this task
-        subjects = c._git(p.root, "log", "--no-merges", "--format=%s", f"{parent}..{merges[tip][1]}", timeout=60, fail=None)
-        named = [set(re.findall(r"T-\d+", s)) for s in (subjects or "").splitlines()]
-        if not (start == parent and isinstance(tasks, list) and tasks and all(isinstance(t, str) for t in tasks)
-                and named and all(n & set(tasks) for n in named) and (b.id in tasks or not any(b.id in n for n in named))):
+        if not (start == parent and isinstance(tasks, list) and tasks and all(isinstance(t, str) for t in tasks)):
             bad += 1  # a record git does not bear out, or an unreadable one: its files stay in
             continue
-        # subjects are free text and a record is only as good as its writer: a landing that brings in a file this
-        # task's own edits touched is this task's change, so the record is ignored and every file stays in
+        if b.id in tasks:
+            theirs.add(tip)  # this task's own landing: its files are its own change
+            continue
+        # a record is only as good as its writer: another task's landing that brings in a file this task's own edits
+        # touched is this task's change too, so the record is ignored and every file stays in (no subject matching)
         brought = c._git(p.root, "diff", "--name-only", "--no-renames", parent, tip, timeout=60, fail=None)
         if brought is None or ledger & set(brought.splitlines()):
             bad += 1
             continue
-        if b.id in tasks:
-            theirs.add(tip)  # this task's own landing: its files are its own change
-        else:
-            landed[tip] = brought
+        landed[tip] = brought
     unrecorded = len(set(merges) - theirs - set(landed))
     notes = []
     if unrecorded:
