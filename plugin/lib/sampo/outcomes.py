@@ -313,18 +313,20 @@ def panel_report(p, outs=None):
 GATE_WINDOW_DAYS = 14  # T-5716: sampo outcomes --gates reads this many days of gate events
 SKIP_RUNS = 5  # T-5716: runs a gate needs with no catch before it is a skip candidate (fewer say nothing)
 STEP_GATES = ("verify", "affected", "advice", "done", "commit")  # close_steps' step names: the close's own gates
-GATE_KINDS = ("close_steps", "close_affected", "finding", "panel_outcome", "plan_gate_refused", "gate_refused")
+GATE_KINDS = ("close_steps", "close_affected", "finding", "audit", "panel_outcome", "plan_gate_refused", "gate_refused")
 NO_WRITER = {"rival read": "a rival read is written to the brief, not the ledger"}  # named, never read as a zero
 
 
 def gate_report(p, days=GATE_WINDOW_DAYS):
     """T-5716: {rows, lines, window_days, since}: per gate and process tier, the runs, seconds and catches over the last
-    `days`, from the events the ledger already holds: close_steps (seconds per step), close_affected (runs; a catch is an
-    exit set), finding (runs; a catch is a confirmed verdict, so a gate with no judged finding reads not recorded),
-    panel_outcome (runs; a catch is an adopted item) and the refusals, plan_gate_refused and gate_refused (each refusal
-    is a run and its catch). A count no writer records is None, printed not recorded, never a zero. A gate with runs, a
-    recorded catch count of zero and at least SKIP_RUNS runs is a skip candidate; nothing is skipped."""
-    since = c.iso(time.time() - days * 86400)
+    `days`, from the events the ledger already holds: close_steps (seconds per step), close_affected (a run is a close
+    that ran its command: not waived, sized out, reused or cached; a catch is a non-zero exit), finding (a run is a
+    judged, lens-tagged verdict; a catch is a confirmed one), audit (a run is a clean lens, result ok; its catch is zero),
+    panel_outcome (runs; a catch is an adopted item) and the
+    refusals, plan_gate_refused and gate_refused (each refusal is a run and its catch). A count no writer records is None,
+    printed not recorded, never a zero. A gate with runs, a recorded catch count of zero and at least SKIP_RUNS runs is a
+    skip candidate; nothing is skipped."""
+    since = c.iso(c.clock().timestamp() - days * 86400)  # clock(): FOREMAN_NOW pins the window like every ledger read
     briefs = {b.id: b for b in c.load_briefs(p, include_archive=True)}
     tiers = {}
 
@@ -337,7 +339,7 @@ def gate_report(p, days=GATE_WINDOW_DAYS):
                 tiers[tid] = "?"
         return tiers[tid]
 
-    acc = collections.defaultdict(lambda: {"runs": 0, "seconds": None, "catches": None, "judged": 0})
+    acc = collections.defaultdict(lambda: {"runs": 0, "seconds": None, "catches": None})
 
     def row(gate, tid):
         return acc[(gate, tier(tid))]
@@ -346,6 +348,8 @@ def gate_report(p, days=GATE_WINDOW_DAYS):
         d, tid, kind = e.get("data"), e.get("task"), e.get("event")
         if not isinstance(d, dict):  # a ledger line whose data is no object is skipped, never a crash
             continue
+        if not isinstance(tid, str):  # a hand-edited task that is no id reads as an unknown tier, never a crash
+            tid = None
         if kind == "close_steps":
             steps = d.get("steps") if isinstance(d.get("steps"), dict) else {}
             for g in STEP_GATES:
@@ -357,15 +361,23 @@ def gate_report(p, days=GATE_WINDOW_DAYS):
                 if isinstance(s, (int, float)) and not isinstance(s, bool):
                     r["seconds"] = round((r["seconds"] or 0) + s, 1)
         elif kind == "close_affected":
+            if "exit" not in d or d.get("reused") or d.get("cached"):  # a waived, sized-out, reused or cached close ran nothing
+                continue
             r = row("affected", tid)
             r["runs"] += 1
             r["catches"] = (r["catches"] or 0) + bool(d.get("exit"))
-        elif kind == "finding":
+        elif kind == "finding":  # a run is a judged, lens-tagged verdict: an unjudged report or a tripwire flag is no run
+            if d.get("verdict") not in ("confirmed", "rejected") or not d.get("lens") or d.get("kind") == "tripwire":
+                continue
             r = row("audit", tid)
             r["runs"] += 1
-            if d.get("verdict") in ("confirmed", "rejected"):
-                r["judged"] += 1
-                r["catches"] = (r["catches"] or 0) + (d.get("verdict") == "confirmed")
+            r["catches"] = (r["catches"] or 0) + (d.get("verdict") == "confirmed")
+        elif kind == "audit":  # a clean lens (ok_audit, or a recorded clean audit): one run, and a known zero catch
+            if d.get("result") != "ok" or not d.get("lens"):
+                continue
+            r = row("audit", tid)
+            r["runs"] += 1
+            r["catches"] = r["catches"] or 0
         elif kind == "panel_outcome":
             a = d.get("adopted")
             r = row("panel", tid)
@@ -381,9 +393,8 @@ def gate_report(p, days=GATE_WINDOW_DAYS):
             r["catches"] = (r["catches"] or 0) + 1
     rows = []
     for (gate, ptier), r in acc.items():
-        catches = None if gate == "audit" and not r["judged"] else r["catches"]
-        rows.append({"gate": gate, "ptier": ptier, "runs": r["runs"], "seconds": r["seconds"], "catches": catches,
-                     "skip": catches == 0 and r["runs"] >= SKIP_RUNS})
+        rows.append({"gate": gate, "ptier": ptier, "runs": r["runs"], "seconds": r["seconds"], "catches": r["catches"],
+                     "skip": r["catches"] == 0 and r["runs"] >= SKIP_RUNS})
     for gate, why in NO_WRITER.items():
         rows.append({"gate": gate, "ptier": "-", "runs": None, "seconds": None, "catches": None, "skip": False,
                      "why": why})

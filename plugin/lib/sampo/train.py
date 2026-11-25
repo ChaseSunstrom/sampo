@@ -7036,7 +7036,11 @@ def accept(p, b, main, args):
     the review just happened); any other lane says why. Nothing is forced, granted or closed beyond land's own close."""
     from sampo import cli
     from sampo import lanes
-    rows = _audit_rows(args)  # T-4391: refused before anything is recorded or started
+    try:
+        rows = _audit_rows(args)  # T-4391: refused before anything is recorded or started
+    except cli.UsageError as e:  # T-5716: a mistyped audit logs one gate event, then refuses as before
+        c.log_gate_refused(p, "accept:audit", task=b.id, where="accept", why=str(e))
+        raise
     path = b.meta.get("lane") or ""
     if not path or not os.path.isdir(path):
         msg = f"{b.id} has no lane to accept (fm lane brief {b.id} starts a builder)"
@@ -7091,6 +7095,7 @@ def accept(p, b, main, args):
     if b.id not in lanes.awaiting_merge(p, c.load_briefs(p), 0, fresh=True):  # T-4265: the review just saw its tip
         lines.append(f"  not queued: {b.id} is not a finished lane waiting on a merge (commits, a clean tree); "
                      "fm lane list says what it waits on")
+        c.log_gate_refused(p, "accept:not-queued", task=b.id, where="accept", why="not a finished lane waiting on a merge")
         return cli.out(args, {"id": b.id, "queued": False, "audits": len(rows)}, "\n".join(lines))
     if tip:  # T-5968: the close's own audit rule passed at this tip (a self-alone tier asks no audit, so none may be on the
         # brief) and the lane is going to the land (queued below, or on its check's green): every path to a trunk reads

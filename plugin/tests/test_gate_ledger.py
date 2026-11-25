@@ -57,6 +57,30 @@ class GateLedger(ForemanTestCase):
         self.assertEqual((rows[("plan", pb)]["runs"], rows[("plan", pb)]["catches"]), (1, 1))
         self.assertEqual((rows[("close:lesson", pb)]["runs"], rows[("close:lesson", pb)]["catches"]), (1, 1))
 
+    def test_a_waived_reused_or_unjudged_close_or_finding_is_no_run(self):  # T-5716 review: no fake runs or skip candidates
+        a = self.brief("Add session cache", "S")
+        self.event("close_affected", a, cmd="pytest", waived="flaky")
+        self.event("close_affected", a, cmd="pytest", exit=0, failing=[], s=0.0, cached=True)
+        self.event("close_affected", a, cmd="pytest", exit=0, reused="T-0001")
+        self.event("close_affected", a, cmd="pytest", sized="too big")
+        self.event("close_affected", a, cmd="pytest", exit=0, failing=[], s=6.0)  # the one real run
+        self.event("finding", a, lens="adversary", verdict="reported", text="maybe")
+        c.log_event(self.p, "finding", task=a, data={"kind": "tripwire", "verdict": "reported", "flag": "x"})
+        c.log_event(self.p, "finding", task=a, data={"kind": "tripwire", "verdict": "confirmed", "lens": "edge"})
+        self.event("finding", a, lens="edge", verdict="confirmed", text="y")
+        rows = {(r["gate"], r["ptier"]): r for r in outcomes.gate_report(self.p)["rows"]}
+        pa = self.ptier(a)
+        self.assertEqual((rows[("affected", pa)]["runs"], rows[("affected", pa)]["catches"]), (1, 0))
+        self.assertEqual((rows[("audit", pa)]["runs"], rows[("audit", pa)]["catches"]), (1, 1))
+
+    def test_a_clean_lens_audit_is_an_audit_run_with_a_recorded_zero_catch(self):  # T-5716 review: ok_audit's lines count
+        a = self.brief("Add session cache", "M")
+        self.event("audit", a, lens="intent", how="fm audit run", result="ok")
+        self.event("audit", a, lens="edge", how="fm audit run", result="changes needed")  # a finding event counts instead
+        rows = {(r["gate"], r["ptier"]): r for r in outcomes.gate_report(self.p)["rows"]}
+        pa = self.ptier(a)
+        self.assertEqual((rows[("audit", pa)]["runs"], rows[("audit", pa)]["catches"]), (1, 0))
+
     def test_a_gate_with_no_writer_is_named_not_recorded_and_a_catch_never_reads_as_zero(self):
         a = self.brief("Add session cache", "S")
         b = self.brief("Rewrite the export module", "M")
@@ -168,6 +192,23 @@ class GateLedger(ForemanTestCase):
         ev = c.ledger_events(self.p, ("gate_refused",))
         self.assertEqual([(e.get("task"), e["data"]["gate"], e["data"]["where"]) for e in ev],
                          [(tid, "accept:no-check", "accept")])
+
+    def test_an_accept_that_queues_nothing_logs_one_gate_event(self):  # T-5716 review: the not-queued path is a refusal too
+        from types import SimpleNamespace
+        from unittest import mock
+        from sampo import lanes, train
+        tid = self.brief("Add session cache", "S")
+        b = c.find_brief(self.p, tid)
+        b.meta["lane"] = self.repo  # an existing dir, but no awaiting merge: the accept queues nothing
+        args = SimpleNamespace(no_check=False, audit=[], json=True)
+        with mock.patch.object(train, "_audit_rows", return_value=[]), \
+                mock.patch.object(train, "_lane_tip", return_value="abc"), \
+                mock.patch.object(train, "_close_gaps", return_value=[]), \
+                mock.patch.object(lanes, "awaiting_merge", return_value=[]):
+            train.accept(self.p, b, self.repo, args)
+        ev = c.ledger_events(self.p, ("gate_refused",))
+        self.assertEqual([(e.get("task"), e["data"]["gate"], e["data"]["where"]) for e in ev],
+                         [(tid, "accept:not-queued", "accept")])
 
     def test_an_accept_with_a_mistyped_audit_logs_one_gate_event(self):  # T-5716 review: _audit_rows refuses first
         from types import SimpleNamespace
