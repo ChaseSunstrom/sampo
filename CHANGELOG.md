@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- A task's scope now covers the test modules its criteria name, in the folder that criterion names, and the repo map's test links to scoped files, read from a map of the current version only, so scope drift, fm edit and the hook scope note agree (T-6299).
 - Builders' first edit of a scope file takes its lease, and brief-time and precheck verify runs are recorded as evidence (T-6158).
 - sampo cost --sessions names each part of the lead's context over its budget per call, from plugin/data/lead-context-budget.json (T-6310).
 - Gated express lanes ready at one train boundary now train together in one train with one gate run, ahead of the ordinary lanes, instead of one train each (T-6307).
