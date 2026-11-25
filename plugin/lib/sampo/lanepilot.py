@@ -26,17 +26,23 @@ import io
 import json
 import os
 import re
+import signal
 import stat
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 import types
+import unicodedata
 
 from sampo import budget
 from sampo import contract
 from sampo import core as c
+from sampo import killsafe
 from sampo import lanes
 from sampo import mapmerge
+from sampo import pilotsig
 from sampo import spawn
 from sampo import train
 
@@ -1813,6 +1819,10 @@ def _fix_refusal(p, spent=()):
 
 ASIDE = "pilot_tips"  # <project dir>/pilot_tips/<task id>: the tip a paid fix left, written without the project lock
 SWEEP_DIR = "lane-pilot-sweep"  # T-6226: <project dir>/lane-pilot-sweep/.lock: held by one `lane pilot --all` run at a time
+PILOT_SWEEP_MAX = 3  # T-6331: lanes one sweep reviews at once, each in a process of its own
+SWEEP_MAX_ENV = "FOREMAN_PILOT_SWEEP_MAX"  # the env's count overrides PILOT_SWEEP_MAX (kept within 1 to 8)
+SWEEP_POLL_S = 0.05  # s: how often a sweep looks at its children
+SWEEP_MORE_S = 0.5  # s: the least gap between two reads of the returned-lane list while a sweep has no queued lane
 _DIGEST = None  # T-6226: the sha256 of this module's bytes, read once per process
 
 
@@ -2175,10 +2185,190 @@ def answer(r):
     return json.dumps(row, separators=(",", ":"))
 
 
+def _plain(text):
+    """T-6331 round 2: text one row can print on one line. A child's stderr or answer is untrusted, so its control and
+    format characters (an escape, a bell, a carriage return) become spaces, and runs of space collapse."""
+    return " ".join("".join(" " if unicodedata.category(ch)[0] == "C" else ch for ch in str(text)).split())
+
+
+def _child_error(tid, why):
+    """T-6331: an exception row for one lane (its pilot raised, or its sweep child gave no answer): one line, and the sweep
+    goes on. `ran` marks a run that reached the lane, so its outcome is recorded."""
+    return {"tid": tid, "outcome": "exception", "lenses": [], "findings": [], "model": "", "seconds": 0.0, "ran": True,
+            "reason": _plain(why)[:300]}
+
+
 def _crashed(tid, e):
     """T-5706 item 6: the row for a lane whose pilot raised: one line, and the sweep goes on to the next lane."""
-    return {"tid": tid, "outcome": "exception", "lenses": [], "findings": [], "model": "", "seconds": 0.0, "ran": True,
-            "reason": " ".join(f"{type(e).__name__}: {e}".split())[:300]}
+    return _child_error(tid, f"{type(e).__name__}: {e}")
+
+
+def sweep_max():
+    """T-6331: the lanes one sweep reviews at once: PILOT_SWEEP_MAX, or the SWEEP_MAX_ENV count, kept within 1 to 8."""
+    try:
+        n = int(os.environ.get(SWEEP_MAX_ENV) or PILOT_SWEEP_MAX)
+    except ValueError:
+        n = PILOT_SWEEP_MAX
+    return min(max(n, 1), 8)
+
+
+def _awaiting(p, main):
+    """The sweep's list: (task, tip) for each returned lane whose reviewed tip is not its current tip (T-5706 item 3):
+    reviewed at its current tip is done; at an older tip, review again. The tip keys a run (T-6331 round 2)."""
+    briefs = c.load_briefs(p)
+    awaiting = set(lanes.awaiting_merge(p, briefs))
+    out = []
+    for b in briefs:
+        if b.id not in awaiting or not lanes._builder_returned(b):
+            continue
+        tip = train._lane_tip(main, b)
+        if tip not in {b.meta.get("reviewed_tip"), *_stamped(p, b)}:
+            out.append((b.id, tip))
+    return out
+
+
+def _spawn_child(p, tid):
+    """T-6331: one lane's pilot in a process of its own, started as pilotsig starts its verb: `sampo lane pilot ID --json`
+    in its own session, with pilotsig's env for the lane and its main checkout as cwd. Returns (process, stdout, stderr)."""
+    out, err = tempfile.TemporaryFile(), tempfile.TemporaryFile()
+    try:
+        proc = subprocess.Popen([sys.executable, pilotsig.verb_path(), "lane", "pilot", tid, "--json"],
+                                cwd=pilotsig._cwd(p), stdin=subprocess.DEVNULL, stdout=out, stderr=err,
+                                start_new_session=True, env=pilotsig._env(tid))
+    except OSError:
+        out.close()
+        err.close()
+        raise
+    killsafe.started(proc)  # its group is killed past the wall, and the registry keeps it reachable
+    return proc, out, err
+
+
+def _child_row(tid, rc, out, err):
+    """T-6331: a sweep child's row, and whether the child answered (False: the sweep made the row). The child's last stdout
+    line is its answer for this tid (answer()'s shape, the reason under why). A child with no such answer is that lane's own
+    exception row, naming its exit and the end of its stderr."""
+    lines = [x for x in pilotsig._tail(out, pilotsig.ANSWER_MAX).splitlines() if x.strip()]
+    try:
+        row = json.loads(lines[-1]) if lines else None
+    except (ValueError, RecursionError):  # a line the child printed past the reader's grammar is no answer
+        row = None
+    if isinstance(row, dict) and row.get("tid") == tid and isinstance(row.get("outcome"), str) and row["outcome"]:
+        return dict(row, reason=_plain(row.get("why") or "")), True
+    errs = _plain(pilotsig._tail(err, pilotsig.ERR_MAX))
+    return _child_error(tid, f"pilot could not run: exit {rc}" + (f": {errs[-200:]}" if errs else ": no JSON answer")), False
+
+
+def _term_to_exit(signum, frame):
+    """T-6331 round 2: SIGTERM ends a sweep the way an interrupt does: the raise runs the sweep's finally, which ends and
+    reaps its children."""
+    raise SystemExit(128 + signum)
+
+
+def _sweep_pass(p, more, main):
+    """T-6331: one pass, each lane in its own child, at most sweep_max() running at once; the next lane starts the moment
+    a child ends, so a slow lane holds none of the others. `more(n, busy)` gives up to n lanes to start, `busy` being the
+    tids queued or running (never two runs of one lane at once). It is asked when no lane is queued and a slot is free:
+    at once after a child ends (its slot is free now), else at most every SWEEP_MORE_S, so a lane returned or retried
+    mid-pass starts without waiting for the pass to drain. A child past pilotsig.VERB_WALL_S is killed whole and its row
+    is an exception. Any exit, a raise or a SIGTERM (the handler is the sweep's while it runs) ends the children still
+    running, killed and reaped, so none outlives the sweep. Returns (rows in start order, the tids whose row the sweep
+    made itself)."""
+    width, queue, live, rows, made, order, read, freed = sweep_max(), [], [], {}, set(), [], None, False
+    main_thread = threading.current_thread() is threading.main_thread()  # signal handlers are set from the main thread only
+    old = signal.signal(signal.SIGTERM, _term_to_exit) if main_thread else None
+    try:
+        while True:
+            now = time.monotonic()
+            if not queue and len(live) < width and (freed or not live or read is None or now - read >= SWEEP_MORE_S):
+                read, freed = now, False
+                queue.extend(more(width - len(live), {item[0] for item in live} | set(queue)))
+            if not queue and not live:
+                break
+            while queue and len(live) < width:
+                tid = queue.pop(0)
+                order.append(tid)
+                try:
+                    live.append((tid, *_spawn_child(p, tid), time.monotonic()))
+                except OSError as e:
+                    rows[tid] = _crashed(tid, e)
+                    made.add(tid)
+            for item in list(live):
+                tid, proc, out, err, t0 = item
+                if proc.poll() is None:
+                    if time.monotonic() - t0 <= pilotsig.VERB_WALL_S:
+                        continue
+                    pilotsig._kill_group(proc)  # past its wall: the group is killed, and the lane's row says so
+                    proc.wait()
+                    rows[tid] = _child_error(tid, f"pilot could not run: no answer in {pilotsig.VERB_WALL_S} s")
+                    made.add(tid)
+                else:
+                    pilotsig._kill_group(proc)  # as pilotsig's verb: a child that ended with children still running leaves none
+                    try:
+                        rows[tid], answered = _child_row(tid, proc.returncode, out, err)
+                    except Exception as e:  # noqa: BLE001 - one child's read is its own row, not the sweep's end
+                        rows[tid], answered = _crashed(tid, e), False
+                    if not answered:
+                        made.add(tid)
+                live.remove(item)
+                freed = True
+                out.close()
+                err.close()
+            if live:
+                time.sleep(SWEEP_POLL_S)
+    finally:  # an interrupt, a SIGTERM or a raise past the rows: the children still running are ended and reaped
+        if main_thread:
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)  # a second TERM while they are ended is ignored: none is left unreaped
+        for _, proc, out, err, _ in live:
+            pilotsig._kill_group(proc)
+            proc.wait()
+            out.close()
+            err.close()
+        if main_thread:
+            signal.signal(signal.SIGTERM, old if old is not None else signal.SIG_DFL)
+    return [rows[t] for t in order], made
+
+
+def _sweep(p, main, top):
+    """T-6331: `lane pilot --all`'s rows. One pass reviews the returned lanes, sweep_max() at once; the list is read again
+    while it runs, so a lane returned or retried during the sweep is reviewed before the sweep ends. A run is keyed by its
+    task and tip (round 2): a lane retried at a new tip mid-sweep is reviewed again once its running review ends, and a
+    tip is reviewed once per sweep, which is what ends it; --max N caps the sweep's runs."""
+    ran = set()
+
+    def more(n, busy):
+        if top is not None:
+            n = min(n, top - len(ran))
+        if n <= 0:
+            return []
+        got = []
+        for tid, tip in _awaiting(p, main):
+            if len(got) >= n:
+                break
+            if tid in busy or (tid, tip) in ran:  # a lane already queued or running waits for its end, then its new tip
+                continue
+            ran.add((tid, tip))
+            got.append(tid)
+        return got
+    batch, made = _sweep_pass(p, more, main)
+    for row in batch:  # a child records its own outcome; the sweep records only the rows it made for a child that gave none
+        if row["tid"] in made:
+            with contextlib.suppress(Exception):
+                _record_outcome(p, row["tid"], row["outcome"])
+    return batch
+
+
+def _in_process(p, tid, main, run):
+    """One lane in this process (`fm lane pilot ID`, or --dry's plan): its row, and a raise is its own exception row. A run
+    that reviewed records its outcome on the brief (a gate refusal keeps the stored one: T-6226)."""
+    from sampo import cli
+    try:
+        row = run(p, cli.need_brief(p, tid), main) if run is plan else run(p, tid, main)
+    except Exception as e:  # noqa: BLE001 - one lane's crash is its row, not the sweep's end
+        row = _crashed(tid, e)
+    if run is pilot and row.get("ran"):
+        with contextlib.suppress(Exception):
+            _record_outcome(p, tid, row["outcome"])
+    return row
 
 
 def cmd(p, args, main):
@@ -2208,28 +2398,17 @@ def cmd(p, args, main):
             raise cli.UsageError("fm lane pilot --all takes no task id")
         if top is not None and top < 1:
             raise cli.UsageError("fm lane pilot --max takes a count of at least 1")
-        briefs = c.load_briefs(p)
-        awaiting = set(lanes.awaiting_merge(p, briefs))
-        ids = [b.id for b in briefs  # T-5706 item 3: reviewed at its current tip is done; at an older tip, review again
-               if b.id in awaiting and lanes._builder_returned(b)
-               and train._lane_tip(main, b) not in {b.meta.get("reviewed_tip"), *_stamped(p, b)}]
-        ids = ids[:top] if top is not None else ids
+        if getattr(args, "dry", False):
+            ids = [tid for tid, _ in _awaiting(p, main)]  # the plan of each lane the sweep would review, in this process (no reviewer runs)
+            rows = [_in_process(p, i, main, plan) for i in (ids[:top] if top is not None else ids)]
+        else:
+            rows = _sweep(p, main, top)  # T-6331: each lane in a process of its own, sweep_max() at once, under the lock
     elif args.id:
         if top is not None:
             raise cli.UsageError("fm lane pilot --max goes with --all")
-        ids = [args.id]
+        rows = [_in_process(p, args.id, main, plan if getattr(args, "dry", False) else pilot)]
     else:
         raise cli.UsageError("fm lane pilot needs a task id, or --all")
-    run = plan if getattr(args, "dry", False) else pilot
-    rows = []
-    for i in ids:
-        try:
-            rows.append(run(p, cli.need_brief(p, i), main) if run is plan else run(p, i, main))
-        except Exception as e:  # noqa: BLE001 - one lane's crash is its row, not the sweep's end
-            rows.append(_crashed(i, e))
-        if run is pilot and rows[-1].get("ran"):  # T-6226: only a run that reviewed or crashed records its outcome; a gate refusal keeps the stored one
-            with contextlib.suppress(Exception):
-                _record_outcome(p, i, rows[-1]["outcome"])
     text = "\n".join(line(r) for r in rows) or "no returned lane awaits a pilot"
     one = getattr(args, "json", False) and not getattr(args, "all", False) and len(rows) == 1
     if one:

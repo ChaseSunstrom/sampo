@@ -10,6 +10,7 @@ import os
 import pty
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -1089,19 +1090,21 @@ class DrySweep(PilotCase):
     def test_a_lane_that_raises_does_not_stop_the_next_one(self):  # T-5706 item 6: per-lane rows
         other = self.lane(2, "f2.txt", when=OLD)
         self.stamp(other, builder_returned=c.now())
-        seen = []
-
-        def fake(p, tid, main):
-            seen.append(tid)
-            if len(seen) == 1:
-                raise RuntimeError("boom")
-            return {"tid": tid, "outcome": "accepted", "lenses": [], "findings": [], "model": "haiku",
-                    "seconds": 0.0, "reason": ""}
+        # T-6331: each lane is its own child, so the crash is a stub verb that dies on one tid and answers for the other
+        verb = os.path.join(self.tmp, "raise_verb.py")
+        with open(verb, "w") as f:
+            f.write("import json, sys\n"
+                    "TID = sys.argv[sys.argv.index('pilot') + 1]\n"
+                    f"if TID == {self.tid!r}:\n"
+                    "    sys.stderr.write('boom')\n"
+                    "    sys.exit(3)\n"
+                    "print(json.dumps({'tid': TID, 'outcome': 'accepted', 'why': '', 'lenses': [], 'findings': [],\n"
+                    "                  'model': 'haiku', 'lens_models': {}, 'seconds': 0.0}))\n")
         args = cli.build_parser().parse_args(["lane", "pilot", "--all"])
-        with mock.patch.object(lanepilot, "pilot", side_effect=fake):
+        with mock.patch.dict(os.environ, {pilotsig.VERB_ENV: verb}):
             with self.assertRaises(cli.UsageError) as e:
                 lanepilot.cmd(c.find_project(self.repo), args, self.repo)
-        self.assertEqual(sorted(seen), sorted([self.tid, other]), "the second lane still ran")
+        self.assertIn(other, str(e.exception), "the second lane still ran")
         self.assertIn("boom", str(e.exception))
         self.assertIn("accepted", str(e.exception))
 
@@ -1374,6 +1377,8 @@ class LastLineReaders(unittest.TestCase):
         "demo.py::_hook": "the plugin's hook script",
         "smoke.py::crawl": "plugin/lib/smoke_web.cjs",
         "cli.py::_estimate": "tests/run.py --estimate",
+        "lanepilot.py::_child_row": "a sweep child's answer: `lane pilot ID --json` prints answer() as its last line "
+                                    "(SweepParallel reads it from each child's stdout)",
     }
 
     def test_every_last_line_reader_is_named_with_its_proof(self):
@@ -2644,6 +2649,205 @@ class FlushBusyLedger(unittest.TestCase):  # T-6322 review: a busy lock drops a 
     def test_an_escalation_the_busy_lock_keeps_out_is_returned_with_the_lens_lines(self):
         unlogged = self.flush_busy([self.LENS, self.ESCALATE])
         self.assertEqual(sorted(x[0] for x in unlogged), ["pilot_escalate", "pilot_lens"])
+
+
+# T-6331: the stub verb one sweep child runs. It logs start and end (monotonic seconds) to LOG, so a test reads how many
+# children were alive at once; a tid in CRASH prints no answer and exits 3; any other prints one changes-needed row.
+STUB_VERB = r'''import json, sys, time
+TID = sys.argv[sys.argv.index("pilot") + 1]
+LOG, CRASH, SLEEP, WAIT = @LOG@, @CRASH@, @SLEEP@, @WAIT@
+def note(what):
+    with open(LOG, "a") as f:
+        f.write("%s %s %.3f\n" % (what, TID, time.monotonic()))
+note("start")
+if TID in CRASH:
+    print("not an answer")
+    sys.exit(3)
+time.sleep(WAIT.get(TID, SLEEP))
+note("end")
+print(json.dumps({"tid": TID, "outcome": "changes", "why": "stub", "lenses": ["intent"], "findings": [],
+                  "model": "haiku", "lens_models": {}, "seconds": SLEEP}))
+'''
+
+
+class SweepParallel(PilotCase):
+    """T-6331: the sweep reviews up to PILOT_SWEEP_MAX lanes at once, each in its own process, a crash is its own row,
+    and a lane returned or retried during a pass is reviewed before the sweep ends."""
+
+    def setUp(self):
+        super().setUp()
+        self.slog = os.path.join(self.tmp, "sweep.log")
+        self.crash, self.sleep, self.wait = set(), 0.8, {}
+        self.p = c.find_project(self.repo)
+        self.verb = os.path.join(self.tmp, "verb_stub.py")
+        self.write_stub()
+        for patch in (mock.patch.dict(os.environ, {pilotsig.VERB_ENV: self.verb}),
+                      mock.patch.object(lanepilot, "PILOT_SWEEP_MAX", 3)):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def write_stub(self):
+        src = STUB_VERB.replace("@LOG@", repr(self.slog)).replace("@SLEEP@", repr(self.sleep)).replace(
+            "@CRASH@", repr(sorted(self.crash))).replace("@WAIT@", repr(self.wait))
+        with open(self.verb, "w") as f:
+            f.write(src)
+
+    def listing(self, *answers):
+        """`_awaiting` answers one list per call (the last one again after the list runs out): what the re-list sees.
+        A bare id is a lane at tip "t0"; a (id, tip) pair is a lane at that tip."""
+        calls = []
+
+        def awaiting(p, main):
+            calls.append([(x, "t0") if isinstance(x, str) else x for x in answers[min(len(calls), len(answers) - 1)]])
+            return calls[-1]
+        return mock.patch.object(lanepilot, "_awaiting", awaiting), calls
+
+    def sweep(self):
+        from types import SimpleNamespace
+        args = SimpleNamespace(all=True, id=None, max=None, dry=False, json=False, retry=False)
+        return lanepilot.cmd(self.p, args, self.repo)
+
+    def events(self):
+        if not os.path.exists(self.slog):
+            return []
+        with open(self.slog) as f:
+            return [(what, tid, float(t)) for what, tid, t in (x.split() for x in f if x.strip())]
+
+    def most_alive(self):
+        """The most children alive at once, from the start and end lines the stub wrote."""
+        alive = most = 0
+        for what, _, _ in sorted(self.events(), key=lambda e: (e[2], e[0] == "start")):  # an end at a tie counts first
+            alive += 1 if what == "start" else -1
+            most = max(most, alive)
+        return most
+
+    def test_up_to_pilot_sweep_max_lanes_run_at_once_and_never_more(self):
+        ids = [f"T-{n}" for n in range(1, 7)]
+        listing, _ = self.listing(ids)
+        with listing:
+            self.sweep()
+        self.assertEqual(sum(1 for what, _, _ in self.events() if what == "start"), 6, "every lane is reviewed once")
+        self.assertLessEqual(self.most_alive(), 3, "never more than PILOT_SWEEP_MAX at once")
+        self.assertGreaterEqual(self.most_alive(), 2, "the lanes overlap: the sweep is parallel, not one at a time")
+
+    def test_pilot_sweep_max_one_runs_the_lanes_one_at_a_time(self):
+        ids = [f"T-{n}" for n in range(1, 4)]
+        listing, _ = self.listing(ids)
+        with listing, mock.patch.dict(os.environ, {lanepilot.SWEEP_MAX_ENV: "1"}):
+            self.sweep()
+        self.assertEqual(self.most_alive(), 1, "the sequential width is the env's 1")
+
+    def test_a_crash_is_its_own_row_and_the_other_lanes_still_run(self):
+        from types import SimpleNamespace
+        self.crash = {"T-2"}
+        self.write_stub()
+        listing, _ = self.listing(["T-1", "T-2", "T-3"])
+        args = SimpleNamespace(all=True, id=None, max=None, dry=False, json=False, retry=False)
+        with listing, self.assertRaises(cli.UsageError) as got:
+            lanepilot.cmd(self.p, args, self.repo)
+        text = str(got.exception)
+        self.assertIn("T-2: exception:", text, "the crashed lane's row names it")
+        self.assertIn("T-1: stub", text, "a changes row is the lane's tid and its why")
+        self.assertIn("T-3: stub", text, "the rest of the sweep ran")
+        self.assertEqual(sum(1 for what, _, _ in self.events() if what == "end"), 2)
+
+    def test_a_lane_returned_during_a_pass_starts_before_the_pass_ends(self):
+        """The list is read again while the pass runs: T-3, returned once T-1 and T-2 run, starts at once, while they
+        still run (a 2 s stub), not after the pass has drained."""
+        self.sleep = 2.0
+        self.write_stub()
+        calls, held = [], []
+
+        def awaiting(p, main):  # the first read has T-1 and T-2; a later read, during the pass, adds T-3
+            calls.append(1)
+            held.append(c.lock_held(os.path.join(self.p.dir, lanepilot.SWEEP_DIR, ".lock")))
+            return [("T-1", "t0"), ("T-2", "t0")] if len(calls) == 1 else [("T-1", "t0"), ("T-2", "t0"), ("T-3", "t0")]
+        with mock.patch.object(lanepilot, "_awaiting", awaiting):
+            self.sweep()
+        starts = {tid: t for what, tid, t in self.events() if what == "start"}
+        ends = [t for what, _, t in self.events() if what == "end"]
+        self.assertEqual(sorted(starts), ["T-1", "T-2", "T-3"], "the lane that came back mid-pass is reviewed too")
+        self.assertLess(starts["T-3"], min(ends), "it starts before the first running lane ends, not after the pass")
+        self.assertTrue(all(held), "the sweep lock is held through the passes")
+
+    def test_an_interrupted_sweep_ends_its_running_children_before_it_raises(self):
+        """A spawn that raises (Ctrl-C, or any error past OSError) ends the children already started, and waits for them."""
+        real, procs = lanepilot._spawn_child, []
+
+        def spawn(p, tid):
+            if len(procs) == 1:  # T-1 started; the second spawn is the interrupt
+                raise RuntimeError("interrupted")
+            proc, out, err = real(p, tid)
+            procs.append(proc)
+            return proc, out, err
+        listing, _ = self.listing(["T-1", "T-2"])
+        with listing, mock.patch.object(lanepilot, "_spawn_child", spawn), self.assertRaises(RuntimeError):
+            self.sweep()
+        self.assertEqual(len(procs), 1)
+        self.assertIsNotNone(procs[0].poll(), "the child that was running is ended and reaped, not left behind")
+
+    def test_a_child_ending_frees_its_slot_for_a_lane_returned_at_once(self):
+        """T-6331 round 2: a child's end frees its slot, and the list is read then, not after the throttle or the pass:
+        T-1 ends at 0.3 s and T-3, returned by then, starts at once while T-2 (3 s) still runs. The throttle is
+        held at 60 s here, so only an immediate re-read on the end starts T-3 before T-2 ends."""
+        self.wait = {"T-1": 0.3}
+        self.sleep = 3.0
+        self.write_stub()
+
+        def awaiting(p, main):
+            ends = sum(1 for what, _, _ in self.events() if what == "end")
+            return [("T-1", "t0"), ("T-2", "t0")] if ends == 0 else [("T-1", "t0"), ("T-2", "t0"), ("T-3", "t0")]
+        with mock.patch.object(lanepilot, "_awaiting", awaiting), mock.patch.object(lanepilot, "SWEEP_MORE_S", 60.0), \
+                mock.patch.object(lanepilot, "PILOT_SWEEP_MAX", 2):
+            self.sweep()
+        starts = {tid: t for what, tid, t in self.events() if what == "start"}
+        t2_end = [t for what, tid, t in self.events() if what == "end" and tid == "T-2"][0]
+        self.assertLess(starts["T-3"], t2_end, "a freed slot takes the next returned lane at once, not when the pass drains")
+
+    def test_a_lane_retried_at_a_new_tip_during_its_run_is_reviewed_again_after_it_ends(self):
+        """T-6331 round 2: the sweep keys its runs by task and tip. T-1 is retried to tip t1 while its own review runs:
+        it is reviewed again once that review ends, never at the same time as the first one."""
+        self.sleep = 1.0
+        self.write_stub()
+        calls = []
+
+        def awaiting(p, main):
+            calls.append(1)
+            return [("T-1", "t0")] if len(calls) == 1 else [("T-1", "t1")]
+        with mock.patch.object(lanepilot, "_awaiting", awaiting):
+            self.sweep()
+        starts = [t for what, tid, t in self.events() if what == "start" and tid == "T-1"]
+        ends = [t for what, tid, t in self.events() if what == "end" and tid == "T-1"]
+        self.assertEqual(len(starts), 2, "the lane retried at a new tip is reviewed a second time")
+        self.assertLessEqual(self.most_alive(), 1, "never two reviews of one lane at once")
+        self.assertLess(ends[0], starts[1], "the second review starts after the first one ends")
+
+    def test_a_sigterm_ends_the_running_children_and_the_sweep_restores_the_handler(self):
+        """T-6331 round 2: SIGTERM takes the same path as an interrupt: the children still running are killed and reaped,
+        the sweep raises, and the handler it installed is put back."""
+        real, procs, before = lanepilot._spawn_child, [], signal.getsignal(signal.SIGTERM)
+
+        def spawn(p, tid):
+            if len(procs) == 1:  # T-1 is running: the handler must be the sweep's, then TERM arrives
+                self.assertTrue(callable(signal.getsignal(signal.SIGTERM)), "the sweep installs a TERM handler")
+                os.kill(os.getpid(), signal.SIGTERM)
+            proc, out, err = real(p, tid)
+            procs.append(proc)
+            return proc, out, err
+        listing, _ = self.listing(["T-1", "T-2"])
+        with listing, mock.patch.object(lanepilot, "_spawn_child", spawn), self.assertRaises(SystemExit):
+            self.sweep()
+        self.assertIsNotNone(procs[0].poll(), "the running child is ended and reaped, not left behind")
+        self.assertEqual(signal.getsignal(signal.SIGTERM), before, "the sweep puts the TERM handler back")
+
+    def test_a_child_stderr_reason_has_no_control_characters(self):
+        """T-6331 round 2: a child's stderr tail is a row's reason: its escape and other control characters are spaces."""
+        out, err = tempfile.TemporaryFile(), tempfile.TemporaryFile()
+        err.write(b"\x1b[31mboom\x1b[0m\x07 bad\r\nlast\n")
+        row, answered = lanepilot._child_row("T-1", 3, out, err)
+        self.assertFalse(answered)
+        self.assertIn("boom", row["reason"])
+        self.assertFalse(any(ord(ch) < 32 or ord(ch) == 127 for ch in row["reason"]), repr(row["reason"]))
 
 
 if __name__ == "__main__":

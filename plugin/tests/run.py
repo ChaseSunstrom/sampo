@@ -71,6 +71,7 @@ OPERATOR_SWITCHES = {"LOAD_GATE", "LOAD_WAIT", "FULL_GATE", "SENTINEL", "SENTINE
                      "DRIVE_TASK", "QUIET", "NO_NET", "NO_LINK", "CONFINE", "SMOKE_RUNNER", "UI_CACHE_S", "NO_TEST_CACHE",
                      "FAST",  # T-3571: SAMPO_FAST=0 sends every call past sampo-fast; test_fast_equiv needs it on
                      "CPU_BASE", "CPU_GATE", "CPU_FLOOR_S",  # T-3757: the train's CPU baseline is never a test's
+                     "PILOT_SWEEP_MAX",  # T-6331: lanes one lane pilot --all sweep reviews at once (FOREMAN_ prefix either way)
                      "SHAPE_RUNS"}  # T-4947: how many lanes' repo-shape stages run at once
 
 

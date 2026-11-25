@@ -1911,18 +1911,21 @@ class StampRetry(FixCase):
                 lanepilot.cmd(p, args, self.repo)  # the second sweep exits 0 and runs nothing
         self.assertTrue(c.lock_held(os.path.join(p.dir, lanepilot.SWEEP_DIR, ".lock")) is False)
 
-    def test_a_retry_that_crashes_mid_run_is_spent_and_the_next_sweep_does_not_retry(self):
+    def test_a_sweep_child_that_dies_mid_run_is_an_exception_row_and_its_outcome_is_recorded(self):
+        # T-6331: the retry runs in its own process, so the crash is the child's: a stub verb that dies with a message on
+        # stderr and no answer. The row is the lane's exception, and the sweep records the outcome the child could not
         from types import SimpleNamespace
         p = c.find_project(self.repo)
         self.set_stamp(train._lane_tip(self.repo, self.brief()), code="0ld", outcome="exception")
+        verb = os.path.join(self.tmp, "dies_verb.py")
+        with open(verb, "w") as f:
+            f.write("import sys\nsys.stderr.write('boom')\nsys.exit(3)\n")
         args = SimpleNamespace(all=True, id=None, max=None, dry=False, json=False, retry=False)
-        with mock.patch.object(lanepilot, "review", side_effect=RuntimeError("boom")):
-            with self.assertRaises(cli.UsageError):  # the retry runs and raises: its row is the exception
+        with mock.patch.dict(os.environ, {pilotsig.VERB_ENV: verb}):
+            with self.assertRaises(cli.UsageError) as got:  # the retry runs and its child dies: the row is the exception
                 lanepilot.cmd(p, args, self.repo)
-        self.assertEqual(self.brief().meta.get("pilot_code"), lanepilot._code_digest(), "the retry spent its tip")
-        with mock.patch.object(lanepilot, "pilot") as again:
-            lanepilot.cmd(p, args, self.repo)
-        self.assertEqual(again.call_count, 0, "the next sweep does not retry the spent tip")
+        self.assertIn(f"{self.tid}: exception: pilot could not run: exit 3: boom", str(got.exception))
+        self.assertEqual(self.brief().meta.get("pilot_outcome"), "exception", "the sweep recorded the child's outcome")
 
     def test_a_gate_refusal_keeps_the_stored_outcome(self):
         from types import SimpleNamespace
