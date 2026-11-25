@@ -1679,9 +1679,11 @@ def per_lane(p, days, now=None, lead_replies=None):
     lanes = {t: r for t, r in sorted(lanes.items()) if r}
     from sampo import workset  # T-6062: the explorer's tokens and the explore share, apart from the roles' above
     ws = {t: w for t in lanes if (w := workset.row(explorer.get(t), reads.get(t)))}
+    from sampo import redfirst  # T-6155: red-first lanes against plain lanes of each class: first passes and builder turns
+    rf = redfirst.readout(p, lanes)
     return {"days": days, "landed": len(landed), "git": git,
             "ledger": {"tasks": len(ledger), "events": ledger_events},
-            "lanes": lanes, "median": _medians(lanes), "unattributed": unattr, "workset": ws,
+            "lanes": lanes, "median": _medians(lanes), "unattributed": unattr, "workset": ws, "redfirst": rf,
             "landed_at": {t: landed[t] for t in lanes}}  # T-6060: the day a lane's dollars belong to
 
 
@@ -1721,6 +1723,10 @@ def _per_lane_text(r, base=None):
         if t in r.get("workset", {}):  # T-6062: the explorer's own line, never added into the builder's
             from sampo import workset
             out.append(workset.line(r["workset"][t]))
+    if r.get("redfirst"):  # T-6155: red-first and plain lanes of each class, the builder turns and first passes side by side
+        from sampo import redfirst
+        out.append("Red-first lanes by class (T-6155): a class's switch turns off once its red-first first passes fall 5 points under the plain's:")
+        out += [f"  {cls}:" + redfirst.line(v) for cls, v in r["redfirst"].items()]
     if r["median"]:
         out.append("Median per role over the lanes that have it:")
         out += [f"  {role} (n {m['n']}): {fmt(m)} · ≈ {_human(m['equiv'])}" for role, m in r["median"].items()]

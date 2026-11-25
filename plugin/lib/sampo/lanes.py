@@ -5886,6 +5886,15 @@ def builder_brief(p, b, args, resume_branch=None, after="", stacked=None, check=
     if ws and ws["lines"]:
         parts[ws_at:ws_at] = ws["lines"]
     parts += ["## Your report", c.REPORT_SHAPE, ""]  # T-6162: the one shape; the PreToolUse refusal of a report file names it too
+    from sampo import redfirst  # T-6155: the plan-time job's red tests, embedded when ready; the brief never waits for the writer
+    first_brief = not (resume_branch and redfirst.briefed(p, b.id))  # T-6155: a resume keeps the flag of its first brief
+    try:
+        rf_lines, rf = redfirst.ready(p, b, base, resume=bool(resume_branch))  # a resume embeds them with RESUME_NOTE
+    except Exception as e:  # noqa: BLE001 — a fault costs the red tests, never the brief
+        rf_lines, rf = [], {"started": False, "reason": c.fit(str(e), 120)}
+    parts[ws_at:ws_at] = rf_lines
+    if first_brief:
+        c.log_event(p, "lane_redfirst", task=b.id, data=rf)  # the lane's record: started red-first or why not
     parts += ["## Standing rules", "Checked before the merge (sampo check --affected runs their tests); break none:",
               *STANDING, *[f"- {d}: {t}" for d, t in standing_decisions(p)], ""]
     parts += cargo_brief(p)  # T-4575

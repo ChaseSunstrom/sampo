@@ -548,6 +548,18 @@ except OSError:
         self.assertLess(time.monotonic() - t, 8)
         self.assertFalse([n for n in os.listdir(self.repo) if n.startswith("big")])
 
+    def test_a_run_filling_a_writable_tree_beside_its_log_folder_is_stopped(self):  # review: the red run's tree was not measured
+        tree, logs = os.path.join(self.repo, "tree"), os.path.join(self.repo, "logs")
+        os.makedirs(tree)
+        os.makedirs(os.path.join(logs, "tmp"))
+        code = 'import time\nfor i in range(20):\n    open("big%d.bin" % i, "wb").write(b"0" * (4 << 20))\ntime.sleep(30)\n'
+        t = time.monotonic()
+        with mock.patch.object(callcards, "SCRATCH_CAP", 8 << 20):
+            r = callcards._spawn([sys.executable, "-c", code], tree, "", callcards._system_reads() + [tree, logs],
+                                 [tree, logs], logs, 10)
+        self.assertTrue(r["over"], r)
+        self.assertLess(time.monotonic() - t, 8)
+
 
 class Unconfined(Base):
     def test_without_confinement_nothing_runs(self):

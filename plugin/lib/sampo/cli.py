@@ -5050,6 +5050,8 @@ def task_new(p, args):
             filled.extend(c.plan_autofill(p, b))  # T-5890: what a tool can settle itself is filled, not refused later
         filled = []
         b, _ = mutate(p, b.id, plan, "task_plan", {"ac": len(args.ac or []), "step": len(args.step or [])})
+        from sampo import redfirst  # T-6155: criteria set here start the detached red-test job (debounced; none for L)
+        redfirst.spawn(p, b.id)
         warns = _lint_verify(p, [v for _, v in map(c.split_verify, args.ac or []) if v])
     else:
         warns, filled = [], []
@@ -5178,6 +5180,13 @@ def plan_file(p, args):
                 c.log_event(p, "stage", task=x.id, data={"from": c.stage(old), "to": c.stage(x)}, session=session())
         c.export_mirror(p)
     c.regen_views(p, mirror=False)  # every brief re-read: never while hooks queue on the project lock
+    from sampo import redfirst  # T-6155: each S/M plan's red tests are written by a detached job, never awaited here
+    for x in planned:
+        if x.tier in ("S", "M"):
+            try:
+                redfirst.spawn(p, x.id)
+            except OSError as e:  # a job that can't start costs its red tests, never the plan
+                print(f"sampo: {x.id}: no red-first job: {c.fit(str(e), 160)}", file=sys.stderr)
     for x, (_, _, crit, steps) in zip(planned, todo):
         rows.append({"id": x.id, "criteria": len(crit), "steps": len(steps)})
         lines.append(f"{x.id}: planned ({len(crit)} criteria, {len(steps)} steps)" + _filled_note(filled.get(x.id, [])))
@@ -5474,6 +5483,8 @@ def task_ac(p, args):
         verify = args.verify or verify
         _refuse_unrunnable(p, [verify])
         b, _ = mutate(p, args.id, lambda b: _filled(b, b.add_ac(text, verify)), "ac_add", {"text": text})
+        from sampo import redfirst  # T-6155: the criteria changed: a red-test job for the new plan (debounced)
+        redfirst.spawn(p, args.id)
         warns = _lint_verify(p, [verify])
         if verify and re.search(r"bash -c|\bcd \S+ *&&|\bexport\b|\bsed\b|\bgit +-C\b|<<", verify):  # T-4139: the forms the
             # harness refuses in an isolated worktree (plain git passes, so it isn't named)
@@ -5491,6 +5502,8 @@ def task_ac(p, args):
             b, _ = mutate(p, args.id, lambda b: b.remove_ac(n), "ac_remove", {"ac": n})
         except KeyError as e:
             raise UsageError(str(e).strip("'\""))
+        from sampo import redfirst  # T-6155: the criteria changed: a red-test job for the new plan (debounced)
+        redfirst.spawn(p, b.id)
         return out(args, c.brief_summary(c.find_brief(p, b.id) or b), f"{b.id}: criterion {n} removed; later ones renumbered.")
     if args.action == "edit":
         if args.rest and args.text is not None:
@@ -5510,6 +5523,8 @@ def task_ac(p, args):
             raise UsageError(str(e).strip("'\""))
         warns = _lint_verify(p, [verify])
         _door_check(p, b)
+        from sampo import redfirst  # T-6155: the criteria changed: a red-test job for the new plan (debounced)
+        redfirst.spawn(p, b.id)
         return out(args, c.brief_summary(c.find_brief(p, b.id) or b), f"{b.id}: criterion {n} edited.{_warned(warns)}")
     ev = args.evidence
 

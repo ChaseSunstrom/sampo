@@ -23,6 +23,7 @@ import test_lane_train as tlt
 from helpers import CALM_HOST, ForemanTestCase, read_text, valid_m_plan
 
 from sampo import core as c
+from sampo import cli as slanes_cli
 from sampo import lanes as slanes
 from sampo import train
 
@@ -8024,6 +8025,673 @@ class HoldOnChangesAsked(tll.LandCase):  # T-6322
         auditrun.write_deferred(held)
         self.assertEqual([a[2] for a in self.brief(tid).audits() if a[0] == "edge"], [tree], "then written on its tree")
         self.assertFalse(held)
+
+
+RF_MOD ="def alpha(x):\n    return x + 1\n\n\ndef beta(y):\n    return alpha(y) * 2\n"
+RF_TESTS = ("import unittest\n\n\nclass T(unittest.TestCase):\n    def test_beta(self):\n        self.assertEqual(2, 2)\n\n\n"
+            "class RedFirstDone(unittest.TestCase):\n    def test_done(self):\n        self.assertEqual(2, 2)\n\n\n"
+            "if __name__ == \"__main__\":\n    unittest.main()\n")
+RF_LOCAL = {"name": "stub-local", "kind": "openai", "base_url": "http://127.0.0.1:9/v1", "sessions": 2}
+
+
+def rf_test(cls, body):  # a writer's answer: one unittest class appended to tests/test_mod.py
+    return {"module": "tests/test_mod.py", "class": cls, "source": f"class {cls}(unittest.TestCase):\n{body}"}
+
+
+class RedFirst(ForemanTestCase):
+    """T-6155: at plan time a detached job asks the local writer for a failing test per criterion whose verify names a
+    test class that does not exist yet (`module.py -k Class` or `module.py::Class`; other verify forms get their reason
+    in the brief), runs each one red on the base in a scratch tree, and stores the passing-red ones as a patch. The brief
+    embeds a ready patch with its failure lines and never waits for the writer."""
+    repo_seed = ("seed", (("tests/test_mod.py", RF_TESTS), ("pkg/mod.py", RF_MOD)))
+    RED = ("    def test_one(self):\n        self.assertEqual(1 + 1, 3)\n")
+    GREEN = ("    def test_one(self):\n        self.assertEqual(1 + 1, 2)\n")
+    BROKEN = ("    def test_one(self):\n        import no_such_module_t6155\n")
+
+    def setUp(self):
+        super().setUp()
+        from sampo import callcards, ideas, models
+        self.fm("init")
+        self.tid = json.loads(self.fm(
+            "task", "new", "Tweak beta", "--type", "FEATURE", "--tier", "S", "--scope", "pkg/mod.py",
+            "--step", "change `beta` in pkg/mod.py", "--ac", "beta doubles :: python3 tests/test_mod.py -k RedFirstBeta",
+            "--ac", "alpha adds one :: python3 tests/test_mod.py -k RedFirstAlpha", "--json").stdout)["id"]
+        self.p = c.find_project(self.repo)
+        self.answers, self.asked, self.spawns = {}, [], []
+        env = mock.patch.dict(os.environ, {"SAMPO_SESSION_SLOTS_DIR": os.path.join(self.tmp, "slots"),
+                                           "FOREMAN_REDFIRST": "on"})  # helpers turns the writer off for every other test
+        env.start()
+        self.addCleanup(env.stop)
+
+        def ask(card, prompt):
+            self.asked.append(prompt)
+            cls = next(k for k in self.answers if k in prompt)
+            return {"text": json.dumps(self.answers[cls]), "model": "stub-local", "usage": {"in": 500, "out": 90}}
+
+        for target, name, new in ((callcards, "_ask", ask),
+                                  (models, "registry", lambda: [{"local": True, "profile": dict(RF_LOCAL)}]),
+                                  (ideas, "run_children", mock.Mock(side_effect=AssertionError("a real claude child ran")))):
+            patch = mock.patch.object(target, name, new)
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def job(self):
+        from sampo import redfirst
+        return redfirst.job(self.p, self.tid)
+
+    def record(self):
+        from sampo import redfirst
+        return redfirst.load(self.p, self.tid)
+
+    def brief(self, resume=None):
+        with contextlib.redirect_stdout(io.StringIO()):
+            slanes.builder_brief(self.p, c.find_brief(self.p, self.tid), SimpleNamespace(json=True, model=None),
+                                 resume_branch=resume)
+        with open(os.path.join(self.p.dir, "audits", f"{self.tid}.builder.md"), encoding="utf-8") as f:
+            return f.read()
+
+    def event(self):  # the lane's own record: its last `lane_redfirst` ledger event
+        got = [e for e in c.ledger_events(self.p, ("lane_redfirst",)) if e.get("task") == self.tid]
+        return got[-1]["data"] if got else None
+
+    def test_two_red_tests_are_checked_on_the_base_stored_as_a_patch_and_embedded(self):
+        self.answers = {"RedFirstBeta": rf_test("RedFirstBeta", self.RED), "RedFirstAlpha": rf_test("RedFirstAlpha", self.RED)}
+        rec = self.job()
+        self.assertEqual(rec["status"], "ready")
+        self.assertEqual(sorted(t["class"] for t in rec["tests"]), ["RedFirstAlpha", "RedFirstBeta"], rec["dropped"])
+        for t in rec["tests"]:
+            self.assertIn("+class " + t["class"], t["patch"], "the patch adds the class to the module")
+            self.assertTrue(any("AssertionError" in x for x in t["failure"]), "the failure line is an assertion")
+        text = self.brief()
+        self.assertIn("## Red tests", text)
+        self.assertLess(text.index("## Red tests"), text.index("## Raw request"))
+        self.assertIn("AssertionError", text)
+        self.assertIn("+class RedFirstBeta", text)
+        self.assertEqual(self.event()["started"], True)
+
+    def test_a_passing_or_unimportable_test_is_dropped_and_its_criterion_left_to_the_builder(self):
+        self.answers = {"RedFirstBeta": rf_test("RedFirstBeta", self.GREEN), "RedFirstAlpha": rf_test("RedFirstAlpha", self.BROKEN)}
+        rec = self.job()
+        self.assertEqual(rec["status"], "ready")
+        self.assertEqual(rec["tests"], [], "a passing test and an import error are both dropped")
+        self.assertEqual(len(rec["dropped"]), 2)
+        text = self.brief()
+        self.assertNotIn("+class RedFirst", text, "no patch is embedded")
+        self.assertIn("RedFirstBeta: it passes on the base", text, "each dropped criterion says why in the brief")
+        self.assertIn("RedFirstAlpha: ", text)
+        self.assertFalse(self.event()["started"])
+
+    def test_the_brief_never_waits_for_the_writer(self):
+        self.answers = {"RedFirstBeta": rf_test("RedFirstBeta", self.RED)}
+        self.assertEqual(self.asked, [], "no writer call at brief time when no patch exists")
+        text = self.brief()
+        self.assertEqual(self.asked, [], "the brief returned with no writer call in its path")
+        self.assertNotIn("## Red tests", text)
+        self.assertEqual(self.event()["reason"], "no job", "no record yet: the brief says so and goes on")
+        self.assertFalse(self.event()["started"])
+
+    def test_a_test_that_arrives_after_the_brief_is_dropped(self):
+        self.answers = {"RedFirstBeta": rf_test("RedFirstBeta", self.RED), "RedFirstAlpha": rf_test("RedFirstAlpha", self.RED)}
+        self.brief()
+        rec = self.job()
+        self.assertEqual(rec["status"], "late")
+        self.assertEqual(rec["tests"], [])
+        self.assertNotIn("+class RedFirst", self.brief(), "a superseded test is never embedded")
+
+    def test_a_stubbed_popen_is_started_detached_and_its_pid_is_never_signalled(self):
+        from sampo import redfirst
+        proc = mock.Mock(pid=4242)
+        with mock.patch.dict(os.environ, {"FOREMAN_REDFIRST": "on"}), \
+                mock.patch.object(redfirst.subprocess, "Popen", return_value=proc) as popen, \
+                mock.patch.object(redfirst.os, "kill", side_effect=AssertionError("a stub pid was signalled")), \
+                mock.patch.object(redfirst.os, "killpg", side_effect=AssertionError("a stub pid was signalled")):
+            redfirst.spawn(self.p, self.tid)
+        self.assertEqual(popen.call_count, 1)
+        self.assertTrue(popen.call_args.kwargs.get("start_new_session"))
+        self.assertIsNone(self.record(), "the job itself writes the record, not the spawn")
+
+    def test_a_plan_spawns_one_job_for_each_s_or_m_task_and_none_for_l(self):
+        from sampo import redfirst
+        m = json.loads(self.fm("task", "new", "Add retry", "--type", "FEATURE", "--tier", "M", "--json").stdout)["id"]
+        big = json.loads(self.fm("task", "new", "Rewrite log", "--type", "FEATURE", "--tier", "L", "--json").stdout)["id"]
+        plans = [{"id": t, "interpretation": "x", "approach": "y", "criteria": ["ok :: python3 tests/test_mod.py -k RedFirstBeta"],
+                  "steps": ["do it"]} for t in (m, big)]
+        path = os.path.join(self.tmp, "PLANS.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(plans, f)
+        with mock.patch.dict(os.environ, {"FOREMAN_REDFIRST": "on"}), \
+                mock.patch.object(redfirst, "spawn", return_value=None) as spawn, \
+                contextlib.redirect_stdout(io.StringIO()):
+            slanes_cli.plan_file(self.p, SimpleNamespace(file=path))
+        self.assertEqual([call.args[1] for call in spawn.call_args_list], [m])
+
+    def test_a_local_writer_that_fails_is_never_replaced_by_a_claude_model(self):  # intent: the criteria and code stay local
+        from sampo import redfirst
+        self.answers = {}
+        with mock.patch.object(redfirst.workset, "_local", side_effect=redfirst.workset.Gone("local: down")), \
+                mock.patch.object(redfirst.workset, "_haiku", side_effect=AssertionError("Haiku was asked")):
+            rec = self.job()  # the project is not sensitive: still no Claude model
+        self.assertEqual((rec["status"], rec["tests"]), ("ready", []))
+        self.assertTrue(rec["dropped"], "each criterion says the local writer did not answer")
+
+    def test_a_committed_credential_is_never_copied_into_the_scratch_tree(self):  # adversary: .env stays out of the jail
+        import tarfile
+        from sampo import redfirst
+        tree = os.path.join(self.tmp, "tree-cred")
+        os.makedirs(tree)
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w") as t:
+            for name, body in ((".env", b"TOKEN=t6155\n"), ("tests/test_mod.py", b"x = 1\n")):
+                info = tarfile.TarInfo(name)
+                info.size = len(body)
+                t.addfile(info, io.BytesIO(body))
+        redfirst._extract(buf.getvalue(), tree)
+        self.assertFalse(os.path.exists(os.path.join(tree, ".env")), "a credential is never copied")
+        self.assertTrue(os.path.exists(os.path.join(tree, "tests", "test_mod.py")), "other files still are")
+
+    def test_the_job_runs_isolated_from_the_working_directory_it_inherits(self):  # adversary: no cwd on sys.path
+        from sampo import redfirst
+        with mock.patch.dict(os.environ, {"FOREMAN_REDFIRST": "on"}), \
+                mock.patch.object(redfirst.subprocess, "Popen", return_value=mock.Mock(pid=4242)) as popen:
+            redfirst.spawn(self.p, self.tid)
+        argv = popen.call_args.args[0]
+        self.assertEqual(argv[1], "-I", "python -I: a stdlib-named module in the cwd is never imported")
+        self.assertNotIn("PYTHONPATH", popen.call_args.kwargs.get("env") or {}, "the path comes from the job's own code")
+
+    def test_a_log_replaced_by_a_link_reads_as_nothing(self):  # adversary: a jailed run cannot make the parent read a host file
+        from sampo import callcards
+        host = os.path.join(self.tmp, "host-t6155.txt")
+        with open(host, "w", encoding="utf-8") as f:
+            f.write("host secret\n")
+        log = os.path.join(self.tmp, "run.out")
+        os.symlink(host, log)
+        self.assertEqual(callcards._head_tail(log), "", "the link is not followed")
+
+    def test_a_line_separator_in_a_writer_class_is_refused_and_never_breaks_the_brief(self):  # adversary: one line each
+        from sampo import redfirst
+        k, mod = "RedFirstBeta", "tests/test_mod.py"
+        sep = chr(0x2028)
+        body = "    def test_one(self):\n        self.assertEqual('a" + sep + "b\x0cc', 'x')\n"
+        self.assertNotEqual(redfirst._check(rf_test(k, body), mod, k)[1], "", "a raw line separator is refused")
+        patch = "--- a/x\n+++ b/x\n@@ -1 +1 @@\n+a" + sep + "b\x0cc\n"
+        out = redfirst._embed([{"criterion": "c", "command": "cmd", "module": mod, "class": k, "patch": patch,
+                                "failure": ["AssertionError: 1"]}], [])
+        lines = "\n".join(out).split("\n")
+        i = lines.index("  ```diff")
+        j = lines.index("  ```", i)
+        self.assertTrue(all(ln.startswith("  ") for ln in lines[i + 1:j]), "every patch line stays inside the fence")
+
+    def test_a_record_for_criteria_that_changed_after_a_failed_spawn_is_not_embedded(self):  # edge
+        self.answers = {k: rf_test(k, self.RED) for k in ("RedFirstBeta", "RedFirstAlpha")}
+        self.job()
+        self.cli("task", "ac", self.tid, "add", "gamma :: python3 tests/test_mod.py -k RedFirstDone")  # no job started
+        text = self.brief()
+        self.assertNotIn("+class RedFirst", text, "the previous plan's patches are never embedded")
+        self.assertEqual(self.event()["reason"], "criteria changed")
+
+    def test_a_base_archive_past_its_time_or_cap_is_refused_before_it_is_read(self):  # edge: bounded time and memory
+        from sampo import redfirst
+        with self.assertRaises(ValueError):  # no time left for git: refused before it is read
+            redfirst._base_tree(self.repo, "HEAD", 0)
+        with mock.patch.object(redfirst, "ARCHIVE_MAX", 10), mock.patch.object(redfirst, "TAR_SLACK", 0):
+            with self.assertRaises(ValueError):
+                redfirst._base_tree(self.repo, "HEAD", redfirst.RECHECK_S)
+
+    def test_git_archive_is_cut_at_the_cap_and_killed_not_written_whole(self):  # edge: git writes no more than the cap
+        from sampo import redfirst
+        endless = "import sys\nwhile True:\n    sys.stdout.buffer.write(b'x' * 65536)\n    sys.stdout.flush()\n"
+        real, started = subprocess.Popen, []
+
+        def popen(argv, **kw):  # a git that never ends: the stream must stop at the cap, and git must be killed
+            proc = real([sys.executable, "-c", endless], **kw)
+            started.append(proc)
+            return proc
+
+        with mock.patch.object(redfirst.subprocess, "Popen", side_effect=popen), \
+                mock.patch.object(redfirst, "ARCHIVE_MAX", 10), mock.patch.object(redfirst, "TAR_SLACK", 0):
+            with self.assertRaises(ValueError):
+                redfirst._archive(self.repo, "HEAD", redfirst.RUN_S)
+        self.assertEqual(len(started), 1, "one git archive was started")
+        self.assertIsNotNone(started[0].poll(), "the git archive was killed once the cap was passed")
+
+    def cli(self, *argv):  # a task verb in this process: the job it starts is recorded in self.spawns, not run
+        from sampo import redfirst
+        with contextlib.ExitStack() as st:
+            spawn = st.enter_context(mock.patch.object(redfirst, "spawn", return_value=None))
+            st.enter_context(contextlib.chdir(self.repo))
+            st.enter_context(contextlib.redirect_stdout(io.StringIO()))
+            rc = slanes_cli.main(list(argv))
+        self.spawns += [call.args[1] for call in spawn.call_args_list]
+        self.assertEqual(rc, 0, argv)
+        return rc
+
+    def git_here(self, *args):
+        subprocess.run(["git", "-C", self.repo, *args], check=True, capture_output=True)
+
+    def trunk_commit(self, rel, text):  # a commit on the repo's trunk: rel written, or removed when text is None
+        if text is None:
+            self.git_here("rm", "-q", rel)
+        else:
+            with open(os.path.join(self.repo, rel), "w", encoding="utf-8") as f:
+                f.write(text)
+            self.git_here("add", rel)
+        self.git_here("-c", "user.name=t6155", "-c", "user.email=t6155@example.invalid", "commit", "-q", "-m", "trunk moves")
+
+    def test_criteria_set_by_task_new_or_task_ac_start_one_job_each(self):  # finding 2
+        self.cli("task", "new", "Add retry", "--type", "FEATURE", "--tier", "S", "--scope", "pkg/mod.py",
+                 "--step", "change retry", "--ac", "retry :: python3 tests/test_mod.py -k RedFirstBeta")
+        self.assertEqual(len(self.spawns), 1, "task new with criteria starts a job")
+        new = self.spawns[0]
+        self.cli("task", "ac", new, "add", "more :: python3 tests/test_mod.py -k RedFirstAlpha")
+        self.cli("task", "ac", new, "edit", "1", "--text", "retry twice :: python3 tests/test_mod.py -k RedFirstBeta")
+        self.cli("task", "ac", new, "rm", "2")
+        self.assertEqual(self.spawns, [new] * 4, "add, edit and rm each start one more job")
+
+    def test_a_resumed_lane_keeps_the_flag_of_its_first_brief(self):  # finding 1
+        self.answers = {k: rf_test(k, self.RED) for k in ("RedFirstBeta", "RedFirstAlpha")}
+        self.job()
+        self.brief()
+        self.brief(resume="worktree-agent-t6155")
+        got = [e["data"] for e in c.ledger_events(self.p, ("lane_redfirst",)) if e.get("task") == self.tid]
+        self.assertEqual(len(got), 1, "a resume logs no flag of its own")
+        self.assertTrue(got[0]["started"])
+
+    def test_each_criterion_without_a_red_test_says_why_in_the_brief(self):  # finding 3
+        self.answers = {k: rf_test(k, self.RED) for k in ("RedFirstBeta", "RedFirstAlpha", "RedFirstEps", "RedFirstZeta")}
+        self.cli("task", "ac", self.tid, "add", "gamma :: python3 tests/test_mod.py -k RedFirstDone")
+        self.cli("task", "ac", self.tid, "add", "delta :: python3 tests/test_mod.py")
+        for n in ("Eps", "Zeta", "Eta"):
+            self.cli("task", "ac", self.tid, "add", f"{n.lower()} :: python3 tests/test_mod.py -k RedFirst{n}")
+        rec = self.job()
+        self.assertEqual(sorted(t["class"] for t in rec["tests"]), ["RedFirstAlpha", "RedFirstBeta", "RedFirstEps", "RedFirstZeta"])
+        reasons = " | ".join(rec["skipped"])
+        self.assertIn("already at the base", reasons)
+        self.assertIn("selects no test class", reasons)
+        self.assertIn("over the 4", reasons, "the fifth criterion is named, not silently left out")
+        text = self.brief()
+        self.assertIn("already at the base", text)
+        self.assertIn("selects no test class", text)
+
+    def test_a_writer_reply_that_is_more_than_one_plain_test_class_is_refused(self):  # finding 4
+        from sampo import redfirst
+        k, mod = "RedFirstBeta", "tests/test_mod.py"
+        body = "    def test_one(self):\n        self.assertEqual(1, 2)\n"
+        self.assertEqual(redfirst._check(rf_test(k, body), mod, k)[1], "", "a plain test class is kept")
+        cases = {
+            "a second statement": f"class {k}(unittest.TestCase):\n{body}\nimport os\n",
+            "a class attribute": f"class {k}(unittest.TestCase):\n    x = __import__('os').getcwd()\n{body}",
+            "a decorator": f"class {k}(unittest.TestCase):\n    @__import__('os').getcwd()\n    def test_one(self):\n"
+                           "        self.assertEqual(1, 2)\n",
+            "a default argument": f"class {k}(unittest.TestCase):\n    def test_one(self, x=__import__('os').getcwd()):\n"
+                                  "        self.assertEqual(1, 2)\n",
+            "a metaclass": f"class {k}(unittest.TestCase, metaclass=type):\n{body}",
+            "another base": f"class {k}(object):\n{body}",
+            "a second class": f"class {k}(unittest.TestCase):\n{body}\nclass Other(unittest.TestCase):\n{body}",
+        }
+        for name, src in cases.items():
+            with self.subTest(name):
+                self.assertNotEqual(redfirst._check({"module": mod, "class": k, "source": src}, mod, k)[1], "")
+
+    def test_the_red_run_is_refused_without_a_jail_and_the_writer_is_not_asked(self):  # finding 4
+        from sampo import callcards
+        self.answers = {k: rf_test(k, self.RED) for k in ("RedFirstBeta", "RedFirstAlpha")}
+        with mock.patch.object(callcards, "confinement", return_value=(False, "no Landlock here")), \
+                mock.patch.object(callcards, "_spawn", side_effect=AssertionError("a test ran without a jail")):
+            rec = self.job()
+        self.assertEqual(rec["tests"], [])
+        self.assertTrue(any("jail" in d for d in rec["dropped"]), rec["dropped"])
+        self.assertEqual(self.asked, [], "no writer call when nothing could run")
+
+    def test_the_writer_class_cannot_write_outside_its_scratch_tree(self):  # finding 4
+        from sampo import callcards
+        if not callcards.confinement()[0]:
+            self.skipTest("no Landlock jail here")
+        outside = os.path.join(self.tmp, "outside-t6155.txt")
+        body = f"    def test_one(self):\n        open({outside!r}, 'w').write('x')\n        self.assertEqual(1, 2)\n"
+        self.answers = {"RedFirstBeta": rf_test("RedFirstBeta", body), "RedFirstAlpha": rf_test("RedFirstAlpha", self.RED)}
+        rec = self.job()
+        self.assertFalse(os.path.exists(outside), "the jail kept the write out")
+        self.assertNotIn("RedFirstBeta", [t["class"] for t in rec["tests"]])
+
+    def test_an_archive_with_a_link_or_a_member_outside_the_tree_is_refused(self):  # finding 5
+        import tarfile
+        from sampo import redfirst
+        tree = os.path.join(self.tmp, "tree")
+        os.makedirs(tree)
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w") as t:
+            info = tarfile.TarInfo("tests/link.py")
+            info.type, info.linkname = tarfile.SYMTYPE, "/etc/passwd"
+            t.addfile(info)
+        with self.assertRaises(ValueError):
+            redfirst._extract(buf.getvalue(), tree)
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w") as t:
+            info = tarfile.TarInfo("../escape-t6155.py")
+            info.size = 1
+            t.addfile(info, io.BytesIO(b"x"))
+        with self.assertRaises(ValueError):
+            redfirst._extract(buf.getvalue(), tree)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "escape-t6155.py")))
+
+    def test_the_module_is_never_written_through_a_link(self):  # finding 5
+        from sampo import redfirst
+        tree, victim = os.path.join(self.tmp, "tree"), os.path.join(self.tmp, "victim-t6155.py")
+        os.makedirs(os.path.join(tree, "tests"), exist_ok=True)
+        with open(victim, "w", encoding="utf-8") as f:
+            f.write("keep\n")
+        os.symlink(victim, os.path.join(tree, "tests", "test_mod.py"))
+        with self.assertRaises(ValueError):
+            redfirst._write(tree, "tests/test_mod.py", "class X(unittest.TestCase):\n    pass\n")
+        with open(victim, encoding="utf-8") as f:
+            self.assertEqual(f.read(), "keep\n")
+
+    def test_a_base_move_that_keeps_the_red_test_red_still_embeds_it(self):  # finding 6
+        self.answers = {k: rf_test(k, self.RED) for k in ("RedFirstBeta", "RedFirstAlpha")}
+        self.job()
+        self.trunk_commit("pkg/other.txt", "moved\n")
+        text = self.brief()
+        self.assertIn("+class RedFirstBeta", text, "the patch re-checked on the new base is still red, so it is kept")
+        self.assertTrue(self.event()["started"])
+
+    def test_a_base_move_that_removes_the_module_drops_the_red_test(self):  # finding 6
+        self.answers = {k: rf_test(k, self.RED) for k in ("RedFirstBeta", "RedFirstAlpha")}
+        self.job()
+        self.trunk_commit("tests/test_mod.py", None)
+        text = self.brief()
+        self.assertNotIn("+class RedFirstBeta", text)
+        self.assertFalse(self.event()["started"])
+
+    def test_a_task_briefed_before_its_replan_still_gets_red_tests(self):  # review: briefed() read the whole ledger
+        c.log_event(self.p, "lane_redfirst", task=self.tid, data={"started": False, "reason": "an earlier plan's brief"})
+        self.answers = {k: rf_test(k, self.RED) for k in ("RedFirstBeta", "RedFirstAlpha")}
+        self.job()
+        self.assertEqual(self.record()["status"], "ready", self.record())
+
+    def test_the_first_brief_decides_a_lanes_flag_for_the_class_and_the_readout(self):  # finding 7
+        from sampo import redfirst
+        c.log_event(self.p, "lane_redfirst", task=self.tid, data={"started": True, "reason": ""})
+        c.log_event(self.p, "lane_redfirst", task=self.tid, data={"started": False, "reason": "resume"})
+        self.assertIs(redfirst.flags(self.p).get(self.tid), True)
+
+    def test_a_pending_save_never_overwrites_a_ready_record_of_the_same_or_a_newer_plan(self):  # finding 8
+        from sampo import redfirst
+        redfirst._save(self.p, self.tid, {"status": "ready", "seq": 2, "tests": [{"class": "RedFirstBeta"}]})
+        redfirst._save(self.p, self.tid, {"status": "pending", "seq": 1, "tests": []})  # an older plan's job
+        redfirst._save(self.p, self.tid, {"status": "pending", "seq": 2, "tests": []})  # a duplicate of the same plan
+        rec = self.record()
+        self.assertEqual((rec["status"], rec["seq"]), ("ready", 2))
+
+    def test_one_job_per_plan_and_the_older_plans_job_writes_nothing(self):  # finding 2 and 8
+        from sampo import redfirst
+        self.answers = {k: rf_test(k, self.RED) for k in ("RedFirstBeta", "RedFirstAlpha")}
+        with mock.patch.object(redfirst.subprocess, "Popen", return_value=mock.Mock(pid=4242)) as popen:
+            redfirst.spawn(self.p, self.tid)
+            redfirst.spawn(self.p, self.tid)  # the same criteria moments later: debounced
+            self.assertEqual(popen.call_count, 1)
+            old = int(popen.call_args.args[0][-1])
+            self.cli("task", "ac", self.tid, "add", "gamma :: python3 tests/test_mod.py -k RedFirstBeta")  # a new plan
+            redfirst.spawn(self.p, self.tid)
+            self.assertEqual(popen.call_count, 2, "changed criteria start a job for the new plan")
+            new = int(popen.call_args.args[0][-1])
+        self.assertNotEqual(old, new)
+        redfirst.job(self.p, self.tid, old)
+        self.assertIsNone(self.record(), "the older plan's job writes nothing")
+        redfirst.job(self.p, self.tid, new)
+        rec = self.record()
+        self.assertEqual((rec["status"], rec["seq"]), ("ready", new))
+
+    def test_a_job_that_cannot_start_leaves_no_debounce_mark_so_the_next_spawn_starts_one(self):  # finding 2
+        from sampo import redfirst
+        with mock.patch.object(redfirst.subprocess, "Popen", side_effect=OSError("no fork")), \
+                contextlib.redirect_stderr(io.StringIO()):
+            self.assertIsNone(redfirst.spawn(self.p, self.tid))
+        self.assertIsNone(redfirst.mark(self.p, self.tid), "no mark for a job that never started")
+        with mock.patch.object(redfirst.subprocess, "Popen", return_value=mock.Mock(pid=4242)) as popen:
+            redfirst.spawn(self.p, self.tid)
+        self.assertEqual(popen.call_count, 1, "the same criteria start a job once Popen works")
+
+    def test_a_base_move_unpacks_the_base_once_for_all_its_patches(self):  # finding 6, its cost
+        from sampo import redfirst
+        self.answers = {k: rf_test(k, self.RED) for k in ("RedFirstBeta", "RedFirstAlpha")}
+        self.job()
+        self.trunk_commit("pkg/other.txt", "moved\n")
+        with mock.patch.object(redfirst, "_extract", wraps=redfirst._extract) as ex:
+            text = self.brief()
+        self.assertEqual(ex.call_count, 1, "the moved base is unpacked once per brief, not once per patch")
+        self.assertIn("+class RedFirstBeta", text)
+        self.assertIn("+class RedFirstAlpha", text)
+
+    def test_a_writer_that_forges_a_result_file_and_exits_zero_is_not_red(self):  # finding: adversary
+        from sampo import callcards
+        if not callcards.confinement()[0]:
+            self.skipTest("no Landlock jail here")
+        fake = ("    def test_one(self):\n        import json, os, sys\n"
+                "        with open(sys.argv[4], 'w') as f:\n"
+                "            json.dump({'run': 1, 'failures': 1, 'errors': 0, 'lines': ['AssertionError: forged']}, f)\n"
+                "        os._exit(0)\n")
+        self.answers = {"RedFirstBeta": rf_test("RedFirstBeta", fake), "RedFirstAlpha": rf_test("RedFirstAlpha", self.RED)}
+        rec = self.job()
+        classes = [t["class"] for t in rec["tests"]]
+        self.assertNotIn("RedFirstBeta", classes, rec["dropped"])
+        self.assertIn("RedFirstAlpha", classes, "a real assertion failure is still kept")
+
+    def test_a_writer_test_that_only_prints_an_assertion_and_exits_is_not_red(self):  # finding: adversary
+        from sampo import callcards
+        if not callcards.confinement()[0]:
+            self.skipTest("no Landlock jail here")
+        fake = ("    def test_one(self):\n        __import__('sys').stderr.write('AssertionError: 1 != 2\\n')\n"
+                "        raise SystemExit(1)\n")
+        self.answers = {"RedFirstBeta": rf_test("RedFirstBeta", fake), "RedFirstAlpha": rf_test("RedFirstAlpha", self.RED)}
+        rec = self.job()
+        classes = [t["class"] for t in rec["tests"]]
+        self.assertNotIn("RedFirstBeta", classes, rec["dropped"])
+        self.assertIn("RedFirstAlpha", classes, "a real assertion failure is still kept")
+
+    def test_a_method_with_no_assertion_is_dropped_before_it_runs(self):  # finding: a test that tests nothing
+        self.answers = {"RedFirstBeta": rf_test("RedFirstBeta", "    def test_one(self):\n        self.fail('always red')\n"),
+                        "RedFirstAlpha": rf_test("RedFirstAlpha", self.RED)}
+        rec = self.job()
+        self.assertNotIn("RedFirstBeta", [t["class"] for t in rec["tests"]], rec["dropped"])
+        self.assertTrue(any("asserts nothing" in x for x in rec["dropped"]), rec["dropped"])
+        self.assertIn("RedFirstAlpha", [t["class"] for t in rec["tests"]])
+
+    def test_a_huge_assertion_message_stays_red_and_its_failure_lines_are_cut(self):  # finding: the result file's bound
+        big = "    def test_one(self):\n        self.assertEqual(1 + 1, 3, 'x' * 300000)\n"  # the message is built at run time
+        self.answers = {"RedFirstBeta": rf_test("RedFirstBeta", big), "RedFirstAlpha": rf_test("RedFirstAlpha", self.RED)}
+        rec = self.job()
+        got = {t["class"]: t for t in rec["tests"]}
+        self.assertIn("RedFirstBeta", got, rec["dropped"])
+        self.assertTrue(got["RedFirstBeta"]["failure"], "the failure lines are kept")
+        self.assertTrue(all(len(x) <= 300 for x in got["RedFirstBeta"]["failure"]), "each line is cut to 300 characters")
+
+    def test_a_lowercase_id_starts_the_job_under_the_briefs_own_id(self):  # finding: a case-folded id
+        from sampo import redfirst
+        with mock.patch.object(redfirst.subprocess, "Popen", return_value=mock.Mock(pid=4242)) as popen:
+            redfirst.spawn(self.p, self.tid.lower())
+        self.assertEqual(popen.call_count, 1, "a lowercase id starts the job")
+        self.assertIsNotNone(redfirst.mark(self.p, self.tid), "the mark is keyed by the brief's own id")
+
+    def test_a_resumed_brief_names_its_red_tests_and_says_they_may_be_on_the_branch(self):  # finding: resume
+        from sampo import redfirst
+        self.answers = {k: rf_test(k, self.RED) for k in ("RedFirstBeta", "RedFirstAlpha")}
+        self.job()
+        text = self.brief(resume="worktree-agent-t6155")
+        self.assertIn(redfirst.RESUME_NOTE, text)
+        self.assertIn("+class RedFirstBeta", text, "the resumed lane still gets its red tests")
+
+    def test_a_lowercase_word_after_k_gets_a_red_test_like_any_class(self):  # finding: lowercase -k
+        self.cli("task", "ac", self.tid, "add", "lower :: python3 tests/test_mod.py -k redfirst_beta")
+        self.answers = {k: rf_test(k, self.RED) for k in ("RedFirstBeta", "RedFirstAlpha", "redfirst_beta")}
+        rec = self.job()
+        self.assertIn("redfirst_beta", [t["class"] for t in rec["tests"]], rec["skipped"] + rec["dropped"])
+
+    def test_a_module_function_verify_gets_its_reason_and_no_test(self):  # finding: the scope named in the docstring
+        self.cli("task", "ac", self.tid, "add", "fn :: python3 tests/test_mod.py::test_beta")
+        self.answers = {k: rf_test(k, self.RED) for k in ("RedFirstBeta", "RedFirstAlpha")}
+        rec = self.job()
+        self.assertIn("selects no test class", " | ".join(rec["skipped"]))
+        self.assertNotIn("test_beta", [t["class"] for t in rec["tests"]])
+
+    def test_a_busy_project_lock_skips_the_job_and_never_fails_the_verb(self):  # finding: edge
+        from sampo import redfirst
+        err = io.StringIO()
+        with mock.patch.object(c, "lock", side_effect=c.LockTimeout("lock busy: test")), \
+                mock.patch.object(redfirst.subprocess, "Popen", side_effect=AssertionError("a job started")), \
+                contextlib.redirect_stderr(err):
+            self.assertIsNone(redfirst.spawn(self.p, self.tid), "a busy lock is not raised into the verb that set criteria")
+        self.assertIn("red-first", err.getvalue())
+
+    def test_a_job_whose_lock_is_busy_writes_a_failed_record_and_never_stays_pending(self):  # edge
+        from sampo import redfirst
+        self.answers = {k: rf_test(k, self.RED) for k in ("RedFirstBeta", "RedFirstAlpha")}
+        with mock.patch.object(redfirst, "_current", side_effect=c.LockTimeout("lock busy: test")):
+            self.assertEqual(redfirst.job(self.p, self.tid, 1)["status"], "failed")
+        rec = self.record()
+        self.assertEqual(rec["status"], "failed")
+        self.assertTrue(any("lock" in x for x in rec["dropped"]), rec["dropped"])
+        self.assertNotIn("+class RedFirst", self.brief(), "a failed job embeds nothing")
+
+    def test_a_scratch_folder_that_cannot_be_made_is_a_dropped_test_not_a_crash(self):  # edge: TMPDIR unwritable
+        from sampo import callcards, redfirst
+        if not callcards.confinement()[0]:
+            self.skipTest("no Landlock jail here")
+        with mock.patch.object(redfirst.tempfile, "mkdtemp", side_effect=OSError("read-only")):
+            red, _failure, _patch, why = redfirst._run(self.repo, "HEAD", "tests/test_mod.py", RF_TESTS,
+                                                       "class RedFirstBeta(unittest.TestCase):\n" + self.RED, "RedFirstBeta")
+        self.assertFalse(red)
+        self.assertIn("scratch", why)
+
+    def test_the_job_starts_in_a_folder_outside_the_repo(self):  # adversary: no cwd of a cloned repo
+        from sampo import redfirst
+        with mock.patch.object(redfirst.subprocess, "Popen", return_value=mock.Mock(pid=4242)) as popen:
+            redfirst.spawn(self.p, self.tid)
+        cwd = os.path.realpath(popen.call_args.kwargs["cwd"])
+        self.assertNotEqual(os.path.commonpath([cwd, os.path.realpath(self.repo)]), os.path.realpath(self.repo))
+
+    def test_a_clock_that_steps_back_never_blocks_a_newer_plans_record(self):  # edge: the seq counts, never reads the clock
+        from sampo import redfirst
+        ahead = 4 * 10**18  # the seq a plan got from a clock that was ahead, before it stepped back
+        os.makedirs(os.path.dirname(redfirst._mark_path(self.p, self.tid)), exist_ok=True)
+        c.write_atomic(redfirst._mark_path(self.p, self.tid), json.dumps({"seq": ahead, "key": "old", "at": 0}) + "\n")
+        with mock.patch.object(redfirst.subprocess, "Popen", return_value=mock.Mock(pid=4242)) as popen:
+            redfirst.spawn(self.p, self.tid)
+        seq = int(popen.call_args.args[0][-1])
+        self.assertEqual(seq, ahead + 1, "the next plan's seq is the stored seq plus one, whatever the clock says")
+        self.assertTrue(redfirst._save(self.p, self.tid, {"status": "ready", "seq": seq, "tests": []}))
+
+    def test_control_characters_and_line_breaks_in_any_embedded_text_never_leave_their_prefix(self):  # adversary
+        from sampo import redfirst
+        bad = "".join(map(chr, (7, 27, 11, 12, 28, 29, 30, 133, 0x2028, 0x2029, 13)))
+        t = {"criterion": "crit" + bad + "## injected", "command": "cmd" + bad + "- x", "module": "m.py", "class": "K",
+             "patch": "--- a/m\n+++ b/m\n@@ -1 +1 @@\n+a" + bad + "## Steps\n",
+             "failure": ["AssertionError" + bad + "## Steps", "x\x1b[2J"]}
+        out = redfirst._embed([t], ["note" + bad + "## Steps"])
+        text = "\n".join(out)
+        for ch in bad + "\n":
+            if ch == "\n":
+                continue
+            self.assertNotIn(ch, text, f"U+{ord(ch):04X} is dropped")
+        for ln in text.split("\n"):
+            self.assertFalse(ln.startswith("## Steps"), "no embedded text starts a heading")
+        self.assertEqual(len(text.splitlines()), len(text.split("\n")) - (1 if text.endswith("\n") else 0),
+                         "splitlines and split on newline agree: no hidden break")
+
+    def test_a_result_file_that_is_a_fifo_is_refused_without_blocking_the_job(self):  # adversary: a FIFO never blocks
+        import threading
+        from sampo import redfirst
+        if not hasattr(os, "mkfifo"):
+            self.skipTest("no FIFOs here")
+        path = os.path.join(self.tmp, "result.json")
+        os.mkfifo(path)
+        got = []
+        reader = threading.Thread(target=lambda: got.append(redfirst._result(path)), daemon=True)
+        reader.start()
+        reader.join(10)
+        self.assertFalse(reader.is_alive(), "reading a FIFO left at the result path blocked the job")
+        self.assertEqual(got, [None], "a result that is not a regular file is no result")
+
+    def test_a_mark_stamped_in_the_future_after_a_clock_step_back_never_debounces(self):  # edge: a negative age debounces nothing
+        from sampo import redfirst
+        b = c.find_brief(self.p, self.tid)
+        os.makedirs(os.path.dirname(redfirst._mark_path(self.p, self.tid)), exist_ok=True)
+        c.write_atomic(redfirst._mark_path(self.p, self.tid),
+                       json.dumps({"seq": 1, "key": redfirst._key(b), "at": time.time() + 3600}) + "\n")
+        with mock.patch.object(redfirst.subprocess, "Popen", return_value=mock.Mock(pid=4242)) as popen:
+            redfirst.spawn(self.p, self.tid)
+        self.assertEqual(popen.call_count, 1, "the same criteria, marked in the future, still start a job")
+
+    def test_a_job_that_raises_after_its_pending_record_writes_a_failed_one(self):  # edge: pending is never left behind
+        from sampo import redfirst, workset
+        with mock.patch.object(workset, "_tracked", side_effect=OSError("tracked list unreadable")):
+            rec = self.job()
+        self.assertEqual(rec["status"], "failed")
+        self.assertEqual(self.record()["status"], "failed", "the pending record is replaced, never left behind")
+        self.assertTrue(any("tracked list unreadable" in x for x in rec["dropped"]), rec["dropped"])
+
+    def test_a_criterion_with_another_verify_form_says_it_gets_no_red_test(self):  # named limitation
+        from sampo import redfirst
+        self.assertIn("other verify forms", redfirst.candidates(self.repo, "HEAD", type("B", (), {
+            "acceptance": lambda s: [SimpleNamespace(text="login works — verify with `python3 -m pytest tests/test_login.py::test_login`")]
+        })(), set())[1][0])
+
+    def test_a_criterion_that_names_a_test_class_by_node_id_selects_it(self):  # finding: intent
+        from sampo import redfirst
+        self.assertEqual(redfirst._kcase("python3 -m pytest tests/test_mod.py::RedFirstBeta -q"),
+                         ("tests/test_mod.py", "RedFirstBeta"))
+        self.assertEqual(redfirst._kcase("python3 tests/test_mod.py -k RedFirstBeta"), ("tests/test_mod.py", "RedFirstBeta"))
+        self.assertIsNone(redfirst._kcase("python3 -m pytest tests/test_mod.py::test_beta -q"),
+                          "a test function is not a class the writer can write")
+        self.assertIsNone(redfirst._kcase("python3 -m pytest tests/test_login.py::test_login -q"))
+
+    def test_a_criterion_run_through_the_runner_by_module_name_gets_its_red_test(self):  # finding: intent
+        from sampo import lanes, redfirst
+        cmd = "python3 plugin/tests/run.py test_lanes -k RedFirstNew"
+        self.assertEqual(redfirst._kcase(cmd), ("test_lanes", "RedFirstNew"))
+        b = SimpleNamespace(acceptance=lambda: [SimpleNamespace(text=f"new class works — verify with `{cmd}`")])
+        with mock.patch.object(lanes, "_source", return_value="class RedFirstOld(unittest.TestCase):\n    pass\n"):
+            todo, skipped = redfirst.candidates("/repo", "HEAD", b, {"plugin/tests/test_lanes.py"})
+        self.assertEqual([t[2:4] for t in todo], [("plugin/tests/test_lanes.py", "RedFirstNew")], skipped)
+
+
+class RedFirstGate(ForemanTestCase):
+    """T-6155: red-first lanes against plain lanes of one class; the class's red-first is off once its first-pass rate
+    falls more than 5 points under the plain lanes' over the newest 20 lanes, once 10 of them are red-first (workset.gate's
+    shape)."""
+
+    def test_the_class_turns_red_first_off_five_points_under_plain_over_ten_red_lanes(self):
+        from sampo import redfirst
+        plain = [(False, True)] * 18 + [(False, False)] * 2  # 90%
+        red = [(True, True)] * 13 + [(True, False)] * 7  # 65%: 25 points under, over 10 red-first lanes
+        self.assertTrue(redfirst.gate(plain + red)["off"])
+        few = [(True, True)] + [(True, False)] * 8  # 9 red-first lanes, 11%: under RED_MIN, no verdict
+        self.assertFalse(redfirst.gate(plain + few)["off"], "fewer than RED_MIN red-first lanes: no verdict")
+
+    def test_the_switch_reads_the_newest_twenty_lanes_so_a_fall_can_recover(self):  # finding: intent
+        from sampo import core as c, outcomes, redfirst
+        old = [f"T-old{i}" for i in range(20)]  # red-first, every one failed its first pass
+        new = [f"T-new{i}" for i in range(20)]  # plain, every one passed: the newest 20 lanes
+        first = {**{t: False for t in old}, **{t: True for t in new}}  # first finishes, oldest first
+        briefs = [SimpleNamespace(id=t, type="FEATURE", tier="M") for t in old + new]
+        self_b = SimpleNamespace(id="T-self", type="FEATURE", tier="M")
+        with mock.patch.object(outcomes, "_first_finish", return_value=first), \
+                mock.patch.object(c, "load_briefs", return_value=briefs), \
+                mock.patch.object(redfirst, "flags", return_value={t: True for t in old}):
+            self.assertTrue(redfirst.gate([(True, False)] * 20 + [(False, True)] * 20)["off"], "all-time history is off")
+            self.assertFalse(redfirst.class_gate(None, self_b)["off"], "the newest 20 lanes hold no red-first lane")
+        plain = [(False, True)] * 18 + [(False, False)] * 2  # 90%
+        ok = [(True, True)] * 18 + [(True, False)] * 2  # 90%, equal to plain
+        self.assertFalse(redfirst.gate(plain + ok)["off"])
+        near = [(True, True)] * 17 + [(True, False)] * 3  # 85%: 5 points under, not more than 5
+        self.assertFalse(redfirst.gate(plain + near)["off"])
+
+    def test_the_readout_compares_red_first_and_plain_lanes_of_a_class(self):
+        from sampo import redfirst
+        rows = [(True, True, 40), (True, False, 60), (False, True, 30), (False, True, 50)]  # (red, first ok, turns)
+        out = redfirst.compare(rows)
+        self.assertEqual((out["red"], out["red_ok"], out["plain"], out["plain_ok"]), (2, 1, 2, 2))
+        self.assertEqual((out["red_turns"], out["plain_turns"]), (50, 40))
+        self.assertIn("red-first 1 of 2 first-passed", redfirst.line(out))
 
 
 if __name__ == "__main__":

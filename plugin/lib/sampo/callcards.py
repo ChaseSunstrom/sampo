@@ -697,22 +697,27 @@ def _tasks():
     return n
 
 
-def _du(top, cap):
-    """True once the files beneath top hold more than cap bytes (stops counting there)."""
+def _du(tops, cap):
+    """True once the files beneath the tops (directories or single files) hold more than cap bytes in all; stops counting
+    there. A top beneath another top is counted once."""
+    roots = sorted({os.path.abspath(t) for t in tops})
+    roots = [r for i, r in enumerate(roots) if not any(r.startswith(o + os.sep) for o in roots[:i])]
     total = 0
-    for base, dirs, files in os.walk(top):
-        for n in dirs + files:
-            try:
-                total += os.lstat(os.path.join(base, n)).st_size
-            except OSError:
-                pass
-            if total > cap:
-                return True
+    for top in roots:
+        walk = os.walk(top) if os.path.isdir(top) else [("", [], [top])]
+        for base, dirs, files in walk:
+            for n in dirs + files:
+                try:
+                    total += os.lstat(os.path.join(base, n)).st_size
+                except OSError:
+                    pass
+                if total > cap:
+                    return True
     return False
 
 
 def _spawn(argv, cwd, stdin, reads, writes, logs, timeout):
-    """One confined run: {rc, out, err, timed_out, over, jail}. over: the scratch (logs) held more than SCRATCH_CAP;
+    """One confined run: {rc, out, err, timed_out, over, jail}. over: the log folder and the writable trees held more than SCRATCH_CAP together;
     jail names a confinement that couldn't be entered.
     ponytail: the scratch is measured every 0.25 s, so a fast writer can pass the cap by what it writes in that time
     (FSIZE bounds each file); a filesystem quota would be exact."""
@@ -720,6 +725,7 @@ def _spawn(argv, cwd, stdin, reads, writes, logs, timeout):
     home = os.path.join(logs, "tmp")
     env = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "HOME": home, "TMPDIR": home, "PYTHONDONTWRITEBYTECODE": "1"}
     cpu = int(timeout) + 2
+    scratch = [logs] + [w for w in writes if isinstance(w, str) and w]  # the log folder and every tree it may write
     nproc = _tasks() + NPROC  # ponytail: the uid's other processes may start or end meanwhile; NPROC is the margin
 
     def jail():  # in the child, after fork: limits, then seccomp and Landlock (nothing is loaded here)
@@ -748,7 +754,7 @@ def _spawn(argv, cwd, stdin, reads, writes, logs, timeout):
                     break
                 except subprocess.TimeoutExpired:
                     data = None  # communicate takes the input once
-                over = _du(logs, SCRATCH_CAP)
+                over = _du(scratch, SCRATCH_CAP)
                 if over:
                     break
                 if time.monotonic() > deadline:
@@ -760,7 +766,7 @@ def _spawn(argv, cwd, stdin, reads, writes, logs, timeout):
             except (ProcessLookupError, PermissionError):
                 pass
             rc = p.wait()
-        over = over or _du(logs, SCRATCH_CAP)
+        over = over or _du(scratch, SCRATCH_CAP)
     finally:
         os.close(rs)
         os.close(fo)
@@ -770,8 +776,15 @@ def _spawn(argv, cwd, stdin, reads, writes, logs, timeout):
 
 
 def _head_tail(path):
-    """The first OUT_CAP bytes, and the last 2 KB when there is more (an error is at the end)."""
-    with open(path, "rb") as f:
+    """The first OUT_CAP bytes, and the last 2 KB when there is more (an error is at the end). The log is the jailed run's
+    to write, so it is opened without following a link or waiting on a FIFO: a link it put in its place reads as nothing."""
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    except OSError:
+        return ""
+    with os.fdopen(fd, "rb") as f:
+        if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+            return ""
         head = f.read(OUT_CAP)
         size = f.seek(0, os.SEEK_END)
         tail = b""

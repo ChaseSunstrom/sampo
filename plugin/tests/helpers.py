@@ -420,6 +420,8 @@ class SampoTestCase(unittest.TestCase):
         # T-6062: a brief asks the local model for a working-set note: the older tests mean a brief with no explorer in it,
         # so it is off (test_lane_brief.WorkingSet and test_lanes.WsRig turn it on, with both clients stubbed)
         os.environ["FOREMAN_WORKSET"] = "off"
+        # T-6155: a plan spawns a detached red-test job: off in every test, RedFirst turns it on with the writer stubbed
+        os.environ["FOREMAN_REDFIRST"] = "off"
         # T-4288: no "Already covered?" note on task new and capture (test_nudges.Covered turns it on): its cache check
         # stats every file of the package, so 630 classes that only made a task depended on all 168 and re-ran on any edit
         os.environ["FOREMAN_NO_COVERED"] = "1"
