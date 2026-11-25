@@ -868,6 +868,7 @@ def post_ticket(p, tid):
 
 def _post(svc, key, body, p):
     from sampo import cli
+    body = c.redact_local(c.redact(body))  # T-5288: a comment is outward text on all three services: redacted strictly first
     if svc == "github":
         repo, n = key.split("#")
         _gh(p, ["issue", "comment", n, f"--body={body}"] + ([f"--repo={repo}"] if repo else []), 60)

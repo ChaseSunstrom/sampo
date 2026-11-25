@@ -15,6 +15,7 @@
 - `sampo run` marks a finished lane's session as its builder's return before the lane pilot reviews it, so the pilot no longer refuses every run lane with "its builder has not returned" (T-6490).
 - The lane pilot reads whether a lane waits on a merge afresh instead of from a 60-second answer that could predate the lane's last commit, so a lane `sampo run` hands it straight after the commit is no longer refused as "not awaiting a merge" (T-6496).
 - `sampo outcomes --gates` is the gate ledger: per gate and process tier, the runs, seconds and catches over 14 days (`--days N` to widen), read from the events Sampo already writes. A mistyped `lane accept --audit` now logs a `gate_refused` event too, as the other accept refusals do. A gate with 5 or more runs and no catch is flagged as a skip candidate, and nothing is skipped; a gate no writer records prints as not recorded (T-5716).
+- Outward posts (PR comments, ticket comments) redact the body strictly before sending; a sink inventory test pins every outside request that carries text to a reviewed reason (T-5288).
 - sampo run: a task scoping a whole big folder no longer holds the rolling pool; narrow tasks fill the lanes first and the wide one starts alone once no lane runs (T-6412).
 - Audit prep trusts a lane_landed record by git alone; the commit-subject check T-6313's fix round added is gone (T-6376).
 - The Sampo pane and band redraw about once a second while Claude works and repaint what moves by blit, cutting the mod's motion cost to a fraction of a core (T-5546).

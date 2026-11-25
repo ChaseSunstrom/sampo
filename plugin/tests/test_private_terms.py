@@ -139,7 +139,9 @@ class PrivateTerms(ForemanTestCase):
 
 DAMAGE = ("dir", "json", "object", "bytes", "mode", "empty", "blank", "mixed", "dangling")  # T-4804: the ways the list
 # exists and can't be read as terms (a truncated file is empty or blank; a dangling symlink is a path that is not absent)
-STRICT = {"sync.py", "readme.py", "rune.py", "release.py", "train.py", "profile.py", "draft.py"}  # leave the machine, land
+STRICT = {"sync.py", "readme.py", "rune.py", "release.py", "train.py", "profile.py", "draft.py",  # leave the machine, land
+          "eco.py", "pr.py",  # T-5288: a ticket comment and a PR comment are outward text, redacted strictly before the send
+          "friction.py"}  # strict already (its failure lines stay local); classified here so the inventory is complete
 # in the repo or another agent's context, or write the list (draft.py: the plan committed to a branch, T-4817)
 LENIENT = {"board.py", "watch.py", "hooks.py", "repeats.py", "steermeter.py"}  # local display: they call
 # private_terms_lenient / redact_display, never the strict reading

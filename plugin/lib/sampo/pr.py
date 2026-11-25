@@ -110,6 +110,7 @@ def post(p, b, body, number=None):
         raise cli.UsageError(f"posting is outward: fm ask {b.id} publish --why \"post {b.id}'s PR description\" (the user's yes), "
                                f"or, where the user has given standing permission, fm task set {b.id} --allow publish; "
                                "then run it again")
+    body = c.redact_local(c.redact(body))  # T-5288: a PR comment is outward text: strict, so an unreadable term list refuses it here, before the grant is spent
     n = number or _json(_gh(p, "pr", "view", "--json", "number")).get("number")
     with c.lock(p.dir):
         nb = cli.need_brief(p, b.id)
