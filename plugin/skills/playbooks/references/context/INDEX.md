@@ -8,3 +8,6 @@ listed in SKILL.md.
 - `references/context/write-plainly.md` — Plain writing for every reader: the answer first, lists before paragraphs, word limits by kind, checked by `sampo readme check --prose`.
 - `references/context/decks-and-reports.md` — Decks, reports and status updates: answer and ask first, sentence titles, sourced numbers, built from source.
 - `references/context/instruction-files.md` — CLAUDE.md, rules and skill descriptions that cost little: count what loads, checkable rules, short descriptions.
+- `references/context/context-budget.md` — Audit what fills the context window (agents, skills, MCP, rules) and cut it.
+- `references/context/living-docs.md` — Keep a long-lived project's documentation from rotting by assigning existing docs clear owners.
+- `references/context/strategic-compact.md` — Compact the context at logical phase breaks, to keep each phase's state.

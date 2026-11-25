@@ -9,3 +9,6 @@ are listed in SKILL.md.
 - `references/release/plugin-release.md` — Tagging a Claude Code plugin or marketplace entry: one version everywhere, strict validate, load it.
 - `references/release/mobile-store-release.md` — Shipping to TestFlight or Play: gate, build number, archive, validate, internal track first.
 - `references/release/go-release.md` — Releasing a Go module or GoReleaser binary: tidy modules, /v2 path, snapshot dry run.
+- `references/release/release-and-changelog.md` — Cutting a version: gate the tagged commit, bump everywhere, user-facing changelog, migration notes.
+- `references/release/dependency-admission.md` — Before adding a dependency: avoid it, name, licence, health, audit, weight, pin.
+- `references/release/dependency-upgrade.md` — Bumping a library or toolchain: one per task, read the notes, baseline, fix forward, verify.

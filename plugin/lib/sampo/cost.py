@@ -2150,7 +2150,8 @@ def cmd_cost(args):
         return _repeat_reads(folder, args, cli)
     share = collections.Counter()
     if getattr(args, "sessions", False):  # a subagent's own context isn't its parent's per-turn figure
-        return _sessions(scan(folder, _since(args.days), sidechains=False, kinds=True)[0], args, cli)
+        return _sessions(scan(folder, _since(args.days), sidechains=False, kinds=True)[0], args, cli,
+                         parts=lead_parts(_entries(folder, _since(args.days), need='"attachment"')))  # T-6310
     since, spent = _since(args.days), [0.0, collections.Counter(), collections.Counter()]
     repeats = _RepeatReads(since)  # T-6064: fed by the same pass (no second walk of the transcripts)
 
@@ -2252,9 +2253,10 @@ SPLIT = {"cache_read_input_tokens": "cache read", "cache_creation_input_tokens":
          "output_tokens": "output"}
 
 
-def _sessions(msgs, args, cli):
+def _sessions(msgs, args, cli, parts=None):
     """T-0703: per session, the context every turn re-reads (the 78% of spend that is cache reads), its weighted split
-    and the cache busts: turns that re-wrote over half of a context past BUST_MIN tokens."""
+    and the cache busts: turns that re-wrote over half of a context past BUST_MIN tokens. T-6310: `parts` (lead_parts)
+    names, per session, the parts of the lead's context over their bytes per call (lead_budgets)."""
     rows = {}
     for ts, sid, u, *kind in sorted(msgs, key=lambda x: x[0]):
         r = rows.setdefault(sid, {"session": sid, "turns": 0, "busts": 0, "ctx": 0, "prev": 0, "prev_t": None,
@@ -2287,6 +2289,11 @@ def _sessions(msgs, args, cli):
                     "input_equivalent": round(sum(spend.values())), "bust_cost": round(r["bust_cost"]),
                     "split": {name: round(100 * spend[k] / (sum(spend.values()) or 1)) for k, name in SPLIT.items()}})
     out.sort(key=lambda s: -s["input_equivalent"])
+    budgets = lead_budgets() if parts else {}  # T-6310: a part's bytes over its turns, against its budget
+    for s in out:
+        per = {k: n // max(s["turns"], 1) for k, n in (parts or {}).get(s["session"], {}).items()}
+        s["over_budget"] = [{"part": k, "bytes_per_call": v, "budget": budgets[k]} for k, v in sorted(per.items())
+                            if k in budgets and v > budgets[k]]
     over = sum(s["over"] for s in out)
     by_trigger = trigger_rows(k for r in rows.values() for k in r["kinds"])
     reread = sum(v["cache_read"] for v in by_trigger.values()) or 1
@@ -2309,6 +2316,9 @@ def _sessions(msgs, args, cli):
                         + (" ⚠ over 200k a reply: compacted late (one started after fm install-user and a restart "
                            "shouldn't)" if s["over"] else "")
                         + f"\n      started by: {kinds_line(s['triggers'], 6)}"
+                        + ("\n      over budget per call: " + "; ".join(
+                            f"{o['part'].replace('_', ' ')} {o['bytes_per_call']:,} > {o['budget']:,}"
+                            for o in s["over_budget"]) if s["over_budget"] else "")
                         for s in out[:15]) + (f"\n  {over} session(s) average over 200k a reply" if over else "")
             + "\nTurns by what started them, all sessions (in brackets the cache-read tokens those turns re-read): "
             + kinds_line(by_trigger)
@@ -3102,6 +3112,63 @@ def _text(x):
     return ""
 
 
+def _hook_text(a):
+    """T-6310: the text one transcript attachment put into the context ("" for an attachment that carries none): a hook
+    note (INJECTS), or a hook_success's stdout JSON (T-2667: SessionStart's text is here)."""
+    if a.get("type") in INJECTS:
+        return _text(a.get("content") or a.get("response") or a.get("blockingError") or "")
+    if a.get("type") == "hook_success" and a.get("stdout"):
+        try:
+            j = json.loads(a["stdout"])
+        except (ValueError, TypeError):
+            j = None
+        j = j if isinstance(j, dict) else {}
+        h = j.get("hookSpecificOutput") if isinstance(j.get("hookSpecificOutput"), dict) else {}
+        # not updatedToolOutput: that is the tool's own output
+        return "\n".join(x for x in (h.get("additionalContext"), j.get("systemMessage")) if isinstance(x, str))
+    return ""
+
+
+_OURS = re.compile(r"(?:Sampo|Foreman)|fm |sampo ")  # T-6310: text Sampo injected (older transcripts say the old name)
+
+def lead_parts(entries):
+    """T-6310: {session: Counter}, the characters that entered each session's context by the parts the budget file
+    names (lead_budgets): SessionStart and PostToolUse hook text, and Sampo's rows of the skill listing (the _share
+    count). `entries` are _entries(folder, since, need='"attachment"'). A subagent's attachments are not the lead's."""
+    out = {}
+    for path, e in entries:
+        a = e.get("attachment")
+        if not isinstance(a, dict) or f"{os.sep}subagents{os.sep}" in path:
+            continue
+        sid = e.get("sessionId") or os.path.basename(path)[:-6]  # the same key scan gives a reply
+        if a.get("type") == "skill_listing":  # Sampo's rows, counted as _share counts them, in UTF-8 bytes
+            rows = map(str, str(a.get("content") or "").splitlines())
+            part, n = "skill_listing", sum(len(r.encode()) + 1 for r in rows
+                                           if r.startswith(tuple("- " + m for m in c.ns_names(""))))
+        else:
+            t = _hook_text(a)
+            part = {"SessionStart": "session_start", "PostToolUse": "post_tool_use"}.get(
+                str(a.get("hookName") or "").split(":")[0])
+            n = len(t.encode()) if _OURS.search(t) else 0
+        if part and n:
+            out.setdefault(sid, collections.Counter())[part] += n
+    return out
+
+
+def lead_budgets(path=os.path.join(c.PLUGIN_ROOT, "data", "lead-context-budget.json")):
+    """T-6310: {part: bytes per call} from the budget file; {} when it cannot be read, so nothing is named over. A JSON
+    boolean is not a budget (bool is an int in Python)."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            parts = json.load(f).get("parts")
+    except (OSError, ValueError, AttributeError):
+        return {}
+    if not isinstance(parts, dict):
+        return {}
+    return {k: v["bytes"] for k, v in parts.items()
+            if isinstance(v, dict) and isinstance(v.get("bytes"), int) and not isinstance(v.get("bytes"), bool)}
+
+
 def burden(folder, since):
     """{session: counts}: turns, turns that were only Sampo bookkeeping, guard refusals, refused fm calls and the
     characters Sampo's hooks put into the context."""
@@ -3130,19 +3197,8 @@ def burden(folder, since):
                                 s["guard_refusals"] += "Foreman guard: blocked" in t or "Ward: blocked" in t
                                 s["fm_refusals"] += bool(re.search(r"\bfm: (?:refused|give --run)", t))
                         a = e.get("attachment") if isinstance(e.get("attachment"), dict) else {}
-                        t, src = "", str(a.get("hookName") or a.get("type") or "?").split(":")[0]
-                        if a.get("type") in INJECTS:
-                            t = _text(a.get("content") or a.get("response") or a.get("blockingError") or "")
-                        elif a.get("type") == "hook_success" and a.get("stdout"):  # T-2667: SessionStart's text is here
-                            try:
-                                j = json.loads(a["stdout"])
-                            except (ValueError, TypeError):
-                                j = None
-                            j = j if isinstance(j, dict) else {}
-                            h = j.get("hookSpecificOutput") if isinstance(j.get("hookSpecificOutput"), dict) else {}
-                            # not updatedToolOutput: that is the tool's own output
-                            t = "\n".join(x for x in (h.get("additionalContext"), j.get("systemMessage")) if isinstance(x, str))
-                        if "Sampo" in t or "Foreman" in t or "fm " in t or "sampo " in t:
+                        src, t = str(a.get("hookName") or a.get("type") or "?").split(":")[0], _hook_text(a)
+                        if _OURS.search(t):
                             s["injected_chars"] += len(t)
                             s["src:" + src] += len(t)
             except OSError:

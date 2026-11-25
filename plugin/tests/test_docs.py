@@ -11,6 +11,7 @@ from unittest import mock
 from e2e import sync_evals
 from helpers import PLUGIN, busy_factor, read_text, read_json, read_doc
 from sampo import core as c
+from test_hooks import HookCase  # T-6310: LeadContextBudget runs the real PostToolUse hook in a project
 
 SKILLS = ["intake", "next", "resume", "status", "capture", "tidy", "doctor", "reflect", "improve", "playbooks", "brainstorm",
           "directions", "design-extract", "ui-design", "genesis", "initiative", "readme-visuals",
@@ -26,7 +27,7 @@ EDITING_AGENTS = {f"{a}.md": {"Edit", "Write", "Bash"}  # T-0234, T-5681: the ex
 HOOK_EVENTS = {"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure", "PreCompact",
                "Stop", "TaskCompleted", "SubagentStart", "SubagentStop", "MessageDisplay", "Notification", "SessionEnd", "PermissionRequest",
                "PostModelSwitch", "PreModelSwitch"}
-OWN_REFERENCES = {"language.md", "planning.md", "execute.md", "delegate.md", "audit.md"}
+OWN_REFERENCES = {"language.md", "planning.md", "execute.md", "delegate.md", "audit.md", "procedure.md"}  # procedure.md: the intake SKILL body moved here (T-6310)
 def frontmatter(path):
     text = read_text(path, encoding="utf-8")
     m = re.match(r"^---\n(.*?)\n---\n(.*)$", text, re.S)
@@ -119,6 +120,25 @@ class LiteRules(unittest.TestCase):  # T-1264
         self.assertIn("plugin/templates/CLAUDE.lite.md", readme)
 
 
+def listing_bytes():
+    """T-1253, T-6310: Foreman's share of the skill listing the model sees, in UTF-8 bytes: the model-visible skill and
+    command descriptions, and the workflows' description and whenToUse lines."""
+    total = 0
+    for kind in ("skills", "commands"):
+        for path in [os.path.join(d, "SKILL.md") for d in
+                     (os.path.join(PLUGIN, "skills", n) for n in os.listdir(os.path.join(PLUGIN, "skills")))
+                     if os.path.isfile(os.path.join(d, "SKILL.md"))] if kind == "skills" else \
+                [os.path.join(PLUGIN, "commands", n) for n in os.listdir(os.path.join(PLUGIN, "commands"))
+                 if n.endswith(".md")]:
+            meta, _ = frontmatter(path)
+            if meta.get("disable-model-invocation") != "true":
+                total += len(meta.get("description", "").encode())
+    for name in os.listdir(os.path.join(PLUGIN, "workflows")):
+        text = read_text(os.path.join(PLUGIN, "workflows", name))
+        total += sum(len(m.encode()) for m in re.findall(r"(?m)^\s*(?:description|whenToUse): '([^']*)'", text))
+    return total
+
+
 class Rules(unittest.TestCase):
     def test_rules_file_within_always_on_budget(self):
         lines = read_text(c.rules_path(PLUGIN)).splitlines()
@@ -183,20 +203,7 @@ class Skills(unittest.TestCase):
     def test_the_listing_foreman_adds_stays_small(self):
         # T-1253: Claude Code 2.1.304 sends the skill listing again after every compaction, so Foreman's share of it
         # (model-visible skill and command descriptions, workflow descriptions) is paid once per compaction
-        total = 0
-        for kind in ("skills", "commands"):
-            for path in [os.path.join(d, "SKILL.md") for d in
-                         (os.path.join(PLUGIN, "skills", n) for n in os.listdir(os.path.join(PLUGIN, "skills")))
-                         if os.path.isfile(os.path.join(d, "SKILL.md"))] if kind == "skills" else \
-                    [os.path.join(PLUGIN, "commands", n) for n in os.listdir(os.path.join(PLUGIN, "commands"))
-                     if n.endswith(".md")]:
-                meta, _ = frontmatter(path)
-                if meta.get("disable-model-invocation") != "true":
-                    total += len(meta.get("description", ""))
-        for name in os.listdir(os.path.join(PLUGIN, "workflows")):
-            text = read_text(os.path.join(PLUGIN, "workflows", name))
-            total += sum(len(m) for m in re.findall(r"(?m)^\s*(?:description|whenToUse): '([^']*)'", text))
-        self.assertLessEqual(total, 2600, "Foreman's part of the skill listing")  # T-1700/T-1701/T-2072: the job skills
+        self.assertLessEqual(listing_bytes(), 2600, "Foreman's part of the skill listing")  # T-1700/T-1701/T-2072: the job skills
         # T-3703: readme-visuals (+110): a README gets its figures unasked
         # T-3855: skill-writing, problem-solving, coverage (+303): each a 100-character router line
         # T-3733: board-panels (+101): a diagram or dashboard is planned from the repo's parts unasked
@@ -338,6 +345,80 @@ class Skills(unittest.TestCase):
         text = read_text(os.path.join(PLUGIN, "THIRD_PARTY_LICENSES.md"))
         self.assertIn("Copyright (c) 2026 Affaan Mustafa", text)
         self.assertIn("Copyright (c) 2025 Jesse Vincent", text)
+
+
+class LeadContextBudget(HookCase):
+    """T-6310: each part of the lead's per-call context has a byte budget in plugin/data/lead-context-budget.json. The
+    skill listing is measured here; SessionStart's budget is the cap the footprint gate checks (hooks.CTX_BUDGET); the
+    PostToolUse notes are measured here by running the real hook on a project with an active task (sampo cost --sessions
+    names them per session too: test_cost's LeadContextBudget)."""
+
+    PARTS = ("post_tool_use", "session_start", "skill_body", "skill_listing")
+
+    def budgets(self):
+        return read_json(os.path.join(PLUGIN, "data", "lead-context-budget.json"))["parts"]
+
+    def test_each_part_has_a_budget_and_says_what_it_covers(self):
+        parts = self.budgets()
+        self.assertEqual(sorted(parts), sorted(self.PARTS))
+        for name, part in parts.items():
+            with self.subTest(part=name):
+                self.assertIsInstance(part["bytes"], int)
+                self.assertNotIsInstance(part["bytes"], bool, "a JSON boolean is not a budget")
+                self.assertGreater(part["bytes"], 0)
+                self.assertTrue(str(part.get("what") or "").strip(), "say what the part covers")
+
+    def test_the_skill_listing_is_under_its_budget(self):
+        total, budget = listing_bytes(), self.budgets()["skill_listing"]["bytes"]
+        self.assertLessEqual(total, budget, f"Foreman's skill listing is {total} bytes, over its {budget}-byte budget")
+
+    def test_the_post_tool_use_notes_are_under_their_budget(self):  # T-6310: the footprint gate's measured notes
+        budget = self.budgets()["post_tool_use"]["bytes"]
+        self.fm("task", "new", "t", "--type", "FEATURE", "--tier", "S", "--step", "s", "--ac", "a", "--focus")
+        a, b = os.path.join(self.repo, "a.py"), os.path.join(self.repo, "b.py")
+        # the batch note comes on the third edit of one file in a row (BatchNoteOnce in test_hooks): in full once a
+        # session, short after that; the sixth in a row is the thrash note. So: a three times, b three times, a three more
+        calls = [a] * 3 + [b] * 3 + [a] * 3
+        payloads = [{"tool_name": "Edit", "tool_input": {"file_path": p}} for p in calls]
+        payloads += [
+            {"tool_name": "Bash", "tool_input": {"command": "pytest -q"}, "tool_response": "", "duration_ms": 9},
+            {"tool_name": "Read", "tool_input": {"file_path": "README.md"}, "tool_response": "", "duration_ms": 9},
+        ]
+        notes, seen = [], []
+        for pl in payloads:
+            out = self.hook("PostToolUse", dict(pl, session_id="sess-1"))
+            seen.append((out.stdout or "")[:120] + " | " + (out.stderr or "")[-200:])
+            try:
+                hso = json.loads(out.stdout or "{}").get("hookSpecificOutput") or {}
+            except ValueError:
+                hso = {}
+            note = hso.get("additionalContext") or ""
+            if note:
+                notes.append((pl["tool_name"], note))
+        self.assertTrue(notes, f"the hook gave no PostToolUse note to measure: {seen}")
+        # the full batch paragraph is said once a session and is pinned there (BatchNoteOnce), not on every call
+        full = [n for _, n in notes if "applies them all" in n]
+        per_call = [(t, n) for t, n in notes if "applies them all" not in n]
+        self.assertEqual(len(full), 1, f"the batch note is said in full once a session, not {len(full)} times")
+        self.assertTrue(per_call, f"no per-call PostToolUse note to measure: {seen}")
+        over = [f"{t} {len(n.encode())}" for t, n in per_call if len(n.encode()) > budget]
+        self.assertEqual(over, [], f"PostToolUse notes over the {budget}-byte budget: {over}")
+
+    def test_the_session_start_budget_is_the_cap_the_footprint_gate_checks(self):
+        from sampo import hooks
+        self.assertEqual(self.budgets()["session_start"]["bytes"], hooks.CTX_BUDGET)
+
+    def test_every_skill_body_is_under_the_skill_body_budget(self):
+        import glob
+        budget = self.budgets()["skill_body"]["bytes"]
+        bodies = sorted(glob.glob(os.path.join(PLUGIN, "skills", "*", "SKILL.md")))
+        self.assertTrue(bodies, "no skills found")
+        over = []
+        for path in bodies:
+            size = len(read_text(path).encode())
+            if size > budget:
+                over.append(f"{os.path.basename(os.path.dirname(path))} {size}")
+        self.assertEqual(over, [], f"SKILL.md bodies over the {budget}-byte budget (move the detail to references/): {over}")
 
 
 class PluginParity(unittest.TestCase):

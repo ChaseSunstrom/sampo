@@ -1174,6 +1174,54 @@ class RepeatReads(HookCase):
         self.assertEqual((got["repeat_bytes"], got["avoided_bytes"], got["sessions"]), (0, 0, []))
 
 
+class LeadContextBudget(HookCase):
+    """T-6310: sampo cost --sessions names, per session, each part of the lead's context over its budget in
+    plugin/data/lead-context-budget.json (characters per call, the turns of the session); a session under budget names
+    nothing, and a subagent's attachments are not the lead's."""
+
+    def test_sessions_name_the_parts_over_budget_per_call(self):
+        cfg = os.path.join(self.tmp, "cfg")
+        folder = os.path.join(cfg, "projects", "".join(ch if ch.isalnum() else "-" for ch in self.repo))
+        os.makedirs(folder)
+        now = datetime.datetime.now(datetime.timezone.utc)
+        at = lambda s=0: (now + datetime.timedelta(seconds=s)).strftime("%Y-%m-%dT%H:%M:%S.000Z")  # noqa: E731
+        hook = lambda s, name, text: {"type": "attachment", "timestamp": at(s), "sessionId": "s1", "attachment": {  # noqa: E731
+            "type": "hook_success", "hookName": name, "stdout": json.dumps({"hookSpecificOutput": {
+                "hookEventName": name.split(":")[0], "additionalContext": text}})}}
+        reply = lambda sid, mid, s: {"type": "assistant", "timestamp": at(s), "sessionId": sid, "message": {  # noqa: E731
+            "id": mid, "usage": {"cache_read_input_tokens": 1000}, "content": []}}
+        rows = [hook(0, "SessionStart:startup", "Sampo project x. " + "x" * 7983), reply("s1", "m1", 1),
+                hook(2, "PostToolUse:Edit", "Sampo: a short note."), reply("s1", "m2", 3), reply("s1", "m3", 4),
+                reply("s1", "m4", 5)]
+        small = [{"type": "attachment", "timestamp": at(0), "sessionId": "s2", "attachment": {
+                  "type": "hook_success", "hookName": "SessionStart:startup", "stdout": json.dumps({
+                      "hookSpecificOutput": {"additionalContext": "Sampo project y."}})}}, reply("s2", "n1", 1)]
+        with open(os.path.join(folder, "s1.jsonl"), "w") as f:
+            f.write("\n".join(json.dumps(r) for r in rows) + "\n")
+        with open(os.path.join(folder, "s2.jsonl"), "w") as f:
+            f.write("\n".join(json.dumps(r) for r in small) + "\n")
+        env = {"CLAUDE_CONFIG_DIR": cfg}
+        got = self.fm_json("cost", "--sessions", "--days", "7", env=env)
+        by = {r["session"]: r for r in got["sessions"]}
+        over = by["s1"]["over_budget"]
+        self.assertEqual([o["part"] for o in over], ["session_start"], "the SessionStart note, not the short PostToolUse one")
+        self.assertEqual((over[0]["bytes_per_call"], over[0]["budget"]), (2000, 1500), "8,000 bytes over 4 turns")
+        self.assertEqual(by["s2"]["over_budget"], [], "a session under its budget names nothing")
+        text = self.fm("cost", "--sessions", "--days", "7", env=env).stdout
+        self.assertIn("over budget per call: session start 2,000 > 1,500", text)
+
+    def test_a_budget_file_that_is_not_a_table_names_nothing(self):
+        from sampo import cost
+        path = os.path.join(self.tmp, "budget.json")
+        for body, want in (('{"parts": ["session_start"]}', {}), ('{"parts": {"session_start": 1500}}', {}),
+                           ("[]", {}), ('{"parts": {"a": {"bytes": 9}, "b": {"bytes": "x"}}}', {"a": 9}),
+                           ('{"parts": {"a": {"bytes": true}, "b": {"bytes": 7}}}', {"b": 7}),
+                           ('{"parts": {"a": {"chars": 9}}}', {})):
+            with open(path, "w") as f:
+                f.write(body)
+            self.assertEqual(cost.lead_budgets(path), want, body)
+
+
 class LeadContext(HookCase):
     """T-6125: the lead's compaction window is an autoCompactWindow setting only when the installed Claude Code knows the
     key (its bundle carries the name), and sampo cost reads the lead's cache reads per turn before and after the first

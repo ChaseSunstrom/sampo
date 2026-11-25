@@ -1,0 +1,10 @@
+{
+  "date": "2026-11-25",
+  "source": "T-6310: the bytes (UTF-8) each part of the lead's context may take per call. skill_listing is measured live by test_docs (the descriptions Sampo adds to the model's skill listing, which Claude Code re-sends after each compaction); session_start is the SessionStart cap the footprint gate checks (hooks.CTX_BUDGET; bench_hooks --inject measured 669 in a fresh project); post_tool_use is set from the measured largest Sampo note (T-6310, transcripts since 2026-11-18). skill_body is test_docs' per-SKILL.md cap: the bodies are re-sent whole after a compaction. sampo cost --sessions names each part over its budget per session (bytes per call = the part's bytes over the session's turns). Raise a budget only with a note in its what field.",
+  "parts": {
+    "skill_listing": {"bytes": 2600, "what": "Sampo's share of the model's skill listing: skill, command and workflow descriptions (T-1253, listing_bytes in test_docs)"},
+    "session_start": {"bytes": 1500, "what": "the SessionStart additionalContext (the hooks.CTX_BUDGET cap, which hooks counts in characters: the same number in bytes only for ASCII text; the requests and reboot notes ride in it too)"},
+    "post_tool_use": {"bytes": 320, "what": "Sampo's own PostToolUse additionalContext on one call (measured on transcripts since 2026-11-18: 25 Sampo notes, mean 111 chars, largest 317; the other plugins' notes and the compact hook's updatedToolOutput are not counted; the full batch paragraph a session's third edit gets once, which is over this size, is pinned by BatchNoteOnce and excluded from the per-call measure)"},
+    "skill_body": {"bytes": 4000, "what": "one Sampo SKILL.md body, which Claude Code re-sends whole after each compaction for every invoked skill (test_docs measures every plugin/skills/*/SKILL.md; the detail lives in the skill's references/)"}
+  }
+}
