@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- The land's review hold now holds a lane the lane pilot asked for changes, even when another lens recorded ok on its tree (T-6322).
 - Trunk's state-write inventory is green again: the lane pilot's Claude-folder wall reads the config folder through claude.config_dir() instead of re-deriving the real home (T-6241).
 - Pilot reviewers run on Haiku at every tier, with sonnet only after two Haiku failures on a lens (T-6164).
 - Lanes name the files that clash when a merge stops on a conflict, help positions tie-break by name, briefs defer on overlap with an open lane, and builders merge the build branch before their report (T-5513).
