@@ -540,9 +540,8 @@ def _models(lenses, answered, model):
 
 
 def _record_cached(p, tid, lens, tree):
-    from sampo import cli
-    cli.mutate(p, tid, lambda x: x.add_audit(lens, "fm audit run (cached verdict)", "ok", tree=tree),
-               "audit", {"lens": lens, "how": "fm audit run (cached verdict)", "result": "ok"})
+    from sampo import auditrun  # T-6322: held for the round when a pilot round is deferring its audits
+    auditrun.ok_audit(p, tid, lens, "fm audit run (cached verdict)", tree)
 
 
 def _record_local(p, tid, lens, tree):
@@ -1698,7 +1697,8 @@ def _flush(p, lines):
     the pilot_lens lines (a record of what each reviewer read; the reviews already ran) are dropped, and the
     pilot_escalate ones (the reason a paid sonnet run happened) go through _busy's backoff, once for the round. Returns the
     lines still unwritten after that (the caller keeps them on its result, so a busy ledger never loses an escalation).
-    The queue is emptied either way; nothing here raises LockTimeout."""
+    T-6322: a dropped pilot_lens line is returned too, so the caller withholds the round's clean audits (they would land
+    with a verdict of the round unlogged). The queue is emptied either way; nothing here raises LockTimeout."""
     todo = list(lines)
     lines.clear()
     if not todo:
@@ -1709,13 +1709,14 @@ def _flush(p, lines):
     except c.LockTimeout:
         pass
     keep = [x for x in todo if x[0] == "pilot_escalate"]
+    lost = [x for x in todo if x[0] != "pilot_escalate"]
     if not keep:
-        return []
+        return lost
     try:
         _busy(_write_lines, p, keep, 5.0)
-        return []
+        return lost
     except c.LockTimeout:
-        return keep
+        return keep + lost
 
 
 def _accept_busy(tid, main):
@@ -1898,7 +1899,7 @@ def pilot(p, tid, main):
     accepted (sampo lane accept took it), changes (a lens reported changes needed, its clean lenses recorded, no
     accept), or exception (a gate, a refused review or the accept said no). Never accepts a lane with a blocking
     finding: the accept runs only when every reviewed lens came back clean."""
-    from sampo import cli
+    from sampo import auditrun, cli
     from sampo.lanes import _reexec_if_code_changed  # T-6169: a round starts on the code on disk
     _reexec_if_code_changed(p)
     t0 = time.monotonic()
@@ -1948,10 +1949,19 @@ def pilot(p, tid, main):
         res["ran"] = True  # T-6226: a run that reviewed (a gate refusal never gets here): its outcome is recorded
         c.log_event(p, "pilot_review", task=b.id, data={"class": lane_class(b), "effort": effort})  # T-6165: the escape rows' class and effort
         queue = []  # T-6164: the round's ledger lines, written once below, after the paid runs
+        # T-6322: a settled local verdict is a pilot_lens line too, and the round's clean audits are written after its
+        # ledger lines (auditrun.deferring holds them): a land never reads an ok audit while a verdict of this round is unlogged
+        queue += [("pilot_lens", b.id, {"lens": x, "scope": "local", "since": "", "tip": before[0][:12], "cached": False,
+                                        "verdict": v}) for x, (v, _f) in settled.items()]
+        audits = []
         try:
-            verdicts, findings, why, unparsed, answered = review_escalated(p, b, main, before, claude, scopes, note, effort, queue)  # not _busy: its lock comes after the reviewers
+            with auditrun.deferring(audits):
+                verdicts, findings, why, unparsed, answered = review_escalated(p, b, main, before, claude, scopes, note, effort, queue)  # not _busy: its lock comes after the reviewers
         finally:
             unlogged = _flush(p, queue)  # one non-blocking try; an escalation the busy lock kept out is on the result
+            if any(x[0] == "pilot_lens" for x in unlogged):  # T-6322: a verdict of this round is unlogged: no ok audit lands
+                audits.clear()
+            auditrun.write_deferred(audits)
         if unlogged:
             res["unlogged"] = [x[2] for x in unlogged]
         for x, (verdict, found) in settled.items():  # T-6089: the local answer that stands, as review() words a Claude one

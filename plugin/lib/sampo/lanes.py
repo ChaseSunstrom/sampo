@@ -6728,20 +6728,43 @@ def _review_hold(b, tip):
     m = b.meta
     if tip in (str(m.get("accepted_tip") or ""), str(m.get("reviewed_tip") or "")):
         return ""
-    path, why = str(m.get("lane") or ""), "no review is recorded at this tip"
+    path, why, tree = str(m.get("lane") or ""), "no review is recorded at this tip", ""
     # the audits speak for the worktree as it sits now: they count for `tip` only when that worktree is clean ON `tip`
     # (a later commit with audits of its own must not release an earlier tip: the tip argument is read, never assumed)
     if (path and os.path.isdir(path) and _lane_tree(path, m.get("lane_branch") or f"foreman/{b.id}")
             and _git(path, "rev-parse", "HEAD").stdout.strip() == tip):
         tree = c.worktree_id(path)
-        if tree and any(t == tree for _, _, t in b.audits()):
-            ptier = c.ptier_now(b)[0]
-            gaps = cli._audit_gaps(b, [], b.audit_blockers(tree=tree, groups=c.audit_groups(b.tier, ptier)), ptier)
-            if not gaps:
-                return ""
-            why = "; ".join(gaps)
+    # T-6322: the pilot's own verdicts hold the lane whatever ok audits another lens of its round recorded on the tree
+    if asked := _pilot_says_changes(b, tip, tree):
+        why = asked
+    elif tree and any(t == tree for _, _, t in b.audits()):
+        ptier = c.ptier_now(b)[0]
+        gaps = cli._audit_gaps(b, [], b.audit_blockers(tree=tree, groups=c.audit_groups(b.tier, ptier)), ptier)
+        if not gaps:
+            return ""
+        why = "; ".join(gaps)
     return (f"{REVIEW_HELD}: {why}; the lane pilot reviews it (sampo lane pilot {b.id}), or sampo lane accept {b.id} "
             "--audit LENS HOW RESULT")
+
+
+def _pilot_says_changes(b, tip, tree):
+    """T-6322: why the lane pilot's verdicts hold `b` at `tip`, '' when they do not. changes_asked marks the lane for its
+    builder: held while it was asked for this tree, or for no tree recorded (fails closed), and not for an older tree
+    (the tree moved on since). A lens whose latest pilot verdict at this tip says changes needed holds it too: the
+    pilot's ledger lines (pilot_lens, tip[:12]) are read oldest first, so a later verdict of the same lens replaces it."""
+    m = b.meta
+    if m.get("changes_asked") and str(m.get("changes_asked_tree") or "") in ("", tree):
+        return "the lane pilot asked for changes (changes_asked)"
+    if not b.path:
+        return ""
+    p = c.Project("", "", os.path.dirname(os.path.dirname(b.path)))  # the project whose ledger holds the brief (core:6779)
+    verdict = {}
+    for e in c.ledger_events(p, ("pilot_lens",)):
+        d = e.get("data") or {}
+        if e.get("task") == b.id and d.get("tip") == tip[:12]:
+            verdict[str(d.get("lens") or "")] = d.get("verdict")
+    asked = sorted(lens for lens, v in verdict.items() if v == "changes needed")
+    return f"lens {', '.join(asked)} asked for changes at this tip" if asked else ""
 
 
 def merge_own_content(root, sha):

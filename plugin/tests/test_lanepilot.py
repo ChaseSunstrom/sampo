@@ -2517,5 +2517,25 @@ class DeltaExcludesTrunk(PilotCase):
         self.assertIn("the fix since", self.prep_text(reviewed))
 
 
+class FlushBusyLedger(unittest.TestCase):  # T-6322 review: a busy lock drops a round's lens lines, so the caller withholds its audits
+    LENS = ("pilot_lens", "T-1", {"lens": "adversary", "verdict": "changes needed"})
+    ESCALATE = ("pilot_escalate", "T-1", {"lens": "edge"})
+
+    def flush_busy(self, queue):
+        busy = c.LockTimeout("lock busy")
+        with mock.patch.object(lanepilot, "_write_lines", side_effect=busy), \
+                mock.patch.object(lanepilot, "_busy", side_effect=busy):
+            return lanepilot._flush(None, queue)
+
+    def test_a_busy_ledger_returns_the_lens_lines_it_could_not_write(self):
+        queue = [self.LENS]
+        self.assertEqual(self.flush_busy(queue), [self.LENS], "the caller must see the lost verdict")
+        self.assertEqual(queue, [])
+
+    def test_an_escalation_the_busy_lock_keeps_out_is_returned_with_the_lens_lines(self):
+        unlogged = self.flush_busy([self.LENS, self.ESCALATE])
+        self.assertEqual(sorted(x[0] for x in unlogged), ["pilot_escalate", "pilot_lens"])
+
+
 if __name__ == "__main__":
     unittest.main()

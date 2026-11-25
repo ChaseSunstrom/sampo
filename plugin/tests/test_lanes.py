@@ -7964,5 +7964,67 @@ class ReviewDepthDoc(unittest.TestCase):
         self.assertNotIn("sonnet", doc, "no tier, and not the full-depth switch, is named on sonnet")
 
 
+import test_lane_land as tll  # noqa: E402  (T-6322: its case class, not its tests, is the base here)
+
+
+class HoldOnChangesAsked(tll.LandCase):  # T-6322
+    """T-6322: the land's review hold passed a lane whose pilot asked for changes as soon as any lens recorded ok on its
+    tree: _review_hold read the audits and never changes_asked, nor a lens's changes-needed verdict at this tip."""
+    HELD = "held: not reviewed at this tip"
+
+    def setUp(self):
+        super().setUp()
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(self.repo)
+        self.p = c.find_project(self.repo)
+
+    def asked_lane(self, n=1):
+        """A lane the builder returned, unreviewed, with one ok audit on its tree (the other lens of the round)."""
+        tid = self.lane(n, f"ask{n}.txt", when=tll.OLD, reviewed=False)
+        self.returned(tid, f"Lane {n}")
+        path = self.brief(tid).meta["lane"]
+        self.fm("task", "audit", tid, "self", "one fm-reviewer pass on the branch", "no findings", cwd=path)
+        return tid, path
+
+    def tip_of(self, path):
+        return subprocess.run(["git", "-C", path, "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+
+    def hold(self, tid, path):
+        return slanes.review_hold(self.brief(tid), self.tip_of(path))
+
+    def test_changes_asked_for_the_tree_holds_it_though_another_lens_recorded_ok(self):
+        tid, path = self.asked_lane()
+        self.assertFalse(self.hold(tid, path), "control: the ok audit alone releases the lane")
+        b = self.brief(tid)
+        b.meta["changes_asked"] = "lane-pilot"
+        b.meta["changes_asked_at"] = "2026-11-25T00:00:00Z"
+        b.meta["changes_asked_tree"] = c.worktree_id(path)
+        c.save_brief(self.p, b)
+        self.assertTrue(self.hold(tid, path).startswith(self.HELD), self.hold(tid, path))
+
+    def test_a_lens_that_asked_for_changes_at_this_tip_holds_it_though_another_recorded_ok(self):
+        tid, path = self.asked_lane(2)
+        tip = self.tip_of(path)
+        self.assertFalse(self.hold(tid, path), "control: the ok audit alone releases the lane")
+        c.log_event(self.p, "pilot_lens", task=tid, data={"lens": "adversary", "scope": "tip", "since": "", "tip": tip[:12],
+                                                          "cached": False, "verdict": "changes needed"})
+        self.assertTrue(self.hold(tid, path).startswith(self.HELD), self.hold(tid, path))
+        c.log_event(self.p, "pilot_lens", task=tid, data={"lens": "adversary", "scope": "tip", "since": "", "tip": tip[:12],
+                                                          "cached": False, "verdict": "ok"})
+        self.assertFalse(self.hold(tid, path), "the lens's later verdict at this tip is the one that counts")
+
+    def test_a_round_holds_its_clean_audits_until_they_are_written_after_its_ledger_lines(self):
+        from sampo import auditrun
+        tid, path = self.asked_lane(3)
+        tree = c.worktree_id(path)
+        held = []
+        with auditrun.deferring(held):
+            auditrun.ok_audit(self.p, tid, "edge", "fm audit run (cached verdict)", tree)
+        self.assertFalse([a for a in self.brief(tid).audits() if a[0] == "edge"], "held while the round runs")
+        auditrun.write_deferred(held)
+        self.assertEqual([a[2] for a in self.brief(tid).audits() if a[0] == "edge"], [tree], "then written on its tree")
+        self.assertFalse(held)
+
+
 if __name__ == "__main__":
     unittest.main()

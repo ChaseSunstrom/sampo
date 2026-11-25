@@ -403,6 +403,49 @@ def _cap(p):
     return cap
 
 
+_DEFER = None  # T-6322: while a pilot round runs, the list its ok audits wait in (None: each is written at once)
+
+
+@contextlib.contextmanager
+def deferring(pending):
+    """T-6322: the ok audits recorded inside this block wait in `pending` (the caller's list) instead of landing at once.
+    The pilot round writes its ledger lines first and then `write_deferred` writes these: a lens's clean audit lands
+    after every verdict of its round is on the ledger, so a land that reads the lane mid-round never sees an ok audit
+    with another lens's changes-needed verdict still unlogged."""
+    global _DEFER
+    prev, _DEFER = _DEFER, pending
+    try:
+        yield pending
+    finally:
+        _DEFER = prev
+
+
+def ok_audit(p, tid, lens, how, tree, event=None):
+    """The clean lens's audit on `tree` (add_audit), written now, or held for the round when deferring is on. `event`
+    is the ledger line's data (default: lens, how and result)."""
+    if _DEFER is not None:
+        _DEFER.append((p, tid, lens, how, tree, event))
+        return
+    _write_ok(p, tid, lens, how, tree, event)
+
+
+def _write_ok(p, tid, lens, how, tree, event):
+    from sampo import cli
+    cli.mutate(p, tid, lambda x: x.add_audit(lens, how, "ok", tree=tree), "audit",
+               event or {"lens": lens, "how": how, "result": "ok"})
+
+
+def write_deferred(pending):
+    """T-6322: writes the audits `deferring` held, in the order they were recorded, and empties the list. One the lock or
+    the lock times out on or the policy refuses is dropped: the lane then has no audit at that tip, so the land holds it
+    (fails closed), and the round's own exception is not replaced by that refusal. Other errors propagate as before."""
+    while pending:
+        try:
+            _write_ok(*pending.pop(0))
+        except (c.LockTimeout, c.PolicyError):
+            pass
+
+
 def run(p, args):
     from sampo import cli
     c.refuse_if_paused()
@@ -533,9 +576,8 @@ def run(p, args):
             break
     for lens, (verdict, found) in verdicts.items():
         if verdict == "ok":  # T-5706: only a clean lens is an audit; changes needed is finding events alone
-            cli.mutate(p, b.id, lambda x, lens=lens: x.add_audit(
-                lens, "fm audit run (claude -p reviewer)", "ok", tree=briefed),
-                "audit", {"lens": lens, "how": "fm audit run", "result": "ok"})
+            ok_audit(p, b.id, lens, "fm audit run (claude -p reviewer)", briefed,  # T-6322: held for a pilot round
+                     {"lens": lens, "how": "fm audit run", "result": "ok"})
         with c.lock(p.dir):
             for sev, at, text in found[:20]:
                 c.log_event(p, "finding", task=b.id, data={"lens": lens, "verdict": "reported",
