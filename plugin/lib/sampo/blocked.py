@@ -11,7 +11,8 @@ never a word list). A block whose reason says something more than its closed tas
 it as tasks or capacity only. No answer, or one under the bar, keeps the block; an answer under the bar is not asked
 again for UNSURE_H hours, a backend that gives no answer ends the review's questions, and a verdict is kept per (task,
 reason) so an unchanged block is asked once. A block with a revisit that hasn't come (sampo task block --until) is left
-alone."""
+alone. T-5227: the review records each kept task's open waits, and due() turns true at once when a block is set or a
+waited-on task closes (read from the ledger's tail since the review), so the next sweep frees it, not the next hour."""
 import hashlib
 import json
 import os
@@ -49,6 +50,9 @@ DOS = {
 REFUSE = ("{id}: capacity is never a block (a builder slot, the lane count, the merge queue): leave it planned and it "
           "runs when there is room. The reason read as capacity only ({pr:.0%}); if something else holds it, say what.")
 
+WAKE = ("task_block", "task_done", "task_done_in", "task_drop")  # T-5227: ledger events that make the review due at once
+CLOSES = ("task_done", "task_done_in", "task_drop")
+
 _LOG = re.compile(r"^- (\S+)\s+blocked\b:?\s*(.*)$")  # the line sampo task block writes (cli.task's change())
 _REVISIT = re.compile(r"\s*\(revisit [^)]*\)$")
 _ID = re.compile(r"\bT-\d+\b")
@@ -80,9 +84,33 @@ def load(p):
 
 
 def due(p, every_h=1.0):
-    """Whether an hour has passed since the last review (the Stop hook's sweep runs the tick far more often)."""
-    h = _hours(load(p).get("at"), c.clock())
-    return h is None or h >= every_h or h < 0
+    """Whether an hour has passed since the last review (the Stop hook's sweep runs the tick far more often), or the
+    ledger since it holds a new block or a close of a task the review recorded as an open wait (T-5227): that task is
+    freed by the next sweep, not at the next hour."""
+    d = load(p)
+    h = _hours(d.get("at"), c.clock())
+    if h is None or h >= every_h or h < 0:
+        return True
+    waits = {i for ids in (d.get("waits") or {}).values() if isinstance(ids, list) for i in ids}
+    for e in _since(p, str(d.get("at"))):
+        if e.get("event") == "task_block" or (e.get("event") in CLOSES and e.get("task") in waits):
+            return True
+    return False
+
+
+def _since(p, at):
+    """The block and close events (WAKE) after the review's stamp `at`. Read from the live ledger's end a few lines at a
+    time, so a review an hour old costs a tail read, never the whole file; the archives only when the live file doesn't
+    reach back to `at` (fm tidy rolled it)."""
+    n = 256
+    while True:
+        evs = c.ledger_tail(p, n, WAKE)
+        if len(evs) < n or str(evs[0].get("ts") or "") <= at:
+            break
+        n *= 4
+    if not evs or str(evs[0].get("ts") or "") > at:
+        evs = c.ledger_events(p, WAKE, since=at)
+    return [e for e in evs if str(e.get("ts") or "") > at]
 
 
 def _ask(p, kind, prompt, choices, timeout=TIMEOUT, n=2):
@@ -197,7 +225,8 @@ def review(p, apply=True, asks=ASKS, briefs=None):
     open_ids = {b.id for b in briefs if b.status not in ("done", "dropped")}
     old = load(p)
     cache = old.get("verdicts") if isinstance(old.get("verdicts"), dict) else {}
-    res = {"at": stamp, "freed": [], "stale": [], "kept": [], "asked": 0, "verdicts": {}, "told": old.get("told")}
+    res = {"at": stamp, "freed": [], "stale": [], "kept": [], "asked": 0, "verdicts": {}, "told": old.get("told"),
+           "waits": {}}  # waits: each kept task's open waits, which due() watches for a close (T-5227)
     ask, done, parked = _Asker(asks), set(), set()  # done: the tasks this pass handled to the end
     try:
         for b in briefs:
@@ -237,6 +266,8 @@ def review(p, apply=True, asks=ASKS, briefs=None):
                 done.add(b.id)
                 continue
             res["kept"].append(b.id)
+            if waits:
+                res["waits"][b.id] = waits
             hours = _hours(ts or b.meta.get("updated"), now)
             if hours is not None and hours >= STALE_H:
                 if _may_ask(keep, "action", now):
@@ -253,6 +284,9 @@ def review(p, apply=True, asks=ASKS, briefs=None):
         for tid, v in cache.items():
             if tid in left and isinstance(v, dict):
                 res["verdicts"].setdefault(tid, v)
+        for tid, ids in (old.get("waits") if isinstance(old.get("waits"), dict) else {}).items():  # not reached: kept
+            if tid in left and isinstance(ids, list):
+                res["waits"].setdefault(tid, ids)
         res["stale"] += [x for x in old.get("stale") or [] if isinstance(x, dict) and x.get("id") in left - parked
                          and isinstance(x.get("hours"), (int, float))]
         res["stale"].sort(key=lambda x: -x["hours"])
