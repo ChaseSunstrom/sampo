@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- test_night's NightLong, Stranger and StrangerGuards fixtures turn claude_bench on for their own fixture project, and one test each checks the gate off refuses naming '! sampo claude-bench on', ending the trunk red from T-5584 (T-5856).
 - The CloseFields test now asserts fm-fixer and fm-resolver trailing lines are recorded, following core.EDITING_AGENTS instead of listing them as non-recording (T-5854).
 - Tests: two lands back to back while one slow ship runs merge before it ends and share one more push (T-5067).
 - A blocked task is freed by the next sweep tick once its last wait closes, not at the next hour: the review records each kept task's open waits and a new block or a waited-on close makes the review due at once (T-5227).
