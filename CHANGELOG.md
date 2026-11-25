@@ -13,6 +13,7 @@
 - Tests: two lands back to back while one slow ship runs merge before it ends and share one more push (T-5067).
 - A blocked task is freed by the next sweep tick once its last wait closes, not at the next hour: the review records each kept task's open waits and a new block or a waited-on close makes the review due at once (T-5227).
 - A page the user looks at now closes only with a real-surface run: Sampo's page builders (live, board, page, panels, stories, site pages and build), page scripts under plugin/web and site, and a project's meta surface_paths globs (T-5240).
+- sampo measure scorecard-past-bar: the median count of measures past bar per hourly scorecard tick, in its own unit; the scorecard tick now logs one scorecard_tick ledger event per counted tick (T-5322).
 - sampo run hands each finished lane to the lane pilot (review, then the accept queues it into the land train) instead of holding it as unreviewed and running an hour-long gate per lane; with the pilot off, the old serial merge stays (T-6480).
 - When `sampo run` has a free slot and fills none, it prints why, once per change: how many queued tasks are held for no scope, open dependencies, no plan, the L tier, waiting on you, or files a running lane holds (T-6487).
 - `sampo run` marks a finished lane's session as its builder's return before the lane pilot reviews it, so the pilot no longer refuses every run lane with "its builder has not returned" (T-6490).

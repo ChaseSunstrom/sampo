@@ -12,7 +12,13 @@ The verb prints the median (minutes), the count and a verdict; it exits 1 when t
 
 review-cost (T-5843) is the second kind, named in DAILY: its reader takes the review_cost events (one per `sampo audit run`,
 T-5842) and returns per-UTC-day rows (lanes, lenses, tokens, dollars and the estimated saving against the five-lens
-default), printed as rows with a total, exit 0, and no --max or --min (a bound on a sum is refused)."""
+default), printed as rows with a total, exit 0, and no --max or --min (a bound on a sum is refused).
+
+scorecard-past-bar (T-5322) is a count, not seconds: its reader takes the scorecard_tick events the hourly tick logs
+(scorecard.drift, one per counted tick: each measure's value and the names past their bar) and returns, per tick, how
+many measures were past their bar. The verb prints the median count (unit "measures past bar", not minutes); it exits 1
+past --max or under --min, and also when no tick is in the window. summary(p, name) gives {name, value, unit, count,
+note} for any name, in the name's unit (UNITS; minutes by default)."""
 import calendar
 import contextlib
 import json
@@ -102,7 +108,7 @@ def review_cost(evs, since):
 
 
 DAILY = {"review-cost"}  # the measures that return per-day rows, not seconds per lane: no median, no bound
-KINDS = {"review-cost": ["review_cost"]}  # the ledger kinds a measure reads; the default is the land's two and the pipeline's
+KINDS = {"review-cost": ["review_cost"], "scorecard-past-bar": ["scorecard_tick"]}  # the ledger kinds a measure reads; the default is the land's two and the pipeline's
 
 
 def pipeline_in_use(evs, since):
@@ -119,8 +125,28 @@ def pipeline_in_use(evs, since):
     return out
 
 
+def scorecard_past_bar(evs, since):
+    """T-5322: one count per scorecard_tick event at or after `since` (one per counted tick, scorecard.drift): how many
+    measures were past their bar at that tick. A tick with no `past` list or no `at` is left out, and so is a tick
+    whose every value is unread (null): an outage reads as no reading, never as a count of zero."""
+    out = []
+    for e in evs:
+        d = e.get("data") if isinstance(e, dict) and e.get("event") == "scorecard_tick" else None
+        at = train.finite_num(d.get("at")) if isinstance(d, dict) else None
+        if at is None or at < since or not isinstance(d.get("past"), list):
+            continue
+        vals = d.get("values")
+        if isinstance(vals, dict) and vals and all(v is None for v in vals.values()):
+            continue
+        out.append(float(len(d["past"])))
+    return out
+
+
 MEASURES = {"accept-to-live": accept_to_live, "accept-to-pushed": accept_to_pushed, "review-cost": review_cost,
-            "pipeline-in-use": pipeline_in_use}
+            "pipeline-in-use": pipeline_in_use, "scorecard-past-bar": scorecard_past_bar}
+# T-5322: a name's unit and what its readers' numbers divide by. The others read seconds and print minutes.
+UNITS = {"scorecard-past-bar": ("measures past bar", 1.0)}
+COUNTED = {"scorecard-past-bar"}  # a count of ticks: no tick in the window is a miss, whatever bound was given
 
 PIPE_OPEN = "pipeline-open.json"  # lanes merged and not yet used: {task: {"filed": epoch, "merged": epoch}}
 IN_USE_BOUND_MIN = 60.0  # a pipeline fix should be the running code within this
@@ -241,6 +267,26 @@ def values(p, name, window_days, now=None):
     return read(p, name, window_days, now)[0]
 
 
+def _unit(name):
+    """(label, divisor): what a name's readers' numbers are in, and the divisor that prints them. Minutes by default."""
+    return UNITS.get(name, ("min", 60.0))
+
+
+def _median_key(name):
+    """The JSON key of the median: median_min for the minute measures (as before T-5322), median for the others."""
+    return "median_min" if _unit(name)[0] == "min" else "median"
+
+
+def summary(p, name, window_days=1.0, now=None):
+    """T-5322: the measure's one number over the window as {name, value, unit, count, note}: the median in its own unit
+    (minutes, or a count for scorecard-past-bar), None when nothing was read in the window. note says how far back the
+    read reached when the ledger ran out first, else ''."""
+    label, div = _unit(name)
+    secs, note = read(p, name, window_days, now)
+    value = round(statistics.median(secs) / div, 2) if secs else None
+    return {"name": name, "value": value, "unit": label, "count": len(secs), "note": note}
+
+
 def verdict(median_min, maximum, minimum):
     """'ok' or what the median missed; None bounds are not held."""
     if maximum is not None and median_min > maximum:
@@ -287,9 +333,11 @@ def cmd_measure(args):
     if args.name not in MEASURES:
         raise cli.UsageError(f"measure: {'unknown name ' + repr(args.name) if args.name else 'name one'}; "
                              f"registered: {', '.join(sorted(MEASURES))}")
+    label, div = _unit(args.name)
+    noun = "minutes" if label == "min" else label
     for flag, v in (("--max", args.max), ("--min", args.min)):
         if v is not None and (not math.isfinite(v) or v < 0):
-            raise cli.UsageError(f"measure: {flag} is a number of minutes, 0 or more")
+            raise cli.UsageError(f"measure: {flag} is a number of {noun}, 0 or more")
     if not math.isfinite(args.window) or args.window <= 0:
         raise cli.UsageError("measure: --window is a number of days above 0")
     if args.name in DAILY:
@@ -299,16 +347,22 @@ def cmd_measure(args):
     p = cli.resolve(args)
     secs, note = read(p, args.name, args.window)
     bound = args.max is not None or args.min is not None
-    base = {"name": args.name, "window_days": args.window, "max": args.max, "min": args.min, "count": len(secs)}
+    key = _median_key(args.name)
+    base = {"name": args.name, "window_days": args.window, "max": args.max, "min": args.min, "count": len(secs),
+            "unit": label}
+    # a count of ticks with none in the window is a miss, bound or not (T-5322): the scorecard's tick did not run
+    missing = "no tick in window" if args.name in COUNTED else "no landings in window"
     if note:  # the read stopped short of the window: whatever it found is not a verdict
-        med = statistics.median(secs) / 60 if secs else None
-        cli.out(args, {**base, "median_min": None if med is None else round(med, 2), "verdict": note, "note": note}, note)
-        return 1 if bound else 0
+        med = statistics.median(secs) / div if secs else None
+        cli.out(args, {**base, key: None if med is None else round(med, 2), "verdict": note, "note": note}, note)
+        return 1 if bound or (args.name in COUNTED and not secs) else 0
     if not secs:
-        cli.out(args, {**base, "median_min": None, "verdict": "no landings in window"}, "no landings in window")
-        return 1 if bound else 0
-    med = statistics.median(secs) / 60
+        cli.out(args, {**base, key: None, "verdict": missing}, missing)
+        return 1 if bound or args.name in COUNTED else 0
+    med = statistics.median(secs) / div
     ver = verdict(med, args.max, args.min)
-    cli.out(args, {**base, "median_min": round(med, 2), "verdict": ver},
-            f"{args.name}: median {med:.1f} min over {len(secs)} lane(s) in {args.window:g} day(s): {ver}")
+    shown = f"{med:.1f}" if label == "min" else f"{med:g}"
+    cli.out(args, {**base, key: round(med, 2), "verdict": ver},
+            f"{args.name}: median {shown} {label} over {len(secs)} "
+            f"{'lane(s)' if label == 'min' else 'tick(s)'} in {args.window:g} day(s): {ver}")
     return 0 if ver == "ok" else 1

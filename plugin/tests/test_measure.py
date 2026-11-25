@@ -109,7 +109,8 @@ class Measure(ForemanTestCase):
     def test_each_registered_name_runs_through_the_verb_under_its_own_name(self):
         for name in measure.MEASURES:
             got = self.run_measure(name, "--json")
-            self.assertEqual(got.returncode, 0, name)
+            # an empty ledger: a tick count with no tick in the window is a miss (T-5322), the others exit 0
+            self.assertEqual(got.returncode, 1 if name in measure.COUNTED else 0, name)
             self.assertEqual(json.loads(got.stdout)["name"], name)
 
     def test_no_name_lists_the_names_too(self):

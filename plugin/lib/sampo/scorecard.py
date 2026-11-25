@@ -214,12 +214,19 @@ def _text(r, n):
 def drift(p, rows, now=None):
     """One tick's rows into the counts: [(task id, measure)] for each task newly captured. A measure past its bar adds
     one to its count (ok False); within the bar, unread or absent clears it. At DRIFT_TICKS it is captured once, by title
-    (eco.capture_once: nothing while an open task has it), and again only every REFILE_TICKS ticks after."""
+    (eco.capture_once: nothing while an open task has it), and again only every REFILE_TICKS ticks after. A counted tick
+    also logs one scorecard_tick ledger event (T-5322): each measure's value and the names past their bar, which
+    `sampo measure scorecard-past-bar` reads."""
     from sampo import eco
     now = time.time() if now is None else now
     st = _load(p)
     if _inside_gap(st, now):
         return []
+    try:
+        c.log_event(p, "scorecard_tick", data={"at": now, "values": {r["name"]: r.get("value") for r in rows},
+                                               "past": sorted(r["name"] for r in rows if r.get("ok") is False)})
+    except OSError:
+        pass  # a ledger that cannot be written never costs the count or the task
     by = {r["name"]: r for r in rows}
     misses, made = {}, []
     for name, r in by.items():
