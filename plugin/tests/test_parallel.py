@@ -459,6 +459,24 @@ class Parallel(ForemanTestCase):
         self.assertEqual(len(c.find_brief(p, "T-0001").meta.get("recoveries") or []), slanes.RECOVERIES_MAX)
         self.assertTrue(os.path.isdir(starts[0].split()[2]), "the lane and its work are kept")
 
+    def test_a_lane_kept_before_run_kept_is_found_by_the_run_log(self):
+        # T-6444: lanes an older run kept carry no run_kept; the run's own session log header names them
+        from sampo import core as c
+        self.task("one", "work-T-0001.txt")
+        self.serving()
+        path = json.loads(self.fm("lane", "new", "T-0001", "--json").stdout)["path"]
+        with open(os.path.join(path, "work-T-0001.txt"), "w") as f:
+            f.write("half\n")
+        p = c.find_project(self.repo)
+        os.makedirs(os.path.join(c.state_dir(), "logs"), exist_ok=True)
+        with open(os.path.join(c.state_dir(), "logs", f"run-{p.slug}.log"), "a") as f:
+            f.write(f"== 2026-01-01T00:00:00Z T-0001 (lane {path}) exit None\nsession text\n")
+        self.stub("claude", f't=$FOREMAN_DRIVE_TASK\necho "start $t $PWD" >> {self.log}\n')
+        out = self.fm("run", "--parallel", "2", env=self.env(), check=False).stdout
+        starts = [ln.split()[2] for ln in self.sessions() if ln.startswith("start T-0001")]
+        self.assertTrue(starts and starts[0] == path, out)
+        self.assertIn("resuming in its lane", out)
+
     def test_a_committed_mirror_doesnt_count_as_the_users_changes(self):
         # T-0174 review: fm keeps a tracked .sampo/ current from every lane session, in the main checkout
         self.fm("sync", "on")

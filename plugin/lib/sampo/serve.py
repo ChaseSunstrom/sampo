@@ -611,11 +611,20 @@ def _new_lane(p, tid):
 
 def _kept_lanes(p, skip):
     """T-6442: (brief, lane path) for each open task an earlier fm run left in its lane with work (run_kept on the brief),
-    still under the recovery cap: the pool resumes these in the same worktree before it starts new tasks."""
+    still under the recovery cap: the pool resumes these in the same worktree before it starts new tasks. T-6444: a lane
+    kept before run_kept existed is found by the run's own session log header (`== time TID (lane PATH) exit None`)."""
     from sampo import lanes as slanes
+    logged = {}
+    try:
+        with open(os.path.join(c.state_dir(), "logs", f"run-{p.slug}.log"), "rb") as f:
+            f.seek(max(0, os.fstat(f.fileno()).st_size - (4 << 20)))  # the recent sessions only: the log only grows
+            for m in re.finditer(rb"^== \S+ (T-\d+) \(lane (.+?)\) exit None$", f.read(), re.M):
+                logged[m[1].decode()] = m[2].decode(errors="replace")
+    except OSError:
+        pass
     got = []
     for b in c.load_briefs(p):
-        path = b.meta.get("run_kept")
+        path = b.meta.get("run_kept") or (logged.get(b.id) if logged.get(b.id) == b.meta.get("lane") else None)
         if (path and b.id not in skip and b.status in ("active", "planned") and os.path.isdir(path)
                 and len(slanes._recoveries(b)) < slanes.RECOVERIES_MAX and _lane_has_work(p, path)):
             got.append((b, path))
