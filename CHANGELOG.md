@@ -11,6 +11,7 @@
 
 ### Everything else
 - sampo/reach.py: needs(root, a, b) sorts a diff into what a running session must do (now, reload, restart, read) and code_id names the plugin code at a commit (T-5197).
+- sampo ship auto on now also reads a polite request to keep main pushed ('can you make sure to keep pushing to main?') as your ask; a question about whether to push is still refused (T-6359).
 - The lane pilot's fix session can now edit its own finished lane: the brief gate admits a done, unlanded task only for the pilot's own headless session pinned to that lane, and a shell command may not set FOREMAN_DRIVE_TASK, so the pilot's fix rounds commit instead of changing nothing (T-6521).
 - test_night's NightLong, Stranger and StrangerGuards fixtures turn claude_bench on for their own fixture project, and one test each checks the gate off refuses naming '! sampo claude-bench on', ending the trunk red from T-5584 (T-5856).
 - The CloseFields test now asserts fm-fixer and fm-resolver trailing lines are recorded, following core.EDITING_AGENTS instead of listing them as non-recording (T-5854).

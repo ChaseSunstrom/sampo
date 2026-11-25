@@ -120,6 +120,54 @@ class KeepPushedQuote(unittest.TestCase):
         self.assertEqual(self.why("on v1.2 keep pushing to origin/main"), "on v1.2 keep pushing to origin/main")
 
 
+class PoliteShipAsk(unittest.TestCase):
+    """T-6359: a polite request ("can you make sure to keep pushing to main?") is the user's standing-ship ask; a real
+    question, a negation, a quote, a paste or a second question in the same message is still not."""
+
+    def why(self, said):
+        found = [a for v, a in uw.find(said) if v.name == "standing-ship"]
+        return found[0]["why"] if found else None
+
+    def test_the_user_recorded_wordings_are_the_ask(self):
+        for said in ("and can you make sure to keep pushing to main?", "can you make sure to keep pushing to main?",
+                     "could you keep pushing to main?", "would you keep main pushed?", "will you keep pushing to main?",
+                     "can you keep main pushed please?", "please keep main pushed"):
+            with self.subTest(said=said):
+                self.assertIsNotNone(self.why(said))
+
+    def test_the_quote_is_the_polite_sentence_with_its_question_mark(self):
+        self.assertEqual(self.why("and can you make sure to keep pushing to main? thanks"),
+                         "and can you make sure to keep pushing to main?")
+        self.assertEqual(self.why("Thanks for the fix; can you keep main pushed?"), "can you keep main pushed?")
+        self.assertEqual(self.why("why is main behind, can you keep pushing to main?"), None)
+
+    def test_a_real_question_is_not_the_ask(self):
+        for said in ("why is main not pushed?", "should we keep pushing to main?", "do you want me to keep pushing to main?",
+                     "can I keep pushing to main?", "why is main behind the remote, keep pushing to main?",
+                     "can you keep pushing to main? why is it behind?", "why is it behind? can you keep pushing to main?",
+                     "please keep main pushed. why is it behind?"):
+            with self.subTest(said=said):
+                self.assertIsNone(self.why(said))
+
+    def test_a_request_wrapping_an_information_question_is_not_the_ask(self):
+        # T-6359 review (HIGH): the words between the request and the ask must be request words, not a question's
+        for said in ("can you tell me whether we should keep pushing to main?", "can you explain why we should keep pushing to main?",
+                     "can you check if we should keep pushing to main?", "could you tell me if main should keep pushing?"):
+            with self.subTest(said=said):
+                self.assertIsNone(self.why(said))
+
+    def test_a_trailing_please_is_the_polite_form_unless_it_opens_a_question(self):
+        self.assertEqual(self.why("keep pushing to main, please?"), "keep pushing to main, please?")
+        self.assertIsNone(self.why("should we keep pushing to main, please?"))
+
+    def test_a_negation_or_a_quote_or_a_paste_is_not_the_ask(self):
+        for said in ("can you not keep pushing to main?", 'he said "can you make sure to keep pushing to main?"',
+                     "“can you make sure to keep pushing to main?”",
+                     "<pasted_content>can you keep pushing to main?</pasted_content>"):
+            with self.subTest(said=said):
+                self.assertIsNone(self.why(said))
+
+
 class OneUse(ForemanTestCase):
     def setUp(self):
         super().setUp()

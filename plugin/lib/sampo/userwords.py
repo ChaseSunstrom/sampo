@@ -6,7 +6,8 @@ words with the one guarded call it stands for; `apply` is the hook's single entr
 A grant is one use and short: its key (verb, arguments, the words) is spent by the ledger row `user_grant` that names
 the prompt, and the same words again inside EXPIRY_S are the same grant (a prompt delivered twice), never a second use.
 Words inside a quote, a code span, a block quote or a paste are somebody's text, not the user's ask: they match nothing
-(unquoted). Only a short, plain sentence counts (MAX_WORDS), never a question, a conditional or a negation. The hook
+(unquoted). Only a short, plain sentence counts (MAX_WORDS), never a question, a conditional or a negation; the one question that
+counts is a polite request to keep main pushed ("can you make sure to keep pushing to main?", T-6359). The hook
 calls apply only for a person's own prompt (not a program's, an agent's, nor another session's text).
 
 A new verb: write a find(clean_text) -> args dict or None and a run(p, args) -> one line, add a Verb to VERBS, and a test
@@ -27,6 +28,7 @@ class Verb(NamedTuple):
     name: str
     find: Callable   # (clean text) -> an args dict, or None when these words don't ask for it
     run: Callable    # (project, args) -> the one line to tell the user
+    ask: bool = False  # True: the verb judges questions itself (a polite request counts), see find_keep_pushed
 
 
 # ---------------------------------------------------------------- the user's words, minus what is quoted
@@ -51,10 +53,15 @@ def unquoted(text):
     return " ".join(text.split())
 
 
-def _sentence(clean):
-    """The words to match: None for an empty, long, questioning or conditional message, or one with an unbalanced quote."""
+def _sentence(clean, ask=False):
+    """The words to match: None for an empty, long or conditional message, or one with an unbalanced quote. A question
+    is None too, unless `ask` (a verb that judges its own question: find_keep_pushed), which gets every other word."""
     words = clean.split()
-    if not words or len(words) > MAX_WORDS or "?" in clean or _STRAY.search(clean) or words[0].lower().strip(",.") in _OPENERS:
+    if not words or len(words) > MAX_WORDS or _STRAY.search(clean):
+        return None
+    if ask:
+        return clean
+    if "?" in clean or words[0].lower().strip(",.") in _OPENERS:
         return None
     return clean
 
@@ -70,7 +77,7 @@ _VALUE = r"(?:(?P<unl>unlimited)|no\s+(?:limit|cap|budget)|(?:without|with\s+no)
 _VERB = r"\b(?:set|make|let|allow|give|lift|remove|raise|limit|cap)\b(?!\s+sure\b)"
 _NEAR = r"(?:\s+(?:to|at|for|of|be|have|has|file|get|go|with|a|the)){0,3}\s+"   # the small words between subject and value
 _WORDS = r"(?:\s+[\w'-]+){0,%d}?\s+"
-_TAIL = r"(?=\s*(?:[.,!;:]|$)|\s+(?:please|now|today|thanks)\b)"
+_TAIL = r"(?=\s*(?:[.,!?;:]|$)|\s+(?:please|now|today|thanks)\b)"
 _BUDGET = (re.compile(rf"{_VERB}{_WORDS % 6}{_SUBJECT}{_THING}{_NEAR}{_VALUE}{_TAIL}", re.I),
            re.compile(rf"{_VERB}{_WORDS % 3}{_VALUE}{_NEAR}{_SUBJECT}{_THING}{_TAIL}", re.I))
 _NEGATED = re.compile(r"\b(?:don'?t|do\s+not|never|cannot|can'?t|won'?t|shouldn'?t|not)\b", re.I)
@@ -109,18 +116,35 @@ _KEEP_PUSH = (re.compile(rf"\bkeep\s+(?:on\s+)?(?:pushing|shipping)(?:\s+(?:it|t
               re.compile(rf"\bkeep\s+(?:origin(?:/|\s+))?main\s+(?:pushed|shipped|up\s+to\s+date){_TAIL}", re.I))
 
 
+# the words before an ask that make it a polite request: "can you ...", "could you ...", "would/will you ...", "please ...",
+# then only request words (the "make sure to" of "can you make sure to keep pushing to main?"), never a question's words
+# ("can you tell me whether we should …" is a question about the ship, not a request to keep it pushed): see T-6359 review
+_REQ_WORDS = "make|sure|to|be|ensure|remember|just|also|still|always|keep|continue|go|on|that|we|you|it|this|the|and|please"
+_REQ_LEAD = re.compile(r"(?:(?:and|so|also|but|ok|okay|hey|now|then)\W+)?(?:(?:can|could|would|will)\s+you\b|please\b)"
+                       rf"(?:\s+(?:{_REQ_WORDS})\b){{0,5}}\s*$", re.I)
+
+
 def find_keep_pushed(clean):
-    """{"why": the sentence} for a plain ask to keep main pushed, else None: the one sentence (cut at a . ! or ; followed
-    by a space or the end) the ask is in, capped at 300, never the rest of the message."""
+    """{"why": the sentence} for an ask to keep main pushed, else None: the one sentence (cut at a . ! ? or ; followed by a
+    space or the end) the ask is in, capped at 300, never the rest of the message. A plain statement ("keep main pushed")
+    or a polite request ("can you make sure to keep pushing to main?") is the ask. A question is not, unless its sentence
+    is that polite request: "should we keep pushing?", "why is main behind?" and any second question in the message are
+    refused, and so is a question that comes between the request and the ask."""
     if _NEGATED.search(clean):
         return None
     for rx in _KEEP_PUSH:
         m = rx.search(clean)
         if m:
-            ends = [e.end() for e in re.finditer(r"[.!;]+(?=\s|$)", clean)]
+            ends = [e.end() for e in re.finditer(r"[.!?;]+(?=\s|$)", clean)]
             start = max([e for e in ends if e <= m.start()], default=0)
             end = min([e for e in ends if e >= m.end()], default=len(clean))
-            return {"on": True, "why": clean[start:end].strip()[:300]}
+            sentence = clean[start:end].strip()
+            if "?" in clean or sentence.split()[0].lower().strip(",.") in _OPENERS:  # a question somewhere: the ask must be it
+                tail_please = re.search(r"\bplease\W*$", sentence, re.I) and sentence.split()[0].lower().strip(",.") not in _OPENERS
+                polite = _REQ_LEAD.match(clean[start:m.start()].strip()) or tail_please
+                if clean.count("?") != sentence.count("?") or not polite:
+                    return None
+            return {"on": True, "why": sentence[:300]}
     return None
 
 
@@ -131,7 +155,8 @@ def run_keep_pushed(p, args):
     return "Keep main pushed, from your words: the standing ship is on, so the land now ships trunk to the remote's main after each train that merged."
 
 
-VERBS = (Verb("triggers-budget", find_budget, run_budget), Verb("standing-ship", find_keep_pushed, run_keep_pushed))
+VERBS = (Verb("triggers-budget", find_budget, run_budget),
+         Verb("standing-ship", find_keep_pushed, run_keep_pushed, ask=True))  # a polite request is its ask (T-6359)
 
 
 # ---------------------------------------------------------------- the hook's entry
@@ -142,10 +167,12 @@ def find(text):
     text = str(text or "")
     if text.lstrip().startswith("/") or _MACHINE_ANY.search(text):
         return []
-    clean = _sentence(unquoted(text))
+    clean = unquoted(text)
+    plain, asked = _sentence(clean), _sentence(clean, ask=True)
     out = []
-    for v in VERBS if clean else ():
-        args = v.find(clean)
+    for v in VERBS:
+        sentence = asked if v.ask else plain
+        args = v.find(sentence) if sentence else None
         if args:
             out.append((v, args))
     return out
