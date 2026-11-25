@@ -7433,13 +7433,8 @@ class HaikuDefault(RouteBase):
         self.assertEqual(calls, ["local"], "the local model answers first and Haiku is not asked")
         self.assertEqual((got["source"], got["local"]), ("local", True))
 
-    def test_every_depth_answers_haiku_and_the_headless_pilot_keeps_its_own_models(self):
-        from sampo import lanepilot
+    def test_every_depth_answers_haiku(self):  # T-6164: the headless pilot's own model is test_lanepilot's PilotHaiku
         self.assertEqual(set(slanes.DEPTH_MODEL.values()), {"haiku"})
-        # the pilot's `claude -p` reviewers are headless children, outside the default: they keep sonnet from normal up
-        self.assertEqual(lanepilot.lenses_for(None, False)[1], "sonnet")
-        self.assertEqual(lanepilot.lenses_for(None, True)[1], "sonnet")
-        self.assertEqual(lanepilot.PILOT_MODEL, {"trivial": "haiku", "small": "haiku", "normal": "sonnet", "risky": "sonnet"})
 
     def test_the_spawn_table_and_the_sampo_agent_files_answer_haiku(self):
         from sampo import spawn

@@ -726,7 +726,7 @@ class _Env(ForemanTestCase):
 
 class RiskDepth(_Env):
     """T-5841: lanes.review_depth(b, files, diff) maps the process tier to the lenses and the reviewer model: trivial and
-    small give intent and adversary on haiku, normal adds edge on sonnet, risky all five; a protected path or a
+    small give intent and adversary on haiku, normal adds edge, risky all five (T-6164: haiku at every depth, sonnet only on escalation); a protected path or a
     security-tagged task always gives all five."""
 
     def depth(self, b, files, diff, **kw):
@@ -746,14 +746,14 @@ class RiskDepth(_Env):
         got = self.depth(_task("M"), [SRC], _patch(SRC), tests_linked={SRC: [SRC_TEST]})
         self.assertEqual((got["ptier"], got["lenses"], got["model"]), ("small", ["intent", "adversary"], "haiku"))
 
-    def test_risk_depth_normal_gives_intent_adversary_and_edge_on_sonnet(self):
+    def test_risk_depth_normal_gives_intent_adversary_and_edge_on_haiku(self):  # T-6164: haiku by default
         got = self.depth(_task("M"), [SRC], _patch(SRC))  # no linked test: normal
-        self.assertEqual((got["ptier"], got["lenses"], got["model"]), ("normal", ["intent", "adversary", "edge"], "sonnet"))
+        self.assertEqual((got["ptier"], got["lenses"], got["model"]), ("normal", ["intent", "adversary", "edge"], "haiku"))
 
     def test_risk_depth_risky_gives_all_five(self):
         got = self.depth(_task("L"), [SRC], _patch(SRC))
         self.assertEqual((got["ptier"], got["lenses"]), ("risky", FIVE))
-        self.assertEqual(got["model"], "sonnet")
+        self.assertEqual(got["model"], "haiku")  # T-6164: haiku by default
 
     def test_risk_depth_lenses_keep_the_default_order(self):
         for b in (_task("S"), _task("M"), _task("L")):
@@ -768,7 +768,7 @@ class RiskDepth(_Env):
                 with self.subTest(path=path, tier=tier):
                     got = self.depth(_task(tier, scope=(path,)), [path], _patch(path), tests_linked={path: ["t"]})
                     self.assertEqual(got["lenses"], FIVE)
-                    self.assertEqual(got["model"], "sonnet")
+                    self.assertEqual(got["model"], "haiku")  # T-6164
                     self.assertTrue(any(path in w for w in got["why"]), got["why"])
 
     def test_risk_depth_a_doc_about_a_protected_path_and_a_lookalike_stay_light(self):
@@ -890,7 +890,7 @@ class RiskDepthPrep(HookCase):
     def test_risk_depth_gate_prep_normal_and_protected_paths(self):
         got = self.lenses_of("M", "plugin/lib/sampo/app.py")
         self.assertEqual(got["lenses"], ["intent", "adversary", "edge"])
-        self.assertEqual(got["model"], "sonnet")
+        self.assertEqual(got["model"], "haiku")  # T-6164
 
     def test_risk_depth_gate_prep_a_protected_path_lists_all_five(self):
         got = self.lenses_of("S", "plugin/lib/sampo/guard.py")
@@ -903,7 +903,7 @@ class RiskDepthPrep(HookCase):
     def test_risk_depth_full_audit_prep_lists_all_five(self):
         got = self.lenses_of("S", "plugin/lib/sampo/app.py", "x = 1\n", env={"SAMPO_REVIEW_DEPTH": "full"})
         self.assertEqual([x for x in got["lenses"] if x != "self"], FIVE)
-        self.assertEqual(got["model"], "sonnet")
+        self.assertEqual(got["model"], "haiku")  # T-6164
 
     def test_risk_depth_full_audit_prep_head_says_full_not_a_small_tier(self):  # T-5841 round 1
         self.fm("init")
@@ -967,7 +967,7 @@ class RiskDepthFull(_Env):
                                (_task("M"), [SRC], _patch(SRC))):
             got = self.depth(b, files, diff)
             self.assertEqual(got["lenses"], FIVE)
-            self.assertEqual(got["model"], "sonnet", "full restores today's review")
+            self.assertEqual(got["model"], "haiku", "full restores today's review")  # T-6164: the five lenses, on haiku
 
     def test_risk_depth_full_is_exact_and_anything_else_is_the_map(self):
         for value, lenses in (("full", FIVE), (" FULL ", FIVE), ("", ["intent", "adversary"]),
@@ -980,7 +980,7 @@ class RiskDepthFull(_Env):
         small = self.lane("S")
         self.finding(small)
         got = self.depth(_task("S"), [SRC], _patch(SRC))
-        self.assertEqual((got["ptier"], got["lenses"], got["model"]), ("normal", ["intent", "adversary", "edge"], "sonnet"))
+        self.assertEqual((got["ptier"], got["lenses"], got["model"]), ("normal", ["intent", "adversary", "edge"], "haiku"))  # T-6164
         self.assertTrue(any(SRC in w for w in got["why"]), got["why"])
         self.assertEqual(self.depth(_task("S"), ["plugin/lib/sampo/other.py"], _patch("plugin/lib/sampo/other.py"))["lenses"],
                          ["intent", "adversary"], "only the named file")

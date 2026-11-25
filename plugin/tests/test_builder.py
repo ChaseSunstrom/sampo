@@ -211,10 +211,11 @@ class Brief(_Tasks):
 
     def test_builder_model_follows_the_tier(self):
         # T-0373: "not everything needs to be opus if opus orchestrates"; T-1796: M builders too (Opus M lanes were
-        # 22% of a week's usage); the main thread still reviews, merges and re-verifies
+        # 22% of a week's usage); the main thread still reviews, merges and re-verifies; T-6101: haiku is the default
+        # for every tier, and sonnet is only the escalation after two Haiku failures
         small, mid = self.task("Small one"), self.task("Mid one", tier="M")
         for tid in (small, mid):
-            self.assertIn('model: "sonnet"', json.loads(self.fm("lane", "brief", tid, "--json").stdout)["agent"])
+            self.assertIn('model: "haiku"', json.loads(self.fm("lane", "brief", tid, "--json").stdout)["agent"])
 
     def test_l_tasks_held_tasks_and_a_third_builder_are_refused(self):
         big = self.task("Rewrite the engine", tier="L")

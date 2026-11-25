@@ -41,6 +41,12 @@ if os.environ.get("FOREMAN_DRIVE_TASK"):  # the fix session
         print("error: unknown agent 'sampo:fm-builder'", file=sys.stderr)
         sys.exit(2)
     mode = os.environ.get("STUB_FIX", "fix")
+    if mode.startswith("failruns"):  # failruns2: the first two sessions exit 1 (costing $0.1 each), the third one fixes the lane
+        n = sum(1 for l in open(os.environ["STUB_LOG"]) if '"kind": "fix"' in l)
+        if n <= int(mode[8:]):
+            print(json.dumps({"result": "it broke", "total_cost_usd": 0.1}))
+            sys.exit(1)
+        mode = "fix"
     if mode == "fail":
         sys.exit(1)
     # round 2: the session has no shell, it only edits files; the PILOT commits. The modes that run git here play a session
@@ -331,7 +337,7 @@ class Argv(FixCase):
         args = call["args"]
         self.assertIn("-p", args)
         self.assertEqual(self.arg(call, "--permission-mode"), "dontAsk", "an allow list, not a deny list of prefixes")
-        self.assertEqual(self.arg(call, "--model"), "sonnet")
+        self.assertEqual(self.arg(call, "--model"), "haiku", "the fix session is Haiku at every tier (T-6164 review item 8)")
         self.assertGreater(float(self.arg(call, "--max-budget-usd")), 0)
         self.assertEqual(self.arg(call, "--output-format"), "json")
         self.assertEqual(self.arg(call, "--agent"), "sampo:fm-builder")
@@ -544,9 +550,58 @@ class FixFails(FixCase):
         r = self.pilot()
         self.assertEqual(r["outcome"], "exception", r)
         self.assertIn("fix session exited 1", r["reason"])
-        self.assertEqual(len(self.kinds("fix")), 1, "a failed session is not retried")
+        self.assertEqual(len(self.kinds("fix")), 1, "a failed session that reported no cost used the whole cap: no retry")
         self.assertEqual(self.brief().meta.get("changes_asked"), "lane-pilot")
         self.assertFalse(self.accepted())
+
+
+class FixModelEscalation(FixCase):
+    """T-6164: the fix session is Haiku (the user's rule, 2026-11-22), and Sonnet only after two failed Haiku runs: the
+    third run of a round is on sonnet, under what is left of the one fix cap, with the move logged."""
+    fix = "failruns2"
+
+    def models(self):
+        return [self.arg(x, "--model") for x in self.kinds("fix")]
+
+    def test_two_failed_haiku_fix_runs_are_followed_by_one_on_sonnet_that_fixes_the_lane(self):
+        r = self.pilot()
+        self.assertEqual(self.models(), ["haiku", "haiku", "sonnet"], r)
+        self.assertEqual(r["outcome"], "accepted", r)
+        esc = [e["data"] for e in self.events("pilot_escalate")]
+        self.assertEqual([(e["lens"], e["from"], e["to"]) for e in esc], [("fix round 1", "haiku", "sonnet")], esc)
+        self.assertIn("exited 1", esc[0]["reason"])
+
+    def test_each_run_is_capped_by_what_the_earlier_ones_left(self):
+        with mock.patch.object(lanepilot, "fix_cap", return_value=1.0):
+            self.pilot()
+        caps = [self.arg(x, "--max-budget-usd") for x in self.kinds("fix")]
+        self.assertEqual(caps, ["1", "0.9", "0.8"])
+
+    def test_a_cap_the_haiku_runs_used_up_stops_before_the_sonnet_run(self):
+        with mock.patch.object(lanepilot, "fix_cap", return_value=0.2):
+            r = self.pilot()
+        self.assertEqual(self.models(), ["haiku", "haiku"], "no third run once the cap is spent")
+        self.assertEqual(self.events("pilot_escalate"), [])
+        self.assertEqual(r["outcome"], "exception", r)
+
+    def test_a_second_haiku_run_that_works_does_not_escalate(self):
+        os.environ["STUB_FIX"] = "failruns1"
+        r = self.pilot()
+        self.assertEqual(self.models(), ["haiku", "haiku"], r)
+        self.assertEqual(self.events("pilot_escalate"), [])
+        self.assertEqual(r["outcome"], "accepted", r)
+
+    def test_a_busy_ledger_never_loses_the_run_or_waits_between_the_sessions(self):
+        real_log = c.log_event
+
+        def busy(p, event, **kw):
+            if event == "pilot_escalate":
+                raise c.LockTimeout("the project lock stayed busy")
+            return real_log(p, event, **kw)
+        with mock.patch.object(c, "log_event", side_effect=busy):
+            r = self.pilot()
+        self.assertEqual(self.models(), ["haiku", "haiku", "sonnet"], r)
+        self.assertEqual(r["outcome"], "accepted", r)
 
 
 class NoCommit(FixCase):
@@ -914,7 +969,7 @@ class SensitiveFix(FixCase):
         self.assertEqual(want, list(c.DEFAULT_LENSES), "a sensitive diff takes the full set")
         self.assertEqual(sorted(x["lens"] for x in again), sorted(want), "the fix raised the lens set at the new tip")
         for call in again:
-            self.assertEqual(self.arg(call, "--model"), "sonnet", "a sensitive tip is read on sonnet")
+            self.assertEqual(self.arg(call, "--model"), "haiku", "a sensitive tip is read on haiku (T-6164: every reviewer tier is haiku)")
         self.assertEqual(r["lenses"], list(want))
         self.assertEqual(r["outcome"], "accepted", r)
 
@@ -1379,7 +1434,7 @@ class LoopExits(FixCase):
                          "a second pilot run pays for nothing")
 
     def test_a_re_review_that_gave_no_verdict_after_a_fix_is_stamped(self):
-        r = self.run_with(review=lambda real, *a, **kw: ({}, [], "a reviewer gave no verdict", []))
+        r = self.run_with(review=lambda real, *a, **kw: ({}, [], "a reviewer gave no verdict", [], []))
         self.assertIn("no verdict", r["reason"])
         self.stamped(r)
 

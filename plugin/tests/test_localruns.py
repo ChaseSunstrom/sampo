@@ -449,7 +449,7 @@ class Escalate(LocalLane):
         pilot.assert_not_called()
         (row,) = self.rows()
         self.assertEqual((row["outcome"], row["task"]), ("abstain", tid))
-        self.assertEqual(b.meta["builder_model"], "sonnet", "briefed again, for a Claude builder")
+        self.assertEqual(b.meta["builder_model"], "haiku", "briefed again, for a Claude builder (T-6101: haiku by default)")
         self.assertIn("local builder escalated", b.section("Log"))
         text = self.claude_brief(tid)
         self.assertIn("## The local attempt", text)
@@ -544,7 +544,7 @@ class LocalFirstBounds(LocalLane):
         (row,) = self.rows()
         self.assertEqual((row["task"], row["outcome"]), (tid, "refused"), row)
         self.assertIn(why, row["why"])
-        self.assertEqual(b.meta["builder_model"], "sonnet", "escalated to a Claude builder")
+        self.assertEqual(b.meta["builder_model"], "haiku", "escalated to a Claude builder (T-6101: haiku by default)")
         base = subprocess.run(["git", "-C", self.main, "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
         names = subprocess.run(["git", "-C", self.main, "diff", "--name-only", f"{base}..foreman/{tid}"],
                                capture_output=True, text=True, check=True).stdout.split()

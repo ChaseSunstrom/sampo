@@ -1,5 +1,5 @@
 """T-5706: `fm lane pilot` (lanepilot.py) turns one returned lane into an accepted lane or one exception line. Headless
-reviewers, one per lens (haiku for an S lane, sonnet for M or a sensitive diff), record only the clean lenses against
+reviewers, one per lens (haiku at every tier, T-6164; sonnet only after two Haiku failures), record only the clean lenses against
 the lane's own tree; a clean lane goes to `sampo lane accept` as a subprocess, with no lead turn. The stub claude is
 test_audit_run's: it answers each lens from the env (STUB_BAD_LENS names one that reports a HIGH finding)."""
 # map-links: plugin/lib/sampo/lanepilot.py
@@ -92,7 +92,7 @@ class SmallLane(PilotCase):
         r = self.pilot()
         self.assertEqual(r["outcome"], "accepted", r)
         self.assertEqual(r["lenses"], ["intent", "adversary"])  # T-6044: the depth map's light tier, not the self lens
-        self.assertEqual(r["model"], "haiku")
+        self.assertEqual((r["model"], r["lens_models"]), ("haiku", {"intent": "haiku", "adversary": "haiku"}))
         calls = self.calls()
         self.assertEqual(sorted(x["lens"] for x in calls), ["adversary", "intent"], "one reviewer per lens")
         self.assertEqual({self.arg(x, "--model") for x in calls}, {"haiku"})
@@ -145,7 +145,7 @@ class Replay(PilotCase):
         os.environ["STUB_REPLY"] = json.dumps(reply)
         self.addCleanup(os.environ.pop, "STUB_REPLY", None)
         p = c.find_project(self.repo)
-        verdicts, findings, why, _ = lanepilot.review(p, self.tid, ["edge"], "haiku")
+        verdicts, findings, why, _, _ = lanepilot.review(p, self.tid, ["edge"], "haiku")
         self.assertEqual(verdicts, {"edge": "changes needed"})
         self.assertEqual(findings, ["edge: HIGH pkg/mod.py:42 an empty list divides by zero"])
 
@@ -157,7 +157,7 @@ class Replay(PilotCase):
         def fake(p, args):
             print(json.dumps(data))
         with mock.patch.object(auditrun, "run", fake):
-            _, findings, _, _ = lanepilot.review(c.find_project(self.repo), self.tid, ["edge"], "haiku")
+            _, findings, _, _, _ = lanepilot.review(c.find_project(self.repo), self.tid, ["edge"], "haiku")
         self.assertEqual(findings, ["edge: LOW a.py:7 a name", "edge: HIGH no place"])
 
     def test_a_recorded_reply_replays_through_the_pilots_review(self):
@@ -179,7 +179,7 @@ class Replay(PilotCase):
             if os.path.exists(auditrun._schema_cache()):
                 os.remove(auditrun._schema_cache())  # the probe's answer is per claude: asked again for each recording
             with self.subTest(reply=n):
-                verdicts, findings, why, _ = lanepilot.review(c.find_project(self.repo), self.tid, [expect["lens"]], "haiku")
+                verdicts, findings, why, _, _ = lanepilot.review(c.find_project(self.repo), self.tid, [expect["lens"]], "haiku")
                 self.assertEqual(verdicts, {expect["lens"]: expect["verdict"]})
                 self.assertEqual(findings, [f"{expect['lens']}: {s} {at} {t}".replace("  ", " ") for s, at, t in expect["findings"]])
 
@@ -246,14 +246,14 @@ class SensitiveScan(PilotCase):
 class SensitiveSmallLane(PilotCase):
     name = "auth.py"
 
-    def test_a_sensitive_s_lane_runs_all_five_on_sonnet(self):  # T-6044: auth.py is a protected path and a sensitive one
+    def test_a_sensitive_s_lane_runs_all_five_on_haiku(self):  # T-6044: auth.py is a protected path and a sensitive one; T-6164: haiku
         r = self.pilot()
         self.assertEqual(r["outcome"], "accepted", r)
         self.assertEqual(r["lenses"], list(c.DEFAULT_LENSES))
-        self.assertEqual(r["model"], "sonnet")
+        self.assertEqual((r["model"], r["lens_models"]), ("haiku", {x: "haiku" for x in c.DEFAULT_LENSES}))
         calls = self.calls()
         self.assertEqual(sorted(x["lens"] for x in calls), sorted(c.DEFAULT_LENSES))
-        self.assertEqual({self.arg(x, "--model") for x in calls}, {"sonnet"})
+        self.assertEqual({self.arg(x, "--model") for x in calls}, {"haiku"})
         self.assertTrue(self.accepted())
 
 
@@ -261,14 +261,14 @@ class MediumLane(PilotCase):
     tier = "M"
     name = "mod.py"  # code with no linked test: the depth map's normal tier
 
-    def test_a_clean_m_lane_gets_the_normal_depth_on_sonnet_and_is_accepted(self):  # T-6044: intent, adversary, edge
+    def test_a_clean_m_lane_gets_the_normal_depth_on_haiku_and_is_accepted(self):  # T-6044: intent, adversary, edge; T-6164: haiku
         r = self.pilot()
         self.assertEqual(r["outcome"], "accepted", r)
         self.assertEqual(r["lenses"], ["intent", "adversary", "edge"])
-        self.assertEqual(r["model"], "sonnet")
+        self.assertEqual((r["model"], r["lens_models"]), ("haiku", {x: "haiku" for x in ["intent", "adversary", "edge"]}))
         calls = self.calls()
         self.assertEqual(sorted(x["lens"] for x in calls), ["adversary", "edge", "intent"])
-        self.assertEqual({self.arg(x, "--model") for x in calls}, {"sonnet"})
+        self.assertEqual({self.arg(x, "--model") for x in calls}, {"haiku"})
         self.assertEqual(self.audits(), ["adversary", "edge", "intent"])
         self.assertTrue(self.accepted())
 
@@ -293,32 +293,32 @@ class LensDepth(PilotCase):
         self.assertEqual(self.chosen(self.tid), (["intent", "adversary"], "haiku"))
         self.assertEqual(self.chosen(self.lane(2, "notes.md", tier="S")), (["intent", "adversary"], "haiku"), "a docs-only lane")
 
-    def test_a_protected_path_runs_all_five_on_sonnet(self):
+    def test_a_protected_path_runs_all_five_on_haiku(self):  # T-6164: haiku at every tier, sonnet only by escalation
         tid = self.lane(2, "sub/land.py")
-        self.assertEqual(self.chosen(tid), (list(c.DEFAULT_LENSES), "sonnet"))
+        self.assertEqual(self.chosen(tid), (list(c.DEFAULT_LENSES), "haiku"))
 
-    def test_a_security_task_runs_all_five_on_sonnet(self):
+    def test_a_security_task_runs_all_five_on_haiku(self):  # T-6164
         tid = self.lane(2, "plain.py")
         self.type_of(tid, "SECURITY")
-        self.assertEqual(self.chosen(tid), (list(c.DEFAULT_LENSES), "sonnet"))
+        self.assertEqual(self.chosen(tid), (list(c.DEFAULT_LENSES), "haiku"))
 
-    def test_a_sensitive_diff_always_includes_the_adversary_on_sonnet(self):
+    def test_a_sensitive_diff_always_includes_the_adversary_on_haiku(self):  # T-6164
         p = c.find_project(self.repo)
         b = self.brief()
         lenses, model = lanepilot.lenses_for(b, True, p, ["notes.md"], b"")  # a light diff the scan still calls sensitive
         self.assertIn("adversary", lenses)
-        self.assertEqual(model, "sonnet")
+        self.assertEqual(model, "haiku")
         lenses, model = self.chosen(self.lane(2, "calc.py", text="result = eval(user_text)\n"))
         self.assertIn("adversary", lenses)
-        self.assertEqual(model, "sonnet")
+        self.assertEqual(model, "haiku")
 
-    def test_a_diff_the_pilot_could_not_read_gets_every_lens_on_sonnet(self):  # fail closed
+    def test_a_diff_the_pilot_could_not_read_gets_every_lens_on_haiku(self):  # fail closed; T-6164: haiku
         lenses, model = lanepilot.lenses_for(self.brief(), False, c.find_project(self.repo), None, b"")
-        self.assertEqual((lenses, model), (list(c.DEFAULT_LENSES), "sonnet"))
+        self.assertEqual((lenses, model), (list(c.DEFAULT_LENSES), "haiku"))
 
-    def test_review_depth_full_gives_all_five(self):
+    def test_review_depth_full_gives_all_five_on_haiku(self):  # T-6164: full depth is still haiku
         with mock.patch.dict(os.environ, {"SAMPO_REVIEW_DEPTH": "full"}):
-            self.assertEqual(self.chosen(self.tid), (list(c.DEFAULT_LENSES), "sonnet"))
+            self.assertEqual(self.chosen(self.tid), (list(c.DEFAULT_LENSES), "haiku"))
 
     def test_the_lenses_are_the_depth_maps_own(self):
         p = c.find_project(self.repo)
@@ -345,7 +345,264 @@ class LensDepth(PilotCase):
         plan = lanepilot.plan(p, self.brief(), self.repo)
         self.assertEqual((plan["lenses"], plan["model"]), (["intent", "adversary"], "haiku"))
         r = self.pilot()
-        self.assertEqual((r["lenses"], r["model"]), (plan["lenses"], plan["model"]))
+        self.assertEqual(r["lenses"], plan["lenses"])
+        self.assertEqual((r["model"], r["lens_models"]), ("haiku", {x: "haiku" for x in plan["lenses"]}))
+
+
+UNPARSED = "<an unparsed reply>"  # T-6164 review: a plan entry for a reply that parses to no verdict
+
+
+class PilotHaikuCase(PilotCase):
+    """T-6164: the pilot's headless reviewers run on Haiku at every tier (the user's rule, 2026-11-22). Sonnet is the one
+    escalation: a lens whose Haiku run errors, times out or parses to no verdict twice re-runs on sonnet, and logs a
+    pilot_escalate event with its reason. A HIGH finding is a verdict and never escalates. plan_reviews scripts the replies
+    per (lens, model): a string is a run that errored, a (verdict, findings) pair is a reply, None is the real stub; a list
+    is used in order."""
+
+    def plan_reviews(self, plan):
+        real, plan = lanepilot.review, {k: list(v) for k, v in plan.items()}
+        self.attempts = []
+
+        def fake(p, tid, lenses, model, since="", note="", effort=""):
+            v, f, w, u, fl, real_lenses = {}, [], "", [], [], []
+            for x in lenses:
+                self.attempts.append((x, model))
+                seq = plan.get((x, model))
+                got = (seq.pop(0) if len(seq) > 1 else seq[0]) if seq else None
+                if got is None:
+                    real_lenses.append(x)
+                elif got == UNPARSED:  # T-6164 review: a reply that parses to no verdict is a failed Haiku run too
+                    u.append(x)
+                    fl.append(x)  # auditrun's "failed" is a superset of "unparsed"
+                elif isinstance(got, str):  # a run that errored or timed out: no verdict, its reason as review() words it
+                    w = "; ".join(s for s in (w, f"fm audit run: no verdict for {x} ({got})") if s)
+                    fl.append(x)
+                else:
+                    v[x] = got[0]
+                    f += [f"{x}: {sev} {at} {text}" for sev, at, text in got[1]]
+            if real_lenses:
+                rv, rf, rw, ru, rfl = real(p, tid, real_lenses, model, since=since, note=note, effort=effort)
+                v.update(rv)
+                f, w, u, fl = f + rf, "; ".join(s for s in (w, rw) if s), u + ru, fl + rfl
+            return v, f, w, u, fl
+
+        patch = mock.patch.object(lanepilot, "review", side_effect=fake)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def escalations(self):
+        return [e["data"] for e in c.ledger_events(c.find_project(self.repo), ("pilot_escalate",))]
+
+
+class PilotHaiku(PilotHaikuCase):
+    tier = "M"
+    name = "mod.py"  # the depth map's normal tier: intent, adversary, edge
+
+    def test_every_tier_answers_haiku_and_the_run_names_it(self):
+        from sampo import spawn
+        self.assertFalse(hasattr(lanepilot, "PILOT_MODEL"), "one constant, not a per-tier table (T-6164 review item 7)")
+        self.assertEqual(lanepilot.HAIKU, spawn.HAIKU)
+        self.assertEqual(lanepilot.FIX_MODEL, "haiku", "the fix session is Haiku too (T-6164 review item 8)")
+        self.assertEqual((lanepilot.lenses_for(None, False)[1], lanepilot.lenses_for(None, True)[1]), ("haiku", "haiku"))
+        r = self.pilot()
+        self.assertEqual((r["outcome"], r["lenses"], r["model"]), ("accepted", ["intent", "adversary", "edge"], "haiku"), r)
+        self.assertEqual(r["lens_models"], {"intent": "haiku", "adversary": "haiku", "edge": "haiku"})
+        self.assertIn("(intent, adversary, edge on haiku, ", lanepilot.line(r))
+        self.assertEqual({self.arg(x, "--model") for x in self.calls()}, {"haiku"})
+        self.assertEqual(self.escalations(), [], "nothing failed, so nothing escalates")
+
+    def test_a_protected_path_runs_all_five_on_haiku(self):
+        p, tid = c.find_project(self.repo), self.lane(2, "sub/land.py")
+        b = c.find_brief(p, tid)
+        names, raw = lanepilot.lane_diff(self.repo, train._lane_tip(self.repo, b))
+        self.assertEqual(lanepilot.lenses_for(b, False, p, names, raw), (list(c.DEFAULT_LENSES), "haiku"))
+
+    def test_a_lens_whose_haiku_run_times_out_twice_reruns_on_sonnet_with_the_reason_logged(self):
+        self.plan_reviews({("edge", "haiku"): ["timed out after 600 s"]})
+        r = self.pilot()
+        self.assertEqual(r["outcome"], "accepted", r)
+        self.assertEqual([t for t in self.attempts if t[0] == "edge"], [("edge", "haiku"), ("edge", "haiku"), ("edge", "sonnet")])
+        self.assertEqual(sorted(t for t in self.attempts if t[0] != "edge"), [("adversary", "haiku"), ("intent", "haiku")])
+        esc = self.escalations()
+        self.assertEqual([(e["lens"], e["from"], e["to"]) for e in esc], [("edge", "haiku", "sonnet")], esc)
+        self.assertIn("timed out after 600 s", esc[0]["reason"])
+        self.assertEqual(self.audits(), ["adversary", "edge", "intent"], "the sonnet run's clean verdict is the one recorded")
+
+    def test_a_haiku_run_that_errors_once_is_retried_on_haiku_and_not_escalated(self):
+        self.plan_reviews({("edge", "haiku"): ["exit 3", None]})  # the second Haiku run is the real stub's, and it is clean
+        r = self.pilot()
+        self.assertEqual(r["outcome"], "accepted", r)
+        self.assertEqual([t for t in self.attempts if t[0] == "edge"], [("edge", "haiku"), ("edge", "haiku")])
+        self.assertEqual(self.escalations(), [])
+
+    def test_a_lens_that_fails_on_sonnet_too_is_an_exception_naming_it(self):
+        self.plan_reviews({("edge", "haiku"): ["timed out"], ("edge", "sonnet"): ["timed out"]})
+        r = self.pilot()
+        self.assertEqual(r["outcome"], "exception", r)
+        self.assertIn("edge", r["reason"])
+        self.assertEqual([t for t in self.attempts if t[0] == "edge"], [("edge", "haiku"), ("edge", "haiku"), ("edge", "sonnet")])
+        self.assertFalse(self.accepted())
+
+    def test_an_unparsed_haiku_reply_is_a_failed_run_retried_once_then_escalated(self):  # T-6164 review item 5
+        self.plan_reviews({("edge", "haiku"): [UNPARSED]})
+        r = self.pilot()
+        self.assertEqual(r["outcome"], "accepted", r)
+        self.assertEqual([t for t in self.attempts if t[0] == "edge"], [("edge", "haiku"), ("edge", "haiku"), ("edge", "sonnet")])
+        esc = self.escalations()
+        self.assertEqual([(e["lens"], e["to"]) for e in esc], [("edge", "sonnet")], esc)
+        self.assertIn("reply unparsed", esc[0]["reason"])
+
+    def test_an_unparsed_haiku_reply_that_the_retry_answers_is_not_escalated(self):  # T-6164 review item 5
+        self.plan_reviews({("edge", "haiku"): [UNPARSED, None]})  # the second Haiku run is the real stub's, and it is clean
+        r = self.pilot()
+        self.assertEqual(r["outcome"], "accepted", r)
+        self.assertEqual([t for t in self.attempts if t[0] == "edge"], [("edge", "haiku"), ("edge", "haiku")])
+        self.assertEqual(self.escalations(), [])
+
+    def test_review_returns_the_lenses_auditruns_json_says_failed_not_a_parse_of_its_prose(self):  # T-6164 review round 2
+        data = {"verdicts": {"intent": "ok"}, "findings": {}, "typed": {}, "unparsed": ["edge"],
+                "failed": {"edge": "reply unparsed", "adversary": "timed out after 600 s"}}
+
+        def fake(p, args):
+            print(json.dumps(data))
+            raise cli.UsageError("no verdict for edge; adversary (worded in no way a parser could rely on)")
+        with mock.patch.object(auditrun, "run", fake):
+            _v, _f, why, unparsed, failed = lanepilot.review(c.find_project(self.repo), self.brief().id, ["intent", "edge", "adversary"], "haiku")
+        self.assertEqual((sorted(failed), unparsed), (["adversary", "edge"], ["edge"]))
+        self.assertIn("no verdict", why)
+
+        def busy(p, args):
+            raise c.LockTimeout("busy")
+        with mock.patch.object(auditrun, "run", busy):
+            *_, why, _u, failed = lanepilot.review(c.find_project(self.repo), self.brief().id, ["edge"], "haiku")
+        self.assertEqual((why, failed), (lanepilot.BUSY_WHY, []), "a busy-lock refusal names no lens")
+
+    def test_two_failed_scope_groups_both_retry_on_haiku_and_both_escalate(self):  # T-6164 review item 2
+        self.plan_reviews({("intent", "haiku"): ["timed out"], ("edge", "haiku"): ["exit 3"],
+                           ("intent", "sonnet"): [("ok", [])], ("edge", "sonnet"): [("ok", [])]})
+        b = self.brief()
+        p = c.find_project(self.repo)
+        before = lanepilot._state(self.repo, b)
+        _names, whole = lanepilot.lane_diff(self.repo, before[0])
+        scopes = {"intent": ("a" * 40, whole), "edge": ("", whole)}  # two scope groups: two no-verdict names in one why
+        queue = []
+        verdicts, _findings, why, _unparsed, _answered = lanepilot.review_escalated(
+            p, b, self.repo, before, ["intent", "edge"], scopes, queue=queue)
+        self.assertEqual(lanepilot._flush(p, queue), [], "the round's lines are written once, by its caller")
+        self.assertEqual(verdicts, {"intent": "ok", "edge": "ok"}, why)
+        self.assertEqual(sorted(t for t in self.attempts if t[1] == "haiku"),
+                         [("edge", "haiku"), ("edge", "haiku"), ("intent", "haiku"), ("intent", "haiku")])
+        self.assertEqual(sorted(e["lens"] for e in self.escalations()), ["edge", "intent"])
+
+    def test_a_busy_lock_refusal_stops_the_later_scope_groups_and_another_refusal_does_not(self):  # T-6164 review item 4
+        b = self.brief()
+        p = c.find_project(self.repo)
+        before = lanepilot._state(self.repo, b)
+        _names, whole = lanepilot.lane_diff(self.repo, before[0])
+        scopes = {"intent": ("a" * 40, whole), "edge": ("", whole)}
+        for why, want in ((lanepilot.BUSY_WHY, 1),
+                          ("fm audit run: lane has no diff", 2)):
+            calls = []
+
+            def fake(p, tid, group, model, since="", note="", effort="", why=why, calls=calls):
+                calls.append(list(group))
+                return {}, [], why, [], []
+
+            with mock.patch.object(lanepilot, "review", side_effect=fake):
+                lanepilot.review_cached(p, b, self.repo, before, ["intent", "edge"], "haiku", scopes)
+            self.assertEqual(len(calls), want, (why, calls))
+
+    def test_a_busy_ledger_on_the_escalation_or_the_lens_log_still_runs_the_sonnet_run(self):  # T-6164 review item 3
+        self.plan_reviews({("edge", "haiku"): ["timed out"]})
+        real_log = c.log_event
+
+        def busy(p, event, **kw):
+            if event in ("pilot_escalate", "pilot_lens"):
+                raise c.LockTimeout("the project lock stayed busy")
+            return real_log(p, event, **kw)
+
+        sleeps = []
+        with mock.patch.object(c, "log_event", side_effect=busy), mock.patch.object(lanepilot, "_sleep", sleeps.append):
+            r = self.pilot()
+        self.assertEqual(r["outcome"], "accepted", r)
+        self.assertIn(("edge", "sonnet"), self.attempts)
+        self.assertEqual([x["lens"] for x in r["unlogged"]], ["edge"], "an escalation the busy ledger kept out is not lost")
+        self.assertLessEqual(len(sleeps), len(lanepilot.LOCK_BACKOFF), f"one backoff for the round, not one per lens: {sleeps}")
+
+    def test_a_busy_lock_costs_no_wait_between_two_paid_runs(self):  # T-6164 review round 2: ~60 s per lens before
+        self.plan_reviews({("edge", "haiku"): ["timed out"]})
+        sleeps, locks = [], []
+        real_lock = c.lock
+
+        def lock(d, timeout=5.0):
+            locks.append(timeout)
+            if timeout == 0:  # the round's single non-blocking try: the lock is held by someone else
+                raise c.LockTimeout("lock busy")
+            return real_lock(d, timeout=timeout)
+
+        with mock.patch.object(c, "lock", side_effect=lock), mock.patch.object(lanepilot, "_sleep", sleeps.append):
+            r = self.pilot()
+        self.assertEqual(r["outcome"], "accepted", r)
+        self.assertEqual(locks.count(0), 1, f"every pilot_lens line of the round goes in one non-blocking try: {locks}")
+        self.assertEqual([(e["lens"], e["from"], e["to"]) for e in self.escalations()], [("edge", "haiku", "sonnet")],
+                         "the escalation line is retried and lands")
+        self.assertLessEqual(len(sleeps), 1)
+
+    def test_a_clean_ledger_writes_the_lens_lines_of_the_round_in_one_lock_take(self):
+        self.plan_reviews({("edge", "haiku"): ["timed out"]})
+        locks = []
+        real_lock = c.lock
+
+        def lock(d, timeout=5.0):
+            locks.append(timeout)
+            return real_lock(d, timeout=timeout)
+
+        with mock.patch.object(c, "lock", side_effect=lock):
+            r = self.pilot()
+        self.assertEqual(r["outcome"], "accepted", r)
+        self.assertEqual(locks.count(0), 1, locks)
+        lens = [e["data"]["lens"] for e in c.ledger_events(c.find_project(self.repo), ("pilot_lens",))]
+        self.assertTrue({"intent", "adversary", "edge"} <= set(lens), lens)
+
+    def test_the_result_names_the_model_and_the_model_that_answered_each_lens(self):  # T-6164 review round 2
+        self.plan_reviews({("edge", "haiku"): ["timed out"]})
+        r = self.pilot()
+        self.assertEqual(r["outcome"], "accepted", r)
+        self.assertEqual(r["model"], "haiku+sonnet", "the string a reader always had")
+        self.assertEqual(r["lens_models"], {"intent": "haiku", "adversary": "haiku", "edge": "sonnet"}, r)
+        self.assertIn("(intent, adversary, edge on haiku+sonnet, ", lanepilot.line(r))
+        said = json.loads(lanepilot.answer(r))
+        self.assertEqual((said["model"], said["lens_models"]), ("haiku+sonnet", r["lens_models"]), "--json carries both")
+
+    def test_a_high_adversary_finding_on_a_lane_that_is_not_sensitive_stays_on_haiku(self):
+        self.no_fix_rounds()
+        self.plan_reviews({("adversary", "haiku"): [("changes needed", [("HIGH", "a.py:3", "the cap is never read")])]})
+        r = self.pilot()
+        self.assertEqual(r["outcome"], "changes", r)
+        self.assertNotIn(("adversary", "sonnet"), self.attempts)
+        self.assertEqual(self.escalations(), [])
+
+
+class PilotHaikuSensitive(PilotHaikuCase):
+    tier = "S"
+    name = "auth.py"  # a protected path and a sensitive one: all five lenses
+
+    def test_a_sensitive_lane_runs_all_five_on_haiku_and_is_accepted(self):
+        r = self.pilot()
+        self.assertEqual((r["outcome"], r["lenses"], r["model"]), ("accepted", list(c.DEFAULT_LENSES), "haiku"), r)
+        self.assertEqual(r["lens_models"], {x: "haiku" for x in c.DEFAULT_LENSES})
+        self.assertEqual({self.arg(x, "--model") for x in self.calls()}, {"haiku"})
+        self.assertTrue(self.accepted())
+
+    def test_a_high_haiku_adversary_finding_on_a_sensitive_lane_stays_on_haiku(self):
+        """The user's rule: Sonnet only after two failed Haiku runs. A HIGH finding is a verdict, sensitive lane or not."""
+        self.no_fix_rounds()
+        self.plan_reviews({("adversary", "haiku"): [("changes needed", [("HIGH", "a.py:3", "the cap is never read")])]})
+        r = self.pilot()
+        self.assertEqual(r["outcome"], "changes", r)
+        self.assertEqual([t for t in self.attempts if t[0] == "adversary"], [("adversary", "haiku")])
+        self.assertEqual(r["findings"], ["adversary: HIGH a.py:3 the cap is never read"])
+        self.assertEqual((r["model"], self.escalations()), ("haiku", []))
 
 
 class VerdictCache(PilotCase):
@@ -434,7 +691,7 @@ class VerdictCache(PilotCase):
     def test_an_unparsed_lens_is_never_kept(self):
         os.environ["STUB_NO_HEADER"] = "intent"
         self.addCleanup(os.environ.pop, "STUB_NO_HEADER", None)
-        verdicts, _, why, unparsed = self.review()
+        verdicts, _, why, unparsed, _ = self.review()
         self.assertEqual(unparsed, ["intent"])
         self.assertEqual(verdicts, {"adversary": "ok"})
         self.review()
@@ -460,7 +717,7 @@ class VerdictCache(PilotCase):
             raise cli.UsageError("fm audit run: no verdict for " + ", ".join(args.lens))
         with mock.patch.object(auditrun, "run", fake):
             for _ in range(2):
-                verdicts, _, why, _ = self.review(("intent",))
+                verdicts, _, why, _, _ = self.review(("intent",))
                 self.assertEqual(verdicts, {})
                 self.assertIn("no verdict", why)
         self.assertEqual(runs, [["intent"], ["intent"]], "asked both times")
@@ -887,7 +1144,7 @@ class DryAndAll(PilotCase):
         self.assertIs(inspect.signature(lanes.land_holds).parameters["timing"].default, True)
 
     def test_a_changes_round_stamps_pilot_tip_through_the_ledger(self):  # round 3 (b)
-        with mock.patch.object(lanepilot, "review", return_value=({"self": "changes needed"}, [], "", [])):
+        with mock.patch.object(lanepilot, "review", return_value=({"self": "changes needed"}, [], "", [], [])):
             r = lanepilot.pilot(c.find_project(self.repo), self.tid, self.repo)
         self.assertEqual(r["outcome"], "changes")
         self.assertTrue(self.brief().meta.get("pilot_tip"))
@@ -1370,11 +1627,11 @@ class LocalReviewFirst(LocalReviewCase):
 
 
 class LocalReviewFirstSensitive(LocalReviewCase):
-    name = "auth.py"  # a sensitive path: all five lenses, on sonnet
+    name = "auth.py"  # a sensitive path: all five lenses, on haiku (T-6164)
 
     def test_a_sensitive_diffs_adversary_lens_is_never_local(self):
         r = self.pilot()
-        self.assertEqual(r["model"], "sonnet", r)
+        self.assertEqual((r["model"], r["lens_models"]), ("haiku", {x: "haiku" for x in c.DEFAULT_LENSES}), r)
         self.assertEqual(self.stub.asked, [], "a sensitive lane reads no lens locally")
         self.assertEqual(self.reviewed_by_claude(), sorted(r["lenses"]), "every lens of a sensitive lane is Claude's")
         self.assertTrue(len(r["lenses"]) > 1, r)

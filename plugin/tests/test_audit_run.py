@@ -456,13 +456,13 @@ class AuditRun(AuditBase):
         self.assertEqual(sorted(x["lens"] for x in self.calls()), ["adversary", "intent"])
         self.assertEqual(self.models(), ["haiku"])
 
-    def test_depth_map_a_protected_path_runs_all_five_on_haiku(self):  # T-5842, T-6101: haiku is the map's model at every tier
+    def test_depth_map_a_protected_path_runs_all_five_on_haiku(self):  # T-5842; T-6164: haiku by default
         self.small_task()
         with open(os.path.join(self.repo, "guard.py"), "w") as f:
             f.write("x = 1\n")
         self.run_audit()
         self.assertEqual(sorted(x["lens"] for x in self.calls()), sorted(c.DEFAULT_LENSES))
-        self.assertEqual(self.models(), ["haiku"])
+        self.assertEqual(self.models(), ["haiku"])  # T-6164
 
     def test_depth_map_an_explicit_lens_or_model_wins(self):  # T-5842
         self.small_task()
@@ -478,7 +478,7 @@ class AuditRun(AuditBase):
         self.small_task()
         self.run_audit(env={"SAMPO_REVIEW_DEPTH": "full"})
         self.assertEqual(sorted(x["lens"] for x in self.calls()), sorted(c.DEFAULT_LENSES))
-        self.assertEqual(self.models(), ["haiku"], "T-6101: DEPTH_MODEL is haiku at full depth too")
+        self.assertEqual(self.models(), ["haiku"])  # T-6164: the full depth is haiku too
 
     def costs(self):
         return [e for e in c.ledger_tail(self.project(), 500) if e.get("event") == "review_cost"]

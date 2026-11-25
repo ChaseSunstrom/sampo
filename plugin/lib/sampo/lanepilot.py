@@ -2,9 +2,12 @@
 
 The pilot gates the lane first (its builder returned, it awaits its merge, no land hold, no red check, the contract
 still runs), then runs fm audit run's reviewers on the lane's own tree: one per lens, the lenses and model the depth map gives
-(lanes.review_depth: intent + adversary on haiku for a light lane, all five on sonnet for a protected path or SECURITY
-task; a sensitive diff always carries the adversary on sonnet). auditrun records only the clean lenses (ok, no MEDIUM or
-worse). A parsed verdict is kept by diff bytes, lens, model, prompt version and brief, so an unchanged re-review launches
+(lanes.review_depth's lenses; every reviewer runs on haiku, T-6164: a light lane gets intent + adversary, a protected path or
+SECURITY task all five, and a sensitive diff always carries the adversary). Sonnet is the one escalation, as the user's rule
+says (2026-11-22): a lens whose Haiku run errors, times out or parses to no verdict twice re-runs on sonnet
+(review_escalated, logged as a pilot_escalate event with its reason), and so does the fix session after two failed Haiku
+runs (fix_round). A HIGH Haiku finding is a verdict, not a failure: it never escalates. auditrun records only the clean
+lenses (ok, no MEDIUM or worse). A parsed verdict is kept by diff bytes, lens, model, prompt version and brief, so an unchanged re-review launches
 nothing (T-6044); after a fix round a lens that asked for changes re-reads the whole diff and a clean one only the fix.
 A clean lane goes to `sampo lane accept` as a subprocess, so the accept's own rules still decide. Anything else
 is one line naming why: changes needed, or an exception.
@@ -34,6 +37,7 @@ from sampo import contract
 from sampo import core as c
 from sampo import lanes
 from sampo import mapmerge
+from sampo import spawn
 from sampo import train
 
 ACCEPT_TIMEOUT = 600  # s: the accept starts the lane's check and returns; the check runs detached
@@ -54,9 +58,11 @@ LOCAL_MATCH_LINES = 5  # a Claude finding is matched by a local one in the same 
 SALT_FILE = "local-parity.salt"  # T-6089: the secret salt of the sample pick, in project state, created once with mode 0600
 
 
-# T-6101: the pilot's headless reviewers are outside the Haiku default (a `claude -p` child, not an Agent launch), so they
-# keep the models the depth map gave before it: haiku for a trivial or small lane, sonnet from normal up.
-PILOT_MODEL = {"trivial": "haiku", "small": "haiku", "normal": "sonnet", "risky": "sonnet"}
+# T-6164: the pilot's headless reviewers run on Haiku at every tier, the user's rule (2026-11-22: Haiku for everything, sonnet
+# only after two Haiku failures). SONNET is the one escalation: review_escalated and fix_round re-run on it.
+HAIKU, SONNET = spawn.HAIKU, "sonnet"
+HAIKU_RUNS = 2  # Haiku runs of a lens that errors, times out or parses to no verdict, before it re-runs on sonnet (T-6164)
+BUSY_WHY = "the project lock stayed busy while the review was recorded (nothing re-run): rerun the pilot"  # review's why for a refusal
 # T-6124: a reviewer's --effort by its depth: low for a trivial or small lane, medium for a normal one, high for a risky, full
 # or sensitive one (sensitive: the adversary lens on a sensitive diff, whatever the tier)
 PILOT_EFFORT = {"trivial": "low", "small": "low", "normal": "medium", "risky": "high", "full": "high", "sensitive": "high"}
@@ -167,18 +173,18 @@ def lenses_for(b, sensitive, p=None, names=None, raw=b""):
 def plan_for(b, sensitive, p=None, names=None, raw=b""):
     """(lenses, model, effort) a lane's review runs with (T-6044): lanes.review_depth's, from the lane's files and diff (the
     depth map and its floors: a protected path, a SECURITY task, SAMPO_REVIEW_DEPTH=full). A sensitive diff always carries
-    the adversary, on sonnet. names None (the diff could not be read) is every lens on sonnet at the top effort: fail toward
-    more review. The model is PILOT_MODEL's for the tier (T-6101 keeps it off the Haiku default); the effort is PILOT_EFFORT's
-    for the same depth (T-6124)."""
+    the adversary, on haiku. names None (the diff could not be read) is every lens on haiku at the top effort: fail toward
+    more review. The model is haiku at every tier (T-6164); review_escalated sends a lens to sonnet only after
+    its Haiku runs fail. The effort is PILOT_EFFORT's for the same depth (T-6124)."""
     from sampo import cli
     if names is None:
-        return list(c.DEFAULT_LENSES), "sonnet", _effort("full")
+        return list(c.DEFAULT_LENSES), HAIKU, _effort("full")
     d = lanes.review_depth(b, names, raw.decode("utf-8", "replace"), p=p, tests_linked=cli._tests_linked(p, b, names))
     lenses = list(d["lenses"])
-    model = "sonnet" if d["full"] else PILOT_MODEL.get(d["ptier"], "sonnet")
+    model = HAIKU
     label = "full" if d["full"] else d["ptier"]
     if sensitive:
-        lenses, model, label = [x for x in c.DEFAULT_LENSES if x in lenses or x == "adversary"], "sonnet", "sensitive"
+        lenses, model, label = [x for x in c.DEFAULT_LENSES if x in lenses or x == "adversary"], HAIKU, "sensitive"
     return lenses, model, _effort(label)
 
 
@@ -342,9 +348,11 @@ def review(p, tid, lenses, model, since="", note="", effort=""):
     """fm audit run's reviewers on these lenses (since: a commit, so they read only the fix after it, T-6044); auditrun
     records each clean one against the lane's tree. `note` (T-5707) is appended to each reviewer's prompt as data: a
     re-review's fix delta and prior findings. Returns
-    (verdicts {lens: ok | changes needed}, findings ["lens: SEVERITY file:line text"], why, unparsed) where why names a
-    refusal or a reviewer that gave no verdict, '' when every lens answered, and unparsed (T-6042) lists the lenses whose
-    reviewer answered with text that parses to no verdict (a failed or timed-out reviewer is in why, not here)."""
+    (verdicts {lens: ok | changes needed}, findings ["lens: SEVERITY file:line text"], why, unparsed, failed) where why names
+    a refusal or a reviewer that gave no verdict, '' when every lens answered, unparsed (T-6042) lists the lenses whose
+    reviewer answered with text that parses to no verdict, and failed (T-6164) lists every lens auditrun's own JSON says
+    gave no verdict (an errored, timed-out, unparsed or not-run reviewer: a superset of unparsed), read from its
+    structured "failed" field, not from the why's prose. A whole-run refusal (a busy lock, an unreadable reply) names none."""
     from sampo import auditrun, cli
     args = cli.build_parser().parse_args(["audit", "run", tid])
     args.lens, args.model, args.pilot, args.json = list(lenses), model, True, True
@@ -363,7 +371,7 @@ def review(p, tid, lenses, model, since="", note="", effort=""):
     except (cli.UsageError, c.PolicyError) as e:
         why = str(e)
     except c.LockTimeout:  # auditrun locks after its reviewers answered: a rerun here would pay for them twice
-        why = "the project lock stayed busy while the review was recorded (nothing re-run): rerun the pilot"
+        why = BUSY_WHY
     try:
         data = json.loads(buf.getvalue() or "{}")
     except ValueError:
@@ -375,7 +383,9 @@ def review(p, tid, lenses, model, since="", note="", effort=""):
                 for lens, fs in typed.items() if isinstance(fs, list) for f in fs if isinstance(f, dict)
                 for at in [f"{f.get('file') or ''}" + (f":{f['line']}" if f.get("line") else "")]]
     findings += [f"{lens}: {x}" for lens, xs in (data.get("findings") or {}).items() if lens not in typed for x in xs]
-    return data.get("verdicts") or {}, findings, why, list(data.get("unparsed") or [])  # auditrun's own classification
+    failed = data.get("failed") if isinstance(data.get("failed"), dict) else {}
+    return (data.get("verdicts") or {}, findings, why, list(data.get("unparsed") or []),  # auditrun's own classification
+            [x for x in failed if isinstance(x, str)])
 
 
 def scopes_for(main, b, lenses, tip, whole, sensitive):
@@ -401,8 +411,10 @@ def scopes_for(main, b, lenses, tip, whole, sensitive):
     return scopes
 
 
-def review_cached(p, b, main, before, lenses, model, scopes, note="", effort=""):
+def review_cached(p, b, main, before, lenses, model, scopes, note="", effort="", queue=None):
     """review() through the verdict cache (T-6044): same return, and `note` goes to every review that runs (T-5707).
+    One pilot_lens line per lens goes to `queue` (a list the caller writes with _flush once its round ends, T-6164: the
+    lock is never waited on between two paid runs); with no queue each is written at once, one non-blocking try.
     A lens whose key (diff bytes it reads, lens, model, prompt version, brief, effort) is stored is answered from the store
     with no child: a clean one is recorded against the lane's tree
     as a review would, a changes-needed one replays its findings. The rest run, grouped by the diff they read, and a
@@ -411,7 +423,9 @@ def review_cached(p, b, main, before, lenses, model, scopes, note="", effort="")
     tree, found, hits, todo = before[1], {}, {}, []
     keys = {x: cache_key(b, x, model, scopes.get(x, ("", b""))[1], effort) if tree else "" for x in lenses}
     stored = _load(p) if any(keys.values()) else {}
-    verdicts, findings, whys, unparsed = {}, [], [], []
+    verdicts, findings, whys, unparsed, failed = {}, [], [], [], []
+    own = queue is None
+    queue = [] if own else queue
     for x in lenses:
         e = stored.get(keys[x])
         if e and e["lens"] == x:
@@ -424,12 +438,15 @@ def review_cached(p, b, main, before, lenses, model, scopes, note="", effort="")
             todo.append(x)
     for since in sorted({scopes.get(x, ("", b""))[0] for x in todo}, key=lambda s: (s != "", s)):
         group = [x for x in todo if scopes.get(x, ("", b""))[0] == since]
-        v, f, w, u = review(p, b.id, group, model, since=since, note=note, effort=effort)
+        v, f, w, u, fl = review(p, b.id, group, model, since=since, note=note, effort=effort)
         verdicts.update(v)
         findings += f
         unparsed += u
+        failed += fl
         if w:
             whys.append(w)
+        if BUSY_WHY in w:  # a whole-run refusal (busy lock): the next group's reviewers would be paid for again
+            break  # any other why names its lenses, and the groups after it still run
         for x in group:
             found[x] = [y[len(x) + 2:] for y in f if y.startswith(x + ": ")]
     if todo and _state(main, b) == before:
@@ -443,13 +460,71 @@ def review_cached(p, b, main, before, lenses, model, scopes, note="", effort="")
                 _store(p, new)
             except (OSError, c.PolicyError):  # a cache that can't be written costs the next review, not this one
                 pass
-    with c.lock(p.dir):
-        for x in lenses:
-            since = scopes.get(x, ("", b""))[0]
-            c.log_event(p, "pilot_lens", task=b.id, data={
-                "lens": x, "scope": "delta" if since else "whole", "since": since[:12], "tip": before[0][:12],
-                "cached": x in hits, "verdict": verdicts.get(x, "")})
-    return verdicts, findings, "; ".join(whys), unparsed
+    for x in lenses:  # a ledger line the busy lock keeps out is dropped by _flush: the reviews it describes already ran
+        since = scopes.get(x, ("", b""))[0]
+        queue.append(("pilot_lens", b.id, {
+            "lens": x, "scope": "delta" if since else "whole", "since": since[:12], "tip": before[0][:12],
+            "cached": x in hits, "verdict": verdicts.get(x, "")}))
+    if own:
+        _flush(p, queue)
+    return verdicts, findings, "; ".join(whys), unparsed, failed
+
+
+def _why(whys):
+    """The distinct non-empty reasons, in order: a retried or escalated lens that failed the same way twice says it once."""
+    return "; ".join(dict.fromkeys(x for x in whys if x))
+
+
+def review_escalated(p, b, main, before, lenses, scopes, note="", effort="", queue=None):
+    """review_cached on Haiku with the escalation rule (T-6164). Returns (verdicts, findings, why, unparsed, answered):
+    review_cached's four, and answered, {lens: HAIKU | SONNET} for each lens that has a verdict. A lens whose own Haiku run
+    failed (named in auditrun's structured "failed" field, which review() returns) or whose reply parsed to no verdict runs
+    again on Haiku; after HAIKU_RUNS such runs it re-runs on SONNET, and only then (the user's rule, 2026-11-22: sonnet
+    only after two Haiku failures; a HIGH finding is a verdict, not a failure). A whole-run refusal (a busy lock: the
+    reviewers already answered, so a rerun would pay for them twice) is no lens's failure: it returns at once, with
+    nothing retried or escalated. The sonnet verdict replaces the Haiku one, its findings too. Each escalation queues a
+    pilot_escalate line with its reason before the sonnet run. A lens still with no verdict keeps the why review() gave
+    it. `queue` (a list; the caller _flushes it when its round ends) takes every ledger line: the lock is never waited
+    on between two paid runs."""
+    queue = [] if queue is None else queue
+    verdicts, findings, whys, unparsed, todo, runs = {}, [], [], [], list(lenses), 0
+    while todo and runs < HAIKU_RUNS:  # a lens its own Haiku run failed, or left unparsed, gets one more Haiku run
+        runs += 1
+        v, f, w, u, failed = review_cached(p, b, main, before, todo, HAIKU, scopes, note, effort, queue)
+        verdicts.update(v)
+        findings += f
+        unparsed += u
+        whys.append(w)
+        if BUSY_WHY in w:  # a whole-run refusal: no rerun and no escalation, either pays for the reviewers again
+            return verdicts, findings, _why(whys), unparsed, {x: HAIKU for x in verdicts}
+        retry = set(failed) | set(u)
+        todo = [x for x in todo if x in retry and x not in verdicts]
+    unparsed = [x for x in dict.fromkeys(unparsed) if x not in verdicts]
+    answered = {x: HAIKU for x in verdicts}
+    if not todo:  # a Haiku run the retry resolved is not a reason; a lens still with no verdict keeps its why
+        return verdicts, findings, _why(whys) if any(x not in verdicts for x in lenses) else "", unparsed, answered
+    why = c.redact(_why(whys))[:300]
+    for x in todo:
+        reason = f"Haiku failed {runs} times: " + "; ".join(s for s in (why, "reply unparsed" if x in unparsed else "") if s)
+        queue.append(("pilot_escalate", b.id, {"lens": x, "from": HAIKU, "to": SONNET, "reason": c.redact(reason)[:300]}))
+    v, f, w, u, _failed = review_cached(p, b, main, before, todo, SONNET, scopes, note, effort, queue)
+    for x in todo:
+        verdicts.pop(x, None)  # a Haiku verdict an escalation replaces is not kept, nor its findings, nor its answerer
+        answered.pop(x, None)
+    verdicts.update(v)
+    answered.update({x: SONNET for x in v})
+    findings = [y for y in findings if y.split(":", 1)[0] not in todo] + f
+    unparsed = [x for x in dict.fromkeys(unparsed + u) if x not in verdicts]
+    whys.append(w)
+    left = [x for x in lenses if x not in verdicts and x not in unparsed]
+    return verdicts, findings, _why(whys) if left or unparsed else "", unparsed, answered
+
+
+def _models(lenses, answered, model):
+    """(res["model"], res["lens_models"]) (T-6164): the model string a reader always had ("haiku", or "haiku+sonnet" when
+    any lens escalated) and, new, {lens: the model that answered it ("haiku", "sonnet", or "local")} in the lens order."""
+    per = {x: answered[x] for x in lenses if x in answered}
+    return (model + "+" + SONNET if SONNET in per.values() else model), per
 
 
 def _record_cached(p, tid, lens, tree):
@@ -640,7 +715,7 @@ FIX_FINDINGS, FIX_TEXT = 20, 300  # what the fix prompt carries: this many findi
 FIX_ANSWER = 2000  # T-6194: the fix session's final message the pilot keeps, redacted, at most this many characters
 PYCACHE = "__pycache__"  # T-6194: Python's bytecode folder: deleted under the lane, never read or opened
 SCRATCH_DIR = ".fm-scratch"  # T-6194: the builder's git-ignored scratch folder: a nested repo under it is a probe, deleted unread
-FIX_MODEL = "sonnet"
+FIX_MODEL = HAIKU  # T-6164: the fix session is Haiku at every tier, like the reviewers
 FIX_AGENT = "sampo:fm-builder"
 
 
@@ -792,9 +867,9 @@ def _fix_session_env(tid, lane, mode):
     return env
 
 
-def fix_argv(p, b, found, n, cap, agent=True, mode=None):
-    """The headless fix session's argv, hardened as the reviewers' and ideas' are (T-5707 review): claude -p on sonnet
-    under a --max-budget-usd cap, as the sampo:fm-builder agent when `agent` (the builder's contract and tools), with
+def fix_argv(p, b, found, n, cap, agent=True, mode=None, model=None):
+    """The headless fix session's argv, hardened as the reviewers' and ideas' are (T-5707 review): claude -p on `model`
+    (FIX_MODEL, haiku, unless fix_round escalates, T-6164) under a --max-budget-usd cap, as the sampo:fm-builder agent when `agent` (the builder's contract and tools), with
     no shell (--tools FIX_TOOLS, and Bash denied). --permission-mode is _fix_mode's (dontAsk, or bypassPermissions with
     this plugin's --plugin-dir when its guard was probed, T-6229) with --allowedTools from fix_rules: what is not allowed
     is refused, not asked about. --setting-sources user and an empty --strict-mcp-config: the lane's own settings, hooks
@@ -806,7 +881,7 @@ def fix_argv(p, b, found, n, cap, agent=True, mode=None):
     mode = mode or _fix_mode(b.meta.get("lane") or "")
     plugin = ["--plugin-dir", pilotsig._plugin_dir()] if mode == "bypassPermissions" else []
     return ideas.harden([
-        "claude", "-p", fix_prompt(p, b, found, n), "--permission-mode", mode, "--model", FIX_MODEL,
+        "claude", "-p", fix_prompt(p, b, found, n), "--permission-mode", mode, "--model", model or FIX_MODEL,
         *plugin,
         "--max-budget-usd", f"{cap:g}", "--output-format", "json", "--setting-sources", "user",
         "--strict-mcp-config", "--mcp-config", json.dumps({"mcpServers": {}}), "--tools", FIX_TOOLS,
@@ -1524,32 +1599,48 @@ def fix_round(p, b, found, n, spent=None, kept=None):
     the budget ledger; it only edits files in the lane (see fix_argv); the pilot commits them (_commit_fix). `spent` is
     the lane's list of what its earlier rounds cost: this round's cap is one fix cap less their sum, and its own cost is
     appended (the whole cap when the session reported none). `kept`, a list, receives the session's final message on
-    exit 0 (T-6194: _answer), so a session that changed nothing says why."""
+    exit 0 (T-6194: _answer), so a session that changed nothing says why.
+    T-6164: the session runs on FIX_MODEL (haiku); a run that exits non-zero is run again, and the third run is on
+    sonnet (the user's rule: Sonnet only after two failed Haiku runs), each run under what is left of the one fix cap
+    (no run starts once `spent` has used it). The move to sonnet is queued as a pilot_escalate event, written once at
+    the end under one non-blocking lock try."""
     lane = b.meta.get("lane") or ""
     if not lane or not os.path.isdir(lane):
         return "its lane worktree is gone"
     spent = [] if spent is None else spent
     try:
         mode = _fix_mode(lane)
-        cap, env = max(0.01, fix_cap(p) - sum(spent)), _fix_session_env(b.id, lane, mode)
+        env = _fix_session_env(b.id, lane, mode)
     except OSError as e:
         return f"fix session not started: {e}"
-    code, so, se = 1, "", ""
-    for agent in (True, False):  # an agent claude does not know is a refusal that spent nothing: try the plain argv
-        try:
-            code, so, se = _run_claude(fix_argv(p, b, found, n, cap, agent, mode), lane, env)
-        except OSError as e:
-            return f"fix session not started: {e} (is `claude` on PATH and logged in?)"
-        text, usd = budget.result(so)
-        retry = bool(code and usd is None and agent and re.search(r"(?i)\bagent\b", se))
-        if not retry:
-            spent.append(cap if usd is None else usd)  # first: the cap's own count must hold when the ledger write fails
-        try:
-            budget.record("fix", usd, project=p.slug, detail=f"{b.id} round {n}")
-        except Exception:  # a ledger that cannot be written never undoes a paid session (its cost is in `spent`)
-            pass
-        if not retry:
-            break
+    code, so, se, text, queue = 1, "", "", "", []
+    try:
+        for i, model in enumerate((FIX_MODEL,) * HAIKU_RUNS + (SONNET,)):
+            cap = max(0.01, fix_cap(p) - sum(spent))
+            if i and sum(spent) >= fix_cap(p):
+                break  # the cap is used: a further run would pass it
+            if model == SONNET:
+                why = c.plain(c.redact(f"fix session exited {code}" + (f": {' '.join((se or text or '').split())[-160:]}" if code else "")))
+                queue.append(("pilot_escalate", b.id, {"lens": f"fix round {n}", "from": FIX_MODEL, "to": SONNET, "reason": why[:300]}))
+            for agent in (True, False):  # an agent claude does not know is a refusal that spent nothing: try the plain argv
+                try:
+                    code, so, se = _run_claude(fix_argv(p, b, found, n, cap, agent, mode, model), lane, env)
+                except OSError as e:
+                    return f"fix session not started: {e} (is `claude` on PATH and logged in?)"
+                text, usd = budget.result(so)
+                retry = bool(code and usd is None and agent and re.search(r"(?i)\bagent\b", se))
+                if not retry:
+                    spent.append(cap if usd is None else usd)  # first: the cap's own count must hold when the ledger write fails
+                try:
+                    budget.record("fix", usd, project=p.slug, detail=f"{b.id} round {n}")
+                except Exception:  # a ledger that cannot be written never undoes a paid session (its cost is in `spent`)
+                    pass
+                if not retry:
+                    break
+            if not code:
+                break
+    finally:
+        _flush(p, queue)
     if code:
         tail = " ".join((se or text or "").split())[-160:]
         return c.plain(c.redact(f"fix session exited {code}" + (f": {tail}" if tail else "")))
@@ -1580,6 +1671,38 @@ def _log(p, event, tid, data):
         with c.lock(p.dir):
             c.log_event(p, event, task=tid, data=data)
     _busy(write)
+
+
+def _write_lines(p, lines, timeout=0):
+    with c.lock(p.dir, timeout=timeout):  # timeout 0: one try, never a wait; a busy lock raises LockTimeout
+        for event, tid, data in lines:
+            c.log_event(p, event, task=tid, data=data)
+
+
+def _flush(p, lines):
+    """Write a round's queued ledger lines ((event, tid, data), T-6164) in one lock take, once its paid runs are over:
+    a lock wait between two paid runs would cost up to _busy's ~60 s per lens. One non-blocking try. When the lock is busy,
+    the pilot_lens lines (a record of what each reviewer read; the reviews already ran) are dropped, and the
+    pilot_escalate ones (the reason a paid sonnet run happened) go through _busy's backoff, once for the round. Returns the
+    lines still unwritten after that (the caller keeps them on its result, so a busy ledger never loses an escalation).
+    The queue is emptied either way; nothing here raises LockTimeout."""
+    todo = list(lines)
+    lines.clear()
+    if not todo:
+        return []
+    try:
+        _write_lines(p, todo)
+        return []
+    except c.LockTimeout:
+        pass
+    keep = [x for x in todo if x[0] == "pilot_escalate"]
+    if not keep:
+        return []
+    try:
+        _busy(_write_lines, p, keep, 5.0)
+        return []
+    except c.LockTimeout:
+        return keep
 
 
 def _accept_busy(tid, main):
@@ -1811,11 +1934,18 @@ def pilot(p, tid, main):
         scopes = {x: ("", whole) for x in claude} if fixes else scopes_for(main, b, claude, before[0], whole, sensitive)
         res["ran"] = True  # T-6226: a run that reviewed (a gate refusal never gets here): its outcome is recorded
         c.log_event(p, "pilot_review", task=b.id, data={"class": lane_class(b), "effort": effort})  # T-6165: the escape rows' class and effort
-        verdicts, findings, why, unparsed = review_cached(p, b, main, before, claude, model, scopes, note, effort)  # not _busy: its lock comes after the reviewers
+        queue = []  # T-6164: the round's ledger lines, written once below, after the paid runs
+        try:
+            verdicts, findings, why, unparsed, answered = review_escalated(p, b, main, before, claude, scopes, note, effort, queue)  # not _busy: its lock comes after the reviewers
+        finally:
+            unlogged = _flush(p, queue)  # one non-blocking try; an escalation the busy lock kept out is on the result
+        if unlogged:
+            res["unlogged"] = [x[2] for x in unlogged]
         for x, (verdict, found) in settled.items():  # T-6089: the local answer that stands, as review() words a Claude one
-            verdicts[x] = verdict
+            verdicts[x], answered[x] = verdict, "local"
             findings += [f"{x}: " + " ".join(f"{sev} {at} {text}".split()) for sev, at, text in found[:20]]
         res["findings"], res["reviews"] = findings, fixes + 1
+        res["model"], res["lens_models"] = _models(lenses, answered, model)  # T-6164: this round's; per lens in lens_models
         if unparsed:  # T-6042: counted before any other exit (selfcheck.verdict_rate reads it), even when the tip moved
             with c.lock(p.dir):
                 c.log_event(p, "pilot_unparsed", task=b.id, data={"lenses": unparsed, "parsed": len(verdicts)})
@@ -1948,6 +2078,7 @@ def answer(r):
            "rounds": r.get("reviews") or (1 if r["outcome"] in ("accepted", "changes") else 0),  # T-5707: reviews run
            "why": cut(r["reason"]), "lenses": [cut(x) for x in r["lenses"]],
            "findings": [cut(x) for x in r["findings"][:ANSWER_FINDINGS]], "model": cut(r["model"]),
+           "lens_models": {cut(k): cut(v) for k, v in (r.get("lens_models") or {}).items()},  # T-6164: who answered each lens
            "seconds": r["seconds"]}
     return json.dumps(row, separators=(",", ":"))
 

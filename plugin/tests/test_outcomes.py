@@ -530,7 +530,8 @@ class Mining(Base):
 
 
 class ModelRouter(Base):
-    """T-2291: the builder model follows how past lanes' tasks held up per tier and model."""
+    """T-2291: the builder model follows how past lanes' tasks held up per tier and model. T-6164: that history route is
+    opted into with `sampo models default route`; the default is haiku (T-6101), so these tests must set the mode first."""
     def seed(self, model, n, bad):
         """n closed S tasks built by `model`; the first `bad` get a later FIX naming them."""
         for i in range(n):
@@ -545,6 +546,7 @@ class ModelRouter(Base):
 
     def route(self):
         from sampo import lanes
+        self.fm("models", "default", "route")  # T-6164: the history route is the mode, not the default
         return lanes.model_route(c.find_project(self.repo), "S")
 
     def test_a_cheaper_model_that_keeps_needing_rework_escalates_to_opus(self):

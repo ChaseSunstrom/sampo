@@ -149,7 +149,7 @@ class Lean(ForemanTestCase):
     # T-5681: a general-purpose launch carries the whole skill listing and tool text every turn (~56k chars); the lean
     # fixer and resolver types take only their own short contract, and delegate.md routes the two jobs to them
     def test_the_fixer_and_the_resolver_are_small_editing_agents_with_their_own_model(self):
-        for name, model in (("fm-fixer", "sonnet"), ("fm-resolver", "haiku")):
+        for name, model in (("fm-fixer", "haiku"), ("fm-resolver", "haiku")):  # T-6101: haiku by default, sonnet only on escalation
             text = read_text(os.path.join(AGENTS, name + ".md"))
             self.assertLess(len(text.encode()), 3000, name)
             self.assertRegex(text, rf"(?m)^name: {name}$")
