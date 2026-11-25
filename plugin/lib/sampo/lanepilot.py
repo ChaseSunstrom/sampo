@@ -215,16 +215,79 @@ def lane_diff(main, tip, since=""):
     return [x.decode("utf-8", "replace") for x in names.split(b"\0") if x], raw
 
 
-def trunk_entered(main, prior, tip):
-    """T-6303: whether the lane merged trunk in after the reviewed tip (a merge commit in prior..tip). Then prior..tip names
-    trunk's own files too, so a fix round reads the lane's whole diff (HEAD...tip, whose merge base is the trunk commit the
-    lane last took in) instead. True as well when git can't say: the whole diff is the safe read."""
-    if not re.fullmatch(r"[0-9a-f]{40,64}", prior or "") or not tip:
-        return True
+def trunk_base(main, tip):
+    """T-6303: merge-base of the trunk and the lane's tip (shas), or None when it can't be had or is the tip itself. The
+    trunk is the main checkout's current branch: lanes merge it (train.py fast-forwards it), so local main can lag far
+    behind the lanes' trunk. Only a detached checkout (no branch) falls back to origin's default branch."""
+    if not re.fullmatch(r"[0-9a-f]{40,64}", tip or ""):
+        return None
     try:
-        return bool(_git_bytes(main, "rev-list", "--merges", f"{prior}..{tip}").strip())
+        from sampo import foresight
+        head = train._git(main, "symbolic-ref", "--short", "-q", "HEAD", timeout=SENSITIVE_TIMEOUT, proc=True)
+        out = head.stdout if isinstance(head.stdout, str) else (head.stdout or b"").decode("utf-8", "replace")
+        trunk = out.strip() if head.returncode == 0 else ""
+        if not trunk:
+            trunk = foresight.default_branch(main)
+        if not re.fullmatch(r"[\w./-]{1,60}", trunk or ""):
+            return None
+        y = _git_bytes(main, "merge-base", f"refs/heads/{trunk}", tip).decode("ascii", "replace").strip()
+        return y if re.fullmatch(r"[0-9a-f]{40,64}", y) and y != tip else None
+    except Exception:  # any git read that fails: no trunk base, so the caller takes the safe read
+        return None
+
+
+def own_whole(main, tip, whole):
+    """T-6303: the whole diff a lens reads at tip, as the lane's own change: tree of trunk's merge base with tip to tip, not
+    HEAD...tip. Once trunk has moved past HEAD (a detached main checkout behind the trunk the lane merged), HEAD...tip names
+    trunk's files as if the builder wrote them. `whole` itself when HEAD is the trunk (the two diffs are the same read), when
+    no trunk base can be had, or when the own change is empty: the read is then as before."""
+    if not whole:
+        return whole
+    y = trunk_base(main, tip)
+    if y is None:
+        return whole
+    try:
+        here = _git_bytes(main, "merge-base", "HEAD", tip).decode("ascii", "replace").strip()
     except (OSError, ValueError, subprocess.SubprocessError):
-        return True
+        return whole
+    if here == y:
+        return whole
+    names, raw = lane_diff(main, tip, since=y)
+    return raw if names and raw else whole
+
+
+def fix_delta_base(main, prior, tip):
+    """T-6303: what a fix round's delta is taken from, for the reviewed tip prior and the lane's tip (both shas). prior itself
+    while trunk has not entered the lane since prior (the delta is prior..tip, as before). Once it has (a merge or a
+    fast-forward of trunk in after prior: the trunk commit Y the lane last took in, merge-base of the main checkout's branch (the
+    trunk the lanes merge from) and tip, is not in prior),
+    the tree of prior with the new trunk merged in (git merge-tree, no checkout): git diff of that tree to tip holds only
+    the lane's own changes since prior. A conflicting merge still writes its tree (exit 1, the tree on the first line), so
+    the cleanly merged trunk files stay out of the delta; the conflicted files carry markers, so the delta reads only those
+    plus the lane's own changes. None when that can't be had (a merge-tree exit other than 0 or 1, any git read that fails,
+    or Y is the tip itself): the caller reads the whole lane diff from its fork, the safe read."""
+    if not re.fullmatch(r"[0-9a-f]{40,64}", prior or "") or not re.fullmatch(r"[0-9a-f]{40,64}", tip or ""):
+        return None
+    try:
+        y = trunk_base(main, tip)
+        if y is None:
+            return None
+        entered = train._git(main, "merge-base", "--is-ancestor", y, prior, timeout=SENSITIVE_TIMEOUT, proc=True).returncode
+        if entered == 0:
+            return prior
+        if entered != 1:
+            return None
+        # T-6303: through _g, so the repo's merge drivers are emptied here too: main is no lane, so _git leaves them alone
+        merged = _g(main, "merge-tree", "--write-tree", y, prior, timeout=SENSITIVE_TIMEOUT, proc=True)
+        if merged.returncode not in (0, 1):  # 1 is a conflict; its first line is still the tree
+            return None
+        out = merged.stdout if isinstance(merged.stdout, str) else (merged.stdout or b"").decode("utf-8", "replace")
+        if len(out) > DIFF_CAP:  # a conflict lists every conflicted file: the same cap as any other read here
+            return None
+        tree = out.split("\n", 1)[0].strip()
+        return tree if re.fullmatch(r"[0-9a-f]{40,64}", tree) else None
+    except Exception:  # any git read that fails: the whole lane diff, never a delta with trunk in it
+        return None
 
 
 def cache_path(p):
@@ -402,8 +465,10 @@ def review(p, tid, lenses, model, since="", note="", effort=""):
 
 def scopes_for(main, b, lenses, tip, whole, sensitive):
     """{lens: (since, diff bytes it reads)} (T-6044). After a changes round every lens reads the whole new diff, except a
-    lens the round found clean: that one reads only old tip..new tip. Only when the old tip is an ancestor of the new
+    lens the round found clean: that one reads only the fix delta, the lane's own change since its reviewed tip (T-6303:
+    fix_delta_base, so trunk merged in after that tip is left out). Only when the old tip is an ancestor of the new
     one (no rewritten history), the new diff is not sensitive and the fix is not empty; any doubt reads the whole diff."""
+    whole = own_whole(main, tip, whole)  # T-6303: every lens's whole is the lane's own change, never trunk's files
     scopes = {x: ("", whole) for x in lenses}
     prior = b.meta.get("pilot_tip") or ""
     oks = b.meta.get("pilot_ok")
@@ -415,9 +480,12 @@ def scopes_for(main, b, lenses, tip, whole, sensitive):
         ancestor = train._git(main, "merge-base", "--is-ancestor", prior, tip, timeout=SENSITIVE_TIMEOUT, proc=True).returncode == 0
     except Exception:
         return scopes
-    if not ancestor or trunk_entered(main, prior, tip):  # T-6303: trunk merged in after prior is not the fix: the whole diff
+    if not ancestor:
         return scopes
-    names, delta = lane_diff(main, tip, since=prior)
+    base = fix_delta_base(main, prior, tip)  # T-6303: prior, or the tree of prior with trunk merged in (trunk's files out)
+    if base is None:  # a merge-tree exit past 1, an oversize or a failed read: the whole diff
+        return scopes
+    names, delta = lane_diff(main, tip, since=base)
     if names and delta:
         scopes.update({x: (prior, delta) for x in lenses if x in clean})
     return scopes
@@ -1940,12 +2008,13 @@ def pilot(p, tid, main):
         # lens, to check the local reviewer against it. The adversary lens and a sensitive lane are never local (local_lenses)
         cls, rows = lane_class(b), parity_rows(p)
         sample = sampled(p, whole) or cold(rows, local_lenses(lenses, sensitive), cls)
-        local = _local_reviews(p, b, lenses, sensitive, whole, cls, sample, rows)
+        own = own_whole(main, before[0], whole)  # T-6303: the reviewers read the lane's own change, not trunk's files
+        local = _local_reviews(p, b, lenses, sensitive, own, cls, sample, rows)
         settled = {} if sample else {x: r for x, r in local.items() if _settled(r)}
         claude, clean = [x for x in lenses if x not in settled], []
         # T-6044: the first read may take only the fix for a lens that was clean at the last stamped tip; after a fix
         # round of this pilot every lens reads the whole diff (the accept needs each one at the new tip, T-5707)
-        scopes = {x: ("", whole) for x in claude} if fixes else scopes_for(main, b, claude, before[0], whole, sensitive)
+        scopes = {x: ("", own) for x in claude} if fixes else scopes_for(main, b, claude, before[0], whole, sensitive)
         res["ran"] = True  # T-6226: a run that reviewed (a gate refusal never gets here): its outcome is recorded
         c.log_event(p, "pilot_review", task=b.id, data={"class": lane_class(b), "effort": effort})  # T-6165: the escape rows' class and effort
         queue = []  # T-6164: the round's ledger lines, written once below, after the paid runs

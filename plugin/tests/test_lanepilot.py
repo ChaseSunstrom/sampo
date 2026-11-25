@@ -2432,6 +2432,12 @@ class DeltaExcludesTrunk(PilotCase):
     """T-6303: a fix round's delta is the lane's own change. A lane that merged trunk in after the reviewed tip (T-5513: every
     builder does) must not hand its lenses the trunk commit's files as if the builder wrote them."""
 
+    def test_merge_tree_reads_through_the_lane_drivers(self):
+        """T-6303: fix_delta_base's merge-tree runs merge drivers, so it is a driven read like diff: _git hands it
+        lane_call's args (drivers emptied) in a lane. Fails without merge-tree in core._DRIVEN_READS."""
+        self.assertIn("merge-tree", c._DRIVEN_READS)
+        self.assertIsNotNone(c.lane_call(self.brief().meta["lane"], ("merge-tree", "--write-tree", "a", "b")))
+
     def commit_in_lane(self, rel, text):
         lane = self.brief().meta["lane"]
         with open(os.path.join(lane, rel), "w") as f:
@@ -2448,16 +2454,20 @@ class DeltaExcludesTrunk(PilotCase):
         b.meta["pilot_ok"] = [f"intent:{tip}"]  # the intent lens was clean at this tip: it reads a fix delta
         c.save_brief(p, b)
 
-    def merge_trunk_into_lane(self):
-        """Trunk gets a commit the lane has not seen, then the lane merges it in."""
-        with open(os.path.join(self.repo, "trunk.py"), "w") as f:
-            f.write("trunk = 1\n")
-        self.git("add", "trunk.py")
-        self.git("commit", "-qm", "trunk work")
-        trunk = self.git("rev-parse", "HEAD")
+    def trunk_commit(self, rel, text):
+        """A commit on trunk (the main checkout's HEAD) the lane has not seen; its sha."""
+        with open(os.path.join(self.repo, rel), "w") as f:
+            f.write(text)
+        self.git("add", rel)
+        self.git("commit", "-qm", f"trunk: {rel}")
+        return self.git("rev-parse", "HEAD")
+
+    def merge_trunk_into_lane(self, *options):
+        """Trunk gets a commit the lane has not seen, then the lane merges it in (with the merge options given)."""
+        trunk = self.trunk_commit("trunk.py", "trunk = 1\n")
         lane = self.brief().meta["lane"]
-        subprocess.run(["git", "-C", lane, "-c", "user.name=t", "-c", "user.email=t@t", "merge", "-q", "--no-edit", trunk],
-                       check=True)
+        subprocess.run(["git", "-C", lane, "-c", "user.name=t", "-c", "user.email=t@t", "merge", "-q", "--no-edit",
+                        *options, trunk], check=True)
         return train._lane_tip(self.repo, self.brief())
 
     def intent_delta(self, tip):
@@ -2465,13 +2475,44 @@ class DeltaExcludesTrunk(PilotCase):
         return lanepilot.scopes_for(self.repo, self.brief(), ["intent", "adversary"], tip, whole, False)["intent"]
 
     def test_a_fix_round_after_a_trunk_merge_reads_only_the_lanes_own_changes(self):
-        self.stamp_reviewed(train._lane_tip(self.repo, self.brief()))
+        reviewed = train._lane_tip(self.repo, self.brief())
+        self.stamp_reviewed(reviewed)
         self.commit_in_lane("fix.py", "fixed = 1\n")
         tip = self.merge_trunk_into_lane()
         since, delta = self.intent_delta(tip)
         self.assertNotIn(b"trunk.py", delta, "the trunk commit's file is not the builder's fix")
         self.assertIn(b"fix.py", delta, "the lane's own fix is read")
-        self.assertEqual(since, "", "a lens that cannot take the fix delta reads the lane's whole own diff")
+        self.assertEqual(since, reviewed, "the delta is exact: prior with the new trunk merged in, to the tip")
+
+    def test_a_fast_forward_onto_trunk_reads_only_the_lanes_own_changes(self):
+        """The reviewed commits land on trunk, trunk moves on, and the lane fast-forwards onto it: prior..tip has no merge
+        commit, yet trunk's files are in it."""
+        reviewed = train._lane_tip(self.repo, self.brief())
+        self.stamp_reviewed(reviewed)
+        lane_branch = self.brief().meta["lane_branch"]
+        subprocess.run(["git", "-C", self.repo, "merge", "-q", "--ff-only", lane_branch], check=True)
+        trunk = self.trunk_commit("trunk.py", "trunk = 1\n")
+        lane = self.brief().meta["lane"]
+        subprocess.run(["git", "-C", lane, "merge", "-q", "--ff-only", trunk], check=True)
+        tip = self.commit_in_lane("fix.py", "fixed = 1\n")
+        self.assertEqual(self.git("rev-list", "--merges", f"{reviewed}..{tip}"), "", "no merge commit: a fast-forward")
+        since, delta = self.intent_delta(tip)
+        self.assertNotIn(b"trunk.py", delta, "the fast-forwarded trunk file is not the builder's fix")
+        self.assertIn(b"fix.py", delta)
+        self.assertEqual(since, reviewed)
+
+    def test_a_trunk_merge_that_conflicts_with_the_reviewed_tip_still_reads_no_trunk_file(self):
+        """Prior and the new trunk both add shared.txt: merge-tree conflicts. The conflicted tree still holds every
+        non-conflicting trunk file, so trunk.py stays out of the delta (the whole lane diff would name it)."""
+        reviewed = self.commit_in_lane("shared.txt", "lane\n")
+        self.stamp_reviewed(reviewed)
+        self.trunk_commit("shared.txt", "trunk\n")
+        self.merge_trunk_into_lane("-X", "theirs")
+        tip = self.commit_in_lane("fix.py", "fixed = 1\n")
+        since, delta = self.intent_delta(tip)
+        self.assertRegex(since, r"^[0-9a-f]{40}$", "the conflicted merge tree is the base, not the whole diff")
+        self.assertNotIn(b"trunk.py", delta, "a non-conflicting trunk file is not the builder's fix")
+        self.assertIn(b"fix.py", delta, "the lane's own fix is read")
 
     def test_a_fix_round_with_no_trunk_merge_still_reads_only_the_fix(self):
         self.stamp_reviewed(train._lane_tip(self.repo, self.brief()))
@@ -2481,13 +2522,68 @@ class DeltaExcludesTrunk(PilotCase):
         self.assertNotIn(b"f1.txt", delta, "the lane's first commit was reviewed: only the fix is read")
         self.assertTrue(since, "the fix delta is read from the reviewed tip")
 
-    def test_trunk_entered_is_true_only_once_trunk_is_merged_after_the_reviewed_tip(self):
+    def test_fix_delta_base_is_the_reviewed_tip_until_trunk_enters_and_then_a_tree_without_trunk(self):
         reviewed = train._lane_tip(self.repo, self.brief())
         fix = self.commit_in_lane("fix.py", "fixed = 1\n")
-        self.assertFalse(lanepilot.trunk_entered(self.repo, reviewed, fix))
+        self.assertEqual(lanepilot.fix_delta_base(self.repo, reviewed, fix), reviewed)
         merged = self.merge_trunk_into_lane()
-        self.assertTrue(lanepilot.trunk_entered(self.repo, reviewed, merged))
-        self.assertTrue(lanepilot.trunk_entered(self.repo, "1" * 40, merged), "a range git can't read counts as trunk")
+        base = lanepilot.fix_delta_base(self.repo, reviewed, merged)
+        self.assertRegex(base, r"^[0-9a-f]{40}$", "a tree: prior with the new trunk merged in")
+        self.assertEqual(self.git("cat-file", "-t", base), "tree")
+        self.assertIsNone(lanepilot.fix_delta_base(self.repo, "1" * 40, merged), "a range git can't read: the whole diff")
+        self.assertIsNone(lanepilot.fix_delta_base(self.repo, reviewed, ""), "no tip: the whole diff")
+
+    def test_fix_delta_base_reads_the_checkout_branch_lanes_merge_from_while_main_lags_far_behind(self):
+        """T-6303: lanes merge the main checkout's current branch (train.py fast-forwards it), so that is the trunk here.
+        The checkout is on `work` while local `main` lags far behind (an ancient commit): the lane forked from work,
+        was reviewed at prior, then merged newer work commits. Reading trunk from `main` took merge-base(main, tip) to be
+        that ancient commit, which is an ancestor of prior, so the delta stayed prior..tip and named work's new file."""
+        ancient = self.git("rev-list", "--max-parents=0", "HEAD")
+        reviewed = train._lane_tip(self.repo, self.brief())
+        self.stamp_reviewed(reviewed)
+        self.git("checkout", "-q", "-b", "work")
+        self.git("branch", "-f", "main", ancient)
+        self.assertEqual(self.git("symbolic-ref", "--short", "HEAD"), "work")
+        self.commit_in_lane("fix.py", "fixed = 1\n")
+        merged = self.merge_trunk_into_lane()
+        base = lanepilot.fix_delta_base(self.repo, reviewed, merged)
+        self.assertRegex(base or "", r"^[0-9a-f]{40}$", "work entered the lane: a tree, not the reviewed tip")
+        self.assertEqual(self.git("cat-file", "-t", base), "tree")
+        names = self.git("diff", "--name-only", base, merged).split()
+        self.assertNotIn("trunk.py", names, "work's new file is not the builder's fix")
+        self.assertIn("fix.py", names, "the lane's own fix is still read")
+
+    def test_the_trial_merge_runs_no_merge_driver_the_repo_names(self):
+        """T-6303: a merge driver the repo's config defines, named by a .gitattributes in trunk, runs in no trial merge the
+        pilot makes. The trunk file conflicts with the reviewed one, so the merge-tree of fix_delta_base reaches the driver;
+        its marker file (the driver's only effect here) must not be written. Fails when merge-tree runs the repo's drivers."""
+        marker = os.path.join(self.tmp, "driver-ran")
+        reviewed = self.commit_in_lane("shared.txt", "lane\n")
+        self.trunk_commit(".gitattributes", "shared.txt merge=marker\n")
+        self.trunk_commit("shared.txt", "trunk\n")
+        lane = self.brief().meta["lane"]
+        subprocess.run(["git", "-C", lane, "-c", "user.name=t", "-c", "user.email=t@t", "merge", "-q", "--no-edit",
+                        "-X", "theirs", self.git("rev-parse", "HEAD")], check=True)
+        self.git("config", "merge.marker.driver", f"touch {marker} && cp %B %A")  # set after the lane's own merge
+        tip = self.commit_in_lane("fix.py", "fixed = 1\n")
+        base = lanepilot.fix_delta_base(self.repo, reviewed, tip)
+        self.assertFalse(os.path.exists(marker), "no merge driver the repo names ran in the trial merge")
+        self.assertRegex(base or "", r"^[0-9a-f]{40}$", "the delta is still read from the merge tree")
+
+    def test_a_non_clean_lens_whole_diff_names_no_trunk_file_when_main_is_detached_behind_trunk(self):
+        """T-6303: the whole lane diff a lens that asked for changes reads is the checkout branch's merge base with the tip
+        to the tip (trunk...tip), not HEAD...tip. A detached main checkout (HEAD behind the trunk branch the lane merged)
+        makes HEAD...tip name the trunk commit's file as if the builder wrote it."""
+        reviewed = train._lane_tip(self.repo, self.brief())
+        self.stamp_reviewed(reviewed)  # intent is clean at this tip; adversary is not: it reads the whole diff
+        fork = self.git("rev-parse", "HEAD")
+        self.merge_trunk_into_lane()  # trunk (main) gets trunk.py and the lane merges it in
+        self.git("checkout", "-q", "--detach", fork)  # HEAD is back at the fork: behind the trunk branch
+        tip = self.commit_in_lane("fix.py", "fixed = 1\n")
+        whole = lanepilot.lane_diff(self.repo, tip)[1]
+        since, delta = lanepilot.scopes_for(self.repo, self.brief(), ["intent", "adversary"], tip, whole, False)["adversary"]
+        self.assertNotIn(b"trunk.py", delta, "the trunk commit's file is not the builder's change")
+        self.assertIn(b"fix.py", delta, "the lane's own change is read")
 
     def prep_text(self, since):
         """The brief `sampo audit prep` writes for the lane with the pilot's delta base (the fix since `since`)."""
@@ -2500,15 +2596,28 @@ class DeltaExcludesTrunk(PilotCase):
         with open(json.loads(buf.getvalue())["brief"]) as f:
             return f.read()
 
-    def test_the_prep_after_a_trunk_merge_names_the_lanes_fork_not_a_fix_since(self):
+    def test_the_prep_after_a_trunk_merge_briefs_the_lanes_own_fix_not_trunk(self):
         reviewed = train._lane_tip(self.repo, self.brief())
         self.stamp_reviewed(reviewed)
         self.commit_in_lane("fix.py", "fixed = 1\n")
         self.merge_trunk_into_lane()
-        trunk = self.git("rev-parse", "HEAD")[:12]  # main is still at the trunk commit the lane merged: the lane's fork
         text = self.prep_text(reviewed)
-        self.assertNotIn("the fix since", text, "the reviewers are briefed on the lane's own diff, not a delta with trunk in it")
-        self.assertIn(f"git diff {trunk} → branch", text, "the diff runs from the lane's fork, which is the trunk commit")
+        self.assertIn("the fix since", text, "the exact delta: prior with the new trunk merged in, to the tip")
+        self.assertNotIn("trunk.py", text, "the trunk commit's file is not in what the reviewers are briefed on")
+        self.assertIn("fix.py", text)
+
+    def test_the_prep_after_a_conflicting_trunk_merge_briefs_the_fix_since_the_merge_tree(self):
+        """A conflicting merge still writes its tree (T-6303): the fix is read since that tree, not the lane's fork."""
+        reviewed = self.commit_in_lane("shared.txt", "lane\n")
+        self.stamp_reviewed(reviewed)
+        self.trunk_commit("shared.txt", "trunk\n")
+        self.merge_trunk_into_lane("-X", "theirs")
+        trunk = self.git("rev-parse", "HEAD")[:12]  # main is still at the trunk commit the lane merged: the lane's fork
+        self.commit_in_lane("fix.py", "fixed = 1\n")
+        text = self.prep_text(reviewed)
+        self.assertIn("the fix since", text, "the delta base is the merge tree, not None")
+        self.assertNotIn(f"git diff {trunk} → branch", text, "the fork is not the base once trunk entered the lane")
+        self.assertIn("fix.py", text, "the lane's own fix is briefed")
 
     def test_the_prep_with_no_trunk_merge_still_reads_the_fix_since_the_reviewed_tip(self):
         reviewed = train._lane_tip(self.repo, self.brief())

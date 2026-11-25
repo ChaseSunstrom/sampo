@@ -9749,12 +9749,14 @@ def cmd_audit(args):
             if fork and fork == (c._git(p.root, "rev-parse", "--verify", "-q", branch + "^{commit}", fail="") or "").strip():
                 fork = ""  # T-5972: HEAD is the lane (a builder's own review): the fork is the tip, an empty diff; the task's start is the base
             base, tree, upto = fork or base, branch, f"branch {branch}"
-            since = getattr(args, "delta_base", "") or ""  # T-6044: the pilot's fix round: a lens that said ok reads old tip..new tip
+            since = getattr(args, "delta_base", "") or ""  # T-6044, T-6303: the pilot's fix round: a lens that said ok reads the fix delta (fix_delta_base)
             if since and re.fullmatch(r"[0-9a-f]{40}", since) and c._git(
                     p.root, "rev-parse", "--verify", "-q", "--end-of-options", f"{since}^{{commit}}", fail=None):
-                from sampo import lanepilot  # T-6303: trunk merged in after since is not the fix: the lane's own diff from its fork
-                if not lanepilot.trunk_entered(p.root, since, branch):
-                    base, upto = since, f"branch {branch}, the fix since {since[:9]}"
+                from sampo import lanepilot  # T-6303: trunk merged in after since is not the fix: since with trunk merged in, or the fork
+                tip_sha = (c._git(p.root, "rev-parse", "--verify", "-q", f"refs/heads/{branch}^{{commit}}", fail=None) or "").strip()
+                fix_base = lanepilot.fix_delta_base(p.root, since, tip_sha)
+                if fix_base:
+                    base, upto = fix_base, f"branch {branch}, the fix since {since[:9]}"
     left_out, why = _others_merged_in(p, b) if own_only else ([], "")  # T-6313
     if why:  # T-6313: the reviewer is told what the diff may hold of other tasks' files
         upto += f"; other tasks' merged files {'kept in' if left_out else 'NOT left out'}: {why}"

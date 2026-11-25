@@ -9734,7 +9734,8 @@ _CLOCKED = ("--since", "--until", "--after", "--before", "--max-age", "--min-age
 # the read-only commands that hash or diff files through a filter, textconv or merge driver: in a linked worktree (a lane)
 # _git empties every driver the config defines first. `add`, `commit`, `merge` and `checkout` are left alone (they would
 # write the neutralised bytes); the pilot's own commit path carries driver_args itself.
-_DRIVEN_READS = ("status", "diff", "diff-index", "diff-files", "diff-tree", "log", "show", "ls-files", "blame", "grep")
+_DRIVEN_READS = ("status", "diff", "diff-index", "diff-files", "diff-tree", "log", "show", "ls-files", "blame", "grep",
+                 "merge-tree")  # T-6303: a trial merge runs the merge drivers too (fix_delta_base reads through it)
 _EXT_DIFF = ("diff", "show", "log", "diff-index", "diff-files", "diff-tree")
 _IGN_SUBMODULES = ("status", "diff", "diff-index", "diff-files", "diff-tree")  # the commands that take --ignore-submodules
 # exit 128 that answers about refs (a lock, a corrupt object or no repository is a failure, asked again next time)
