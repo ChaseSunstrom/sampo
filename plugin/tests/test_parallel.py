@@ -713,11 +713,24 @@ class IntegrateThroughPilot(ForemanTestCase):
         every run lane ('its builder has not returned'). The stubbed verb above hid it: this asks the real gate."""
         from sampo import core as c
         from sampo import lanepilot, lanes
-        self.via_pilot({"tid": "T-0001", "outcome": "accepted", "rounds": 1, "why": ""})
+        from unittest import mock
         p = c.find_project(self.repo)
-        b = c.find_brief(p, "T-0001")
-        self.assertTrue(lanes._builder_returned(b), b.meta)
-        self.assertNotIn("has not returned", lanepilot.gate(p, b, self.repo))
+
+        def lane_then_warm():  # T-6496: the run's loop reads finished lanes (a 60 s cache) while the session still works,
+            path = json.loads(self.fm("lane", "new", "T-0001", "--json").stdout)["path"]  # before its commit; the
+            self.assertNotIn("T-0001", lanes.awaiting_merge(p, c.load_briefs(p)))  # pilot then read that stale answer
+            with open(os.path.join(path, "x.py"), "w") as f:
+                f.write("A = 1\n")
+            self.git("add", "x.py", cwd=path)
+            self.git("commit", "-qm", "work T-0001", cwd=path)
+            return path
+        with mock.patch.dict(os.environ, {"FM_STALL_CACHE_S": "60"}), mock.patch.object(self, "lane", lane_then_warm):
+            self.via_pilot({"tid": "T-0001", "outcome": "accepted", "rounds": 1, "why": ""})
+            b = c.find_brief(p, "T-0001")
+            self.assertTrue(lanes._builder_returned(b), b.meta)
+            said = lanepilot.gate(p, b, self.repo)
+        self.assertNotIn("has not returned", said)
+        self.assertNotIn("not awaiting a merge", said)
 
     def test_changes_keep_the_lane_with_the_reason(self):
         how, path = self.via_pilot({"tid": "T-0001", "outcome": "changes", "rounds": 1, "why": "edge: off by one"})

@@ -407,7 +407,8 @@ def gate(p, b, main):
         return f"reviewed at {tip[:12]}, changes needed: waiting for the builder's next commit"
     if c.is_big(b):
         return c.big_refusal(b)
-    if b.id not in lanes.awaiting_merge(p, c.load_briefs(p)):
+    # T-6496: fresh: the 60 s answer may predate the lane's last commit (sampo run reads it while its session works)
+    if b.id not in lanes.awaiting_merge(p, c.load_briefs(p), fresh=True):
         return "not awaiting a merge (still running, parked, or its last merge failed)"
     why = contract.over(p)
     if why:

@@ -13,6 +13,7 @@
 - sampo run hands each finished lane to the lane pilot (review, then the accept queues it into the land train) instead of holding it as unreviewed and running an hour-long gate per lane; with the pilot off, the old serial merge stays (T-6480).
 - When `sampo run` has a free slot and fills none, it prints why, once per change: how many queued tasks are held for no scope, open dependencies, no plan, the L tier, waiting on you, or files a running lane holds (T-6487).
 - `sampo run` marks a finished lane's session as its builder's return before the lane pilot reviews it, so the pilot no longer refuses every run lane with "its builder has not returned" (T-6490).
+- The lane pilot reads whether a lane waits on a merge afresh instead of from a 60-second answer that could predate the lane's last commit, so a lane `sampo run` hands it straight after the commit is no longer refused as "not awaiting a merge" (T-6496).
 - sampo run: a task scoping a whole big folder no longer holds the rolling pool; narrow tasks fill the lanes first and the wide one starts alone once no lane runs (T-6412).
 - Audit prep trusts a lane_landed record by git alone; the commit-subject check T-6313's fix round added is gone (T-6376).
 - The Sampo pane and band redraw about once a second while Claude works and repaint what moves by blit, cutting the mod's motion cost to a fraction of a core (T-5546).
