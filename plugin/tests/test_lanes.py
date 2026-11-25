@@ -3465,6 +3465,41 @@ class RecoverAfterStop(ForemanTestCase):
                 self.assertIn("the lane changed since", r.stdout + r.stderr, "named as a return the lane moved past")
 
 
+class ReturnedUnheld(RecoverAfterStop):
+    """T-6548: the work after a return was the lane pilot's fix round (pilot_done_for is that return) and the pilot holds
+    the lane no more: its leftovers are the cause, read at once; a dead fix round no longer leaves the lane 'may be
+    working' forever. A pilot still holding it, or one that ran for an older return, keeps the lane left alone."""
+
+    def pilot_ran(self, tid, path, held=False, same=True):
+        import time
+        p = c.find_project(self.repo)
+        b = c.find_brief(p, tid)
+        b.meta["pilot_done_for"] = b.meta["builder_returned"] if same else c.iso(time.time() - 3600)
+        if held:
+            b.meta["claude_starting"] = str(time.time())
+        c.save_brief(p, b)
+        later = time.time() + 60
+        os.utime(os.path.join(path, "wip.py"), (later, later))  # the fix round wrote after the return
+
+    def test_a_dead_fix_rounds_leftovers_are_recovered_at_once(self):
+        from sampo import lanes as slanes
+        p = c.find_project(self.repo)
+        tid, path = self.returned_builder()
+        self.pilot_ran(tid, path)
+        self.assertEqual(slanes.stop_causes(p, c.load_briefs(p), fresh=True).get(tid, ("",))[0], "uncommitted")
+
+    def test_a_held_or_older_pilot_keeps_the_lane_left_alone(self):
+        from sampo import lanes as slanes
+        p = c.find_project(self.repo)
+        held, hpath = self.returned_builder()
+        self.pilot_ran(held, hpath, held=True)
+        old, opath = self.returned_builder()
+        self.pilot_ran(old, opath, same=False)
+        causes = slanes.stop_causes(p, c.load_briefs(p), fresh=True)
+        self.assertNotIn(held, causes)
+        self.assertNotIn(old, causes)
+
+
 class RecoverPastBacklog(ForemanTestCase):
     """T-5933: recovering a lane that already has a branch is finishing work, not starting new: the land backlog bar and
     the unmerged cap hold new lanes only (sampo do sweep-lanes was refused T-5771 by 21 waiting lanes). Deliberate:

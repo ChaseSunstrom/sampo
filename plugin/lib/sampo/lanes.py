@@ -1648,7 +1648,18 @@ def _returned_quiet(b, git):
     by this; a git that failed reads as newest (_newest: inf), so it is not quiet either."""
     if not _builder_returned(b):
         return False
+    if b.meta.get("pilot_done_for") == b.meta["builder_returned"] and not _pilot_has_b(b):
+        return True  # T-6548: the work after the return was this return's pilot fix round, and that pilot is gone
     return _newest(b.meta["lane"], git) <= c.parse_ts(b.meta["builder_returned"]).timestamp() + 2
+
+
+def _pilot_has_b(b):
+    """T-6548: pilotsig.held for a brief already read; a read that fails counts as held (the lane is left alone)."""
+    from sampo import pilotsig
+    try:
+        return bool(pilotsig.held(b))
+    except Exception:  # noqa: BLE001 — fail closed
+        return True
 
 
 def stop_causes(p, briefs=None, fresh=False):
