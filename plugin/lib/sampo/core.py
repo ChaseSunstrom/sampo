@@ -9838,13 +9838,29 @@ def _q(s):
     return shlex.quote(str(s))
 
 
+_LINT = {}  # T-6335: (cmd, root, PATH) -> (monotonic time, problems): kept across rollups in this process
+_LINT_TTL = 60  # ponytail: a verdict is kept a minute (a program installed or a file moved shows within it); upgrade: key on the stat of each file the command names
+
+
+def _lint_once(x, cmd):
+    """T-6335: a verify command is linted once per minute per process, not once per proof need (2,161 needs share a few
+    commands) nor once per rollup (the UI reruns the rollup every 10 s, each with its own `shared` dict)."""
+    key = (cmd, x["p"].root, os.environ.get("PATH", ""))
+    hit = _LINT.get(key)
+    if hit and time.monotonic() - hit[0] < _LINT_TTL:
+        return hit[1]
+    got = lint_verify(cmd, x["p"].root)
+    _LINT[key] = (time.monotonic(), got)
+    return got
+
+
 def _need_evidence(status):
     def need(x):
         got = [k for k, v in x["bad"].items() if v == status]
         if not got:
             return None
         cmd = x["cmds"].get(got[0]) or ""  # what the line says: typed prose or a run; never a stand-in that passes
-        bad = lint_verify(cmd, x["p"].root) if cmd else ["no command was recorded"]
+        bad = _lint_once(x, cmd) if cmd else ["no command was recorded"]
         return {"why": joinmore([f"{k} {n}" for k, n in got], 4),
                 "fmt": {"cmd": _q("<a command that can fail>" if bad else cmd)},
                 "blocked": f"needs a check that can fail ({bad[0]})" if bad else ""}
@@ -10915,7 +10931,9 @@ def _run_py_misses(cmd, root):
         return []
     out = []
     for n in names:  # a name is a substring of test ids, as -k is; a module name is the usual one
-        ids = [i for s in ([s for s in stems if n in s] or stems) for i in _test_ids(tests, s) if n in i]
+        head = n.split(".")[0]  # T-6335: a dotted name's module part, when it exists, is the only file to read
+        ids = [i for s in ([s for s in stems if n in s] or ([head] if head in stems else stems)) for i in _test_ids(tests, s)
+               if n in i]
         if not ids:
             out.append(f"run.py {n} names no test module or test in plugin/tests")
         elif k and not any(x in i for i in ids for x in k):
@@ -10923,20 +10941,35 @@ def _run_py_misses(cmd, root):
     return out
 
 
+_TEST_CLASS = lazy(r"class (\w+)")
+_TEST_DEF = lazy(r"    (?:async )?def (test\w*)")
+_TEST_IDS = {}  # T-6335: path -> ((mtime_ns, size, ctime_ns), ids): a verify command's test file is read once per edit
+
+
 def _test_ids(tests, stem):
-    """module.Class.test ids of a test file, from its lines. ponytail: tests a class inherits from another module are
-    missed, so a -k naming only those warns; import the module if that ever bites."""
+    """module.Class.test ids of a test file, from its lines, kept on its path, mtime, size and change time (a file that
+    changes is read again; a utime that puts the mtime back still moves the change time). ponytail: tests a class
+    inherits from another module are missed, so a -k naming only those warns; import the module if that ever bites."""
+    path = os.path.join(tests, stem + ".py")
+    try:
+        st = os.stat(path)
+    except OSError:
+        return ()
+    key = (st.st_mtime_ns, st.st_size, st.st_ctime_ns)
+    if (hit := _TEST_IDS.get(path)) and hit[0] == key:
+        return hit[1]
     cls, ids = None, []
     try:
-        with open(os.path.join(tests, stem + ".py"), encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             for line in f:
-                if c := re.match(r"class (\w+)", line):
+                if c := _TEST_CLASS.match(line):
                     cls = c.group(1)
-                elif cls and (t := re.match(r"    (?:async )?def (test\w*)", line)):
+                elif cls and (t := _TEST_DEF.match(line)):
                     ids.append(f"{stem}.{cls}.{t.group(1)}")
     except OSError:
-        pass
-    return ids
+        return ()
+    _TEST_IDS[path] = (key, tuple(ids))
+    return tuple(ids)
 
 
 _STATE_READ = lazy(r"(?:^|[\s'\"=:/])\.(?:sampo|foreman)(?:/|\b)|\bforeman/state/(?:projects/[^/\s]+/)?(?:tasks|briefs)\b"

@@ -6,6 +6,7 @@ import re
 import subprocess
 import sys
 import time
+import types
 import unittest
 from unittest import mock
 
@@ -2520,3 +2521,66 @@ class ScopeCoversOwnTests(ForemanTestCase):  # T-6299: a task's scope covers the
         self.assertEqual(c.scope_drift(b, ["plugin/lib/sampo/hooks.py", "plugin/tests/test_hooks.py",
                                            "plugin/tests/test_core.py", "plugin/lib/sampo/core.py"]),
                          ["plugin/tests/test_core.py", "plugin/lib/sampo/core.py"])
+
+
+class TestIdsCached(ForemanTestCase):  # T-6335: a verify command's test ids are read once per file, not once per call
+    def setUp(self):
+        super().setUp()
+        self.tests = os.path.join(self.repo, "plugin", "tests")
+        os.makedirs(self.tests, exist_ok=True)
+        self.write("test_widget.py", "class Widget(Base):\n    def test_spins(self):\n        pass\n")
+        self.write("test_other.py", "class Other(Base):\n    def test_untouched(self):\n        pass\n")
+
+    def write(self, name, text):
+        with open(os.path.join(self.tests, name), "w", encoding="utf-8") as f:
+            f.write(text)
+
+    def opened(self, cmd):
+        """The test files lint_verify opened for cmd, one entry per open (the calls are counted, not the ids)."""
+        real, seen = open, []
+
+        def counting(path, *a, **kw):
+            if str(path).startswith(self.tests):
+                seen.append(os.path.basename(str(path)))
+            return real(path, *a, **kw)
+        with mock.patch("builtins.open", counting):
+            c.lint_verify(cmd, self.repo)
+        return seen
+
+    def test_a_second_lint_reads_no_test_file_again(self):
+        cmd = "python3 plugin/tests/run.py test_widget -k test_spins"
+        self.assertEqual(self.opened(cmd), ["test_widget.py"])
+        self.assertEqual(self.opened(cmd), [], "the ids are kept on path, mtime and size: nothing to read twice")
+
+    def test_an_edited_file_is_read_again(self):
+        cmd = "python3 plugin/tests/run.py test_widget -k test_spins"
+        self.opened(cmd)
+        path = os.path.join(self.tests, "test_widget.py")
+        self.write("test_widget.py", "class Widget(Base):\n    def test_flies(self):\n        pass\n")
+        st = os.stat(path)
+        os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 10**9))  # the clock's resolution doesn't decide the test
+        self.assertEqual(self.opened(cmd), ["test_widget.py"])
+        self.assertEqual(c.lint_verify("python3 plugin/tests/run.py test_widget -k test_flies", self.repo), [])
+
+    def test_a_same_size_edit_with_its_mtime_put_back_is_read_again(self):
+        # T-6335: os.utime can put the mtime back after a same-size edit; the change time still moves, so the ids are re-read
+        cmd = "python3 plugin/tests/run.py test_widget -k test_spins"
+        self.opened(cmd)
+        path = os.path.join(self.tests, "test_widget.py")
+        st = os.stat(path)
+        self.write("test_widget.py", "class Widget(Base):\n    def test_spine(self):\n        pass\n")  # same size
+        os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
+        self.assertEqual(self.opened("python3 plugin/tests/run.py test_widget -k test_spine"), ["test_widget.py"])
+
+    def test_a_dotted_name_reads_only_its_module(self):
+        # the all-stems fallback (for a name no module name contains) is skipped when the module part exists
+        self.assertEqual(self.opened("python3 plugin/tests/run.py test_widget.Widget -k test_spins"), ["test_widget.py"])
+
+    def test_a_second_rollup_reuses_the_lint_verdict(self):
+        # T-6335: the UI reruns the rollup every 10 s; each rollup has its own `shared` dict, so the verdict must outlive it
+        cmd = "python3 plugin/tests/run.py test_widget -k test_spins"
+        with mock.patch.object(c, "lint_verify", wraps=c.lint_verify) as lv:
+            for _ in range(3):
+                c._lint_once({"shared": {}, "p": types.SimpleNamespace(root=self.repo)}, cmd)
+        self.assertEqual(lv.call_count, 1, "a verdict is kept for a minute per process, not per rollup")
+

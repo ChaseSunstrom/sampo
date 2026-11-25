@@ -86,6 +86,23 @@ class Proof(ForemanTestCase):
         self.assertIn(t2, [r["id"] for r in c.unproven(self.p)])
         self.assertEqual(self.fm_json("status", "--json")["unproven"], c.unproven_cached(self.p))
 
+    def test_a_cold_rollup_lints_a_command_its_needs_share_once(self):  # T-6335: 50 needs on one verify command
+        from unittest import mock
+        cmd = "python3 plugin/tests/run.py test_widget -k test_spins"
+        t = self.task(lines=[(1, cmd, self.RED)])
+        tdir = os.path.join(self.p.dir, "tasks")
+        src = next(f for f in os.listdir(tdir) if f.startswith(t))
+        text = open(os.path.join(tdir, src), encoding="utf-8").read()
+        for i in range(49):
+            n = 900 + i
+            with open(os.path.join(tdir, f"T-{n}-x.md"), "w", encoding="utf-8") as f:
+                f.write(text.replace(t, f"T-{n}"))
+        with mock.patch.object(c, "lint_verify", wraps=c.lint_verify) as lv:
+            got = c.unproven_summary(self.p)  # cold: no unproven.json yet, so every need is worked out
+        self.assertEqual(got["n"], 50)
+        self.assertEqual(sum(1 for x in lv.call_args_list if x.args[0] == cmd), 1,
+                         "a rollup lints each distinct verify command once, not once per proof need")
+
     def test_the_window_bounds_the_list_and_the_count_is_on_status_and_digest(self):
         t = self.task(evidence=[("--step", "1", "pytest", "ok")])
         self.assertEqual(self.fm_json("prove", "--rollup", "--days", "7")["count"], 1)
