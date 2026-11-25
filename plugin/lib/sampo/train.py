@@ -7032,21 +7032,27 @@ def accept(p, b, main, args):
     rows = _audit_rows(args)  # T-4391: refused before anything is recorded or started
     path = b.meta.get("lane") or ""
     if not path or not os.path.isdir(path):
-        raise c.PolicyError(f"{b.id} has no lane to accept (fm lane brief {b.id} starts a builder)")
+        msg = f"{b.id} has no lane to accept (fm lane brief {b.id} starts a builder)"
+        # T-5716: each accept refusal logs one gate event
+        c.log_gate_refused(p, "accept:no-lane", task=b.id, where="accept", why=msg)
+        raise c.PolicyError(msg)
     tip = _lane_tip(main, b)
     clean = _clean_run(b, tip, main)  # T-4286: a passing run at its tip that held the repo-shape classes (see there)
     skip_check = bool(getattr(args, "no_check", False))
     if skip_check and not clean:  # refused before anything is recorded
-        raise c.PolicyError(
-            f"{b.id} has no passing affected run at its tip that held the repo-shape classes "
-            f"({', '.join(c.repo_shape_classes())}): --no-check would queue it without them. Run "
-            f"`sampo check --affected --hold --evidence {b.id}` in the lane (or drop --no-check: accept starts that check)")
+        msg = (f"{b.id} has no passing affected run at its tip that held the repo-shape classes "
+               f"({', '.join(c.repo_shape_classes())}): --no-check would queue it without them. Run "
+               f"`sampo check --affected --hold --evidence {b.id}` in the lane "
+               f"(or drop --no-check: accept starts that check)")
+        c.log_gate_refused(p, "accept:no-check", task=b.id, where="accept", why=msg)
+        raise c.PolicyError(msg)
     counted = _counted_lenses(b, path)  # T-5516: audits already on the brief for the lane's tree count, typed or not
     tier = {}  # T-5715: the process tier the lane's diff scored, filled by _accept_gaps
     gaps = _accept_gaps(b, path, main, rows, counted, p=p, tier_out=tier)
     if gaps:  # T-4487: refused before anything is recorded or started: the close would refuse the lane for these
         msg = (f"{b.id} not accepted, nothing recorded: the close would refuse this lane: {'; '.join(gaps)}. "
                f"Accept again with the audits it names ({AUDIT_FORM}, one per lens)")
+        c.log_gate_refused(p, "accept:gaps", task=b.id, where="accept", why=msg)
         if not rows and not counted:  # T-5516: nothing typed and nothing on the brief after the tip: a usage refusal
             raise cli.UsageError(msg)
         raise c.PolicyError(msg)

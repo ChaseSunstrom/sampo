@@ -11109,12 +11109,15 @@ def _build_parser(only=None):
                    "levels over the last 14 days: exists, used outside a builder, effective (T-3934)")
     s.add_argument("--capture", action="store_true", help="--census: one capture per never-used or ineffective item "
                    "(at most 10, once each)")
-    s.add_argument("--days", type=float, help="--census, --backfill: the window in days (14; 30)")
+    s.add_argument("--days", type=float, help="--census, --backfill, --gates: the window in days (14; 30; --gates "
+                   "reads 14 by default)")
     s.add_argument("--backfill", action="store_true", help="propose an Outcome signal for each FEATURE closed in the "
                    "window (30 days) that has none, from its criteria and CHANGELOG line (T-3934)")
     s.add_argument("--apply", action="store_true", help="--backfill: write the proposals into the briefs")
     s.add_argument("--panel", action="store_true", help="fixed-or-reverted-after-close rate of tasks that adopted a panel's "
                    "item against tasks with no Dissent lines, with the n of each; no model call (T-3951)")
+    s.add_argument("--gates", action="store_true", help="the gate ledger over 14 days: per gate and process tier the runs, "
+                   "seconds and catches, a no-catch gate flagged as a skip candidate (nothing is skipped; T-5716)")
     s.add_argument("--atlas", action="store_true", help="by file and language: where work didn't hold (T-0620)")
     s.add_argument("--calibration", action="store_true", help="per tier: median actual/predicted minutes (T-2290)")
     s.add_argument("--judgment", action="store_true", help="the confidence ledger: stated bets scored by outcomes, "

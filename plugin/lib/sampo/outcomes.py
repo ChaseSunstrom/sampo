@@ -310,6 +310,99 @@ def panel_report(p, outs=None):
     return {"rows": rows, "rates": rates, "lines": lines}
 
 
+GATE_WINDOW_DAYS = 14  # T-5716: sampo outcomes --gates reads this many days of gate events
+SKIP_RUNS = 5  # T-5716: runs a gate needs with no catch before it is a skip candidate (fewer say nothing)
+STEP_GATES = ("verify", "affected", "advice", "done", "commit")  # close_steps' step names: the close's own gates
+GATE_KINDS = ("close_steps", "close_affected", "finding", "panel_outcome", "plan_gate_refused", "gate_refused")
+NO_WRITER = {"rival read": "a rival read is written to the brief, not the ledger"}  # named, never read as a zero
+
+
+def gate_report(p, days=GATE_WINDOW_DAYS):
+    """T-5716: {rows, lines, window_days, since}: per gate and process tier, the runs, seconds and catches over the last
+    `days`, from the events the ledger already holds: close_steps (seconds per step), close_affected (runs; a catch is an
+    exit set), finding (runs; a catch is a confirmed verdict, so a gate with no judged finding reads not recorded),
+    panel_outcome (runs; a catch is an adopted item) and the refusals, plan_gate_refused and gate_refused (each refusal
+    is a run and its catch). A count no writer records is None, printed not recorded, never a zero. A gate with runs, a
+    recorded catch count of zero and at least SKIP_RUNS runs is a skip candidate; nothing is skipped."""
+    since = c.iso(time.time() - days * 86400)
+    briefs = {b.id: b for b in c.load_briefs(p, include_archive=True)}
+    tiers = {}
+
+    def tier(tid):  # a task's process tier: the ptier its close stamped, else its claimed tier as the brief reads now;
+        # FOREMAN_PROCESS_TIER=off gives ptier_of's tier (ptier_now). "?" for a brief no longer on disk
+        if tid not in tiers:
+            try:
+                tiers[tid] = c.ptier_now(briefs[tid])[0] if tid in briefs else "?"
+            except Exception:  # noqa: BLE001 - a brief that cannot be scored is one unknown tier, not a failed report
+                tiers[tid] = "?"
+        return tiers[tid]
+
+    acc = collections.defaultdict(lambda: {"runs": 0, "seconds": None, "catches": None, "judged": 0})
+
+    def row(gate, tid):
+        return acc[(gate, tier(tid))]
+
+    for e in c.ledger_events(p, GATE_KINDS, since=since):
+        d, tid, kind = e.get("data"), e.get("task"), e.get("event")
+        if not isinstance(d, dict):  # a ledger line whose data is no object is skipped, never a crash
+            continue
+        if kind == "close_steps":
+            steps = d.get("steps") if isinstance(d.get("steps"), dict) else {}
+            for g in STEP_GATES:
+                if g not in steps:
+                    continue
+                r = row(g, tid)
+                r["runs"] += g != "affected"  # the affected runs are close_affected's own events
+                s = steps[g]
+                if isinstance(s, (int, float)) and not isinstance(s, bool):
+                    r["seconds"] = round((r["seconds"] or 0) + s, 1)
+        elif kind == "close_affected":
+            r = row("affected", tid)
+            r["runs"] += 1
+            r["catches"] = (r["catches"] or 0) + bool(d.get("exit"))
+        elif kind == "finding":
+            r = row("audit", tid)
+            r["runs"] += 1
+            if d.get("verdict") in ("confirmed", "rejected"):
+                r["judged"] += 1
+                r["catches"] = (r["catches"] or 0) + (d.get("verdict") == "confirmed")
+        elif kind == "panel_outcome":
+            a = d.get("adopted")
+            r = row("panel", tid)
+            r["runs"] += 1
+            r["catches"] = (r["catches"] or 0) + int(isinstance(a, int) and a > 0)
+        elif kind == "plan_gate_refused":
+            r = row("plan", tid)
+            r["runs"] += 1
+            r["catches"] = (r["catches"] or 0) + 1
+        elif kind == "gate_refused":
+            r = row(c.fit(str(d.get("gate") or "unnamed"), 60), tid)
+            r["runs"] += 1
+            r["catches"] = (r["catches"] or 0) + 1
+    rows = []
+    for (gate, ptier), r in acc.items():
+        catches = None if gate == "audit" and not r["judged"] else r["catches"]
+        rows.append({"gate": gate, "ptier": ptier, "runs": r["runs"], "seconds": r["seconds"], "catches": catches,
+                     "skip": catches == 0 and r["runs"] >= SKIP_RUNS})
+    for gate, why in NO_WRITER.items():
+        rows.append({"gate": gate, "ptier": "-", "runs": None, "seconds": None, "catches": None, "skip": False,
+                     "why": why})
+    order = list(c.PTIERS) + ["?", "-"]
+    rows.sort(key=lambda r: (r["gate"], order.index(r["ptier"]) if r["ptier"] in order else len(order)))
+    lines = []
+    for r in rows:
+        if r["runs"] is None:
+            lines.append(f"{r['gate']}: not recorded (no writer): {r['why']}")
+            continue
+        secs = "not recorded" if r["seconds"] is None else f"{r['seconds']:g}s"
+        catches = "not recorded" if r["catches"] is None else str(r["catches"])
+        line = f"{r['gate']} · {r['ptier']}: runs {r['runs']}, seconds {secs}, catches {catches}"
+        if r["skip"]:
+            line += f"; no catch in {r['runs']} runs over {days:g} days: a skip candidate (nothing is skipped)"
+        lines.append(line)
+    return {"rows": rows, "lines": lines, "window_days": days, "since": since}
+
+
 def cmd_outcomes(args):
     from sampo import cli
     if getattr(args, "judgment", False):  # T-2461: fm calibration folded in here
@@ -319,6 +412,14 @@ def cmd_outcomes(args):
         res = panel_report(p)
         return cli.out(args, res, "Fixed or reverted after close (adopted = the plan text changed; no causal claim):\n"
                                   + "\n".join(res["lines"]))
+    if getattr(args, "gates", False):  # T-5716: the gate ledger, 14 days unless --days: runs, seconds, catches per tier
+        days = getattr(args, "days", None)
+        if days is not None and not 0 < days <= 3650:
+            raise cli.UsageError("--days, with --gates, is above 0 and at most 3650")
+        res = gate_report(p, days or GATE_WINDOW_DAYS)
+        head = (f"Gates over {res['window_days']:g} days (runs, seconds and catches per process tier; "
+                "a skip candidate is flagged, nothing is skipped):")
+        return cli.out(args, res, head + "\n" + "\n".join(res["lines"]))
     if getattr(args, "silent", False) or getattr(args, "census", False) or getattr(args, "backfill", False):  # T-3934
         return cmd_probes(args, p)
     if getattr(args, "predictions", False) or getattr(args, "unmute", None):  # T-2406: the prediction book
