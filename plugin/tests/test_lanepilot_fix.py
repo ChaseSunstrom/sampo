@@ -574,6 +574,48 @@ class FixInClaudeFolder(FixCase):
                              os.path.join(top, ".claude"))
 
 
+class FixMode(FixCase):
+    """T-6533: the fix session's guard probe runs with the session's drive task (FOREMAN_DRIVE_TASK, as the session runs), so
+    the guard lets the session edit its own done, unlanded lane and the mode is bypassPermissions there. Without the task,
+    or with another lane's, the probe's in-lane write is refused and the mode stays dontAsk. The guard is the real hook."""
+
+    def setUp(self):
+        super().setUp()
+        claude = mock.patch.object(pilotsig, "_claude_folder", return_value=True)
+        claude.start()
+        self.addCleanup(claude.stop)
+        # the lane sits where a real one does, under the main checkout's .claude/worktrees: the probe's outside write (the lane's
+        # parent) is then under main, which the guard confines; a lane under the test's scratch /tmp is not confined at all
+        new = os.path.join(self.repo, ".claude", "worktrees", "lane1")
+        os.makedirs(os.path.dirname(new))
+        subprocess.run(["git", "-C", self.repo, "worktree", "move", self.lane_path, new], check=True)
+        self.lane_path = new
+        p = c.find_project(self.repo)  # the builder finished: its task is done, and the lane is not landed
+        x = c.find_brief(p, self.tid)
+        x.meta["status"] = "done"
+        x.meta["lane"] = new
+        c.save_brief(p, x)
+        # the guard finds its project from the lane in the run's environment (FOREMAN_HOME is the run's home); the lane has no
+        # active task, so the drive gate decides its in-lane control: the done task the drive marker names
+        home = mock.patch.dict(os.environ, {"FOREMAN_HOME": self.home})
+        home.start()
+        self.addCleanup(home.stop)
+
+    def test_fix_mode_with_the_drive_task_is_bypass_for_the_done_lane_it_names(self):
+        self.assertEqual(self.brief().status, "done", "the fixture is a done, unlanded lane")
+        args = lanepilot.fix_argv(c.find_project(self.repo), self.brief(), [], 1, 1.0)  # the session's own argv, the real guard
+        self.assertEqual(args[args.index("--permission-mode") + 1], "bypassPermissions")
+        self.assertIn("--plugin-dir", args)
+        self.assertEqual(lanepilot._fix_mode(self.lane_path, self.tid), "bypassPermissions")
+
+    def test_fix_mode_without_the_drive_task_stays_dontask(self):
+        self.assertEqual(lanepilot._fix_mode(self.lane_path), "dontAsk")
+
+    def test_fix_mode_for_another_lanes_task_stays_dontask(self):
+        other = self.lane(2, "f2.txt")
+        self.assertEqual(lanepilot._fix_mode(self.lane_path, other), "dontAsk")
+
+
 class FixFails(FixCase):
     fix = "fail"
 

@@ -779,13 +779,15 @@ def _why_words(b):
     return f" ({'; '.join(parts)})" if parts else ""
 
 
-def _claude_env(lane=None, agent=""):
+def _claude_env(lane=None, agent="", drive_task=None):
     """The headless agent's environment: the pilot's, as its own main session (the pilot's session id is not its), marked
     (core.HEADLESS_ENV) so the hooks confine that main session to the lane as they do a subagent builder, and naming the lane
     (core.PILOT_LANE_ENV, T-5889: the confine root comes from it, not from the cwd a command moves to). T-5868: for the
     resolver, and for any agent while the lane has unmerged paths, its `sampo` runs the main install's plugin
     (SAMPO_LANE_CHILD ends py.lane_reexec's hand-over to the lane's own), which imports modules and cards that still hold
-    conflict markers and fails. (The resolver's own `git merge` makes the conflict after it starts: the lane may be clean now.)"""
+    conflict markers and fails. (The resolver's own `git merge` makes the conflict after it starts: the lane may be clean now.)
+    T-6533: `drive_task`, the fix session's own task, is set as FOREMAN_DRIVE_TASK, so the guard probe runs as the session
+    does and the lane's done task is the one the guard reads (hooks._drive_lane_brief); no task leaves the env as it was."""
     env = c.scrubbed_env(os.environ)
     for k in ("CLAUDE_CODE_SESSION_ID", "FOREMAN_SESSION_ID", "FOREMAN_PILOT"):
         env.pop(k, None)
@@ -799,6 +801,8 @@ def _claude_env(lane=None, agent=""):
         env[c.PILOT_MAIN_ENV] = os.path.realpath(own)
     if agent in c.ns_names("fm-resolver") or _unmerged(lane):
         env["SAMPO_LANE_CHILD"] = "1"
+    if drive_task:  # T-6533: the fix session's own task, as its run has it (lanepilot._fix_session_env)
+        env["FOREMAN_DRIVE_TASK"] = drive_task
     return env
 
 
@@ -840,7 +844,7 @@ def _claude_folder(lane):
 GUARD_PROBE_S = 10.0  # per call: well under the hook's 20 s in hooks.json, past which Claude Code kills it and reads no objection
 
 
-def _guard_answer(hook, lane, agent, path):
+def _guard_answer(hook, lane, agent, path, drive_task=None):
     """The PreToolUse hook's answer to a Write of `path` from a headless run of `agent` in `lane` (its environment, a cwd that is
     no project's): "deny" (exit 2, or a permissionDecision of deny), "other" (it ran and did not deny), or None (it did not
     run or answer inside GUARD_PROBE_S)."""
@@ -849,7 +853,7 @@ def _guard_answer(hook, lane, agent, path):
                "tool_input": {"file_path": path, "content": "probe"}}
     try:
         r = subprocess.run([hook, "PreToolUse"], input=json.dumps(payload), capture_output=True, text=True,
-                           env=_claude_env(lane, agent), cwd=tempfile.gettempdir(), timeout=GUARD_PROBE_S)
+                           env=_claude_env(lane, agent, drive_task), cwd=tempfile.gettempdir(), timeout=GUARD_PROBE_S)
     except (OSError, subprocess.SubprocessError):
         return None
     if r.returncode == 2:
@@ -862,23 +866,25 @@ def _guard_answer(hook, lane, agent, path):
     return "deny" if r.returncode == 0 and isinstance(spec, dict) and spec.get("permissionDecision") == "deny" else "other"
 
 
-def _guard_denies(lane, plugin, agent):
+def _guard_denies(lane, plugin, agent, drive_task=None):
     """T-5889 round 2: whether the guard of `plugin` (hooks/fast, the PreToolUse entry Claude Code would run) confines a headless
     run of `agent` to `lane`: it must NOT deny a Write inside the lane (the control: a deny for another reason, a guard that
     refuses everything, proves nothing) and must deny a Write outside it (the lane's parent folder). The probe is the run's
     precondition for bypassPermissions, which has no check of its own: a plugin that does not load, or a hook that exits other
     than 2 (Claude Code takes it as no objection) would leave the run with no bound. A hook that does not answer inside
-    GUARD_PROBE_S, under the 20 s at which Claude Code kills it, counts as no deny. Anything but both answers is False."""
+    GUARD_PROBE_S, under the 20 s at which Claude Code kills it, counts as no deny. Anything but both answers is False.
+    T-6533: `drive_task` runs the probe with that FOREMAN_DRIVE_TASK, as the fix session runs: the in-lane control is then
+    allowed only for the lane's own done task (the guard's brief gate), so without it the control is refused and this is False."""
     hook = os.path.join(plugin or "", "hooks", "fast")
     if not (plugin and os.path.isfile(hook) and os.access(hook, os.X_OK)):
         return False
     real = os.path.realpath(lane)
-    if _guard_answer(hook, lane, agent, os.path.join(real, "sampo-guard-probe")) != "other":
+    if _guard_answer(hook, lane, agent, os.path.join(real, "sampo-guard-probe"), drive_task) != "other":
         return False
-    return _guard_answer(hook, lane, agent, os.path.join(os.path.dirname(real), "sampo-guard-probe")) == "deny"
+    return _guard_answer(hook, lane, agent, os.path.join(os.path.dirname(real), "sampo-guard-probe"), drive_task) == "deny"
 
 
-def _permission_mode(lane, plugin=None, agent=""):
+def _permission_mode(lane, plugin=None, agent="", drive_task=None):
     """T-5889: the headless run's permission mode. acceptEdits auto-approves an edit, except of a path Claude Code holds
     sensitive, which it asks about; with `-p` nobody answers, so every file in a lane under a Claude config dir was refused
     (9 of 16 resolver runs ended so, 0 of a morning's 4 committed). The narrower fix does not work: acceptEdits with
@@ -890,10 +896,12 @@ def _permission_mode(lane, plugin=None, agent=""):
     hook that does not load, times out or exits other than 2 is no bound at all, so bypass starts only when _guard_denies
     saw this plugin's guard refuse an outside write just now, else acceptEdits (the run then fails on the refusal, as before).
     A hook that times out on a later call of the run stays fail-open under bypass: accepted, and bounded by MAX_TURNS,
-    MAX_USD and VERB_WALL_S. A lane elsewhere keeps acceptEdits: bypass only where the refusal is."""
+    MAX_USD and VERB_WALL_S. A lane elsewhere keeps acceptEdits: bypass only where the refusal is.
+    T-6533: `drive_task` (the fix session's task) is the FOREMAN_DRIVE_TASK the probe runs with; the resolver and the review
+    pass none and are unchanged."""
     if not _claude_folder(lane):
         return "acceptEdits"
-    return "bypassPermissions" if _guard_denies(lane, plugin, agent) else "acceptEdits"
+    return "bypassPermissions" if _guard_denies(lane, plugin, agent, drive_task) else "acceptEdits"
 
 
 def _headless(p, tid, lane, agent, prompt, left):

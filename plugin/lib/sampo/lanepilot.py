@@ -933,12 +933,14 @@ def _claude_walls(lane, root):
     return walls
 
 
-def _fix_mode(lane):
+def _fix_mode(lane, tid=None):
     """T-6229: the fix session's permission mode. A lane under a Claude folder is edited in bypassPermissions only when the
     resolver's probe (pilotsig._permission_mode, bounded by the guard) saw this plugin refuse an outside write; otherwise
-    dontAsk, as before: Claude Code refuses an edit under a Claude folder in dontAsk, and the run then fails as it did."""
+    dontAsk, as before: Claude Code refuses an edit under a Claude folder in dontAsk, and the run then fails as it did.
+    T-6533: the probe runs with `tid`, the session's drive task (FOREMAN_DRIVE_TASK), so the guard allows the session's
+    in-lane control write on its own done lane; without it, or for another lane, the probe is refused and the mode is dontAsk."""
     from sampo import pilotsig
-    return "bypassPermissions" if pilotsig._permission_mode(lane, pilotsig._plugin_dir(), FIX_AGENT) == "bypassPermissions" \
+    return "bypassPermissions" if pilotsig._permission_mode(lane, pilotsig._plugin_dir(), FIX_AGENT, tid) == "bypassPermissions" \
         else "dontAsk"
 
 
@@ -948,7 +950,7 @@ def _fix_session_env(tid, lane, mode):
     from sampo import pilotsig
     if mode != "bypassPermissions":
         return _fix_env(tid, lane)
-    env = pilotsig._claude_env(lane, FIX_AGENT)  # T-6229 review 1: the very env the probe used
+    env = pilotsig._claude_env(lane, FIX_AGENT, tid)  # T-6229 review 1: the very env the probe used (T-6533: and its task)
     env["FOREMAN_DRIVE_TASK"] = tid
     env["PYTHONDONTWRITEBYTECODE"] = "1"  # T-6194, as _fix_env
     return env
@@ -965,7 +967,7 @@ def fix_argv(p, b, found, n, cap, agent=True, mode=None, model=None):
     from sampo import ideas, pilotsig
     brief = os.path.join(p.dir, "audits", f"{b.id}.builder.md")
     allow, deny = fix_rules(p, b)
-    mode = mode or _fix_mode(b.meta.get("lane") or "")
+    mode = mode or _fix_mode(b.meta.get("lane") or "", b.id)
     plugin = ["--plugin-dir", pilotsig._plugin_dir()] if mode == "bypassPermissions" else []
     return ideas.harden([
         "claude", "-p", fix_prompt(p, b, found, n), "--permission-mode", mode, "--model", model or FIX_MODEL,
@@ -1704,7 +1706,7 @@ def fix_round(p, b, found, n, spent=None, kept=None):
         return "its lane worktree is gone"
     spent = [] if spent is None else spent
     try:
-        mode = _fix_mode(lane)
+        mode = _fix_mode(lane, b.id)
         env = _fix_session_env(b.id, lane, mode)
     except OSError as e:
         return f"fix session not started: {e}"
