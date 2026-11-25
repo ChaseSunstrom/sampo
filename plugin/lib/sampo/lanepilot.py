@@ -822,8 +822,9 @@ def fix_rules(p, b):
 def _claude_root(lane):
     """T-6229: the Claude folder the lane sits under: the user's (CLAUDE_CONFIG_DIR, default ~/.claude) when the lane is under
     it, else the outermost folder named .claude on the lane's path (a lane in a repo's .claude), else None."""
+    from sampo import claude  # the one reviewed reader of CLAUDE_CONFIG_DIR, else ~/.claude (state_write inventory)
     real = os.path.realpath(lane or ".")
-    home = os.path.realpath(os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude"))
+    home = os.path.realpath(claude.config_dir())
     if real.startswith(home + os.sep):
         return home
     parts = real.split(os.sep)

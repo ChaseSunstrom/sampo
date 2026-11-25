@@ -542,6 +542,23 @@ class FixInClaudeFolder(FixCase):
             pattern = rule.split("(", 1)[1][:-1].replace("~", home, 1)
             self.assertFalse(fnmatch.fnmatch(probe_file, pattern), f"{rule} covers the lane")
 
+    def test_the_claude_root_is_the_config_dir_or_the_repos_dot_claude_and_the_home_is_the_default(self):
+        # the walls read the folder through claude.config_dir(): CLAUDE_CONFIG_DIR when set, else ~/.claude under HOME
+        top = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, top, True)
+        cfg = os.path.join(top, "cfg")
+        os.makedirs(os.path.join(cfg, "lanes", "x"))
+        repo = os.path.join(top, "repo", ".claude", "worktrees", "agent-1")
+        os.makedirs(repo)
+        with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": cfg}):
+            self.assertEqual(lanepilot._claude_root(os.path.join(cfg, "lanes", "x")), cfg)
+            self.assertEqual(lanepilot._claude_root(repo), os.path.join(top, "repo", ".claude"))
+            self.assertIsNone(lanepilot._claude_root(os.path.join(top, "plain")))
+        with mock.patch.dict(os.environ, {"HOME": top}):
+            os.environ.pop("CLAUDE_CONFIG_DIR", None)
+            self.assertEqual(lanepilot._claude_root(os.path.join(top, ".claude", "lanes")),
+                             os.path.join(top, ".claude"))
+
 
 class FixFails(FixCase):
     fix = "fail"
