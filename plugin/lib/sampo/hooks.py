@@ -5367,6 +5367,27 @@ def _ambient_note(p):
     return ambient.note(p)
 
 
+def _drive_lane_brief(p):
+    """T-6521: the lane's own finished, unlanded task, named by FOREMAN_DRIVE_TASK, for the lane pilot's fix session (a
+    claude -p worker that edits the lane its task built). A done task is not active, so the brief gate refused the
+    session's edits there. Read only (no focus: that would reopen the task), and only when the task's lane is the lane
+    `p` is in and the task is neither landed (lane_stop 'merged…') nor closed: never another lane, never the main checkout.
+    T-6521 round 2: the env name alone is no proof (a builder can set it in any shell): the lane pilot's marker must name
+    this same lane (headless_pilot, and headless_lane() is the lane it pinned to its own main checkout). So the brief's
+    criterion reads: env alone is refused; env with the pilot marker for this lane is allowed (T-6521 round 3 review).
+    Known residual (not closed here): a headless builder that cd's into a done lane and sets the marker itself passes this
+    gate; closing it needs a pilot-issued token or a fix window recorded by the pilot, a design change, not a patch."""
+    tid, lane = os.environ.get("FOREMAN_DRIVE_TASK"), getattr(p, "lane", None)
+    if not tid or not lane or not c.headless_pilot():
+        return None
+    if c.headless_lane() != os.path.realpath(lane):
+        return None
+    b = c.find_brief(p, tid)
+    if not b or b.status != "done" or b.meta.get("lane") != lane or str(b.meta.get("lane_stop") or "").startswith("merged"):
+        return None
+    return b
+
+
 def _guard_ctx(pl, fmguard, lanes=()):
     """T-4340: lanes are lane folders whose one open task is active there (just read or focused): the main session's
     edits strictly inside them are briefed (fmguard.Ctx.briefed_lanes); nothing else about the call changes."""
@@ -5386,17 +5407,23 @@ def _guard_ctx(pl, fmguard, lanes=()):
             act = (cc.active_brief(cc.load_briefs(p), lane) if lane else cc.active_brief(cc.load_briefs(p))) if p else None
         except Exception:
             log_error("PreToolUse", _tb())  # unreadable state: no authorizations, guard still runs
+    drive = _drive_lane_brief(p) if p and not act else None  # T-6521: the lane pilot's fix session in its finished lane
+    if drive:
+        act = drive
     scratch = [s for s in (pl.get("scratchpad_dir"), "/tmp", "/var/tmp", os.environ.get("TMPDIR")) if s]
     try:
         meta = c.read_meta(p) if p else {}
     except Exception:
         meta = {}  # unreadable: no standing yes or trust, the guard asks as before
+    confine = None if getattr(p, "lane", None) and _visiting(pl, p.lane) else c.builder_confine(p, act, pl.get("agent_type"))
+    if drive and confine is None:  # the session's edits stay in its lane even when no builder or editing agent is named
+        confine = (p.lane, c.main_worktree(p.lane))
     ctx = fmguard.Ctx(cwd=cwd, project_root=fmguard.project_root_for(pcwd, home), home=home,
                       foreman_home=c.foreman_home(), state_dir=c.state_dir(),
                       state_fallbacks=c.state_fallbacks(), scratch=scratch,
                       allow=set(act.meta.get("allow") or []) if act else set(), task_id=act.id if act else None,
                       standing=set(meta.get("standing") or {}), trusted=bool(c.trusted()),
-                      confine=None if getattr(p, "lane", None) and _visiting(pl, p.lane) else c.builder_confine(p, act, pl.get("agent_type")),
+                      confine=confine,
                       unbriefed=p.root if p and not act and not _quiet() else None)  # T-0308: Bash writes too
     if lanes and ctx.unbriefed:
         ctx.briefed_lanes = tuple(lanes)

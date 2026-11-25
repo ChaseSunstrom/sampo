@@ -4188,6 +4188,100 @@ class PreToolUse(HookCase):
         self.assertNotIn("scope", self.ctx_of(self.pre("Write", {"file_path": inside, "content": "x"})))
 
 
+class DriveTaskLane(HookCase):  # T-6521: the lane pilot's fix session edits its lane while its task is done and unlanded
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+
+    def lane_task(self, status="done", **meta):
+        """A task its builder finished in its own lane (focused there, so its brief records the lane), then set to status."""
+        tid = self.task("Lane fix", focus=False)
+        lane = os.path.join(self.repo + ".lanes", tid)
+        subprocess.run(["git", "-C", self.repo, "worktree", "add", "-q", "-b", f"foreman/{tid}", lane], check=True)
+        self.fm("focus", tid, cwd=lane)
+        p = self.project()
+        b = c.find_brief(p, tid)
+        b.meta.update({"status": status, **meta})
+        c.save_brief(p, b)
+        with open(os.path.join(lane, "x.py"), "w") as f:
+            f.write("x = 1\n")
+        return tid, lane
+
+    def edit(self, path, env, cwd):
+        return self.hook("PreToolUse", {"tool_name": "Edit", "cwd": cwd,
+                                        "tool_input": {"file_path": path, "old_string": "x = 1", "new_string": "x = 2"}},
+                         env=env)
+
+    def pilot(self, tid, lane, marker_lane=None):
+        """The env _fix_env gives the lane pilot's fix session: the drive marker, and the headless marker naming the lane
+        it pinned to its own main checkout (marker_lane: a lane that is not the one edited)."""
+        return {"FOREMAN_DRIVE_TASK": tid, "FOREMAN_PILOT_HEADLESS": "1", "FOREMAN_PILOT_LANE": marker_lane or lane,
+                "FOREMAN_PILOT_MAIN": os.path.realpath(self.repo)}
+
+    def status(self, tid):
+        return c.find_brief(self.project(), tid).status
+
+    def test_drive_task_lane_a_done_unlanded_task_lets_its_own_fix_session_edit_its_lane(self):
+        tid, lane = self.lane_task()
+        p = self.edit(os.path.join(lane, "x.py"), self.pilot(tid, lane), lane)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertEqual(self.status(tid), "done", "no focus: the finished task stays finished")
+
+    def test_drive_task_lane_is_refused_without_the_env_or_for_another_task(self):
+        tid, lane = self.lane_task()
+        other, other_lane = self.lane_task()
+        for drive in ("", "T-9999", other):  # no env, an id that names nothing, and another lane's task
+            p = self.edit(os.path.join(lane, "x.py"), {"FOREMAN_DRIVE_TASK": drive}, lane)
+            self.assertEqual(p.returncode, 2, (drive, p.stdout + p.stderr))
+            self.assertIn("no active task", p.stdout, drive)
+        self.assertEqual(self.edit(os.path.join(other_lane, "x.py"), self.pilot(tid, other_lane), other_lane).returncode, 2,
+                         "tid's env never opens the other lane")
+        self.assertEqual(self.status(tid), "done")
+
+    def test_drive_task_lane_env_alone_without_the_pilot_marker_is_refused(self):
+        """T-6521 round 2: FOREMAN_DRIVE_TASK names a task of this lane, but no lane pilot runs the session: any shell can
+        set the name, so the gate needs the headless marker as well."""
+        tid, lane = self.lane_task()
+        p = self.edit(os.path.join(lane, "x.py"), {"FOREMAN_DRIVE_TASK": tid}, lane)
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertIn("no active task", p.stdout)
+        no_pin = self.pilot(tid, lane)
+        del no_pin["FOREMAN_PILOT_MAIN"]  # the marker with no pin to its own main checkout names no lane
+        self.assertEqual(self.edit(os.path.join(lane, "x.py"), no_pin, lane).returncode, 2)
+
+    def test_drive_task_lane_a_marker_for_another_lane_is_refused(self):
+        tid, lane = self.lane_task()
+        _other, other_lane = self.lane_task()
+        p = self.edit(os.path.join(lane, "x.py"), self.pilot(tid, lane, marker_lane=other_lane), lane)
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertEqual(self.status(tid), "done")
+
+    def test_drive_task_lane_dotdot_and_symlink_out_of_the_lane_are_refused(self):
+        tid, lane = self.lane_task()
+        outside = os.path.join(self.repo, "outside.py")
+        with open(outside, "w") as f:
+            f.write("x = 1\n")
+        os.symlink(outside, os.path.join(lane, "link.py"))
+        env = self.pilot(tid, lane)
+        for path in (os.path.join(lane, "..", "outside.py"), os.path.join(lane, "link.py"), outside):
+            p = self.edit(path, env, lane)
+            self.assertEqual(p.returncode, 2, (path, p.stdout + p.stderr))
+        with open(outside) as f:
+            self.assertEqual(f.read(), "x = 1\n", "a refused edit writes nothing")
+
+    def test_drive_task_lane_is_refused_for_a_landed_or_dropped_task(self):
+        landed, landed_lane = self.lane_task(lane_stop=f"merged {c.now()}")
+        dropped, dropped_lane = self.lane_task(status="dropped")
+        for tid, lane in ((landed, landed_lane), (dropped, dropped_lane)):
+            p = self.edit(os.path.join(lane, "x.py"), self.pilot(tid, lane), lane)
+            self.assertEqual(p.returncode, 2, (tid, p.stdout + p.stderr))
+
+    def test_drive_task_lane_never_widens_to_the_main_checkout(self):
+        tid, lane = self.lane_task()
+        p = self.edit(os.path.join(self.repo, "x.py"), self.pilot(tid, lane), self.repo)
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+
+
 class DesignNudge(HookCase):
     """T-1514: a task's first UI edit in a repo with no DESIGN.md gets one note naming the design-direction playbook;
     once per task, never a block."""

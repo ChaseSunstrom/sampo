@@ -197,6 +197,7 @@ class StateEnvAsk(ForemanTestCase):
         "FOREMAN_PILOT_HEADLESS=0 sampo status",  # round 2: the marker that confines a headless main session
         "env FOREMAN_PILOT_HEADLESS= sampo lane list",  # T-5766: a program run detached
         "FOREMAN_PILOT_LANE=/ sampo status", "export FOREMAN_PILOT_LANE=/tmp/x",  # T-5889: the lane the headless run is confined to
+        "FOREMAN_DRIVE_TASK=T-1 sampo status", "export FOREMAN_DRIVE_TASK=T-1",  # T-6521: the drive marker a fix session reads its task by
         "SAMPO_HOME=/tmp/x true", "FOREMAN_HOME=/tmp/h ls", "env FOREMAN_HOME=/tmp/h env",
         "FOREMAN_STATE=/x/plugin/state ls", "echo FOREMAN_HOME=/tmp/h sampo status",
         "git add plugin/lib/fmguard.py && echo SAMPO_HOME=1", "printf '%s\\n' FOREMAN_HOME=/tmp/h",

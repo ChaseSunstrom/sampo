@@ -233,6 +233,16 @@ class OneRound(FixCase):
         self.assertEqual([e["data"]["round"] for e in self.events("pilot_fix")], [1])
         self.assertNotIn("changes_asked", self.brief().meta)
 
+    def test_a_fix_round_on_a_done_lane_commits_the_session_edits(self):
+        """T-6521 AC2: the fix session is given a done lane, and what it edits is committed by the pilot, nothing else."""
+        tip = train._lane_tip(self.repo, self.brief())
+        r = self.pilot()
+        self.assertEqual(r["outcome"], "accepted", r)
+        new = train._lane_tip(self.repo, self.brief())
+        self.assertNotEqual(new, tip, "the pilot committed the fix session's edit")
+        self.assertEqual(self.lgit("show", "--name-only", "--format=", new).split(), ["bad.txt"],
+                         "the fix commit holds the session's one edit (bad.txt removed) and no other file")
+
     def test_the_fix_session_is_sent_the_blocking_findings_as_data_and_the_brief_path(self):
         self.pilot()
         args = self.kinds("fix")[0]["args"]
@@ -445,14 +455,18 @@ class FixInClaudeFolder(FixCase):
         self.assertEqual(self.arg(args, "--permission-mode"), "dontAsk")
         self.assertNotIn("--plugin-dir", args)
 
-    def test_the_lane_env_is_the_headless_one_only_under_bypass(self):
+    def test_the_lane_env_is_headless_under_bypass_and_dontask_alike(self):  # T-6521 round 2: the marker in both modes
         tid = self.tid
         self.assertIn(c.HEADLESS_ENV, pilotsig._claude_env(self.lane_path, lanepilot.FIX_AGENT))
         with mock.patch.object(pilotsig, "_guard_denies", return_value=True):
             env = lanepilot._fix_session_env(tid, self.lane_path, "bypassPermissions")
         self.assertEqual(env.get(c.HEADLESS_ENV), "1")
         self.assertEqual(env.get(c.PILOT_LANE_ENV), os.path.realpath(self.lane_path))
-        self.assertNotIn(c.HEADLESS_ENV, lanepilot._fix_session_env(tid, self.lane_path, "dontAsk"))
+        dontask = lanepilot._fix_session_env(tid, self.lane_path, "dontAsk")
+        self.assertEqual(dontask.get(c.HEADLESS_ENV), "1", "T-6521 round 2: the drive marker needs the pilot marker in dontAsk too")
+        self.assertEqual(dontask.get(c.PILOT_LANE_ENV), os.path.realpath(self.lane_path))
+        self.assertEqual(dontask.get(c.PILOT_MAIN_ENV), os.path.realpath(c._gitfile_main(os.path.realpath(self.lane_path))))
+        self.assertEqual(dontask.get("FOREMAN_DRIVE_TASK"), tid)
 
     def test_the_bypass_env_is_the_probes_env_on_every_key_it_adds_two(self):
         """T-6229 review 1: the session is confined by the env the guard probe ran with, not a subset of it."""
