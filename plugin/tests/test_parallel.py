@@ -423,6 +423,42 @@ class Parallel(ForemanTestCase):
         self.fm("run", "--parallel", "2", env=self.env(), check=False)
         self.assertEqual(len(self.sessions()), before, "the next run starts nothing")
 
+    def test_a_lane_kept_with_work_is_resumed_in_the_same_worktree(self):
+        # T-6442: a session that ends unfinished but leaves work (a timeout, a stall) is resumed once in its own lane by
+        # the run, not left for a hand lane recover; the resumed session sees the earlier work and finishes
+        from sampo import core as c
+        self.task("one", "work-T-0001.txt")
+        self.serving()  # one task runs in a lane only beside serve
+        fm = f"{sys.executable} {FM}"
+        self.stub("claude", f't=$FOREMAN_DRIVE_TASK\necho "start $t $PWD" >> {self.log}\n{fm} focus $t >/dev/null\n'
+                            f'if [ ! -e "work-$t.txt" ]; then echo half > "work-$t.txt"; exit 0; fi\n'
+                            f'{fm} task finish $t --run true --audit "self check" --commit "work $t" >/dev/null\n')
+        out = self.fm("run", "--parallel", "2", env=self.env(), check=False).stdout
+        starts = [ln.split()[2] for ln in self.sessions() if ln.startswith("start T-0001")]
+        self.assertEqual(len(starts), 2, out)
+        self.assertEqual(starts[0], starts[1], "resumed in the same lane")
+        self.assertIn("resumed in its lane", out)
+        p = c.find_project(self.repo)
+        self.assertEqual(c.find_brief(p, "T-0001").status, "done", out)
+        self.assertIn("work T-0001", self.git("log", "--format=%s"))
+        self.assertEqual(len(c.find_brief(p, "T-0001").meta.get("recoveries") or []), 1)
+
+    def test_a_lane_that_never_finishes_is_resumed_up_to_the_cap_across_runs(self):
+        # T-6442: once per run, and a later run resumes a lane an earlier one kept; lanes.RECOVERIES_MAX caps it
+        from sampo import core as c
+        from sampo import lanes as slanes
+        self.task("one", "work-T-0001.txt")
+        self.serving()
+        self.stub("claude", f't=$FOREMAN_DRIVE_TASK\necho "start $t $PWD" >> {self.log}\n'
+                            f'{sys.executable} {FM} focus $t >/dev/null\necho more >> "work-$t.txt"\n')
+        for _ in range(3):
+            self.fm("run", "--parallel", "2", env=self.env(), check=False)
+        starts = [ln for ln in self.sessions() if ln.startswith("start T-0001")]
+        self.assertEqual(len(starts), 1 + slanes.RECOVERIES_MAX, starts)
+        p = c.find_project(self.repo)
+        self.assertEqual(len(c.find_brief(p, "T-0001").meta.get("recoveries") or []), slanes.RECOVERIES_MAX)
+        self.assertTrue(os.path.isdir(starts[0].split()[2]), "the lane and its work are kept")
+
     def test_a_committed_mirror_doesnt_count_as_the_users_changes(self):
         # T-0174 review: fm keeps a tracked .sampo/ current from every lane session, in the main checkout
         self.fm("sync", "on")

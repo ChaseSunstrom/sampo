@@ -609,6 +609,29 @@ def _new_lane(p, tid):
         time.sleep(1 + i)
 
 
+def _kept_lanes(p, skip):
+    """T-6442: (brief, lane path) for each open task an earlier fm run left in its lane with work (run_kept on the brief),
+    still under the recovery cap: the pool resumes these in the same worktree before it starts new tasks."""
+    from sampo import lanes as slanes
+    got = []
+    for b in c.load_briefs(p):
+        path = b.meta.get("run_kept")
+        if (path and b.id not in skip and b.status in ("active", "planned") and os.path.isdir(path)
+                and len(slanes._recoveries(b)) < slanes.RECOVERIES_MAX and _lane_has_work(p, path)):
+            got.append((b, path))
+    return got
+
+
+def _mark_resume(p, tid, path):
+    """Count a run resume as a lane recovery (capped at lanes.RECOVERIES_MAX) and keep the lane's path on the brief."""
+    from sampo import cli
+    def mark(x):
+        x.meta["recoveries"] = (x.meta.get("recoveries") or []) + [f"run_unfinished@{c.now()}"]
+        x.meta["run_kept"] = path
+    cli.mutate(p, tid, mark, "run_resume", {"lane": path})
+    return c.find_brief(p, tid)
+
+
 def _run_pool(p, args, models, log, skip, told, fit, n, left, fails=0):
     """T-3294: a rolling pool. Up to n tasks work at once, each a fresh session in its own lane (fm lane new); as soon
     as one ends the next compatible queued task starts (_batch with the lanes running), and a finished task's lane is
@@ -618,6 +641,7 @@ def _run_pool(p, args, models, log, skip, told, fit, n, left, fails=0):
     import signal
     import tempfile
     from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+    from sampo import cli
     live, merging, lanes, done_ids = {}, {}, {}, set()  # live: watcher future -> (brief, path, proc, out, t0)
     finished, limited = 0, False
     stall_s = getattr(args, "stall", 20) * 60
@@ -629,16 +653,20 @@ def _run_pool(p, args, models, log, skip, told, fit, n, left, fails=0):
             _stop(proc, signal)  # the whole process group: tools the session started go too
         return code, why
 
-    def start(b):
-        """True when b was dealt with (started, or skipped for good); False when the host is too loaded for a lane now."""
-        made = _new_lane(p, b.id)
-        if made.returncode and "no new lane until it eases" in made.stderr:
-            return False  # load is not the task's fault: it keeps its place and the pool asks again later
-        if made.returncode:
-            skip.add(b.id)  # never retry a lane that can't be made, or the run loops forever
-            print(f"{b.id}: no lane ({made.stderr.strip()[:200]}); skipped this run", flush=True)
-            return True
-        path = lanes[b.id] = json.loads(made.stdout)["path"]
+    def start(b, kept=None):
+        """True when b was dealt with (started, or skipped for good); False when the host is too loaded for a lane now.
+        kept: the lane b already has with work (T-6442), resumed in place instead of a new one."""
+        if kept:
+            path = lanes[b.id] = kept
+        else:
+            made = _new_lane(p, b.id)
+            if made.returncode and "no new lane until it eases" in made.stderr:
+                return False  # load is not the task's fault: it keeps its place and the pool asks again later
+            if made.returncode:
+                skip.add(b.id)  # never retry a lane that can't be made, or the run loops forever
+                print(f"{b.id}: no lane ({made.stderr.strip()[:200]}); skipped this run", flush=True)
+                return True
+            path = lanes[b.id] = json.loads(made.stdout)["path"]
         out = tempfile.TemporaryFile("w+", errors="replace")
         try:
             proc = subprocess.Popen(_session_cmd(p, b, args, _routed(p, b, models, args)), cwd=path, stdout=out,
@@ -646,7 +674,7 @@ def _run_pool(p, args, models, log, skip, told, fit, n, left, fails=0):
                                     start_new_session=True)
         except BaseException:  # claude missing, or the route failed: the lane just made frees its task
             out.close()
-            if not _lane_has_work(p, path):
+            if not kept and not _lane_has_work(p, path):
                 _fm(p.root, "lane", "rm", b.id)
             raise
         t0 = time.monotonic()
@@ -677,10 +705,11 @@ def _run_pool(p, args, models, log, skip, told, fit, n, left, fails=0):
         after = c.find_brief(p, tid)
         if after.status == "done":
             fails = 0  # (finished is counted when its lane lands)
+            if after.meta.get("run_kept"):
+                cli.mutate(p, tid, lambda x: x.meta.pop("run_kept", None), None)
             beat(p, "run", 2 * 3600, f"{tid}: merging its lane")  # gates may take an hour
             merging[merge_pool.submit(_integrate, p, tid, path)] = after
             return
-        fails += not hit  # a usage limit is waited out, never a failure
         skip.add(tid)  # not this run again; an empty lane frees the task for the next
         try:  # T-3294 review: a timeout or OSError here must not end every live pool session (trunk's block() guards too)
             freed = not _lane_has_work(p, path) and _fm(p.root, "lane", "rm", tid).returncode == 0
@@ -688,9 +717,21 @@ def _run_pool(p, args, models, log, skip, told, fit, n, left, fails=0):
             print(f"fm run: couldn't remove {tid}'s lane: {e}", file=sys.stderr)
             freed = False
         stuck = freed and not hit and after.status not in ("blocked", "dropped", "deferred")
+        # T-6442: a lane kept with work (a timeout, a stall, a session that stopped early) is resumed in place once per
+        # run, and by later runs, until lanes.RECOVERIES_MAX: the work is not thrown away nor left for a person
+        resume = (not freed and not hit and tid not in resumed and after.status in ("active", "planned")
+                  and len(slanes._recoveries(after)) < slanes.RECOVERIES_MAX)
+        if freed and after.meta.get("run_kept"):
+            cli.mutate(p, tid, lambda x: x.meta.pop("run_kept", None), None)
+        elif not freed and not resume:
+            cli.mutate(p, tid, lambda x: x.meta.__setitem__("run_kept", path), None)  # a later run resumes it
+        fails += not hit and not resume  # a usage limit is waited out, a resume is progress: neither is a failure
+        if resume:
+            resumes.append((_mark_resume(p, tid, path), path))
+            resumed.add(tid)
         print(f"{tid} not finished in its lane ({after.status}, exit {code}); "
               + ("no progress: blocked" if stuck else "lane removed, back in the queue" if freed
-                 else f"lane kept with its work: {path}"), flush=True)
+                 else f"resumed in its lane {path}" if resume else f"lane kept with its work: {path}"), flush=True)
         if stuck:  # T-0968: an empty lane is no progress, quarantined as a single session's is
             try:
                 r = _fm(p.root, "task", "block", tid, f"fm run: no progress in its lane (exit {code})", timeout=120)
@@ -702,6 +743,10 @@ def _run_pool(p, args, models, log, skip, told, fit, n, left, fails=0):
     watch_pool, merge_pool = ThreadPoolExecutor(max_workers=max(1, n)), ThreadPoolExecutor(max_workers=1)
     from sampo import lanes as slanes
     unlanded, idle = set(), 0  # unlanded: finished tasks whose lane was kept, not merged: what waits on them waits on
+    resumes, resumed = [], set()  # T-6442: (brief, kept lane) to start again in place; tasks resumed this run
+    for b, path in _kept_lanes(p, skip):  # lanes earlier runs kept with work go first
+        resumes.append((_mark_resume(p, b.id, path), path))
+        resumed.add(b.id)
     try:
         while True:
             running = [b for b, *_ in live.values()] + list(merging.values())  # a lane waiting to merge still holds its files
@@ -709,12 +754,17 @@ def _run_pool(p, args, models, log, skip, told, fit, n, left, fails=0):
             deferred = False
             if (room > 0 and len(merging) < slanes.UNMERGED_MAX  # back-pressure: the merges are the narrow part
                     and not limited and fails < FAILS_MAX and not c.panicked()):
+                while resumes and room > 0:  # T-6442: before any new task, in the lane that holds its work
+                    rb, rpath = resumes.pop(0)
+                    print(f"{rb.id}: resuming in its lane {rpath}", flush=True)
+                    start(rb, rpath)
+                    room -= 1
                 unmerged = {b.id for b in running} | unlanded  # "done" is not landed: its dependents start on a stale base
                 every = c.load_briefs(p)
                 waiting = {b.id for b in every if unmerged & set(c._deps(b))}
                 skip.update(b.id for b in every if unlanded & set(c._deps(b)))  # kept, not merged: held for the run
-                avoid = skip | {b.id for b in running} | done_ids | waiting
-                head = _next_runnable(p, avoid, told, fit)
+                avoid = skip | {b.id for b in running} | done_ids | waiting | resumed
+                head = _next_runnable(p, avoid, told, fit) if room > 0 else None
                 batch = _batch(p, head, avoid, room, running) if head else []
                 if head and not batch and serving and not _batch(p, head, avoid, 1, []):
                     # T-6409: a head no lane will ever take (no scope, L, held): beside serve there is no main-checkout
@@ -923,7 +973,10 @@ def _integrate_lane(p, tid, path):
 def _prompt(p, b):
     nxt = c.next_action(b, "full", c.last_change(p, b.id))
     title = re.sub(r"[\x00-\x1f\"]", " ", b.title)[:200]  # task text is data: one quoted line
-    return (f"Sampo worker (fm run): work task {b.id} (titled \"{title}\") until it is done, following the Sampo rules. "
+    again = (" Your lane already holds a previous session's uncommitted work on it (that session ran out of time or "
+             "stopped): read git status and git diff first, keep what is good, and finish from there."
+             if b.meta.get("run_kept") else "")  # T-6442
+    return (f"Sampo worker (fm run): work task {b.id} (titled \"{title}\") until it is done, following the Sampo rules.{again} "
             f"Autonomy is full: never ask; decide with your default and record it (fm decide). If it can't be "
             f"finished, record why with fm task block {b.id} \"<why>\". Next: {nxt}")
 
@@ -1155,12 +1208,14 @@ def cmd_run(args):
             break
         fit = args.fit or bool(_ahead_of_pace(p))
         b = _next_runnable(p, skip, told, fit=fit)
-        if not b:
+        kept = args.parallel > 1 or serving  # T-6442: lanes an earlier run kept with work are resumed by the pool
+        kept = kept and _kept_lanes(p, skip)
+        if not b and not kept:
             break
         width = min(args.parallel, _pool_cap(p), args.max - finished)
-        batch = _batch(p, b, skip, width)
-        beat(p, "run", args.timeout * 60, " ".join(x.id for x in batch))
-        if len(batch) > 1 or serving:  # T-0167: independent tasks at once, each in its lane, merged back one by one
+        batch = _batch(p, b, skip, width) if b else []
+        beat(p, "run", args.timeout * 60, " ".join(x.id for x in batch) or " ".join(x.id for x, _ in kept))
+        if kept or len(batch) > 1 or serving:  # T-0167: independent tasks at once, each in its lane, merged back one by one
             if args.parallel > width < args.max - finished:
                 print(f"lanes at once: {width} (fm lane max N raises it, up to 100)", flush=True)
             try:  # T-3294: a rolling pool: the next task starts when any lane ends
