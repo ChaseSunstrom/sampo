@@ -2403,3 +2403,120 @@ class PlanAutoFill(ForemanTestCase):
         b, notes = self.fill(tid)
         self.assertTrue(any("2 options" in g and "3+ options needed" in g for g in c.plan_gaps(b)), c.plan_gaps(b))
         self.assertTrue(all("Undo" not in n for n in notes), notes)
+
+
+class ScopeCoversOwnTests(ForemanTestCase):  # T-6299: a task's scope covers the test modules it names or the map links to it
+    def brief(self, scope, verify=None, tests=None, name="proj", version=None):
+        from sampo import map as smap
+        d = os.path.join(self.tmp, name)
+        os.makedirs(os.path.join(d, "tasks"))
+        if tests is not None:
+            self.write_map(d, tests, smap.VERSION if version is None else version)
+        verifies = verify if isinstance(verify, list) else [verify]
+        crit = "".join(f"- [ ] it works — verify with `{v}`\n" if v else "- [ ] it works\n" for v in verifies)
+        return c.Brief({"scope": scope}, [], "", [["Acceptance criteria", crit]], os.path.join(d, "tasks", "T-1.md"))
+
+    def write_map(self, d, tests, version):
+        with open(os.path.join(d, "map.json"), "w") as f:
+            json.dump({"version": version, "tests": tests}, f)
+
+    def test_a_criterion_named_test_module_is_in_scope_and_a_test_of_unscoped_code_is_not(self):
+        b = self.brief(["plugin/lib/sampo/hooks.py"], "python3 plugin/tests/run.py test_hooks -k Scope")
+        self.assertTrue(c.in_scope(b, "plugin/lib/sampo/hooks.py"))
+        self.assertTrue(c.in_scope(b, "plugin/tests/test_hooks.py"))
+        self.assertFalse(c.in_scope(b, "plugin/tests/test_core.py"), "a test of unscoped code still counts")
+        self.assertFalse(c.in_scope(b, "plugin/lib/sampo/core.py"))
+
+    def test_a_same_named_test_module_in_another_folder_is_not_in_scope(self):  # T-6299: the folder the verify command names
+        b = self.brief(["plugin/lib/sampo/hooks.py"], "python3 plugin/tests/run.py test_hooks -k Scope")
+        self.assertTrue(c.in_scope(b, "plugin/tests/test_hooks.py"))
+        self.assertFalse(c.in_scope(b, "vendor/other/tests/test_hooks.py"), "a test_hooks.py that tests other code")
+        self.assertFalse(c.in_scope(b, "docs/examples/test_hooks.py"), "a same-named file anywhere is not the module")
+
+    def test_the_map_is_read_again_when_it_changes(self):  # T-6299: the per-process map cache is keyed on mtime and size
+        tests = {"plugin/tests/test_hooks.py": ["plugin/lib/sampo/hooks.py"]}
+        b = self.brief(["plugin/lib/sampo/hooks.py"], tests=tests)
+        self.assertTrue(c.in_scope(b, "plugin/tests/test_hooks.py"))
+        from sampo import map as smap
+        self.write_map(os.path.join(self.tmp, "proj"), {"plugin/tests/test_core.py": ["plugin/lib/sampo/hooks.py"]}, smap.VERSION)
+        self.assertFalse(c.in_scope(b, "plugin/tests/test_hooks.py"), "the map no longer links it")
+        self.assertTrue(c.in_scope(b, "plugin/tests/test_core.py"), "the rewritten map's link counts")
+
+    def test_a_criterion_glob_naming_the_module_counts(self):  # `-p 'test_hooks*.py'` names test_hooks
+        b = self.brief(["plugin/lib/sampo/hooks.py"], "python3 plugin/tests/run.py -p 'test_hooks*.py' -k Scope")
+        self.assertTrue(c.in_scope(b, "plugin/tests/test_hooks.py"))
+        self.assertFalse(c.in_scope(b, "plugin/tests/test_core.py"))
+
+    def test_a_criterion_glob_with_no_name_after_test_names_no_module(self):  # T-6299 review: `test_*_*` is every test
+        b = self.brief(["plugin/lib/sampo/hooks.py"], "python3 plugin/tests/run.py -p 'test_*_*.py' -k Scope")
+        self.assertFalse(c.in_scope(b, "plugin/tests/test_core.py"), "a glob that matches every test names none")
+        self.assertFalse(c.in_scope(b, "plugin/tests/test_hooks.py"), "a glob that matches every test names none")
+
+    def test_each_criterion_counts_its_module_only_in_the_folder_it_names(self):
+        b = self.brief(["plugin/lib/sampo/hooks.py"], ["python3 plugin/tests/run.py test_hooks -k Scope",
+                                                       "python3 vendor/run.py test_other -k Scope"])
+        self.assertTrue(c.in_scope(b, "plugin/tests/test_hooks.py"))
+        self.assertTrue(c.in_scope(b, "vendor/test_other.py"))
+        self.assertFalse(c.in_scope(b, "vendor/test_hooks.py"), "the other criterion names test_other, in vendor")
+
+    def test_a_bare_test_name_matches_no_file_by_name_alone(self):  # no folder named: only the map says which file it is
+        b = self.brief(["plugin/lib/sampo/hooks.py"], "python3 run.py test_hooks -k Scope")
+        self.assertFalse(c.in_scope(b, "docs/examples/test_hooks.py"), "a same-named file anywhere is not the module")
+        self.assertFalse(c.in_scope(b, "plugin/tests/test_hooks.py"), "no folder named and no map")
+        mapped = self.brief(["plugin/lib/sampo/hooks.py"], "python3 run.py test_hooks -k Scope", name="mapped",
+                            tests={"plugin/tests/test_hooks.py": ["plugin/lib/sampo/hooks.py"]})
+        self.assertTrue(c.in_scope(mapped, "plugin/tests/test_hooks.py"))
+        self.assertFalse(c.in_scope(mapped, "docs/examples/test_hooks.py"))
+
+    def test_a_file_of_the_module_name_that_is_not_python_is_not_the_module(self):
+        b = self.brief(["plugin/lib/sampo/hooks.py"], "python3 plugin/tests/run.py test_hooks -k Scope")
+        self.assertFalse(c.in_scope(b, "plugin/tests/test_hooks.json"))
+        self.assertFalse(c.in_scope(b, "plugin/tests/test_hooks.md"))
+
+    def test_a_folder_link_names_no_scoped_file(self):  # the map's "plugin/" folder link is not a link to hooks.py
+        b = self.brief(["plugin/lib/sampo/hooks.py"], tests={"plugin/tests/test_unrelated.py": ["plugin/"],
+                                                             "plugin/tests/test_hooks.py": ["plugin/lib/sampo/hooks.py"]})
+        self.assertFalse(c.in_scope(b, "plugin/tests/test_unrelated.py"), "it names the folder plugin, not the scoped file")
+        self.assertTrue(c.in_scope(b, "plugin/tests/test_hooks.py"))
+
+    def test_a_malformed_map_entry_is_skipped_not_fatal(self):
+        b = self.brief(["plugin/lib/sampo/hooks.py"], tests={"plugin/tests/test_hooks.py": 5, "plugin/tests/test_core.py": None,
+                                                             "plugin/tests/test_x.py": ["plugin/lib/sampo/hooks.py", 3]})
+        self.assertFalse(c.in_scope(b, "plugin/tests/test_hooks.py"))
+        self.assertFalse(c.in_scope(b, "plugin/tests/test_core.py"))
+        self.assertTrue(c.in_scope(b, "plugin/tests/test_x.py"))
+
+    def test_a_map_of_another_version_links_nothing(self):  # smap.load rebuilds such a map; the scope gate reads no link from it
+        b = self.brief(["plugin/lib/sampo/hooks.py"], tests={"plugin/tests/test_hooks.py": ["plugin/lib/sampo/hooks.py"]}, version=0)
+        self.assertFalse(c.in_scope(b, "plugin/tests/test_hooks.py"))
+
+    def test_a_test_the_map_links_to_a_scoped_module_is_in_scope_without_a_map_it_is_not(self):
+        tests = {"plugin/tests/test_hooks.py": ["plugin/lib/sampo/hooks.py"], "plugin/tests/test_core.py": ["plugin/lib/sampo/core.py"]}
+        b = self.brief(["plugin/lib/sampo/hooks.py"], tests=tests)
+        with mock.patch.object(c, "_git", side_effect=AssertionError("the hook path runs no child process")):
+            self.assertTrue(c.in_scope(b, "plugin/tests/test_hooks.py"))
+            self.assertFalse(c.in_scope(b, "plugin/tests/test_core.py"))
+        bare = self.brief(["plugin/lib/sampo/hooks.py"], name="bare")
+        self.assertFalse(c.in_scope(bare, "plugin/tests/test_hooks.py"), "no map, no link")
+
+    def test_fm_edit_writes_a_criterion_named_test_module_and_refuses_a_test_of_unscoped_code(self):
+        self.fm("init")
+        for name in ("plugin/lib/sampo/hooks.py", "plugin/tests/test_hooks.py", "plugin/tests/test_core.py"):
+            os.makedirs(os.path.dirname(os.path.join(self.repo, name)), exist_ok=True)
+            with open(os.path.join(self.repo, name), "w") as f:
+                f.write("x = 1\n")
+        tid = self.fm_json("task", "new", "Fix hooks", "--type", "FIX", "--tier", "S", "--scope", "plugin/lib/sampo/hooks.py")["id"]
+        self.fm("task", "step", tid, "add", "fix")
+        self.fm("task", "ac", tid, "add", "hook tests pass", "--verify", "python3 plugin/tests/run.py test_hooks -k Scope")
+        self.fm("focus", tid)
+        self.fm("edit", input=json.dumps([{"file": "plugin/tests/test_hooks.py", "old": "x = 1", "new": "x = 2"}]))
+        p = self.fm("edit", input=json.dumps([{"file": "plugin/tests/test_core.py", "old": "x = 1", "new": "x = 2"}]), check=False)
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("scope", p.stdout + p.stderr)
+
+    def test_scope_drift_counts_own_tests_as_in_scope_and_the_rest_as_outside(self):
+        b = self.brief(["plugin/lib/sampo/hooks.py"], "python3 plugin/tests/run.py test_hooks",
+                       tests={"plugin/tests/test_core.py": ["plugin/lib/sampo/core.py"]})
+        self.assertEqual(c.scope_drift(b, ["plugin/lib/sampo/hooks.py", "plugin/tests/test_hooks.py",
+                                           "plugin/tests/test_core.py", "plugin/lib/sampo/core.py"]),
+                         ["plugin/tests/test_core.py", "plugin/lib/sampo/core.py"])

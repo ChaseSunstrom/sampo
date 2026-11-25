@@ -2153,6 +2153,30 @@ class NoTaskGateKinds(NoTaskGateKit, HookCase):
         self.assertNotIn("outside", p.stdout)
 
 
+class ScopeCoversOwnTests(HookCase):  # T-6299: a task's scope covers the test modules it names or the map links to it
+    def edit(self, rel):
+        r = self.hook("PreToolUse", {"tool_name": "Edit", "tool_input": {
+            "file_path": os.path.join(self.repo, rel), "old_string": "a", "new_string": "b"}})
+        return ((parse(r) or {}).get("hookSpecificOutput") or {}).get("additionalContext", "")
+
+    def test_an_edit_to_the_scoped_modules_own_test_file_passes_the_scope_gate(self):
+        self.fm("init")
+        tid = self.task(scope=["plugin/lib/sampo/hooks.py"])
+        self.fm("task", "ac", tid, "add", "hook tests pass", "--verify", "python3 plugin/tests/run.py test_hooks -k Scope")
+        self.assertNotIn("outside", self.edit("plugin/tests/test_hooks.py"), "the criterion names that test module")
+        self.assertIn(f"outside {tid} scope", self.edit("plugin/tests/test_core.py"), "a test of unscoped code still counts")
+        self.assertIn(f"outside {tid} scope", self.edit("vendor/other/tests/test_hooks.py"), "same name, other folder: not the module")
+
+    def test_a_test_the_repo_map_links_to_the_scoped_module_passes_without_a_criterion(self):
+        self.fm("init")
+        tid = self.task(scope=["plugin/lib/sampo/hooks.py"])
+        from sampo import map as smap
+        with open(os.path.join(self.project().dir, "map.json"), "w") as f:
+            json.dump({"version": smap.VERSION, "tests": {"plugin/tests/test_hooks.py": ["plugin/lib/sampo/hooks.py"]}}, f)
+        self.assertNotIn("outside", self.edit("plugin/tests/test_hooks.py"), "the map links it to the scoped module")
+        self.assertIn(f"outside {tid} scope", self.edit("plugin/tests/test_core.py"), "unlinked, so it still counts")
+
+
 class PromptApprovals(HookCase):
     """fm ask raises Claude Code's own permission prompt; only an approved prompt for that very call grants."""
     CMD = "fm ask {tid} core --why 'fix the guard'"

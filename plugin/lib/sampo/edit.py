@@ -74,7 +74,7 @@ def _check(p, b, paths):
         if rel.startswith("../"):
             why.append(f"{rel}: outside the project")
             continue
-        if scope and not any(c.glob_match(rel, s) for s in scope):  # review: scope entries are globs
+        if scope and not c.in_scope(b, rel):  # review: scope entries are globs; T-6299: and the task's own test modules
             why.append(f"{rel}: outside {b.id}'s scope ({c.joinmore(scope, 4)}); widen it with fm task set {b.id} "
                        f"scope=… or use the Edit tool")
             continue

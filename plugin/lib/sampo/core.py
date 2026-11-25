@@ -8108,7 +8108,7 @@ def own_test_modules(changed, cmds=()):
     `test_x.Class.test`, `test_x::Class`, `path/test_x.py::C::t`, `plugin.tests.test_x`, `-p test_x*.py`, inside a
     `bash -c '...'`). A module is the lane's whole: a `-k` word never narrows it, for the train's reds are class-level
     (`mod.Class`) and no word matches one. The token after `-k` is a pattern, never a module; a bare `test_*` glob names
-    no module. None when `changed` is None (the diff could not be listed): the caller then counts every test as the lane's
+    no module (nor any glob with nothing after `test_`, such as `test_*_*`). None when `changed` is None (the diff could not be listed): the caller then counts every test as the lane's
     (fail closed). Known red, a red base and a trunk red excuse only a test that is not in this list."""
     if changed is None:
         return None
@@ -8120,7 +8120,9 @@ def own_test_modules(changed, cmds=()):
             toks = (cmd or "").split()
         toks = [w for t in toks for w in (t.split() if re.search(r"\s", t) else [t])]  # `bash -c 'a && b'` is one token
         for n, t in enumerate(toks):
-            if (m := _OWN_MOD.match(t)) and not t.startswith("-") and (n == 0 or toks[n - 1] != "-k") and m.group(1) != "test_*":
+            # ponytail: a glob with nothing after `test_` (test_*, test_*_*) names no module: it would match every test
+            if (m := _OWN_MOD.match(t)) and not t.startswith("-") and (n == 0 or toks[n - 1] != "-k") \
+                    and m.group(1).replace("*", "").replace("?", "").strip("_") != "test":
                 own.add(m.group(1))
     return sorted(own)
 
@@ -10312,7 +10314,77 @@ def scope_drift(b, files):
     .fm-scratch/ a builder's git-ignored drafts (T-4059: fm-builder.md sends its edit batches and probes there)."""
     scope = b.meta.get("scope") or []
     return [f for f in files if scope and not f.startswith(MIRROR_DIRS + (".fm-scratch/",))
-            and not any(glob_match(f, s) for s in scope)]
+            and not in_scope(b, f)]
+
+
+_LINKS = {}  # T-6299: map.json path -> ((mtime_ns, size), its file links or None): re-read when the file changes, per process
+
+
+def _map_links(b):
+    """T-6299: the file links of the project's repo map (test file -> the source files it names), read from the map.json
+    beside the brief's folder (tasks/T-x.md). A folder link ("plugin/") names no scoped file, and an entry of the wrong
+    shape is skipped; None when there is no readable map of this version (map.load rebuilds one). A hook runs this: no
+    child process."""
+    path = getattr(b, "path", None)
+    if not path:
+        return None
+    mp = os.path.join(os.path.dirname(os.path.dirname(path)), "map.json")
+    try:
+        st = os.stat(mp)
+    except OSError:
+        return None
+    key = (st.st_mtime_ns, st.st_size)
+    if mp not in _LINKS or _LINKS[mp][0] != key:
+        from sampo import map as smap  # imports core: at call time, not at load
+        links = None
+        try:
+            with open(mp, encoding="utf-8") as f:
+                m = json.load(f)
+            if isinstance(m, dict) and m.get("version") == smap.VERSION and isinstance(m.get("tests"), dict):
+                links = {t: [s for s in srcs if isinstance(s, str) and s and not s.endswith("/")]
+                         for t, srcs in m["tests"].items() if isinstance(t, str) and isinstance(srcs, list)}
+        except (OSError, ValueError):
+            links = None
+        _LINKS[mp] = (key, links)
+    return _LINKS[mp][1]
+
+
+def _test_dirs(cmds):
+    """T-6299: the folders a verify command names its test files in (`python3 plugin/tests/run.py test_x` and
+    `plugin/tests/test_x.py::C` both give plugin/tests). Empty when a command names no folder (a bare `test_x`)."""
+    dirs = set()
+    for cmd in cmds or ():
+        for t in (cmd or "").split():
+            t = t.strip("'\"`").split("::", 1)[0]
+            if "/" in t and t.endswith(".py"):
+                d = t.rpartition("/")[0]
+                dirs.add(d[2:] if d.startswith("./") else d)
+    return dirs
+
+
+def in_scope(b, rel):
+    """T-6299: is rel inside b's scope? A scope glob matches it; or it is a test module one of the task's own criteria
+    names (own_test_modules, a `-p` glob included), in the folder that same criterion names (_test_dirs; a criterion that
+    names no folder names no file, so only the map can say which one it is); or it is a test the repo map links to a
+    scoped file (map.tests_for). A test of code outside the scope is still outside. Shared by scope_drift, edit's write
+    check and the hook's scope note."""
+    scope = b.meta.get("scope") or []
+    if any(glob_match(rel, s) for s in scope):
+        return True
+    if not scope or not TESTISH.search(rel or ""):
+        return False
+    base = rel.rsplit("/", 1)[-1]
+    verify = getattr(b, "verify_cmds", None)
+    for _, cmd in (verify() if verify else ()):
+        if not cmd or not base.endswith(".py") or rel.rpartition("/")[0] not in _test_dirs([cmd]):
+            continue
+        if any(fnmatch.fnmatchcase(base[:-3], n) for n in own_test_modules((), [cmd]) or ()):
+            return True
+    links = _map_links(b)
+    if not links:
+        return False
+    from sampo import map as smap  # imports core: at call time, not at load
+    return rel in set(smap.tests_for({"tests": links}, scope))
 
 
 _VERIFY_OF = lazy(r"— verify with `((?:(?!— verify with `).)+)`\s*$")  # T-2839: the last one, not a quoted one

@@ -6459,7 +6459,7 @@ def _scope_note(pl, p, act):
     if not _in_project(path, p):
         return None  # not a project edit (auto memory, scratch, other repos)
     rel = os.path.relpath(path, p.root)
-    if not scope or any(c.glob_match(rel, s) for s in scope):
+    if not scope or c.in_scope(act, rel):  # T-6299: a task's own test modules are its scope too
         return None
     for e in c.ledger_tail(p, 300):
         if e.get("event") == "scope_note" and e.get("task") == act.id and (e.get("data") or {}).get("file") == path:
