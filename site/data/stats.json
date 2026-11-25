@@ -1,17 +1,17 @@
 {
- "generated": "2026-11-23",
+ "generated": "2026-11-25",
  "totals": {
-  "tasks_done": 1538,
-  "evidence": 10757,
+  "tasks_done": 1539,
+  "evidence": 10778,
   "proofs": 907,
   "commits": 1177,
-  "gate_runs": 500,
+  "gate_runs": 501,
   "subagents": 5291,
   "lanes_merged": 1234,
   "findings": 6461,
-  "guard_blocks": 1461,
-  "captures": 2411,
-  "lessons_shown": 2749
+  "guard_blocks": 1466,
+  "captures": 2464,
+  "lessons_shown": 2750
  },
  "daily": [
   {
@@ -260,32 +260,43 @@
    "day": "2026-11-23",
    "FEATURE": 15,
    "FIX": 31,
-   "CLEAN": 1,
+   "CLEAN": 2,
    "PERFORMANCE": 19,
    "SECURITY": 8,
    "RESEARCH": 0,
    "lanes": 73,
-   "evidence": 1020
+   "evidence": 1021
+  },
+  {
+   "day": "2026-11-25",
+   "FEATURE": 0,
+   "FIX": 0,
+   "CLEAN": 0,
+   "PERFORMANCE": 0,
+   "SECURITY": 0,
+   "RESEARCH": 0,
+   "lanes": 0,
+   "evidence": 20
   }
  ],
  "tiers": {
-  "S": 723,
+  "S": 724,
   "M": 780,
   "L": 34
  },
  "types": {
   "FEATURE": 449,
   "FIX": 727,
-  "CLEAN": 64,
+  "CLEAN": 65,
   "PERFORMANCE": 209,
   "SECURITY": 64,
   "RESEARCH": 25
  },
  "guard": {
-  "brief": 675,
+  "brief": 676,
   "core": 343,
   "system": 207,
-  "state-direct": 79,
+  "state-direct": 83,
   "rm-outside": 51,
   "credentials": 33,
   "confine": 28,
@@ -315,7 +326,7 @@
   "fm-reviewer": 208
  },
  "gate_seconds": {
-  "runs": 500,
+  "runs": 501,
   "median": 442.5
  },
  "tools": {
@@ -440,13 +451,13 @@
   "hardware": 8
  },
  "code": {
-  "model_tests": 101,
+  "model_tests": 107,
   "endpoints": 9,
-  "tests": 12867
+  "tests": 17596
  },
  "calibration": {
   "scored": 34,
-  "pending": 1130,
+  "pending": 1132,
   "brier": {
    "stated": 0.21132352941176472,
    "base": 0.2777181818181818
@@ -523,15 +534,15 @@
     {
      "lo": 60,
      "hi": 79,
-     "n": 98,
-     "held": 92,
-     "pct": 94
+     "n": 103,
+     "held": 96,
+     "pct": 93
     },
     {
      "lo": 80,
      "hi": 94,
-     "n": 528,
-     "held": 490,
+     "n": 569,
+     "held": 528,
      "pct": 93
     },
     {
@@ -553,8 +564,7 @@
    "meaning-notes": 415,
    "red": 83,
    "perf-typed": 227,
-   "docs": 117,
-   "ui-unshot": 1,
+   "docs": 116,
    "tui-unshot": 2,
    "perf-noise": 1
   },
@@ -650,6 +660,10 @@
    {
     "day": "2026-11-23",
     "n": 867
+   },
+   {
+    "day": "2026-11-25",
+    "n": 867
    }
   ]
  },
@@ -657,7 +671,7 @@
   "triggers": [
    {
     "trigger": "discovered",
-    "fired": 1532,
+    "fired": 1545,
     "precision": 0.886,
     "route": "inbox"
    },
@@ -669,19 +683,19 @@
    },
    {
     "trigger": "self",
-    "fired": 212,
+    "fired": 225,
     "precision": 0.781,
     "route": "inbox"
    },
    {
     "trigger": "steer",
-    "fired": 163,
+    "fired": 165,
     "precision": 0.45,
     "route": "inbox"
    },
    {
     "trigger": "ci-red",
-    "fired": 81,
+    "fired": 82,
     "precision": 0.778,
     "route": "inbox"
    },
@@ -717,19 +731,25 @@
    },
    {
     "trigger": "foresight-date",
-    "fired": 18,
+    "fired": 22,
     "precision": 0.0,
     "route": "inbox"
    },
    {
     "trigger": "sentinel reverify",
-    "fired": 17,
+    "fired": 18,
     "precision": 1.0,
     "route": "inbox"
    },
    {
     "trigger": "steer-recur",
     "fired": 13,
+    "precision": null,
+    "route": "inbox"
+   },
+   {
+    "trigger": "trunk-red",
+    "fired": 12,
     "precision": null,
     "route": "inbox"
    },
@@ -747,7 +767,7 @@
    },
    {
     "trigger": "foresight-cochange",
-    "fired": 8,
+    "fired": 9,
     "precision": 0.2,
     "route": "inbox"
    },
@@ -755,6 +775,12 @@
     "trigger": "friction",
     "fired": 8,
     "precision": 0.0,
+    "route": "inbox"
+   },
+   {
+    "trigger": "landscape:which-capabilities-do-users-say",
+    "fired": 7,
+    "precision": null,
     "route": "inbox"
    },
    {
@@ -788,19 +814,13 @@
     "route": "inbox"
    },
    {
-    "trigger": "trunk-red",
+    "trigger": "sentinel bisect",
     "fired": 4,
     "precision": null,
     "route": "inbox"
    },
    {
     "trigger": "predicted",
-    "fired": 3,
-    "precision": null,
-    "route": "inbox"
-   },
-   {
-    "trigger": "sentinel bisect",
     "fired": 3,
     "precision": null,
     "route": "inbox"
@@ -818,6 +838,12 @@
     "route": "inbox"
    },
    {
+    "trigger": "repeat",
+    "fired": 2,
+    "precision": null,
+    "route": "inbox"
+   },
+   {
     "trigger": "self-failure",
     "fired": 2,
     "precision": 1.0,
@@ -830,13 +856,13 @@
     "route": "inbox"
    },
    {
-    "trigger": "promise",
+    "trigger": "landscape:what-do-rival-harnesses-ship",
     "fired": 1,
     "precision": null,
     "route": "inbox"
    },
    {
-    "trigger": "repeat",
+    "trigger": "promise",
     "fired": 1,
     "precision": null,
     "route": "inbox"
@@ -851,9 +877,9 @@
   "predictions": [
    {
     "kind": "next-request",
-    "n": 361,
-    "hit": 0.424,
-    "base_hit": 0.38,
+    "n": 362,
+    "hit": 0.423,
+    "base_hit": 0.378,
     "lead": [
      true,
      0.004520592745393515,
@@ -861,8 +887,8 @@
      9
     ],
     "muted": false,
-    "shown_n": 253,
-    "shown_hit": 0.423,
+    "shown_n": 254,
+    "shown_hit": 0.421,
     "overlap": 0.056,
     "base_overlap": 0.052
    }
@@ -921,6 +947,27 @@
   }
  },
  "decisions": [
+  {
+   "date": "2026-11-25",
+   "text": "read T-6295: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-23",
+   "text": "Sampo vs plain Claude Code is measured offline from shipped lanes and recorded sessions, not by new Claude benchmark runs; the same-task A/B of about 10 real tasks waits until the user lifts the no-Cl",
+   "later": null,
+   "confidence": 80,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-23",
+   "text": "read T-6273: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
   {
    "date": "2026-11-23",
    "text": "read T-6208: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
@@ -2299,27 +2346,6 @@
   {
    "date": "2026-11-08",
    "text": "read T-3893: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-08",
-   "text": "read T-3889: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-08",
-   "text": "read T-3885: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-08",
-   "text": "read T-3873: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
    "later": null,
    "confidence": null,
    "kind": "costly"

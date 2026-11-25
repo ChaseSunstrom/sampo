@@ -1,5 +1,5 @@
 {
- "updated": "2026-11-23T14:35:17Z",
+ "updated": "2026-11-25T07:14:42Z",
  "rev": "a53e986d8",
  "capabilities": [
   {
@@ -64901,8 +64901,7 @@
   "meaning-notes": 415,
   "red": 83,
   "perf-typed": 227,
-  "docs": 117,
-  "ui-unshot": 1,
+  "docs": 116,
   "tui-unshot": 2,
   "perf-noise": 1
  },
@@ -66109,10 +66108,10 @@
  },
  "moons_scale": {
   "funnel": {
-   "generated": 80711,
+   "generated": 82285,
    "write": {
     "title": 466,
-    "line": 4585,
+    "line": 4801,
     "payoff": 72,
     "kill test": 383,
     "code": 44
@@ -66123,14 +66122,14 @@
     "shingle": 0
    },
    "rejected": {
-    "kill": 39878,
+    "kill": 40406,
     "tier": 21623,
-    "novelty": 210
+    "novelty": 214
    },
-   "merged": 2960,
-   "kept": 3146,
-   "pending": 80,
-   "pooled": 7101
+   "merged": 2963,
+   "kept": 3199,
+   "pending": 127,
+   "pooled": 7824
   },
   "families": [
    {
@@ -68099,6 +68098,54 @@
     ]
    },
    {
+    "id": "F-081214",
+    "size": 1,
+    "lead": "Ingest install payloads as executable bytes",
+    "today": "Today you can't",
+    "with_this": "With this, Sampo can",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 5,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "carries"
+    ]
+   },
+   {
+    "id": "F-081706",
+    "size": 1,
+    "lead": "Sandbox the execution environment as a virtual reality",
+    "today": "Today you can't safely test destructive system changes like registry edits or service restarts within the coding session",
+    "with_this": "With this, Sampo can execute code in a fully isolated, observable virtual machine that mimics the target OS without touching the host",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 4,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "native"
+    ]
+   },
+   {
+    "id": "F-081870",
+    "size": 1,
+    "lead": "Dream up alternative histories for security breaches",
+    "today": "Today you can't know how a different incident response path would have contained a leak before it spread across dependent services.",
+    "with_this": "With this, Sampo can breed parallel 'ghost' repositories where it imagines having detected the leak at earlier stages, testing how those hypothetical interventions would have minimized the blast radius.",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 4,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "zero"
+    ]
+   },
+   {
     "id": "F-011460",
     "size": 5,
     "lead": "Negotiate migration compatibility with AI agents in other repos",
@@ -69354,60 +69401,12 @@
     "kinds": [
      "design"
     ]
-   },
-   {
-    "id": "F-007307",
-    "size": 1,
-    "lead": "Auto-negotiate agent permission grants in PR comments",
-    "today": "Today you can't have agents negotiate their own permission requirements in PR comments.",
-    "with_this": "With this, you can see agents propose and justify their needed grants in the PR thread.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 4,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "onboarding"
-    ]
-   },
-   {
-    "id": "F-007447",
-    "size": 1,
-    "lead": "Dream up the rollback plan while the release is running",
-    "today": "Today you can't revert a complex microservice update without a human remembering the exact sequence of failed states",
-    "with_this": "With this, you can push breaking changes with the guarantee that the system will self-heal or revert within the same minute",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 4,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "releases"
-    ]
-   },
-   {
-    "id": "F-007593",
-    "size": 1,
-    "lead": "Derivative contracts on your CI success rate",
-    "today": "Today you can't hedge against the risk of a bad merge that breaks the build for the whole team.",
-    "with_this": "With this, you can protect your release schedule by buying 'insurance' against CI failures, where the cost is determined by the historical reliability of your codebase.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 1,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "ops"
-    ]
    }
   ],
-  "families_total": 2274,
+  "families_total": 2327,
   "catalogue": {
    "file": "moons-catalogue.json",
-   "total": 3146
+   "total": 3199
   }
  },
  "steer": {
@@ -69441,7 +69440,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 367.4,
+    "idle_h": 408.0,
     "spend": 0,
     "missions": 1,
     "restarted": 1794121960.535213,
@@ -69464,7 +69463,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 367.6,
+    "idle_h": 408.2,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.599455,
@@ -69487,7 +69486,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 367.4,
+    "idle_h": 408.0,
     "spend": 0,
     "missions": 1,
     "restarted": 1794121967.999056,
@@ -69510,7 +69509,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 367.4,
+    "idle_h": 408.1,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.6324291,
@@ -69533,7 +69532,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 367.2,
+    "idle_h": 407.9,
     "spend": 0,
     "missions": 1,
     "restarted": 1794122562.2909884,
@@ -69556,7 +69555,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 367.2,
+    "idle_h": 407.9,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.4659588,
@@ -69579,7 +69578,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 367.0,
+    "idle_h": 407.6,
     "spend": 0,
     "missions": 1,
     "restarted": 1794123380.885613,
@@ -69602,7 +69601,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 367.0,
+    "idle_h": 407.7,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.498627,
@@ -69625,7 +69624,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 367.1,
+    "idle_h": 407.7,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.5147183,
@@ -69648,7 +69647,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 368.7,
+    "idle_h": 409.4,
     "spend": 0,
     "missions": 0,
     "restarted": 1794117043.5747485,
@@ -69671,7 +69670,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 368.4,
+    "idle_h": 409.0,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118380.3416526,
@@ -69694,7 +69693,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 368.4,
+    "idle_h": 409.0,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118361.1994553,
@@ -69717,7 +69716,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 368.4,
+    "idle_h": 409.1,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118199.6757877,
@@ -69740,7 +69739,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 368.5,
+    "idle_h": 409.1,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118077.9765282,
@@ -69763,7 +69762,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 368.2,
+    "idle_h": 408.9,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118859.5629494,
@@ -69786,7 +69785,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 368.2,
+    "idle_h": 408.9,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118976.4831173,
@@ -69809,7 +69808,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 368.2,
+    "idle_h": 408.9,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118909.105619,
@@ -69832,7 +69831,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 368.2,
+    "idle_h": 408.8,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119078.902836,
@@ -69855,7 +69854,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 368.0,
+    "idle_h": 408.7,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119714.3650527,
@@ -69878,7 +69877,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 368.0,
+    "idle_h": 408.6,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119789.0770543,
@@ -69901,7 +69900,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 368.0,
+    "idle_h": 408.6,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119787.6820118,
@@ -69924,7 +69923,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 368.0,
+    "idle_h": 408.6,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119848.5161927,
@@ -69947,7 +69946,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 367.8,
+    "idle_h": 408.4,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120496.255495,
@@ -69970,7 +69969,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 367.7,
+    "idle_h": 408.4,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120635.9146411,
@@ -69993,7 +69992,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 367.7,
+    "idle_h": 408.4,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120649.5444589,
@@ -70016,7 +70015,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 367.8,
+    "idle_h": 408.5,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120343.9599955,
@@ -70216,7 +70215,7 @@
    }
   ],
   "halted": null,
-  "rounds": 22,
+  "rounds": 24,
   "spent_today": 0,
   "share": 65.0
  }
