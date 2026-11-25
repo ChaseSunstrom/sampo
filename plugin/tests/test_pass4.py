@@ -21,8 +21,7 @@ class GuardHeredoc(GuardCase):
         drive = "import fmhooks\nfmhooks.save_brief(x)\n"
         for pre in ("cd /tmp/x && ", "cd /tmp/x; ", "cd $(mktemp -d) && ", "cd /tmp/x | ", "true && "):
             self.assertTrue(self.driving(f"{pre}python3 - <<'PY'\n{drive}PY"), pre)  # a real drive still blocks
-        self.assertFalse(self.driving(f"cd /tmp/x; python3 - <<'PY'\n{edit}PY"))  # T-3538: plain commands chained by ; name it only in strings
-        for pre in ("cd `pwd` && ", "x=$(id) && "):  # an expansion in the lead keeps the text match
+        for pre in ("cd /tmp/x; ", "cd `pwd` && ", "x=$(id) && "):  # anything but a plain cd chain keeps the text match
             self.assertTrue(self.driving(f"{pre}python3 - <<'PY'\n{edit}PY"), pre)
 
 

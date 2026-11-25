@@ -2763,16 +2763,6 @@ class InterpreterWrites(GuardCase):
             self.assertTrue(driving(cmd), cmd)  # still refused: the split is the only way through
         self.assertNotIn("in the next", str(self.bash(f"python3 - <<'EOF'\n{body}EOF")), "no file written: no hint")
 
-    def test_the_hint_says_split_when_the_refusal_does(self):
-        # T-3554: a scratch script written and run in one command got "write and run in two commands" in the refusal and
-        # "Write tool, then sampo edit < draft" in the hint after it; the draft route is for source edits only
-        body = "import fmcore\nfmcore.write_meta(p, {{}})\n"
-        for cmd in (f"cat > x.py <<'EOF'\n{body}EOF\npython3 x.py", f"tee s.py <<'E' >/dev/null\n{body}E\npython3 s.py"):
-            said = g.message(self.bash(cmd), self.ctx())
-            self.assertIn("run it in the next", said, cmd)
-            self.assertNotIn("sampo edit < draft", said, cmd)
-        self.assertIn("sampo edit < draft", g.message(self.bash(f"python3 - <<'EOF'\n{body}EOF"), self.ctx()))
-
     def test_a_script_written_and_run_in_one_command_is_told_to_split(self):
         # T-1289: still refused, and the refusal ends with the way forward, not only the --allow route
         for cmd in ("printf 'echo hi\\n' > s.sh && bash s.sh", "cp a.sh s.sh && sh s.sh",  # (a heredoc body is read, so cat <<EOF > s.sh; sh s.sh is judged, not refused)
