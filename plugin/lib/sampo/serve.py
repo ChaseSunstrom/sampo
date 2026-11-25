@@ -374,6 +374,7 @@ def _failover(p, b, agent):
 
 
 PARALLEL_MAX = 3  # T-0167: lanes at once at most (each is a full session: usage adds up)
+WIDE_ENTRIES = 20  # T-6412: a scope naming a folder with more entries than this is wide: the rolling pool starts it last, alone
 LOAD_RETRY_S, LOAD_TRIES = 30, 20  # T-3294: a loaded host holds a lane back: asked again every 30 s, 10 min with nothing running
 FM_BIN = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(os.path.dirname(__file__)))), "bin", "fm")
 
@@ -431,6 +432,16 @@ def _pool_cap(p):
     return slanes.builders_cap(p) if c.read_meta(p).get("builders") else PARALLEL_MAX
 
 
+def _wide(p, b):
+    """T-6412: a task whose scope names a big folder: its footprint overlaps nearly every other task's."""
+    def big(lit):
+        try:
+            return bool(lit) and len(os.listdir(os.path.join(p.root, lit))) > WIDE_ENTRIES
+        except (OSError, ValueError):  # a scope with a NUL byte names no folder
+            return False
+    return any(big(_literal(s)) for s in b.meta.get("scope") or ())
+
+
 def _batch(p, head, skip, n, running=None):
     """T-0167: head plus queued tasks that can't collide with it or each other: S or M, planned, explicit scopes that
     are pairwise disjoint, nothing unfinished they depend on, nothing waiting on the user. One task: run as before.
@@ -448,8 +459,12 @@ def _batch(p, head, skip, n, running=None):
         return [head] if running is None else []
     batch, pairs, hubs, passed = [], _pairs(p), _hubs(p), []
     group = lambda b: b.meta.get("group")  # T-0445: fm relate's groups are related work: one at a time
+    wide = []  # T-6412: in the pool a wide task waits until no lane runs and nothing narrow fits, and blocks nothing
     for i, b in enumerate([head] + c.order_queue(briefs)[0]):
         if len(batch) >= n or (i and b.id == head.id) or not free(b):
+            continue
+        if running is not None and _wide(p, b):
+            wide.append(b)
             continue
         # a task passed over for a running lane's files holds its place: a later one on those files waits behind it,
         # or a stream of them would starve it
@@ -461,6 +476,8 @@ def _batch(p, head, skip, n, running=None):
                 passed.append(b)
             continue
         batch.append(b)
+    if running is not None and not batch and not running and wide:
+        return wide[:1]
     return batch
 
 

@@ -216,6 +216,26 @@ class Parallel(ForemanTestCase):
         every = {"T-0001", "T-0002", "T-0003"}
         self.assertEqual(serve._batch(p, c.find_brief(p, "T-0004"), every, 3, [c.find_brief(p, t) for t in every]), [])
 
+    def test_wide_scope_never_holds_the_pool(self):
+        # T-6412: a task scoping a whole big folder overlapped every queued task: one lane ran, five slots sat empty
+        from sampo import core as c
+        from sampo import serve
+        os.makedirs(os.path.join(self.repo, "lib"))
+        for i in range(serve.WIDE_ENTRIES + 1):
+            open(os.path.join(self.repo, "lib", f"m{i}.py"), "w").close()
+        for title, scope in (("wide", "lib"), ("a", "lib/m1.py"), ("b", "lib/m2.py"), ("c", "x.txt")):
+            self.task(title, scope)
+        p = c.find_project(self.repo)
+        wide, a = c.find_brief(p, "T-0001"), c.find_brief(p, "T-0002")
+        ids = lambda bs: [b.id for b in bs]
+        self.assertEqual(ids(serve._batch(p, wide, set(), 3, [])), ["T-0002", "T-0003", "T-0004"],
+                         "narrow tasks start first; a wide head waits")
+        self.assertEqual(ids(serve._batch(p, a, set(), 3, [a])), ["T-0003", "T-0004"],
+                         "a passed-over wide task never blocks the narrow ones after it")
+        self.assertEqual(ids(serve._batch(p, wide, {"T-0002", "T-0003", "T-0004"}, 3, [])), ["T-0001"],
+                         "with nothing running and nothing narrow left, the wide task starts alone")
+        self.assertEqual(ids(serve._batch(p, a, set(), 3, [wide])), ["T-0004"], "a running wide lane still blocks what it covers")
+
     def test_changelog_is_a_hub_only_where_git_merges_it_by_union(self):
         from sampo import core as c
         from sampo import serve

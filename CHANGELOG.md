@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- sampo run: a task scoping a whole big folder no longer holds the rolling pool; narrow tasks fill the lanes first and the wide one starts alone once no lane runs (T-6412).
 - Audit prep trusts a lane_landed record by git alone; the commit-subject check T-6313's fix round added is gone (T-6376).
 - The Sampo pane and band redraw about once a second while Claude works and repaint what moves by blit, cutting the mod's motion cost to a fraction of a core (T-5546).
 - lane pilot --all reviews up to PILOT_SWEEP_MAX returned lanes at once, each in its own process, and picks up lanes retried mid-sweep (T-6331).
