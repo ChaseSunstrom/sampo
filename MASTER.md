@@ -338,6 +338,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmworkset` (T-6062: `sampo/workset.py`, the builder's explore/edit split) [→ files-lib-8](docs/map/files-lib-8.md)
 - `fmworks` (T-3106: `sampo works check FILE...`: each SVG sanitised, rendered headless in light… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmworksgrow` (T-3110: `sampo works grow --grid works --target N`: a type x subject x style x technique grid… [→ files-lib-4](docs/map/files-lib-4.md)
+- `fmreach` (T-5197, `sampo/reach.py`: `needs(root, a, b)` sorts a diff into now, reload, restart, read; `code_id`) [→ files-lib-6](docs/map/files-lib-6.md)
 
 ### mods/, site/ and demo/
 
