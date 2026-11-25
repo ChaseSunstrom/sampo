@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- Pilot reviewers run on Haiku at every tier, with sonnet only after two Haiku failures on a lens (T-6164).
 - Lanes name the files that clash when a merge stops on a conflict, help positions tie-break by name, briefs defer on overlap with an open lane, and builders merge the build branch before their report (T-5513).
 - The clear pass deletes through directory fds opened O_NOFOLLOW from the lane root and refuses while a process still lives in the lane, so a folder swapped for a link mid-clear deletes nothing outside the lane (T-6227).
 - The pilot retries a lane stamped under an earlier pilot code once, sampo lane pilot ID --retry clears one lane's stamp (a task id only), and a land that changes the pilot's code starts one gated sweep (T-6226).
