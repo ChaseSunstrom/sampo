@@ -1605,6 +1605,22 @@ class OwnFilesOnly(PrepBase):
         diff, _ = self.audit()
         self.assertIn("other.py", diff, "this lane's own commit changed it after the landing: its change too")
 
+    def test_a_lane_commit_keeps_its_file_while_the_same_landing_still_leaves_out_its_other_file(self):  # T-6869 fix round
+        self.prep()
+        start, trunk = self.sha(), self.git("rev-parse", "--abbrev-ref", "HEAD").strip()
+        self.git("checkout", "-qb", "side2")
+        self.commit("other.py", "y = 2\n", "Other work")
+        self.commit("mine.py", "z = 1\n", "Other work on mine.py")
+        self.git("checkout", "-q", trunk)
+        self.git("merge", "--no-ff", "-q", "-m", "Merge T-9999: two files", "side2")
+        self.landed(start, self.sha(), ["T-9999"])  # the record names only another task: no file of it is this task's
+        self.commit("mine.py", "z = 2\n", "Tweak mine.py")  # this lane's own commit after the landing
+        self.write("a.py", "x = 1\n")
+        diff, text = self.audit()
+        self.assertIn("mine.py", diff, "this lane's own commit changed it after the landing: its change too")
+        self.assertNotIn("other.py", diff, "the same landing's other file is still another task's: left out")
+        self.assertNotIn("NOT left out", text)
+
     def test_a_landing_recorded_for_this_task_is_its_own_change(self):
         self.prep()
         self.land("other.py", "y = 2\n", "Merge T-9999: work this task landed", [self.tid])

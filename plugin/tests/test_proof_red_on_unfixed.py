@@ -35,6 +35,8 @@ def write(content):
 
 FIX_CALC = call("edit", file="calc.py", old="a - b", new="a + b")  # the same size: a stale .pyc would hide the change
 DONE = call("done", summary="proof written and calc.add fixed")
+# T-6158: a verify that never ran on the start tree is no red, so a FIX's finish asks for its regression test (T-2937)
+GAP = {"text": json.dumps({"regression": "test_calc.py failed before the fix and passes now"})}
 
 
 class Unit(CodeCase):
@@ -118,7 +120,7 @@ class Run(CodeCase):
         self.assertTrue(any(x.startswith("not proven: " + ASKED) for x in last["unproven"]), last["unproven"])
 
     def test_a_criterion_with_no_proof_files_is_never_run_on_the_before_copy(self):
-        f, r = self.go(one(proof=None), write(WEAK), FIX_CALC, DONE)
+        f, r = self.go(one(proof=None), write(WEAK), FIX_CALC, DONE, GAP)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(self.notes(r), [])
         self.assertNotIn("not proven", events(r)[-1]["text"])
@@ -157,10 +159,19 @@ class Run(CodeCase):
         """The verify fails on the before copy for its own reasons (the file imports a module the fix adds): accepted."""
         needs = "import helper_new\nassert helper_new.ok() == 5\n"
         mk = call("write", file="helper_new.py", content="def ok():\n    return 5\n")
-        f, r = self.go(one(), mk, write(needs), DONE)
+        f, r = self.go(one(), mk, write(needs), DONE, GAP)  # T-6869: no test ran there, so the finish asks for the regression test
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(f.script, [])
         self.assertEqual(self.task()["status"], "done")
+
+    def test_a_red_that_is_an_import_error_and_no_test_is_no_regression_proof(self):
+        """T-6869: the proof fails on the before copy with an ImportError, which says no test ran: it is not red, so the
+        finish does not count it as the regression test and asks for one (no GAP reply here: the finish is not done)."""
+        self.assertFalse(smith._proof_ran("Traceback (most recent call last):\nImportError: add is not fixed\n"))
+        self.assertTrue(smith._proof_ran("F\nAssertionError: 5 != -1\n"), "a test that ran and failed is red")
+        bad = "import calc\nif calc.add(2, 3) != 5:\n    raise ImportError('add is not fixed')\n"
+        f, r = self.go(one(), write(bad), FIX_CALC, DONE)
+        self.assertNotEqual(self.task()["status"], "done", str(events(r)[-1]))  # the old code closed this one as done
 
 
 TOOL = "#!/bin/sh\npython3 -c 'import calc; assert calc.add(2, 0) == 2'\n"  # a weak proof as a script: passes on the old code
@@ -222,7 +233,7 @@ class Review(CodeCase):
         mk = call("write", file="newtool.sh", content="#!/bin/sh\npython3 -c 'import calc'\n")
         mod = call("run", cmd="chmod +x newtool.sh")
         p = dict(one(), criteria=[{"text": ASKED, "verify": f"python3 {PROOF} && ./newtool.sh", "proof": [PROOF]}])
-        f, r = self.go(p, write(WEAK), mk, mod, FIX_CALC, DONE)
+        f, r = self.go(p, write(WEAK), mk, mod, FIX_CALC, DONE, GAP)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         got = self.notes(r)
         self.assertEqual({n["proof"] for n in got}, {"skipped"}, got)
@@ -232,11 +243,11 @@ class Review(CodeCase):
     def test_a_verify_naming_the_trees_absolute_path_is_skipped_with_a_note(self):
         """The copy would run the fixed tree: a pass there proves nothing, so the criterion is not checked."""
         p = dict(one(), criteria=[{"text": ASKED, "verify": f"python3 {self.repo}/{PROOF}", "proof": [PROOF]}])
-        f, r = self.go(p, write(WEAK), FIX_CALC, DONE)
+        f, r = self.go(p, write(WEAK), FIX_CALC, DONE, GAP)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         got = self.notes(r)
         self.assertEqual({n["proof"] for n in got}, {"skipped"}, got)
-        self.assertIn("path", " ".join(n.get("why", "") for n in got))
+        self.assertIn("path"," ".join(n.get("why", "") for n in got))
         self.assertNotIn("before your work", "\n".join(sent(f, i) for i in range(len(f.seen))))
         self.assertNotIn("not proven", events(r)[-1]["text"])
 
@@ -311,7 +322,7 @@ class Resume(CodeCase):
     def test_a_resume_of_a_run_whose_check_was_off_from_the_start_is_not_made_unproven(self):
         self.kill_after(one(), write(WEAK), FIX_CALC)
         self.drop_base({"kind": "proof_base", "off": "the folder is not the top of a git tree"})
-        self.serve("openai", DONE)
+        self.serve("openai", DONE, GAP)
         r = self.code("--resume", "--model", "fake", "--json", check=False)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertNotIn("not proven", events(r)[-1]["text"])

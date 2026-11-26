@@ -12,17 +12,18 @@ class BriefShowsTheUnpipedGate(ForemanTestCase):
         super().setUp()
         self.fm("init")
 
-    def test_the_brief_names_the_builders_own_command_unpiped_with_the_reason_on_one_line(self):
+    def test_the_builder_rules_name_its_own_command_unpiped_with_the_reason_on_one_line(self):
         # T-4514: a builder never runs the wide check; the no-pipe rule stays for the commands it does run
+        # T-6158: a step naming no criterion gets no evidence call (Sampo records only the covered steps), so the
+        # unpiped rule lives in the agent definition the brief points to, not in a brief line of its own
         tid = json.loads(self.fm("task", "new", "Gate hint", "--type", "FIX", "--tier", "S", "--ac",
                                  "gate hint works :: python3 -c 'print(1)'", "--step", "build it",
                                  "--json").stdout)["id"]
         brief = read_text(json.loads(self.fm("lane", "brief", tid, "--json").stdout)["path"])
-        own = f'`sampo task evidence {tid} --step N --run "<cmd>"`'
-        lines = [line for line in brief.splitlines() if own in line]
-        self.assertTrue(lines, "the brief shows the builder's own evidence command unpiped, in backticks")
-        self.assertTrue(any("pipe" in line and "exit status" in line for line in lines),
-                        "the reason sits on the same line as the command")
+        self.assertNotIn(f"sampo task evidence {tid}", brief, "T-6158: no evidence call is asked of the builder here")
+        from sampo import lanes
+        rule = [line for line in lanes.agent_text().splitlines() if "pipe" in line and "exit status" in line]
+        self.assertTrue(rule, "the builder's rules show the unpiped run, with the reason, on one line")
         for line in brief.splitlines():
             if "`sampo check --affected" in line:  # a command shown in backticks, as opposed to prose
                 self.assertIn("Never run", line, "no brief line tells a builder to run the wide check")

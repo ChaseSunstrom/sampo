@@ -46,9 +46,32 @@ def code_stamp(folder=None):
     return out
 
 
-def code_changed(start):
+def _changed_ns(path):
+    """T-6869: the later of a path's mtime and ctime: cp -p or rsync sets an old mtime back over a file, and a future-dated
+    one is possible, but ctime is when the inode last changed and no tool sets it back."""
+    st = os.stat(path)
+    return max(st.st_mtime_ns, st.st_ctime_ns)
+
+
+def _moved_since_load():
+    """T-6869: True when the package folder or a module file in it changed after LOADED_NS (this process's load time), or
+    either can't be read. A module loaded before its file moved runs old code; one loaded after reads the new."""
+    folder = os.path.dirname(os.path.abspath(__file__))
+    try:
+        if _changed_ns(folder) > LOADED_NS:
+            return True
+        return any(_changed_ns(os.path.join(folder, n)) > LOADED_NS
+                   for n in os.listdir(folder) if n.endswith(".py"))
+    except OSError:
+        return True
+
+
+def code_changed(start=None):
     """T-6169: True when a module file's mtime or inode differs from `start` (code_stamp taken at start), or the file is
-    gone. One os.stat per file start stamped: no directory listing, no subprocess, so a wake costs that many stats."""
+    gone. One os.stat per file start stamped: no directory listing, no subprocess, so a wake costs that many stats.
+    T-6869: with no `start` (CODE_START, which no process takes at import now), _moved_since_load asks instead."""
+    if start is None:
+        return _moved_since_load()
     for path, key in start.items():
         try:
             if _code_key(path) != tuple(key):
@@ -58,7 +81,8 @@ def code_changed(start):
     return False
 
 
-CODE_START = code_stamp()  # T-6169: the module files as this process loaded them; a loop's wake that finds one changed re-execs
+CODE_START = None  # T-6869: no stat of the package at import (T-6169's code_stamp() here made every fm process stat all of it);
+# code_changed(None) answers "moved since this process loaded" from LOADED_NS, so a loop's wake still re-execs on a change
 
 
 class _Later:
@@ -4678,6 +4702,7 @@ _TREE_MARK = lazy(r"\[tree ([0-9a-f]+)\]")
 # T-6158: a ✗ run on the base where no test ran at all is no red proof: pytest's exit 5, run.py's "no test matches <name>"
 # (exit 1), and a unittest module that is not there ("Failed to import test module", "No module named", "NO TESTS RAN")
 _NO_TEST_RED = lazy(r"` → ✗ exit 5\b|Failed to import test module|ModuleNotFoundError: |No module named|\(never ran: ")  # T-6158: the rest of 'no test ran' is _NO_TEST's (with its cached-run carve-out)
+_PROBE_NEG = lazy(r"(^|&&|;|\|\|)\s*! ")  # T-6869: a negated probe is a command segment that starts with `! ` (not a "! " in an argument)
 _RAN_MARK = " [ran]"  # evidence fm produced by running the command (fm task evidence --run, fm check)
 CLOSE_PENDING, CLOSE_COMMITTED = "land: close commit pending", "land: close committed"  # T-5368: the Log's marks of a land close's two phases
 _INCONCLUSIVE = " [inconclusive]"  # T-0255: a run that neither proves nor disproves: kept, never counted
@@ -5591,7 +5616,10 @@ class Brief:
             if _RAN_MARK not in line or "`" not in line:
                 continue
             cmd = line.split("`", 2)[1]
-            if _NO_TEST.search(line) or _NO_TEST_RED.search(line):  # T-6158: no test ran (a test not written yet on the base): not a red proof
+            # T-6869: a negated probe that passed (`… && ! tool -h`) prints the tool's absence as its own output: that pass is
+            # the probe's, so only its missing-module line is kept; any other green run naming one is still no test
+            probe_pass = "` → exit 0" in line and bool(_PROBE_NEG.search(cmd))
+            if _NO_TEST.search(line) or (_NO_TEST_RED.search(line) and not probe_pass):  # T-6158: no test ran: not a red proof
                 continue
             if "` → ✗ exit" in line or "` → red as expected" in line:  # T-1893: --expect-fail's red run counts
                 failed.add(cmd)

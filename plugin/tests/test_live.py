@@ -1385,7 +1385,10 @@ class IdleCost(ForemanTestCase):  # T-6013: an idle sampo watch --web costs next
 
     def test_the_briefs_are_parsed_again_only_when_a_brief_file_moved(self):
         n, patch = self._parses()
-        with patch:
+        # T-6155: the stats job's red-first readout parses the briefs too, on its own cadence (SLOW_S, in a background
+        # thread), not per build: the stats collector is left out so only the builds' parses are counted
+        stats_off = mock.patch.dict(live.COLLECTORS, {"stats": lambda p: {}})
+        with patch, stats_off:
             live._build_one(self.p)
             live._build_one(self.p)
             live._build_one(self.p)

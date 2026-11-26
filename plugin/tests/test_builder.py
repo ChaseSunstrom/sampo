@@ -210,7 +210,7 @@ class Brief(_Tasks):
         tid = self.task("Changelog")
         agent = read_text(os.path.join(PLUGIN, "agents", "fm-builder.md"))  # T-5595: the rule is the agent's
         self.assertIn("Don't edit CHANGELOG.md", agent)
-        self.assertIn("CHANGELOG (one sentence", agent)  # T-6158: the keys are named, written as trailers in the last commit
+        self.assertIn("Write no commit trailers (T-6158): when you return, Sampo writes the close trailers on your", agent)  # T-6158
         self.assertIn("final report", agent)
 
     def test_builder_model_follows_the_tier(self):
@@ -251,7 +251,7 @@ class Brief(_Tasks):
         self.assertNotIn("Before editing, claim what you plan to change", flat)
         self.assertIn("its start took the leases on your scope files", flat)  # T-6158: the first call's start
         self.assertIn("your first edit of one of its symbols takes that symbol's lease (T-6158)", flat)  # review: in scope only
-        self.assertIn("A file outside the scope is not taken for you: take it first with `sampo lease take FILE[::SYMBOL]`", flat)
+        self.assertIn("A file outside the scope is not taken for you: take it first with the lease call the brief names for it (T-1068)", flat)  # T-6158 round 2
         copy = " ".join(slanes.contract("T-9", "abc123", "/main").split())
         self.assertNotIn("Before editing, claim what you plan to change", copy)
         self.assertIn("its start took the leases on your scope files", copy)

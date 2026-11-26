@@ -377,6 +377,10 @@ ALLOWED = {  # name: why it reads a diff itself, and why that is no close-time r
     "_hub_tests": "symbols of the files changed between a base and a tree the caller (affected) hands it, already the view's",
     "_audit_scan": "sampo audit scan: any diff (a branch, a PR checkout), no task needed",
     "cmd_audit": "the audit brief's diff is the whole range the reviewer reads, by design (a separate reader, not a gate)",
+    "_symbol_names": "T-6160: the names a diff changed in the view's .py files, between the view's base and the tree affected hands it",
+    "_others_merged_in": "T-6313: the names only (git diff --name-only parent tip) of the files other tasks' lane_landed merges "
+                         "brought in since the focus, left out of a main-thread audit's diff; the task's own ledger, commits "
+                         "and uncommitted files are kept in",
 }
 
 

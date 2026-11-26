@@ -10,8 +10,9 @@ from sampo import core as c
 
 # bytes each hook event may inject over the whole replay: measured, then about a quarter of headroom
 # (2026-10-20: SessionStart 814, UserPromptSubmit 397 under its own 400 cap, PreToolUse 1538, PostToolUse 0;
-# 2026-10-22, T-1697's skill hint once a stage instead of the procedure on every step: SessionStart 852, UserPromptSubmit 321)
-BUDGET = {"SessionStart": 1000, "UserPromptSubmit": 400, "PreToolUse": 1900, "PostToolUse": 200}
+# 2026-10-22, T-1697's skill hint once a stage instead of the procedure on every step: SessionStart 852, UserPromptSubmit 321;
+# 2026-11-25, T-6125's compaction resume line (sampo next after a cut window): SessionStart 1078, so the cap is 1200)
+BUDGET = {"SessionStart": 1200, "UserPromptSubmit": 400, "PreToolUse": 1900, "PostToolUse": 200}
 POINTER = "its notes were shown earlier this session"
 
 

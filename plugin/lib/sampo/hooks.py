@@ -1832,7 +1832,7 @@ def _lane_start_first(p, pl):
     recorded, costs no child and no brief load. The third value is the start's own words (the brief's path, the notes:
     main moved, leases not taken, and the steps) when it ran, else "": the builder is shown them (the hook's context)."""
     lane = getattr(p, "lane", None)
-    if not lane:
+    if not lane or not _lane_dir(p, lane, root=True):  # T-4340: a worktree outside Sampo's and Claude Code's lane folders is no lane
         return "", False, ""
     act = c.active_brief_fast(p, lane)
     if act and act.meta.get("lane_started"):
@@ -1845,8 +1845,8 @@ def _lane_start_first(p, pl):
         return _lane_start_wait(p, lane, key)
     tasks = _lane_tasks(p, lane)
     if tasks and len(tasks[1]) > 1:  # review: no one task to start, so the call is refused, never let through unchecked
-        return (f"Sampo: this lane holds {len(tasks[1])} tasks, so its start can't pick one: run sampo lane start ID "
-                f"for the task you work. Nothing was focused."), False, ""
+        return (f"Sampo: this lane holds {len(tasks[1])} tasks ({', '.join(tasks[1])}), so its start can't pick one: "
+                f"run sampo lane start ID for the task you work. Nothing was focused."), False, ""
     if not tasks or len(tasks[1]) != 1:
         return "", False, ""
     tid = tasks[1][0]

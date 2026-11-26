@@ -5997,6 +5997,16 @@ class LaneAutoFocus(ForemanTestCase):
         from sampo import core as c
         return [e["task"] for e in c.ledger_tail(c.find_project(self.repo)) if e["event"] == "auto_focus"]
 
+    def started(self):
+        """T-6158: the lane's first call starts its lane (sampo lane start in a child), which logs lane_start."""
+        from sampo import core as c
+        return [e["task"] for e in c.ledger_tail(c.find_project(self.repo)) if e["event"] == "lane_start"]
+
+    def refused(self, p):
+        """T-6158: a lane start's refusal is a PreToolUse deny printed on stdout, with exit 0 (not the exit-2 block)."""
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        return json.loads(p.stdout)["hookSpecificOutput"]["permissionDecisionReason"]
+
     def test_a_lane_on_its_tasks_branch_focuses_that_task_and_the_edit_goes_ahead(self):
         tid = self.planned("Lane work")
         lane = self.sampo_lane(tid)
@@ -6004,9 +6014,9 @@ class LaneAutoFocus(ForemanTestCase):
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertIn(tid, p.stdout)  # the note tells the builder
         self.assertEqual((self.active(lane), self.active(self.repo)), (tid, None))  # that lane's, never main's
-        self.assertEqual(self.auto(), [tid])
+        self.assertEqual(self.started(), [tid])
         self.assertEqual(self.edit(lane).returncode, 0)
-        self.assertEqual(self.auto(), [tid], "once: the second edit finds it active")
+        self.assertEqual(self.started(), [tid], "once: the second edit finds it started")
 
     def test_a_refusal_in_a_lane_names_the_lane_its_task_and_the_focus_command(self):
         """T-3534: a lane's refusal said 'no active task in this project … sampo task new', from the lane or the main
@@ -6078,24 +6088,22 @@ class LaneAutoFocus(ForemanTestCase):
         self.fm("task", "block", b, "waits", cwd=lane)
         self.fm("task", "unblock", b, cwd=lane)  # both planned in this lane, neither active
         p = self.edit(lane)
-        self.assertEqual(p.returncode, 2, p.stdout)
-        self.assertIn(f"{a}, {b}", p.stdout)  # the hint names the candidates
+        self.assertIn(f"{a}, {b}", self.refused(p))  # the hint names the candidates: the start refuses to pick
         self.fm("task", "drop", b, "not needed", cwd=lane)
         p = self.edit(lane)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertEqual(self.active(lane), a)
-        self.assertEqual(self.auto(), [a])
+        self.assertEqual(self.started(), [a])
 
     def test_a_lane_whose_task_refuses_focus_says_why(self):
         tid = self.planned("Main took it")
         self.fm("focus", tid)  # active in the main checkout: sampo focus in the lane refuses
         lane = self.sampo_lane(tid)
-        p = self.edit(lane)
-        self.assertEqual(p.returncode, 2, p.stdout)
-        self.assertIn(f"sampo focus {tid} here refused", p.stdout)
-        self.assertIn("held by the main checkout", p.stdout)
-        self.assertNotIn("Next:", p.stdout)  # focus's first line only
-        self.assertEqual((self.active(self.repo), self.auto()), (tid, []))
+        reason = self.refused(self.edit(lane))
+        self.assertIn(f"the lane's start for {tid} was refused", reason)
+        self.assertIn("held by the main checkout", reason)
+        self.assertNotIn("Next:", reason)  # the start's refusal is one line of words
+        self.assertEqual((self.active(self.repo), self.started()), (tid, []))
 
     def test_a_refusal_hint_makes_no_task_and_a_worktree_elsewhere_is_no_lane(self):
         import contextlib
@@ -6105,10 +6113,10 @@ class LaneAutoFocus(ForemanTestCase):
         self.fm("focus", tid)
         held = self.sampo_lane(tid)
         other = self.lane(os.path.join(self.tmp, "elsewhere"), f"foreman/{self.planned('Elsewhere')}")
-        for lane, made in ((held, 0), (other, 1)):  # review: a hint is the answer; a worktree elsewhere isn't a lane
+        for lane, made, code in ((held, 0, 0), (other, 1, 2)):  # review: a hint is the answer; a worktree elsewhere isn't a lane
             with mock.patch.object(hooks, "_first_brief", return_value=None) as first, \
                     contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                self.assertEqual(hooks._pre_tool_use(json.dumps(self.payload(lane))), 2)
+                self.assertEqual(hooks._pre_tool_use(json.dumps(self.payload(lane))), code)  # T-6158: a start's refusal exits 0
             self.assertEqual(first.call_count, made, lane)
         self.assertEqual(self.auto(), [])
 

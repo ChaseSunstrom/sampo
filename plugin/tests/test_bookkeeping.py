@@ -164,6 +164,31 @@ class FinishGaps(HookCase):
         self.fm("task", "ac", "T-0001", "edit", "1", "--verify", "python3 plugin/tests/run.py test_real")
         self.assertIn("test_real", c.find_brief(p, "T-0001").section("Acceptance criteria"))
 
+    def test_a_green_run_naming_a_missing_module_is_no_red_then_green_unless_it_is_a_negated_probe_that_passed(self):  # T-6869
+        # T-6158: "No module named" marks a run that tested nothing, so a green one is no pass of a red-then-green. The one
+        # exception is a negated probe (`… && ! tool -h`) that passed: its absence line is the probe's own output
+        self.fm("init")
+        self.fm("task", "new", "t", "--type", "FIX", "--tier", "S", "--ac", "ok :: python3 test_calc.py",
+                "--step", "s", "--focus")
+        b = c.find_brief(c.find_project(self.repo), "T-0001")
+        b.add_evidence("python3 test_calc.py", c.run_result(1, "AssertionError: -1"), ac=1, ran=True)
+        b.add_evidence("python3 test_calc.py", c.run_result(0, "/usr/bin/python3: No module named zzdetour"), ac=1, ran=True)
+        self.assertIsNone(b.red_green_cmd(), "a green run that tested nothing is no pass")
+        probe = "python3 test_calc.py && ! python3 -m zzdetour -h"
+        b.add_evidence(probe, c.run_result(1, "AssertionError: -1"), ac=1, ran=True)
+        b.add_evidence(probe, c.run_result(0, "/usr/bin/python3: No module named zzdetour"), ac=1, ran=True)
+        self.assertEqual(b.red_green_cmd(), probe, "the negated probe's pass is its own output")
+
+    def test_a_bang_inside_an_argument_is_no_negated_probe(self):  # T-6869 self-review: the probe is a `! ` command segment
+        self.fm("init")
+        self.fm("task", "new", "t", "--type", "FIX", "--tier", "S", "--ac", "ok :: python3 test_calc.py",
+                "--step", "s", "--focus")
+        b = c.find_brief(c.find_project(self.repo), "T-0001")
+        odd = "python3 test_calc.py --name 'wow! '"
+        b.add_evidence(odd, c.run_result(1, "AssertionError: -1"), ac=1, ran=True)
+        b.add_evidence(odd, c.run_result(0, "/usr/bin/python3: No module named zzdetour"), ac=1, ran=True)
+        self.assertIsNone(b.red_green_cmd(), "a '! ' in an argument is no probe: that green run tested nothing")
+
     def test_a_failed_affected_run_reruns_its_command_not_its_label(self):  # T-2596
         self.fm("init")
         self.fm("task", "new", "t", "--type", "FIX", "--tier", "S", "--ac", "ok :: true", "--step", "s", "--focus")

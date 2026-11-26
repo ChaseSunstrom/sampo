@@ -242,11 +242,11 @@ class LaneTrailerWalk(ForemanTestCase):
 
 
 class ContractAsksForTrailers(ForemanTestCase):
-    def test_the_builder_contract_asks_for_the_close_lines_as_trailers_in_its_last_commit(self):  # T-5496
+    def test_the_builder_contract_leaves_the_close_trailers_to_sampo(self):  # T-5496, T-6158
         """The contract() text (rendered from agents/fm-builder.md, the one a brief carries when its agent lacks the rules)
-        tells the builder to put its close lines in its last commit's message, so a land can close the lane with no hand
-        step."""
+        has Sampo write the close trailers on the builder's commit (T-6158: 22c01dd33 moved the bookkeeping from the builder
+        to Sampo), and the builder's LESSON and WHY-NOT-CAUGHT lines ride its final report instead."""
         flat = " ".join(lanes.contract("T-9", "abc123", "/main").split())
-        self.assertIn("Write each as a `KEY: text` trailer line in your last commit's message", flat)  # T-6158
-        self.assertIn("CHANGELOG (one sentence", flat)
-        self.assertIn("Sampo adds a title-only set at precheck when your commits carry none", flat)
+        self.assertIn("Write no commit trailers (T-6158)", flat)
+        self.assertIn("Sampo writes the close trailers on your commit (CHANGELOG, TITLE, LESSON, NUMBERS, DOCS and WHY-NOT-CAUGHT", flat)
+        self.assertIn("End your final report with a `LESSON:` line", flat)

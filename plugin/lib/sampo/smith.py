@@ -2407,6 +2407,7 @@ class Run:
         # (criterion, verify, proof contents) -> state, the done-refusals per phase, and the criteria whose proof passes
         # on the code as it was before the work ([{text, why}]: not proven at the close; journaled and replayed)
         self.proof_base, self.proof_memo, self.proof_refused, self.proof_unproven = None, {}, {}, []
+        self.proof_ran = {}  # T-6869: key -> whether a red proof run's output says a test ran
         # the base's record was journalled (a resume replays it), and a resume that could not restore it: its criteria
         # that name proof files close not proven
         self.proof_logged = self.proof_lost = False
@@ -3037,7 +3038,7 @@ class Run:
         key = (n, cr["verify"], tuple(sorted((r, hashlib.sha1(b).hexdigest(), m) for r, (b, m) in laid.items())))
         if key in self.proof_memo:
             return self.proof_memo[key]
-        tmp, state, why = tempfile.mkdtemp(prefix="fm-proof-"), "skipped", ""
+        tmp, state, why, ran = tempfile.mkdtemp(prefix="fm-proof-"), "skipped", "", False
         try:
             roots = {x for x in (self.root.rstrip(os.sep), os.path.realpath(self.root).rstrip(os.sep)) if x}
             if any(x in cr["verify"] for x in roots):
@@ -3055,17 +3056,19 @@ class Run:
                         f.write(data)
                     os.chmod(dest, mode)  # ./proof.sh must stay runnable
                 env = dict(self.env(), PYTHONDONTWRITEBYTECODE="1")
-                code, _ = run_bounded(cr["verify"], copy, VERIFY_TIMEOUT, env, self.cap,  # a restored file of the same
+                code, out = run_bounded(cr["verify"], copy, VERIFY_TIMEOUT, env, self.cap,  # a restored file of the same
                                       confine=worker_confinement(copy)[0])  # size must not reuse the fixed .pyc
                 if code in (126, 127):  # not executable / not found there: the check could not run, nothing failed
                     why = f"the verify could not run there (exit {code})"
                 else:
                     state = "passes" if code == 0 else "red"
+                    ran = code != 0 and _proof_ran(out)  # T-6869: a red that tested nothing is no regression proof
         except (OSError, subprocess.SubprocessError, shutil.Error) as e:
             why = f"the copy failed: {_one_line(e, 160)}"
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
         self.proof_memo[key] = state
+        self.proof_ran[key] = ran
         self.emit("note", f"  proof check (criterion {n}): {state if state != 'skipped' else 'skipped: ' + why}",
                   quiet=True, proof=state, criterion=n, **({"why": why} if why else {}))
         return state
@@ -8614,6 +8617,7 @@ def _lookback_swap(run, tid):
     run.orig, run.snap, run.broken, run.pmemo, run.steps_done = {}, {}, {}, {}, False
     run.wrote = set()
     run.proof_base, run.proof_memo, run.proof_refused, run.proof_unproven = None, {}, {}, []  # T-4590
+    run.proof_ran = {}  # T-6869
     run.proof_logged = run.proof_lost = False
     run.review, run.review_text, run.whole, run.find_fix = None, "", False, None
 
@@ -11649,6 +11653,12 @@ def _finish_lane(run, profile):
              task=run.tid, tokens=run.tokens, unproven=[], usd=None if run.usd is None else round(run.usd, 4))
 
 
+def _proof_ran(out):
+    """T-6869: whether a red proof run's output says a test ran and failed: not a missing module, an import error or no
+    test at all (core's _NO_TEST_RED reads those for an evidence line; a plain ImportError is the same kind of failure)."""
+    return not (core._NO_TEST_RED.search(out) or re.search(r"\bImportError\b", out))
+
+
 def _finish(run, profile):
     pl = run.plan
     run.leave_out_built()  # T-4387: what a close-time command built (a fix round's verify) stays out of the commit too
@@ -11671,6 +11681,16 @@ def _finish(run, profile):
         a += [f"--docs={notes['docs']}", f"--lesson={notes['lesson']}"]
         if pl["type"] == "FIX":
             a += [f"--why-not-caught={notes['why_not_caught']}"]
+    # T-6869: a proof file the run wrote that fails on the code as it was before the work is the red the regression test
+    # asks for; the check ran here, not as an evidence line, so fm finish's proof gap would refuse it: its test says so.
+    # Only a red run that tested something counts, and the section names the criteria it covers (not every criterion)
+    red = sorted({k[0] for k, v in run.proof_memo.items() if v == "red" and run.proof_ran.get(k)})
+    if red and "regression" in _gaps_needed(run):
+        code, out = run.fm("task", "set", run.tid, "--section", "Regression test", "--text",
+                           "the proof file of criterion " + ", ".join(str(n) for n in red)
+                           + " fails on the code as it was before the work (fm code's before-work check)")
+        if code:
+            raise Blocked(f"fm code: fm task set Regression test refused: {_one_line(out, 400)}")
     # T-2937: asked for any tier; a close key already given isn't asked again; a modelless run (--worker --verify) has
     # nobody to ask, so finish refuses with its own reason
     if profile is not None and (need := _gaps_needed(run)):

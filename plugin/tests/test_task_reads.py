@@ -6,6 +6,8 @@ tests' default turns the note off (FOREMAN_NO_COVERED=1, set in helpers; test_nu
 briefs' stamp says what it is (a "sampo.stamp" audit event the recorder reads)."""
 import os
 import subprocess
+import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -85,6 +87,38 @@ class OwnStamp(ForemanTestCase):
                          [x for x in calls if x[0] in ("sampo.stamp", "stat")])
         self.assertEqual([[f, os.stat(f).st_mtime_ns, os.stat(f).st_size] for f in own], recall._own_stamp(*own),
                          "the stamp itself is as before: a kept cache stays valid")
+
+
+class CodeStampAtLoad(unittest.TestCase):
+    """T-6869: importing core stamps no module file (c6d0aff74 stat'ed all of them in every fm process, so every class
+    that made a task depended on the whole package). A wake asks whether a module moved since this process loaded its
+    code: the folder or a .py modified after LOADED_NS is a change, a file gone is a change."""
+
+    def test_importing_core_stamps_no_module_file(self):
+        self.assertIsNone(c.CODE_START)
+
+    def test_a_module_moved_after_the_load_is_a_change_and_one_before_it_is_not(self):
+        with mock.patch.object(c, "LOADED_NS", 0):
+            self.assertTrue(c.code_changed(None), "every file is newer than a load at time zero")
+        with mock.patch.object(c, "LOADED_NS", 1 << 62):
+            self.assertFalse(c.code_changed(None), "nothing on disk moved after a load in the far future")
+
+    def test_a_package_folder_that_cannot_be_read_is_a_change(self):
+        with mock.patch.object(c, "__file__", os.path.join(TOP, "no-such-folder", "core.py")):
+            self.assertTrue(c.code_changed(None))
+
+    def test_a_module_restored_with_an_old_mtime_after_the_load_is_still_a_change(self):
+        """T-6869: cp -p or rsync sets an old mtime back over a file the load already read: the ctime says when it moved."""
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "mod.py")
+            with open(path, "w") as fh:
+                fh.write("X = 1\n")
+            loaded = time.time_ns()
+            time.sleep(0.02)  # ctime has a tick: the restore must land after the load's stamp
+            os.utime(path, ns=(1, 1))
+            self.assertGreater(os.stat(path).st_ctime_ns, loaded, "precondition: the restore is after the load")
+            with mock.patch.object(c, "__file__", os.path.join(d, "core.py")), mock.patch.object(c, "LOADED_NS", loaded):
+                self.assertTrue(c.code_changed(None), "mtime 1970 says unchanged; ctime says it moved after the load")
 
 
 class TaskReads(ForemanTestCase):

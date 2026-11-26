@@ -32,7 +32,6 @@ import re
 import stat
 import sys
 import shlex
-import tempfile
 
 
 class lazy:  # fmcore.lazy's twin: this module imports no other Foreman module
@@ -1718,6 +1717,7 @@ def _trusted_tree(p, main):
     root (named, or through a link: verify, brief, ship and train trees), a fallback root or a fork server's folder (both
     named in the temp root by prefix), or another lane's worktree (main's lanes folder). A builder's own scratchpad and
     other temp files stay scratch. Pure path checks, the scratch root cached per process."""
+    import tempfile  # T-3577: lazy, so the hooks that never reach this check load no tempfile (shutil, bz2, lzma, random)
     tmp = tempfile.gettempdir()
     uid = getattr(os, "getuid", lambda: 0)()
     key = (os.environ.get("FOREMAN_SCRATCH_ROOT"), tmp)

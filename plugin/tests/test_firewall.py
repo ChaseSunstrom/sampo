@@ -13,8 +13,8 @@ class Base(ForemanTestCase):
         self.fm("init")
         self.big = os.path.join(self.repo, "big.py")
         with open(self.big, "w") as f:
-            for i in range(80):
-                f.write(f"def handler_{i}(x):\n" + "    y = x\n" * 8 + "    return y\n\n")
+            for i in range(400):  # T-6125: the outline is capped at CONTEXT_OUTLINE_CHARS, so 400 names don't all fit
+                f.write(f"def handler_{i}(x):\n    return x\n\n")
 
     def pre(self, tool_input, **extra):
         p = self.hook("PreToolUse", dict({"tool_name": "Read", "tool_input": tool_input}, **extra))
@@ -36,10 +36,11 @@ class OutlineFirst(Base):
         self.assertEqual(out.get("permissionDecision"), "deny")
         reason = out["permissionDecisionReason"]
         self.assertIn("1 handler_0 · ", reason)  # T-3670: names packed several per line, no def prefix
-        self.assertIn("more", reason, "80 defs don't fit: the rest are counted")
+        self.assertIn("more", reason, "400 defs don't fit: the rest are counted")
         self.assertLessEqual(len(reason.splitlines()), 8, "T-3670: the terminal shows it as an error block")
         self.assertIn("offset", reason)
-        self.assertEqual(self.pre({"file_path": self.big}), {}, "asked again: it reads whole")
+        self.assertEqual(self.pre({"file_path": self.big}).get("permissionDecision"), "deny",
+                         "T-6125: denied every time, not once: a range or limit is the way in")
 
     def test_a_range_a_small_file_or_another_agent_reads(self):
         self.assertEqual(self.pre({"file_path": self.big, "offset": 100, "limit": 50}), {})
@@ -52,7 +53,7 @@ class OutlineFirst(Base):
 
     def test_markdown_and_diffs_outline_too(self):
         md = self.write("notes.md", "".join(f"## Part {i}\n" + "text\n" * 20 for i in range(40)))
-        self.assertIn("Part 39", self.pre({"file_path": md}).get("permissionDecisionReason", ""))
+        self.assertEqual(self.pre({"file_path": md}), {}, "T-6125: a Markdown file is read whole, never refused")
         diff = self.write("t.diff", "".join(f"diff --git a/f{i}.py b/f{i}.py\n@@ -1 +1 @@\n" + "+x\n" * 30
                                             for i in range(25)))
         reason = self.pre({"file_path": diff}).get("permissionDecisionReason", "")

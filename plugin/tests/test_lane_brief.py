@@ -127,7 +127,9 @@ class AlreadyTrue(ForemanTestCase):
         b = self.stored(tid)
         self.assertEqual(b.status, "planned")
         self.assertFalse(any(a.checked for a in b.acceptance()))  # nothing is ticked: the builder's close re-runs them
-        self.assertFalse(b.evidence(), b.evidence())
+        ev = b.evidence()  # T-6158: the red criterion's brief-time run is recorded as evidence, the green one is not
+        self.assertEqual(len(ev), 1, ev)
+        self.assertIn("(ac 2)", ev[0], ev)
 
     def test_the_criteria_filter_lists_all_when_nothing_passes(self):
         tid = self.task(RED, "python3 -c 'import sys; sys.exit(4)'")

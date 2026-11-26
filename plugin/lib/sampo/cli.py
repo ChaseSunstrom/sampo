@@ -8914,6 +8914,12 @@ def _own_view(p, b, base, changed=None, landing=True, span=None):
     return _OwnView(p, b, base, changed, landing, span)
 
 
+def _symbol_names(root, base, tree, pys):
+    """T-6160: the names the diff between the view's base and the tree changed in its .py files: affected hands the base
+    and the files it took from the view, as _hub_tests does (the close-time guard lists this reader by name)."""
+    return smap.changed_symbols(root, base, tree, pys)
+
+
 def affected(p, b=None, skipped=None, since=None, detail=None, only=None, hold=False, shape_green=False, lock=None,
              among=None, why=None, also=None, dependent=None):
     """(command, tests, changed files) for the tests linked (fm map) to files changed since the task started, with the
@@ -8986,7 +8992,7 @@ def affected(p, b=None, skipped=None, since=None, detail=None, only=None, hold=F
         deps, verify = set(), set()  # T-6160: the test modules that depend on a changed file (the train's gate asks, with `dependent`); verify: the ones only an import reaches
         if dependent is not None and wide:
             pys = sorted(f for f in wide if f.endswith(".py"))
-            syms = smap.changed_symbols(p.root, base, tree, pys) if pys and tree else {}  # T-6160: the names the diff changed
+            syms = _symbol_names(p.root, base, tree, pys) if pys and tree else {}  # T-6160: the names the diff changed
             found, dependent["modules"] = dependents(p.root, sorted(wide), tree, symbols=syms, verify=verify,
                                                      budget=dependent.get("budget"))  # T-6160: the gate's budget, when it has one
             dependent["skipped"] = found is None  # past DEPENDENT_FILES the map is not read: the train runs the whole suite
