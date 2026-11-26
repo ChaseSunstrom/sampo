@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- Hook notes name at most 3 unverified merges, then a count: the list grew to 50+ tasks on every promp (T-5949).
 - The every-landing-records scan accepts big.py task_close, whose landing _record logs, so test_release.PushHold is green on trunk again (T-5915).
 - A headless pilot run's prompt, or a prompt from a session in a lane worktree, no longer becomes a task in the main project (T-5898).
 - card grow now mines the sessions' own repeated chores as card requests: `sampo repeats --sequences` routines, repeated plan-gate refusal kinds and forgiven guard refusals, each naming its source and count (T-5887).
