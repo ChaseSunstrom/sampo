@@ -8220,9 +8220,19 @@ class RedFirst(ForemanTestCase):
         self.assertFalse(self.event()["started"])
 
     def test_a_test_that_arrives_after_the_brief_is_dropped(self):
+        # T-6559: the brief goes out while the job runs (a job counts only the briefs since it began: aeacda4b5)
+        from sampo import callcards
         self.answers = {"RedFirstBeta": rf_test("RedFirstBeta", self.RED), "RedFirstAlpha": rf_test("RedFirstAlpha", self.RED)}
-        self.brief()
-        rec = self.job()
+        ask, briefed = callcards._ask, []
+
+        def brief_then_ask(card, prompt):
+            if not briefed:
+                briefed.append(self.brief())
+            return ask(card, prompt)
+
+        with mock.patch.object(callcards, "_ask", brief_then_ask):
+            rec = self.job()
+        self.assertEqual(len(briefed), 1, "the brief went out mid-job")
         self.assertEqual(rec["status"], "late")
         self.assertEqual(rec["tests"], [])
         self.assertNotIn("+class RedFirst", self.brief(), "a superseded test is never embedded")
