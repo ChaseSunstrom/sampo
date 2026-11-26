@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- card grow now mines the sessions' own repeated chores as card requests: `sampo repeats --sequences` routines, repeated plan-gate refusal kinds and forgiven guard refusals, each naming its source and count (T-5887).
 - The plugin manifest now ships the sampo MCP server, so Claude Code sessions and builders get card_find, card_call and do as deferred tools with no manual registration (T-5885).
 - The Land summary counts only the lanes its own trains landed and names the lanes merged before the run apart, so a 7-lane train after a restart no longer reads "74 lane(s) landed" (T-5883).
 - Ward no longer lets a `'` inside double quotes, after a backslash, in a comment or never closed hide a real redirect from the quote-blind fallback, and an awk program's own `)` is no longer a tail cut (T-5882).
