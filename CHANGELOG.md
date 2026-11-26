@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- The runner plans an unplanned S/M task on a free slot instead of skipping it, and its summary names each lane's slowest phase (T-6851).
 - Plan-time red tests: each S or M task gets a failing test per criterion, checked red on the base and embedded in the builder brief (T-6155).
 - Art card pair tests: one real Chrome render per card, samples checked without a browser; the class runs in about 5 s, was 63 s (T-6566).
 - test_night.NightGuards and test_second make their CLAUDE_CONFIG_DIR under the headless launcher's safe root (helpers.safe_config_dir) instead of /tmp, which the T-5706 launcher refuses, so the stub claude runs again and the night's spend and usage stops are tested (T-6017).
