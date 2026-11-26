@@ -3,6 +3,7 @@ track record that follows (T-0641): per type and tier, how many closed on their 
 Everything is derived on demand from git, the briefs and the ledger, so there is nothing extra to keep in sync."""
 import bisect
 import collections
+import itertools
 import json
 import os
 import re
@@ -1577,28 +1578,84 @@ def _census_items(p, days):
     return items
 
 
-def census(p, days=14):
+UNCALLED = "no caller on the default path"  # T-5239: a wired.scan_full row's flag (static: no run is needed to see it)
+
+
+def _unwired_items(p):
+    """T-5239: the unwired public functions and verbs (wired.scan_full: nothing on the default path refers to them), as
+    census items. None when the scan could not read any module (a symlink, an oversize or unparsable file): the graph
+    would be partial, and a callee of the missing module would read as unwired."""
+    from sampo import wired
+    rows, skipped = wired.scan_full(c.PLUGIN_ROOT)
+    if skipped:
+        return None
+    return [{"kind": "verb" if r["kind"] == "cmd" else "function", "name": f"{r['module']}.{r['name']}", "exists": True,
+             "used": 0, "effective": None, "flag": UNCALLED, "unwired": True, "file": r["file"], "line": r["line"],
+             "callers": r["callers"]} for r in rows]
+
+
+def _save_census(p, unwired):
+    """census.json in the project state: this capture run's unwired count and the run before it (the doctor check of
+    T-5241 reads it, never a scan)."""
+    path = os.path.join(p.dir, "census.json")
+    prev = None
+    try:
+        with open(path, encoding="utf-8") as f:
+            prev = json.load(f).get("unwired")
+    except (OSError, ValueError, AttributeError):  # no earlier run, or one that is not a census: no previous count
+        prev = None
+    c.write_atomic(path, json.dumps({"unwired": len(unwired), "previous": prev, "at": c.now()}, indent=2) + "\n")
+
+
+def census(p, days=14, save=False):
     """Every verb, skill, playbook, night job and hook note at three levels over the last days: exists, used (a run or
-    load outside a builder), effective (an action followed in the same session)."""
+    load outside a builder), effective (an action followed in the same session). T-5239: plus the unwired functions and
+    verbs; save=True (a capture run) also writes census.json with their count and the previous one."""
     items = _census_items(p, days)
     for i in items:
         i["flag"] = "never used" if not i["used"] else "used, never effective" if i["effective"] == 0 else ""
+    unwired = _unwired_items(p)
+    if unwired is not None:
+        items += unwired
+        if save:
+            _save_census(p, unwired)
     return items
 
 
+def _capture_title(i):
+    if i.get("unwired"):
+        return f"Outcome census: {i['kind']} {i['name']} is {UNCALLED}: wire it in (who should reach it, when) or retire it"
+    t = f"Outcome census: {i['kind']} {i['name']} is {i['flag']} in 14 days: wire it in (who should reach it, when) or retire it"
+    if i["kind"] == "verb" and i["name"] in CENSUS_SEEDS:
+        t += f" ({CENSUS_SEEDS[i['name']]})"
+    return t
+
+
+def _census_key(title):
+    """'Outcome census: kind name' — the item a census title is about, whatever its flag says now."""
+    return title.partition(" is ")[0]
+
+
 def census_captures(p, items, limit=10):
-    """Titles for the flagged items, the 2026-11-08 finds first, at most limit, none already on the board."""
+    """Titles for the flagged items, at most limit. The 2026-11-08 seed verbs first; then the other kinds take turns
+    (runtime and unwired alike), so a long list of one kind never starves the rest. An item already on the board
+    (archived briefs too: done or dropped) is never captured again, even when its flag has since changed."""
     bad = [i for i in items if i["flag"] and i["kind"] != "hook"]
-    bad.sort(key=lambda i: (i["name"] not in CENSUS_SEEDS or i["kind"] != "verb", i["kind"], i["name"]))
-    have = {b.title for b in c.load_briefs(p)}
+    seeds = sorted((i for i in bad if i["kind"] == "verb" and i["name"] in CENSUS_SEEDS), key=lambda i: i["name"])
+    groups = collections.defaultdict(list)
+    for i in sorted(bad, key=lambda i: (i["kind"], i["name"])):
+        if not (i["kind"] == "verb" and i["name"] in CENSUS_SEEDS):
+            groups[(i["kind"], bool(i.get("unwired")))].append(i)
+    taken = {_census_key(b.title) for b in c.load_briefs(p, include_archive=True) if b.title.startswith("Outcome census: ")}
     out = []
-    for i in bad:
-        t = f"Outcome census: {i['kind']} {i['name']} is {i['flag']} in 14 days: wire it in (who should reach it, when) or retire it"
-        if i["kind"] == "verb" and i["name"] in CENSUS_SEEDS:
-            t += f" ({CENSUS_SEEDS[i['name']]})"
-        if t not in have:
+    for i in seeds + [x for row in itertools.zip_longest(*groups.values()) for x in row if x is not None]:
+        if len(out) == limit:
+            break
+        t = _capture_title(i)
+        if _census_key(t) not in taken:
             out.append(t)
-    return out[:limit]
+            taken.add(_census_key(t))  # a title once chosen this run is never chosen twice
+    return out
 
 
 VERB = re.compile(r"\b(?:sampo|fm) (?!task\b)([a-z][a-z-]{2,})")
@@ -1654,7 +1711,7 @@ def cmd_probes(args, p):
                        "\n".join([f"{len(bad)} of {len(rows)} declared outcome(s) never seen at 1, 7 or 30 days:"]
                                  + [f"  {r['task']} [{r['status']}, {r['age_days']:g} d, probe {r['stage']}] "
                                     f"{c.fit(r['title'], 70)}: {r['signal']} (checked {r['checked']})" for r in bad]))
-    items = census(p, getattr(args, "days", None) or 14)
+    items = census(p, getattr(args, "days", None) or 14, save=bool(getattr(args, "capture", False)))
     flags = [i for i in items if i["flag"]]
     made = []
     if getattr(args, "capture", False):
@@ -1669,16 +1726,17 @@ def cmd_probes(args, p):
     by = collections.Counter((i["kind"], i["flag"]) for i in flags)
     head = [f"{len(items)} item(s), last 14 days: "
             + ", ".join(f"{n} {k} {f}" for (k, f), n in sorted(by.items())) + (f"; captured {', '.join(made)}" if made else "")]
-    order = ("verb", "skill", "night", "playbook")  # each kind shows its first 12, ineffective before never used
+    order = ("verb", "function", "skill", "night", "playbook")  # each kind shows its first 12, ineffective before never used
     show = []
     for k in order:
         mine = sorted((i for i in flags if i["kind"] == k), key=lambda i: (
             not (k == "verb" and i["name"] in CENSUS_SEEDS), i["flag"] != "used, never effective", -i["used"], i["name"]))
         show += mine[:12]
+    shown = [f"  {i['kind']} {i['name']}: {i['flag']} ({i['file']}:{i['line']})" if i.get("unwired")  # T-5239: a static row
+             else f"  {i['kind']} {i['name']}: {i['flag']} (used {i['used']}, effective {i['effective']})" for i in show]
     return cli.out(args, {"items": items, "captured": made},
-                   "\n".join(head + [f"  {i['kind']} {i['name']}: {i['flag']} (used {i['used']}, effective {i['effective']})"
-                                     for i in show] + [f"  … {len([i for i in flags if i['kind'] != 'hook']) - len(show)} more "
-                                                       "(--json)"]))
+                   "\n".join(head + shown + [f"  … {len([i for i in flags if i['kind'] != 'hook']) - len(show)} more "
+                                             "(--json)"]))
 
 
 def caution(p, scope):

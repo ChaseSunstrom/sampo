@@ -30,10 +30,10 @@ LAND_POLL_S = 30  # T-4278: how often the wait looks at the land's lock
 HEAVY = ("evolve", "bench", "exam", "sentinel")  # T-4278: a replayed session, exam arms or a bisect's test suites: by a
 # job's first word; such a job never starts while a land runs
 _LEASE = None  # T-0921: the open lock file of a running night
-NAMES = ("scout", "dream", "spar", "cold files", "guard cases", "steer checks", "compost", "consolidate", "sentinel", "moons grow", "moons funnel", "cards grow", "model bench", "long exam", "next request", "smoke", "pre-plan", "model lesion", "second session", "landscape", "research debt", "court", "evolve candidate", "queue", "draft", "kalevala rounds", "fits", "headroom")
+NAMES = ("scout", "dream", "spar", "cold files", "guard cases", "steer checks", "compost", "consolidate", "sentinel", "moons grow", "moons funnel", "cards grow", "model bench", "long exam", "next request", "smoke", "pre-plan", "model lesion", "second session", "landscape", "research debt", "court", "evolve candidate", "queue", "draft", "kalevala rounds", "fits", "headroom", "census")
 
 
-GENERATORS = ("moons grow", "moons funnel", "cards grow", "headroom")  # T-3296: the bulk CPU users; they take the project lock only briefly per row; T-3328: headroom's git log and local-model calls, at idle too
+GENERATORS = ("moons grow", "moons funnel", "cards grow", "headroom", "census")  # T-3296: the bulk CPU users; they take the project lock only briefly per row; T-3328: headroom's git log and local-model calls, at idle too; T-5239: census parses every module (~10 s of CPU)
 
 
 def priority(name):
@@ -109,6 +109,9 @@ def jobs(p, warn=None):
     meta, out = c.read_meta(p), [("scout", ["scout", "--slow"], 0.0)]  # T-0950: free to look: work nobody asked for
     out.append(("dream", ["dream"], 0.0))  # T-0665: free: the day's failures as tripwire candidates
     out.append(("failure classes", ["friction", "--failures"], 0.0))  # T-6109: free: the logs' failures filed as classes
+    from sampo import scout
+    if scout._is_home(p):  # T-5239: the census scans Sampo's own modules, so only Sampo's project runs it
+        out.append(("census", ["outcomes", "--census", "--capture"], 0.0))  # free: the unwired list, census.json, its captures
     out.append(("spar", ["spar", "--capture", "--budget", "120"], 0.0))  # T-3281: free: hook fuzz, idle priority, crashes filed as FIX
     out.append(("cold files", ["map", "--cold", "--capture"], 0.0))  # T-0660: free: hot files nobody has read
     from sampo import replay
