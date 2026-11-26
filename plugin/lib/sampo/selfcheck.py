@@ -451,6 +451,14 @@ def _over(r):
     return (r["actual"] - r["target"]) / (abs(r["target"]) or 1)
 
 
+def watchdog_note(p, briefs, now):
+    """T-6859: the throughput watchdog's note from its last tick (a regressed outcome and the stage it names, or a stage
+    alarm): a lead line in sampo next, no action. It is the one place the lead hears the watchdog, so it is not an inbox item."""
+    from sampo import watchdog
+    text = watchdog.note(p, now)
+    return Hit(c.fit(c.plain(text), 300), lead=True) if text else None
+
+
 def targets_regressed(p, briefs, now):
     """T-5709: a firm outcome target (plugin/data/targets.json) past its target files a discovered task with its numbers,
     once a day per target, and leads sampo next. A provisional one only tells (no action, no lead): its target is a
@@ -551,6 +559,7 @@ def _disk_held(p, briefs, now):
 
 CHECKS += (usage_burn, stale_beats, stale_stats, pause_lingers, disk_low)
 CHECKS += (targets_regressed,)  # T-5709: its own line, so other lanes' checks join without a conflict
+CHECKS += (watchdog_note,)  # T-6859: the watchdog's lead line, its own line for the same reason
 
 
 def lines(p, briefs=None, now=None):

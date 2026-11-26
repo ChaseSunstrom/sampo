@@ -493,6 +493,13 @@ def tick(p, fetch_ci=None):
                     res["drift"] = [{"task": t, "measure": m} for t, m in made]
             except Exception as e:  # the scorecard never costs the tick
                 res["notes"].append(f"scorecard: {c.fit(c.plain(str(e)), 120)}")
+            try:  # T-6859: the throughput watchdog: an outcome and a stage census; a regression names its stage and the fix
+                from sampo import watchdog
+                if got := watchdog.tick(p):
+                    if got.get("note"):
+                        res["watchdog"] = got["note"]
+            except Exception as e:  # the watchdog never costs the tick
+                res["notes"].append(f"watchdog: {c.fit(c.plain(str(e)), 120)}")
             try:  # T-2406: score the pending next-request prediction, make the next (local reads, never sensitive)
                 foresight.prediction_tick(p)
             except Exception as e:  # the book never costs the tick
