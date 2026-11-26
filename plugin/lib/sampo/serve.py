@@ -481,6 +481,84 @@ def _batch(p, head, skip, n, running=None):
     return batch
 
 
+PLAN_TIMEOUT = 120  # seconds: the planning pass's one Haiku call (T-6426)
+PLAN_TOP = 1000  # tracked files the planning pass is shown: its scope is picked from these
+PHASES = ("wait", "plan", "build", "review", "land")  # T-6434: a lane's phases, in order
+PLAN_SYSTEM = ("You plan one small change in a repository. Reply with one JSON object and nothing else: "
+               '{"scope": ["path", ...], "verify": ["command", ...]}. scope: at most 6 of the files listed that the '
+               "change edits. verify: at most 3 shell commands that prove the change, each run from the repository root.")
+
+
+def _haiku_plan(prompt):
+    """The planning pass's one model call: a headless Haiku run with no tools (T-6426). Its reply's text, or it raises."""
+    from sampo import budget, ideas
+    budget.check("run-plan", budget.estimate("run-plan", 1, 0.02))
+    res = ideas.run_children([(ideas.child_cmd("haiku", PLAN_SYSTEM), prompt, "run plan")], PLAN_TIMEOUT, "run-plan",
+                             usage=[])
+    text, err = res[0] if res else (None, "no run")
+    if not (text or "").strip():
+        raise RuntimeError(err or "an empty reply")
+    return text
+
+
+def _plan_doc(text):
+    """The planning pass's JSON object from a reply, or {}: strict, one object, nothing around it."""
+    try:
+        doc = json.loads(text)
+    except (ValueError, TypeError, RecursionError):
+        return {}
+    return doc if isinstance(doc, dict) else {}
+
+
+def plan_head(p, b, ask=None):
+    """T-6426: the planning pass for the queued task b that a free slot would take. A planned S or M task with no scope
+    gets one cheap call (ask(prompt) -> the reply's text; Haiku by default): the tracked files the reply names, which git
+    lists, become its scope and its verify commands its plan_verify, so the picker can take it. Returns '' when b has a
+    scope now, else the one concrete gap that keeps it off a lane (L tier, unplanned, no tracked file named, a failed
+    call). A gap writes nothing."""
+    from sampo import cli
+    if b.tier not in ("S", "M"):
+        return f"{b.id}: L tier: split it into S or M children before a lane can take it"
+    if b.status != "planned":
+        return f"{b.id}: unplanned ({b.status}): run sampo task plan {b.id} first"
+    if b.meta.get("scope"):
+        return ""
+    tracked = [f for f in c._git(p.root, "ls-files", timeout=30).splitlines() if f]  # "" on a failure: no tracked file
+    prompt = f"Task {b.id}: {c.fit(c.plain(c.redact(b.title)), 200)}\nFiles:\n" + "\n".join(tracked[:PLAN_TOP])
+    try:
+        reply = (ask or _haiku_plan)(prompt)
+    except Exception as e:  # noqa: BLE001 - a planner that can't run names the gap; the run goes on
+        return f"{b.id}: no scope: the planning pass failed ({type(e).__name__})"
+    doc, known = _plan_doc(reply), set(tracked)
+    named = doc.get("scope") if isinstance(doc.get("scope"), list) else []
+    scope = [x.strip() for x in named if isinstance(x, str) and x.strip() in known][:6]
+    if not scope:
+        return f"{b.id}: no scope: the planning pass named no tracked file"
+    named = doc.get("verify") if isinstance(doc.get("verify"), list) else []
+    verify = [x.strip() for x in named if isinstance(x, str) and x.strip()][:3]
+
+    def plan(x):
+        x.meta["scope"], x.meta["plan_verify"] = scope, verify
+        x.append_log(f"planning pass: scope {', '.join(scope)}")
+    cli.mutate(p, b.id, plan, None)
+    return ""
+
+
+def phase_summary(phases, idle_s=None, slot_s=None):
+    """T-6434: the run's bottleneck line: the lane-minutes each phase took over the lanes it ran (wait for a slot, plan,
+    build, review, land), the slowest one (the time sink to fix first) and the share of slot time no lane held. '' when no
+    lane ran."""
+    if not phases:
+        return ""
+    tot = {k: sum(float(v.get(k) or 0.0) for v in phases.values()) for k in PHASES}
+    top = max(PHASES, key=lambda k: tot[k])
+    line = (f"phases over {len(phases)} lane(s), lane-minutes: " + ", ".join(f"{k} {tot[k] / 60:.1f}" for k in PHASES)
+            + f"; slowest: {top} {tot[top] / 60:.1f}")
+    if slot_s:
+        line += f"; idle {100 * (idle_s or 0.0) / slot_s:.0f}% of slot time"
+    return line
+
+
 def _held_back(p, skip, running):
     """T-6487: why the queue fills no free slot, as one tally line ("" for an empty queue): each queued task counted
     once, under the first reason _batch would refuse it, so an idle pool says what to fix (plan, scope, land, wait)."""
@@ -711,6 +789,7 @@ def _run_pool(p, args, models, log, skip, told, fit, n, left, fails=0):
                 _fm(p.root, "lane", "rm", b.id)
             raise
         t0 = time.monotonic()
+        ph(b.id)["wait"] = t0 - first_seen.get(b.id, t0)  # T-6434: from its first turn as the head to its session
         live[watch_pool.submit(watch, proc, path, t0 + args.timeout * 60)] = (b, path, proc, out, t0)
         return True
 
@@ -732,6 +811,7 @@ def _run_pool(p, args, models, log, skip, told, fit, n, left, fails=0):
         c.log_event(p, "run_session", task=tid, data={"lane": path, "minutes": round((time.monotonic() - t0) / 60, 1),
                                                        "parallel": len(live)})
         done_ids.add(tid)
+        ph(tid)["build"] += time.monotonic() - t0  # T-6434: the session's own time
         last = text.strip().splitlines()[-1:]
         hit = bool(code and last and USAGE_LIMIT.search(last[0]))
         limited = limited or hit
@@ -741,7 +821,7 @@ def _run_pool(p, args, models, log, skip, told, fit, n, left, fails=0):
             if after.meta.get("run_kept"):
                 cli.mutate(p, tid, lambda x: x.meta.pop("run_kept", None), None)
             beat(p, "run", 2 * 3600, f"{tid}: merging its lane")  # gates may take an hour
-            merging[merge_pool.submit(_integrate, p, tid, path)] = after
+            merging[merge_pool.submit(_timed_land, p, tid, path, ph(tid))] = after
             return
         skip.add(tid)  # not this run again; an empty lane frees the task for the next
         try:  # T-3294 review: a timeout or OSError here must not end every live pool session (trunk's block() guards too)
@@ -778,6 +858,11 @@ def _run_pool(p, args, models, log, skip, told, fit, n, left, fails=0):
     last_held = ""  # T-6487: the last hold-back tally printed
     unlanded, idle = set(), 0  # unlanded: finished tasks whose lane was kept, not merged: what waits on them waits on
     resumes, resumed = [], set()  # T-6442: (brief, kept lane) to start again in place; tasks resumed this run
+    phases, first_seen, planned = {}, {}, set()  # T-6434: each lane's phase seconds; T-6426: heads planned this run
+    slot_s = idle_s = 0.0  # T-6434: the pool's slot seconds, and those no lane held
+
+    def ph(tid):
+        return phases.setdefault(tid, dict.fromkeys(PHASES, 0.0))
     for b, path in _kept_lanes(p, skip):  # lanes earlier runs kept with work go first
         resumes.append((_mark_resume(p, b.id, path), path))
         resumed.add(b.id)
@@ -799,12 +884,25 @@ def _run_pool(p, args, models, log, skip, told, fit, n, left, fails=0):
                 skip.update(b.id for b in every if unlanded & set(c._deps(b)))  # kept, not merged: held for the run
                 avoid = skip | {b.id for b in running} | done_ids | waiting | resumed
                 head = _next_runnable(p, avoid, told, fit) if room > 0 else None
+                if head:
+                    first_seen.setdefault(head.id, time.monotonic())  # T-6434: its wait starts when it first heads the queue
                 batch = _batch(p, head, avoid, room, running) if head else []
+                gap = ""
+                if head and not batch and head.id not in planned:  # T-6426: a free slot plans the head once before any skip
+                    planned.add(head.id)
+                    t_p = time.monotonic()
+                    try:
+                        gap = plan_head(p, head)
+                    except Exception as e:  # noqa: BLE001 - a planner that fails names its gap; the run goes on
+                        gap = f"{head.id}: no scope: the planning pass failed ({type(e).__name__})"
+                    ph(head.id)["plan"] += time.monotonic() - t_p  # T-6434: the planning pass's own time
+                    head = c.find_brief(p, head.id)  # the pass wrote the scope: pick from the brief as it is now
+                    batch = _batch(p, head, avoid, room, running)
                 if head and not batch and serving and not _batch(p, head, avoid, 1, []):
                     # T-6409: a head no lane will ever take (no scope, L, held): beside serve there is no main-checkout
                     # session for it, so skip it and pick again, or the pool returns and is called for it forever
                     skip.add(head.id)
-                    print(f"{head.id}: no lane can take it (needs S/M, planned, a scope, nothing pending); "
+                    print(f"{head.id}: no lane can take it ({gap or 'needs S/M, planned, a scope, nothing pending'}); "
                           "skipped this run", flush=True)
                     continue
                 if room > 0 and not batch:  # T-6487: a free slot nothing fills says why, once per change
@@ -834,8 +932,12 @@ def _run_pool(p, args, models, log, skip, told, fit, n, left, fails=0):
                 time.sleep(LOAD_RETRY_S)
                 continue
             idle = 0
+            t_w, live_n = time.monotonic(), len(live)
             done, _ = wait(list(live) + list(merging), timeout=LOAD_RETRY_S if deferred else None,
                            return_when=FIRST_COMPLETED)
+            dt = time.monotonic() - t_w  # T-6434: the slots' time over this wait, and the part no session held
+            slot_s += n * dt
+            idle_s += max(0, n - live_n) * dt
             for fut in done:
                 if fut in merging:
                     after = merging.pop(fut)
@@ -865,6 +967,9 @@ def _run_pool(p, args, models, log, skip, told, fit, n, left, fails=0):
         if merging:  # the gates of a merge under way can take an hour: say what this waits on
             print(f"fm run: waiting for {', '.join(x.id for x in merging.values())} to finish merging", flush=True)
         merge_pool.shutdown(wait=True, cancel_futures=True)  # a merge under way finishes: a half-done one is worse
+    summary = phase_summary(phases, idle_s, slot_s)  # T-6434: the run's bottleneck line, when a lane ran
+    if summary:
+        print(f"fm run: {summary}", flush=True)
     return finished, fails, limited
 
 
@@ -920,14 +1025,27 @@ def _lane_has_work(p, path):
         return True
 
 
-def _integrate(p, tid, path):
+def _timed_land(p, tid, path, rec):
+    """T-6434: _integrate for one finished lane, its time split into rec's review (the lane pilot's, when it reviews) and
+    land (the rest: the rebase and gates, or the queueing into the land train). One merge runs at a time, so rec is
+    written by one thread."""
+    timing = {"review": 0.0}
+    t0 = time.monotonic()
+    try:
+        return _integrate(p, tid, path, timing)
+    finally:
+        rec["review"] += timing["review"]
+        rec["land"] += max(0.0, time.monotonic() - t0 - timing["review"])
+
+
+def _integrate(p, tid, path, timing=None):
     """One finished lane into the main checkout, serially: rebase it on the main branch, run the gates there, then a
     fast-forward and fm lane rm. Any doubt keeps the lane and its branch, and says why. T-6480: with the pilot on, the
     lane goes to sampo lane pilot instead (headless review, then the accept queues it into the land train, which gates
     once per batch and bisects): serve's own path held every unreviewed lane and ran an hour-long gate per lane."""
     from sampo import pilotsig
     if not pilotsig._off(p):
-        return _via_pilot(p, tid, path, pilotsig)
+        return _via_pilot(p, tid, path, pilotsig, timing)
     try:
         return _integrate_lane(p, tid, path)
     except Exception as e:  # a slow gate or git: keep it, finish the others (T-4785: any error, never ending the loop)
@@ -941,7 +1059,7 @@ def _integrate(p, tid, path):
             f" ({str(e)[:120]})" if isinstance(e, (OSError, subprocess.SubprocessError)) else "")
 
 
-def _via_pilot(p, tid, path, pilotsig):
+def _via_pilot(p, tid, path, pilotsig, timing=None):
     """T-6480: the lane pilot's outcome as the run's line. accepted: queued into the land train (which merges, closes
     and removes the lane); anything else keeps the lane and names why."""
     from sampo import cli
@@ -953,10 +1071,14 @@ def _via_pilot(p, tid, path, pilotsig):
         cli.mutate(p, tid, back, "run_return", {"lane": str(path)})
     except Exception as e:
         return f"kept in {path}: {type(e).__name__} marking its session returned"
+    t_r = time.monotonic()
     try:
         got = pilotsig._verb(p, tid)
     except Exception as e:  # noqa: BLE001 - a pilot that can't run keeps the lane, never ends the run
         return f"kept in {path}: {type(e).__name__} while piloting"
+    finally:
+        if timing is not None:  # T-6434: the review's own time, for the phase summary
+            timing["review"] = timing.get("review", 0.0) + time.monotonic() - t_r
     outcome, why = got.get("outcome"), " ".join(str(got.get("why") or "").split())[:200]
     if outcome == "accepted":
         return "accepted: reviewed by the lane pilot and queued into the land train"

@@ -389,7 +389,9 @@ class Run(RunCase):
         self.stub("claude", self.finisher)
         p = self.run_fm(check=False)
         self.assertIn(f"{a}: no lane can take it", p.stdout)
-        self.assertNotIn("claude ", self.called())
+        # T-6426: a free slot plans the head first, once per run (the one planning call, its reply names no file, so the
+        # gap is named and the task skipped); the call is the planning pass, not a session for the task
+        self.assertEqual(len([l for l in self.called().splitlines() if l.startswith("claude ")]), 1)
 
 
 class RunRoute(RunCase):

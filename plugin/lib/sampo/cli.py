@@ -4940,6 +4940,9 @@ def _make_batch(p, ids, title, tier=None, gate=None, held=False):
                 for s in b.steps() or [None]:  # a planned member's own steps, else one step for it
                     h.add_step(f"{b.id}: {s.text if s else b.title}")
             h.meta["batch"] = ids
+            verify = sorted({v for b in members for v in b.meta.get("plan_verify") or []})  # T-6426: the members' commands
+            if verify:
+                h.meta["plan_verify"] = verify
         if gate:  # T-5478: the host is judged as a stand-in before it takes an id, so a refused host leaves nothing behind
             stand = c.Brief.new("T-0000", c.fit(title, 120), type_, tier, raw=raw, scope=_scope_paths(kw["scope"]),
                                 depends=kw["depends"], source=source, priority=kw["priority"], status="planned")
