@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- A lane whose auto start is refused still runs its own task's plan commands (set text, ac, step, show, block), so a missing plan can be written instead of deadlocking every tool call (T-6871).
 - Pilot settles a lane parked on its own changes request when its findings are MEDIUM or LOW, and fails closed on a full finding log or on another source's changes request (T-6588).
 - The runner plans an unplanned S/M task on a free slot instead of skipping it, and its summary names each lane's slowest phase (T-6851).
 - Plan-time red tests: each S or M task gets a failing test per criterion, checked red on the base and embedded in the builder brief (T-6155).
