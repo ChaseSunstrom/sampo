@@ -17,6 +17,6 @@ Numbers: exam run s21-013 (2026-11-01, zero-token arms) and fm prove --rollup.
 
 ## Exam
 Kinds proof (#6) and beyond (#10), with slow and docs: s21-013: the oracle arm closes all 18 proof and beyond scenarios, the empty arm none of them. Two gaps
-found in this critique pass: neither kind was mapped to its capability, so the scorecard graded #6 on slow and docs only
+found in this critique pass: [REDACTED] kind was mapped to its capability, so the scorecard graded #6 on slow and docs only
 and #10 on docs only (fixed by T-2451), and neither had an outside author (fixed by T-2453). The session arms run at the
 end-of-run exam.
