@@ -20,6 +20,7 @@
 - A headless pilot run's prompt, or a prompt from a session in a lane worktree, no longer becomes a task in the main project (T-5898).
 - card grow now mines the sessions' own repeated chores as card requests: `sampo repeats --sequences` routines, repeated plan-gate refusal kinds and forgiven guard refusals, each naming its source and count (T-5887).
 - The plugin manifest now ships the sampo MCP server, so Claude Code sessions and builders get card_find, card_call and do as deferred tools with no manual registration (T-5885).
+- sampo doctor warns when the unwired count grew since the last capture run (census.json, T-5239); it reads the file and never scans (T-5241).
 - The Land summary counts only the lanes its own trains landed and names the lanes merged before the run apart, so a 7-lane train after a restart no longer reads "74 lane(s) landed" (T-5883).
 - Ward no longer lets a `'` inside double quotes, after a backslash, in a comment or never closed hide a real redirect from the quote-blind fallback, and an awk program's own `)` is no longer a tail cut (T-5882).
 - sampo doctor now fails with "hooks on fallback" when a hook was answered from another tree than the live one in the last 24 h, naming that tree and the error (T-5089).

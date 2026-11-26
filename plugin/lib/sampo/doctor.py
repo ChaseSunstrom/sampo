@@ -599,6 +599,25 @@ def check_outcomes(projects):
                                       f"({r['signal']}, {r['status']}): sampo outcomes --silent")
 
 
+def check_unwired(projects):
+    """T-5241: the unwired count grew since the last capture run. Reads each project's census.json (T-5239: its latest
+    count and the one before); never scans, so a missing, unreadable or first census passes."""
+    grew = []
+    for p in projects:
+        raw = _read(os.path.join(p.dir, "census.json"))
+        try:
+            d = json.loads(raw) if raw is not None else {}
+            now, prev = d.get("unwired"), d.get("previous")
+        except (ValueError, AttributeError, RecursionError):
+            continue  # not a census (RecursionError: nested JSON past the parser's limit): no count to compare
+        if isinstance(now, int) and isinstance(prev, int) and now > prev:
+            grew.append((p.slug, prev, now))
+    if not grew:
+        return Result("unwired", "PASS", "the unwired count didn't grow since the last census (or none ran yet)")
+    slug, prev, now = grew[0]
+    return Result("unwired", "WARN", f"{len(grew)} project(s) gained unwired code: {slug} went {prev} -> {now}: sampo wired lists it")
+
+
 def check_briefs(p):
     errors = []
     briefs = c.load_briefs(p, errors=errors)
@@ -3623,6 +3642,7 @@ def run_all(full=False, accept_supply=False):
     results.append(Result("briefs", worst, "; ".join(r.detail for r in brief_results if r.status != "PASS")
                           or f"{len(projects)} project(s) OK", int((time.perf_counter() - t0) * 1000)))
     results.append(check_outcomes(projects))  # T-3934
+    results.append(check_unwired(projects))  # T-5241: census.json's count grew (read only, no scan)
     t0 = time.perf_counter()
     stale = [p.slug for p in projects if not views_match(p)]  # T-0494
     results.append(Result("views", "WARN" if stale else "PASS",
