@@ -3469,6 +3469,7 @@ class ReturnedUnheld(RecoverAfterStop):
     """T-6548: the work after a return was the lane pilot's fix round (pilot_done_for is that return) and the pilot holds
     the lane no more: its leftovers are the cause, read at once; a dead fix round no longer leaves the lane 'may be
     working' forever. A pilot still holding it, or one that ran for an older return, keeps the lane left alone."""
+    locals().update({n: None for n in dir(RecoverAfterStop) if n.startswith("test_")})  # only the base's setUp
 
     def pilot_ran(self, tid, path, held=False, same=True):
         import time

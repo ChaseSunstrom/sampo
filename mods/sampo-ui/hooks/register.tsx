@@ -213,6 +213,9 @@ let saidSeq = 0 // T-1090: one id per model step, for its narration entry
 let isBusy = false
 let lastFull = 0
 let poll: { cancel: () => void } | null = null
+// T-6552: a headless session (claude -p: fm run workers, lane pilots, audit reviewers) draws no pane or band, so it runs
+// no `fm ui --json` and arms no poll: each run cost 0.1-1 s of CPU, times every worker on the machine
+let headless = false
 let clock: { cancel: () => void } | null = null
 let lastActive = 0 // the frame of the last turn or tool activity
 let checkpointed = false
@@ -251,6 +254,7 @@ async function chime($: EngineInterface, name: 'done' | 'needs') {
 
 // fromPoll: the 2 s poll's own run; any other (a turn's end, a pane action, a command) is one the user waits on
 async function refresh($: EngineInterface, fromPoll = false): Promise<boolean> {
+  if (headless) return false
   if (isBusy) {
     if (fromPoll) isDirty = true
     else owed = true // T-3580: a run already in flight swallowed it; the next poll runs it, not the 10 s gap
@@ -723,6 +727,12 @@ export const register: Register = (on, options) => {
   applyOptions(options)
   on('session.start', async ($, e, next) => {
     cfg.root = typeof e.cwd === 'string' ? e.cwd : ''
+    headless = e.isInteractive === false
+    if (headless) {
+      poll?.cancel()
+      poll = null
+      return next(e)
+    }
     feed.length = 0 // T-1033 review: a new session's tree starts empty
     treeTall = 0 // T-1041: and at its own height
     said.clear() // T-1090: and so do its nodes' words

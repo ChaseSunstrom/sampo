@@ -239,7 +239,8 @@ CONFIG_DIR_NEVER_LAUNCHES = {
     "test_supply_delta.py": _FOLDER, "test_which.py": _FOLDER, "test_migrate.py": _FOLDER, "test_targets.py": _FOLDER,
     "test_sandbox.py": _FOLDER, "test_profile.py": _FOLDER, "test_code_skills.py": _FOLDER, "test_doctor.py": _FOLDER,
     "test_private_terms.py": _FOLDER,
-    "test_hooks.py": _HOOKS, "test_long.py": _HOOKS, "test_keeper.py": _HOOKS, "test_guard_cases.py": _HOOKS,
+    "test_hooks.py": _HOOKS + "; it names ideas.fresh_cwd only in a comment on the scratch folder its setUp makes itself, "
+                     "so no launcher runs and none needs a mock", "test_long.py": _HOOKS, "test_keeper.py": _HOOKS, "test_guard_cases.py": _HOOKS,
     "test_guard_mine.py": _HOOKS, "test_pilotsig.py": _HOOKS, "test_flywheel.py": _HOOKS, "test_tool_queue.py": _HOOKS,
 }
 LAUNCHER_NAMES = re.compile(r"\b(run_child|run_children|child_env|fresh_cwd)\b")
