@@ -1915,6 +1915,35 @@ def check_hook_errors():
                                          f"{c.fit(cause, 120)} (state/logs/hooks.log)" + (f"; {busy}" if busy else ""))
 
 
+# T-5089: the first line hooks/hook and hooks.py write when a call is answered from another tree than the live one
+_HOOK_FALLBACK = re.compile(
+    r"\S+ (?P<event>\S+) the (?:"
+    r"working copy of Sampo's library failed to import \((?P<exc>.*)\); "
+    r"using the (?P<library>committed library)"
+    r"|working copy of (?P<module>fmguard|sampo\.core) failed[^;]*; (?:using|trying) the committed)")
+_FALLBACK_TREES = {"committed library": "committed library (HEAD)", "fmguard": "committed guard (HEAD)",
+                   "sampo.core": "committed sampo.core"}
+
+
+def check_hook_fallback():
+    """T-5089: a hook that fell back in the last 24h is a FAIL naming the tree that answered and the error: the calls
+    were answered, so nothing else shows that the live tree is broken."""
+    found = []
+    for entry in recent_hook_errors():
+        event = (entry[0].split(" ") + [""])[1]
+        last = next((l.strip() for l in reversed(entry[1:]) if l.strip()), "")
+        m = _HOOK_FALLBACK.match(entry[0])
+        if m:
+            tree = _FALLBACK_TREES.get(m["library"] or m["module"], m["library"])
+            found.append((event, tree, m["exc"] or last or "no traceback logged"))
+    if not found:
+        return Result("hooks on fallback", "PASS", "no hook fell back in the last 24h")
+    event, tree, error = found[-1]
+    return Result("hooks on fallback", "FAIL", f"{len(found)} fallback(s) in the last 24h; latest: {c.plain(event)} "
+                                               f"used the {c.plain(tree)}; error: {c.fit(c.plain(error), 200)} "
+                                               f"(fix plugin/lib; state/logs/hooks.log)")
+
+
 # ---------------------------------------------------------------- orchestration
 
 class _NoBench(Exception):
@@ -3570,7 +3599,8 @@ def run_all(full=False, accept_supply=False):
                     for n in ("hook latency", "hook exit codes", "injection budgets")]
     except Exception as e:  # the bench itself failing is a finding, not a crash
         results += [Result(n, "FAIL", f"bench failed: {e}") for n in ("hook latency", "hook exit codes", "injection budgets")]
-    results += [check_hook_errors(), check_hook_slo(), check_hook_writers(settings, home), check_name_collisions(settings),
+    results += [check_hook_errors(), check_hook_fallback(), check_hook_slo(), check_hook_writers(settings, home),
+                check_name_collisions(settings),
                 check_half_moved(settings),
                 check_footprint(c.rules_path(PLUGIN), os.path.join(claude, "CLAUDE.md"),
                                 project=c.find_project(os.getcwd()), extra=meas),

@@ -22,6 +22,7 @@
 - The plugin manifest now ships the sampo MCP server, so Claude Code sessions and builders get card_find, card_call and do as deferred tools with no manual registration (T-5885).
 - The Land summary counts only the lanes its own trains landed and names the lanes merged before the run apart, so a 7-lane train after a restart no longer reads "74 lane(s) landed" (T-5883).
 - Ward no longer lets a `'` inside double quotes, after a backslash, in a comment or never closed hide a real redirect from the quote-blind fallback, and an awk program's own `)` is no longer a tail cut (T-5882).
+- sampo doctor now fails with "hooks on fallback" when a hook was answered from another tree than the live one in the last 24 h, naming that tree and the error (T-5089).
 - PowerShell guard: comma path lists are judged per element, native flags and sort output flags are checked, and Env: dumps are refused, quoted or wildcard (T-6018 fix round) (T-6092).
 - A steer logged after planning reaches the builder brief, above the steps, newest first and capped (T-6354).
 - A lane pilot's fix session on a finished lane under a Claude folder now runs with its permission prompts skipped, because the guard probe gets the task's drive id, and every headless pilot session reads only its lane, its scratch folder and its own task's briefs: the guard refuses out-of-lane reads and brace or tilde globs, and the fast path hands pilot sessions to Python (T-6533).
