@@ -25,6 +25,7 @@ from helpers import ForemanTestCase
 from test_accept_check import AcceptCase, stub
 from test_express_lane import ExpressBase
 from test_lane_train import AffectedBase, TrainCase
+from test_land_ship import ShipCase
 from test_postmerge import PmCase
 
 from sampo import cli
@@ -2799,3 +2800,54 @@ class EveryPathToTrunkIsReviewed(unittest.TestCase):
                                 for k in n.keywords)):
                     off.add(os.path.basename(f))
         self.assertEqual(off, {"lanepilot.py", "big.py", "pr.py", "serve.py"}, off)
+
+
+class ShipNoWait(ShipCase):
+    """T-6858: a land that finds a ship running (another land's) joins it, records the join and goes on: the join's memo
+    already makes that ship go again on the new trunk when it is done, so the land never waits for it. On 2026-11-25 the
+    19:08 land sat 30 min on 'ship joined ... goes again when done', and the 19:39 land logged nothing meanwhile."""
+
+    def test_a_land_that_starts_its_own_ship_does_not_wait_for_it_either(self):
+        # T-6858 review: the land's own detached ship (T-4239) was awaited for up to 1800 s; the land now reports it running
+        from types import SimpleNamespace
+        got = {"landed": [], "merged_earlier": [], "trains": 0, "train_times": [], "hand": [], "parked": [],
+               "stopped": "", "lines": [], "restart": False, "ship_asked": True, "ship_own": True, "ship_failed": None,
+               "ship_grant": None, "ship": ""}
+        args = SimpleNamespace(batch=1, merged=False, first=None, bg=False, drop_empty=False)
+        with mock.patch.object(train, "land", return_value=got), mock.patch.object(train, "_stamp_output"), \
+                mock.patch.object(train, "_ship_alive", return_value=True), \
+                mock.patch.object(train.cli, "out", side_effect=lambda a, g, t: t), \
+                mock.patch.object(train.time, "sleep") as sleep:
+            t0 = time.monotonic()
+            text = train.cmd_land(self.p, args, self.repo)
+        self.assertLess(time.monotonic() - t0, 5, "the land waited for its own ship")
+        sleep.assert_not_called()
+        self.assertIn("ship still running", text)
+
+    def test_a_land_that_joins_a_running_ship_finishes_without_waiting_for_it(self):
+        ids = self.lanes_ready(1)
+        ship = subprocess.Popen(["sleep", "600"])  # a fake running ship: a real process this test ends, never a stub's pid
+        path = train._ship_marker(self.p)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        c.write_atomic(path, json.dumps({"pid": ship.pid, "ticks": train._ticks(ship.pid), "started": time.time(),
+                                         "want": "e" * 40, "ship_head": "e" * 40, "again": False, "final": False,
+                                         "grant": ids[0], "log": os.path.join(self.p.dir, "ship.log")}))
+        try:
+            t0 = time.monotonic()
+            r = self.fm("lane", "land", "--batch", "1", env={"SAMPO_LAND_SHIP_WAIT_S": "240"}, timeout=600)
+            took = time.monotonic() - t0
+            out = r.stdout + r.stderr
+            self.assertIsNone(ship.poll(), "the fake ship is still running: nothing ended it")
+            self.assertTrue(os.path.exists(os.path.join(self.repo, "a.txt")), out)  # the land merged its lane
+            self.assertIn(ids[0], [b.id for b in c.load_briefs(self.p) if b.status in c.CLOSED], out)  # and closed it
+            self.assertIn("ship joined", out)
+            self.assertNotIn("ship still running", out, "the land waited for the other land's ship")
+            self.assertLess(took, 200, f"the land took {took:.0f}s: it waited for the running ship\n{out}")
+            m = train._read_marker(self.p) or {}
+            self.assertEqual(m.get("want"), self.git("rev-parse", "HEAD"), "the join asks for the new trunk")
+            self.assertIs(m.get("again"), True, "the running ship goes again on the new trunk when it is done")
+        finally:
+            ship.kill()
+            ship.wait()
+            with contextlib.suppress(OSError):
+                os.remove(path)

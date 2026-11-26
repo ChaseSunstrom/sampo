@@ -4568,6 +4568,7 @@ def _land_trains(p, main, batch, owed, closer=None):
     pipes = set()  # T-5735: the sorted lanes whose diff touches the pipeline (express, whatever their type)
     times, background, asked = [], not os.environ.get("FOREMAN_NO_BACKGROUND") and not c.panicked(), False
     ship_failed = None  # the newest request's failure to start a ship (None once a later one started or joined)
+    own_ship = False  # T-6858: a ship this land started (awaited at its end); a join of another land's ship is not
     land_id = f"{os.getpid()}-{int(time.time())}"
     if (rec := ship_last(p)) and not rec.get("seen"):  # T-4239: the end of a ship that outlived its land
         print(f"sampo lane land: the earlier ship ended at {time.strftime('%H:%M:%S', time.localtime(rec['end']))} "
@@ -4576,13 +4577,14 @@ def _land_trains(p, main, batch, owed, closer=None):
             c.write_atomic(os.path.join(p.dir, "ship-last.json"), json.dumps({**rec, "seen": True}))
 
     def ship(final):  # T-4239: where nothing runs detached the ship is in line, as before; else it is asked for
-        nonlocal asked, ship_failed
+        nonlocal asked, ship_failed, own_ship
         if not background:
             return _ship(p, not final, main)
         got = _ship_request(p, main, final)
         if got:
             kind, m = got
             asked, ship_failed = kind in ("started", "joined"), (None if kind in ("started", "joined") else str(m))
+            own_ship = own_ship or kind == "started"  # T-6858
             print("sampo lane land: " + (f"ship started (pid {m['pid']}, log {m['log']})" if kind == "started" else
                   f"ship joined for {m.get('want', '')[:9]}: the running ship goes again when it is done"
                   if kind == "joined" else f"ship not started: {m}"), file=sys.stderr, flush=True)
@@ -5072,7 +5074,7 @@ def _land_trains(p, main, batch, owed, closer=None):
     hand = list(dict(hand).items())  # a leftover retried after its brief changed: its newest answer
     return {"landed": landed, "merged_earlier": earlier, "closed": [t for t, _ in closed], "hand": hand, "settled": settled, "parked": parked, "trains": trains,
             "stopped": stopped, "restart": restart, "ship": said, "ship_grant": grant, "lines": closed,
-            "train_times": times, "ship_asked": asked, "ship_failed": ship_failed}
+            "train_times": times, "ship_asked": asked, "ship_own": own_ship, "ship_failed": ship_failed}
 
 
 def close_landed(p, main, ids, who="sampo lane land", settled=None, again=None, commit_wait=None):
@@ -5883,6 +5885,9 @@ def cmd_land(p, args, main):
     if got.get("ship_failed"):  # the newest request never started a ship: no record of an earlier one stands in for it
         wait = f"Ship not started: {c.fit(c.plain(got['ship_failed']), 300)} (the next land ships the head)"
         got["ship"] = wait
+    elif got.get("ship_asked") and not got.get("ship_own") and not got["restart"]:  # T-6858: a join is not awaited
+        wait = f"ship joined: the running ship goes again on the new trunk when it is done ({os.path.join(p.dir, 'ship.log')})"
+        got["ship"], got["ship_log"] = wait, os.path.join(p.dir, "ship.log")
     elif got.get("ship_asked") and not got["restart"]:  # T-4239: the land's last ship, awaited (bounded) with the lock released
         secs = float(os.environ.get("FOREMAN_LAND_SHIP_WAIT_S") or 1800)  # SAMPO_LAND_SHIP_WAIT_S, mirrored by core
         if _ship_wait(p, secs):

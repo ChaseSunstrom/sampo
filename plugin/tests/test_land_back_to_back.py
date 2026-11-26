@@ -27,7 +27,8 @@ class BackToBack(ShipCase):
         r2 = self.fm("lane", "land", "--batch", "1", env={"SAMPO_LAND_SHIP_WAIT_S": "4"}, timeout=240)
         out2 = r2.stdout + r2.stderr
         self.assertTrue(os.path.exists(os.path.join(self.repo, "b.txt")), out2)  # merged before the ship ended
-        self.assertIn("ship still running", out2, "the second land ends while the first ship still runs")
+        self.assertIn("ship joined", out2, "the second land joins the first ship")  # T-6858: it does not wait for it
+        self.assertNotIn("ship still running", out2, "the second land ends while the first ship still runs")
         self.assertTrue(train._ship_alive(self.p), "the first ship is still running when the second land ends")
         self.assertEqual(len(self.pushes()), 1, "the second land started no ship beside the running one")
         self.assertEqual(self.files() & {"a.txt", "b.txt"}, set(), "the held ship has not pushed either lane yet")
