@@ -4282,6 +4282,144 @@ class DriveTaskLane(HookCase):  # T-6521: the lane pilot's fix session edits its
         self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
 
 
+class StartRefusedPlanVerbs(HookCase):  # T-6871: a lane whose auto start is refused still runs its plan verbs, and nothing else
+    """The start's refusal (here a missing Approach) denies every Bash call, so the builder could not fix the plan that
+    refused it. The plan and state verbs on the lane's own task pass; a chained, substituted, globbed or other-task
+    command is still denied with the refusal."""
+    PLAN = "Reading 1: a. Reading 2: b. 1) a; fails if: x 2) use what exists: b; fails if: y 3) do less: c; fails if: z Choice 1 (80%): a"
+
+    def setUp(self):
+        super().setUp()
+        patch = mock.patch.dict(os.environ)  # a pilot's own env would confine every hook path to no lane
+        patch.start()
+        self.addCleanup(patch.stop)
+        for k in ("FOREMAN_PILOT_HEADLESS", "FOREMAN_PILOT_LANE", "FOREMAN_PILOT_MAIN"):
+            os.environ.pop(k, None)
+        self.fm("init")
+        self.tid = self.unplanned_task("Plan later")
+        self.other = self.unplanned_task("Someone else's")
+        self.lane = json.loads(self.fm("lane", "new", self.tid, "--json").stdout)["path"]
+
+    def unplanned_task(self, title):
+        # an M task with no Approach: its start (the focus) refuses it for the missing section
+        tid = json.loads(self.fm("task", "new", title, "--type", "FEATURE", "--tier", "M", "--json").stdout)["id"]
+        self.fm("task", "step", tid, "add", "s")
+        self.fm("task", "ac", tid, "add", "works", "--verify", "pytest")
+        return tid
+
+    def call(self, cmd):
+        return self.hook("PreToolUse", {"tool_name": "Bash", "session_id": "sess-refused", "cwd": self.lane,
+                                        "tool_input": {"command": cmd}})
+
+    def refusal_of(self, cmd):
+        out = self.out_of(self.call(cmd))
+        return out.get("permissionDecision"), out.get("permissionDecisionReason", "")
+
+    def test_a_refused_start_denies_a_plain_command_with_the_refusal(self):
+        decision, reason = self.refusal_of("ls")
+        self.assertEqual(decision, "deny")
+        self.assertIn("was refused", reason)
+        self.assertIn("Approach", reason)  # the refusal says what is missing
+
+    def test_the_plan_and_state_verbs_on_the_lanes_task_pass_a_refused_start(self):
+        tid = self.tid
+        for cmd in (f"sampo task set {tid} --section 'Approach (options → choice → why)' --text '{self.PLAN}'",
+                    f"fm task set {tid} --section Approach --text 'a; b | c'",
+                    f"sampo task ac {tid} add works2 --verify pytest",
+                    f"sampo task step {tid} add more",
+                    f"sampo task show {tid}",
+                    f"sampo task show {tid} --section Approach",
+                    f"sampo task block {tid} 'waiting on the user'"):
+            decision, reason = self.refusal_of(cmd)
+            self.assertNotEqual(decision, "deny", (cmd, reason))
+            self.assertNotIn("was refused", reason, cmd)
+
+    def test_any_other_command_stays_denied_with_the_refusal(self):
+        tid, other = self.tid, self.other
+        for cmd in (f"sampo task drop {tid} --why nope",
+                    f"sampo task set {tid} --section Approach --text x; rm -rf ~",
+                    f"sampo task show {tid} && ls",
+                    f"sampo task show {tid} | sh",
+                    f"sampo task show {tid} $(id)",
+                    f"sampo task show {tid} `id`",
+                    f"sampo task show {tid} *",
+                    f"sampo task show {tid}\nls",
+                    f"sampo task set {tid} --text \"$HOME\"",
+                    f"sampo task set {other} --section Approach --text x",
+                    f"sampo task show {tid} T-99999",
+                    f"sampo task show {tid} {other}",
+                    f"sampo task show ({tid})",
+                    f"/tmp/evil/sampo task show {tid}",
+                    f"sampo task show {tid} >x"):
+            decision, reason = self.refusal_of(cmd)
+            self.assertEqual(decision, "deny", cmd)
+            self.assertIn("was refused", reason, cmd)
+
+    def memo_keys(self):
+        path = os.path.join(self.project().dir, "lane-start-memo.json")
+        if not os.path.exists(path):
+            return []
+        with open(path) as f:
+            return list(json.load(f))
+
+    def test_task_set_refuses_allow_and_standalone_key_value_words(self):  # T-6871 review: no field writes past a refused start
+        tid = self.tid
+        for cmd in (f"sampo task set {tid} --section x --text y approved=true",
+                    f"sampo task set {tid} --allow credentials",
+                    f"sampo task set {tid} depends_on=T-999"):
+            decision, reason = self.refusal_of(cmd)
+            self.assertEqual(decision, "deny", cmd)
+            self.assertIn("was refused", reason, cmd)
+
+    def test_task_set_text_value_may_hold_key_value_words(self):  # T-6871 review: inside a --text value it is plan text
+        decision, reason = self.refusal_of(f"sampo task set {self.tid} --section Approach --text 'a=b; approved=true'")
+        self.assertNotEqual(decision, "deny", reason)
+
+    def test_task_show_names_only_the_lanes_own_task(self):  # T-6871 review: a list, a range or a lowercase id reaches no other task
+        tid, other = self.tid, self.other
+        for cmd in (f"sampo task show {tid},{other}",
+                    f"sampo task show T-99999,{tid}",
+                    f"sampo task show {tid} {other.lower()}",
+                    f"sampo task show {other.lower()}",
+                    f"sampo task show {tid} {tid}..{other}",
+                    f"sampo task show {tid} {tid},{other}"):
+            decision, reason = self.refusal_of(cmd)
+            self.assertEqual(decision, "deny", cmd)
+            self.assertIn("was refused", reason, cmd)
+
+    def test_a_plain_refused_call_reads_no_lane_tasks(self):  # T-6871 review: the word shape is checked before any git
+        import contextlib
+        import io
+        from sampo import hooks
+        self.refusal_of("ls")  # the refusal is memoed: the next call runs no start child
+        payload = json.dumps({"tool_name": "Bash", "session_id": "sess-refused", "cwd": self.lane,
+                              "tool_input": {"command": "ls"}})
+        buf = io.StringIO()
+        with mock.patch.dict(os.environ, {"FOREMAN_HOME": self.home}), \
+                mock.patch.object(hooks, "_lane_tasks", return_value=None) as lt, \
+                contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
+            hooks._pre_tool_use(payload)
+        self.assertIn("deny", buf.getvalue())
+        self.assertFalse(lt.called, "a plain call read the lane's tasks")
+
+    def test_a_plan_verb_that_passes_drops_the_refused_start_so_it_is_retried_at_once(self):  # T-6871 review
+        self.refusal_of("ls")
+        self.assertTrue([k for k in self.memo_keys() if f"|{self.lane}|" in k], "the refusal is memoed")
+        decision, _ = self.refusal_of(f"sampo task show {self.tid}")
+        self.assertNotEqual(decision, "deny")
+        self.assertEqual([k for k in self.memo_keys() if f"|{self.lane}|" in k], [])
+
+    def test_the_plain_word_check_reads_quotes_and_refuses_shell_syntax(self):
+        from sampo import hooks
+        self.assertEqual(hooks._plain_words("sampo task set T-1 --text 'a; b|c $x'"),
+                         ["sampo", "task", "set", "T-1", "--text", "a; b|c $x"])
+        self.assertEqual(hooks._plain_words('fm task show T-1 ""'), ["fm", "task", "show", "T-1", ""])
+        for bad in ("sampo task show T-1; ls", "sampo task show T-1 &", "sampo task show $(x)", "sampo task show `x`",
+                    "sampo task show T-1 *", "sampo task show T-1 'x", "sampo task show T-1\nls", "sampo task show ~",
+                    'sampo task show "$HOME"', "sampo task show T-1 \\x"):
+            self.assertIsNone(hooks._plain_words(bad), bad)
+
+
 class HeadlessReadScope(HookCase):  # T-6533 review: a headless pilot session reads only its lane, its scratch and its task's brief
     def setUp(self):
         super().setUp()

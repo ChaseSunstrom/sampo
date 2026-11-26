@@ -1896,6 +1896,109 @@ def _lane_start_first(p, pl):
     return "", True, (f"Sampo started your lane for {tid} (you run no start call):\n{words}" if words else "")
 
 
+# T-6871: the plan and state verbs a lane whose auto start was refused still runs: the builder fixes the plan that
+# refused the start (Interpretation, Approach, criteria, steps), reads it, or blocks the task. The lane's own tasks only.
+_PLAN_VERBS = ("set", "ac", "step", "show", "block")
+_PLAN_TASK_ID = c.lazy(r"T-\d+")
+_SHELL_OUT = frozenset(";&|<>()*?[]{}~!#\\`$\n\r")  # outside single quotes: an operator, a substitution, a glob, a brace
+_SHELL_DQ = frozenset("`$!\\\n\r")  # inside double quotes: a substitution or an escape
+
+
+def _plain_words(cmd):
+    """T-6871: the words of a command that is one plain invocation, its quotes read, or None when it has shell syntax the
+    shell would act on (an operator, a substitution, a glob, a newline, an unterminated quote). Fails closed: a miss refuses."""
+    words, word, quote, have = [], "", None, False
+    for ch in cmd:
+        if quote == "'":
+            if ch == "'":
+                quote = None
+            else:
+                word += ch
+        elif quote == '"':
+            if ch == '"':
+                quote = None
+            elif ch in _SHELL_DQ:
+                return None
+            else:
+                word += ch
+        elif ch in "'\"":
+            quote, have = ch, True
+        elif ch in " \t":
+            if have:
+                words.append(word)
+            word, have = "", False
+        elif ch in _SHELL_OUT:
+            return None
+        else:
+            word, have = word + ch, True
+    if quote:
+        return None
+    if have:
+        words.append(word)
+    return words
+
+
+_SET_FLAGS = ("--section", "--text", "--file")  # T-6871: `task set` takes these, each with its value; nothing else passes
+
+
+def _plan_words(cmd):
+    """T-6871: the words of a plain `sampo|fm task set|ac|step|show|block ...` command, else None. The shape is read
+    before anything reads the lane, so a call that is no plan verb costs no git."""
+    w = _plain_words(cmd)
+    if not w or len(w) < 4 or w[0] not in ("sampo", "fm") or w[1] != "task" or w[2] not in _PLAN_VERBS:
+        return None
+    return w
+
+
+def _names_own(words, ids):
+    """T-6871: every task ID the words name is one of ids. sampo reads an argument uppercased, as a comma list of IDs, each
+    a T-N or a range T-N..T-M (or T-N..M); a range passes only as one own ID, anything else that starts T- must be own."""
+    for x in words:
+        for part in x.upper().split(","):
+            first, sep, last = part.partition("..")
+            if sep:
+                if first not in ids or last not in (first, first[2:]):
+                    return False
+            elif part.startswith("T-") and part not in ids:
+                return False
+    return True
+
+
+def _plan_verb(w, ids):
+    """T-6871: True when w (from _plan_words) is one `task set|ac|step|show|block ID ...` on the lane's own tasks only. Another
+    task's ID is False; so is a `set` that takes --allow or a standalone key=value word (a field write). Text in a --text
+    (or --section, --file) value is plan text and passes."""
+    if w[3].upper() not in ids or not _names_own(w[3:], ids):
+        return False
+    if w[2] == "set":
+        rest, i = w[4:], 0
+        while i < len(rest):
+            if rest[i] in _SET_FLAGS and i + 1 < len(rest):
+                i += 2  # the flag's value is text, whatever it holds
+                continue
+            if rest[i] == "--allow" or re.fullmatch(r"[A-Za-z_][\w.-]*=.*", rest[i], re.S):
+                return False
+            i += 1
+    return True
+
+
+def _lane_start_forget(p, key):
+    """T-6871: drops the key's entry from the refused-start memo, so the lane's next call runs the start again at once."""
+    path = os.path.join(p.dir, "lane-start-memo.json")
+    try:
+        with open(path) as f:
+            memo = json.load(f)
+    except (OSError, ValueError):
+        return
+    if not isinstance(memo, dict) or key not in memo:
+        return
+    del memo[key]
+    try:
+        c.write_atomic(path, json.dumps(memo, sort_keys=True), durable=False)
+    except OSError:
+        log_error("PreToolUse", _tb())
+
+
 REQUEST_HEAD = c.lazy(r"(?im)^#{1,3}\s*request\s+\d+\b[^\n]*$")
 
 
@@ -4616,6 +4719,12 @@ def _pre_tool_use(raw):
         cmd = str((pl.get("tool_input") or {}).get("command") or "")
         if refusal and re.match(r"\s*(?:git\s+merge\s+--ff-only\b|(?:sampo|fm|\S*/fm)\s+lane\s+start\b)", cmd):
             refusal = ""
+        if refusal and tool == "Bash":  # T-6871: the plan verbs on the lane's own task fix the plan that refused the start
+            w = _plan_words(cmd)  # the word shape first: a call that is no plan verb reads no lane
+            own = _lane_tasks(p, p.lane) if w else None  # None when the folder is no worktree's top: then nothing passes
+            if own and _plan_verb(w, own[1]):
+                refusal = ""
+                _lane_start_forget(p, f"{pl.get('session_id') or ''}|{p.lane}|{_lane_head(p.lane)}")  # retried at once
         if refusal:
             print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
                                                      "permissionDecisionReason": refusal}}))
