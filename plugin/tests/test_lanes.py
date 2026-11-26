@@ -8109,19 +8109,22 @@ class SpeedStanding(ForemanTestCase):
         self.assertEqual(data["lanes_stages"], {"T-1": {"brief_return": 1800.0, "return_merged": 600.0,
                                                         "brief_merged": 2400.0, "precheck": 3.0, "gate": 60.0,
                                                         "land": 30.0}}, "each merged lane carries the train's shared stages")
-        hist = [{"lanes_stages": {f"T-{i}": {"brief_merged": 1200.0}}} for i in range(20)]
+        hist = [{"lanes_stages": {f"T-{i}": {"brief_return": 1200.0}}} for i in range(20)]  # a lane's own stage: T-6168 review
         made = []
 
         def create(p, title, type, tier, status, raw=None, source="user", **kw):
             made.append((title, raw or ""))
             return SimpleNamespace(id=f"T-9{len(made):03d}")
 
-        slow = {"T-1": {"brief_merged": 3000.0}}
+        slow = {"T-1": {"brief_return": 3000.0}}
         with mock.patch("sampo.cli._create", side_effect=create):
             made_ids = train.file_speed_tasks(self.p, train.lane_speed_flags(slow, hist), "T-1")
         self.assertEqual(made_ids, ["T-9001"])
-        self.assertIn("brief_merged", made[0][0])
+        self.assertIn("brief_return", made[0][0])
         self.assertIn("T-1", made[0][1], "the task names the lane whose stage slowed")
+        merged = [{"lanes_stages": {f"T-{i}": {"brief_merged": 1200.0}}} for i in range(20)]
+        self.assertEqual(train.lane_speed_flags({"T-1": {"brief_merged": 9000.0}}, merged), [],
+                         "brief_merged holds the train's wait, not the lane's own stage (T-6896 review)")
 
     def test_a_class_whose_wall_doubles_on_a_loaded_host_is_still_flagged(self):
         # T-6168 review: the record keeps the run's raw wall (no division by load): a class that takes 20 s where it took
@@ -8349,7 +8352,8 @@ class SpeedStandingAccept(ForemanTestCase):
                 mock.patch.object(foresight, "default_branch", lambda root: "no-such-branch"), \
                 self.assertRaises(RuntimeError):
             train._accept_gaps(b, self.repo, self.repo, [], p=self.p)
-        self.assertEqual(seen[0], "main" if "main" in self.git("branch") else "master", seen)
+        branches = subprocess.run(["git", "-C", self.repo, "branch", "--list"], capture_output=True, text=True).stdout
+        self.assertEqual(seen[0], "main" if "main" in branches else "master", seen)
 
     def test_a_cost_word_and_a_bound_word_without_figures_do_not_pass_a_subprocess(self):
         # T-6168 review: the win and the bound are figures (a measured pair and a number), not the words alone

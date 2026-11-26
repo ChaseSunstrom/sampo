@@ -2,10 +2,11 @@
 ledger already holds, and fm lane list shows them as the gap before each stage."""
 import json
 import os
+import subprocess
 import time
 
 from helpers import ForemanTestCase
-from test_lane_land import report
+from test_lane_land import CLEAN_CMD, report
 from test_lanepilot import PilotCase
 
 from sampo import core as c
@@ -104,9 +105,13 @@ class LiveFlow(PilotCase):
     def setUp(self):
         super().setUp()
         self.fm("lane", "mode", "live")
-        # the hook matches a lane by its agent-<id> path, which this test lane does not have: a link to it does
+        # the hook matches a lane by its agent-<id> path, which this test lane does not have: the worktree moves there, as a
+        # real folder (T-6227: the pilot opens the lane root O_NOFOLLOW, so a link at the lane path is refused), and the old
+        # path links to it for the helpers that still name lane1
         self.link = os.path.join(self.tmp, "agent-a1b2c3d4")
-        os.symlink(os.path.join(self.tmp, "lane1"), self.link)
+        old = os.path.join(self.tmp, "lane1")
+        subprocess.run(["git", "-C", self.repo, "worktree", "move", old, self.link], check=True, capture_output=True)
+        os.symlink(self.link, old)
         x = self.brief()
         x.meta["lane"] = self.link
         # PilotCase stamped the return itself: the hook marks a return only when the stamp changes, so clear it here and let
@@ -173,11 +178,23 @@ class LiveFlow(PilotCase):
     def test_gated_project_unchanged(self):
         self.fm("lane", "mode", "gated")  # setUp says live: this project is the gated one
         self.assertFalse(train.live_mode(c.find_project(self.repo)))
+        # a newer failing run at the tip replaces the helper's clean one (T-4286: a clean run at the tip lets any accept skip
+        # the check, gated or live): with none, a gated accept must go to its check stage, where a live one queues
+        p = c.find_project(self.repo)
+        x = self.brief()
+        x.add_evidence(c.AFFECTED_LABEL + CLEAN_CMD, "✗ 1 failed", step=1, ran=True,
+                       ts=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 60)))
+        c.save_brief(p, x)
+        tip = subprocess.run(["git", "-C", self.link, "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+        self.assertFalse(train._clean_run(self.brief(), tip, self.repo), "the newest run at the tip is a red one")
         self.hook_return()  # FOREMAN_NO_BACKGROUND is on: no detached pilot starts, the return is stamped only
         self.assertEqual(self.stages(), ["built"])
-        self.pilot()  # the lane pilot verb, in process: the reviewers run, then accept runs its check stage first
+        self.pilot()  # the lane pilot verb, in process: the reviewers run, then accept goes to its check stage
         self.assertEqual(self.audits(), ["adversary", "intent"], "the pilot still reviews a gated lane")
-        self.assertTrue(self.brief().meta.get("check_state"), "accept ran its check stage (the claim sets check_state) before anything queued")
-        self.assertNotIn("landed", self.stages(), "the check is not started, so nothing queues")
+        b = self.brief()
+        self.assertFalse(self.accepted(), f"the gated accept waits on its check (not started here: no background), {b.meta}")
+        self.assertNotIn("check_state", b.meta, "a check that did not start gives its claim back")
+        self.assertNotIn("accepted", self.stages(), "nothing queues before the check")
+        self.assertNotIn("landed", self.stages())
         self.assertNotIn("closed", self.stages())
-        self.assertNotIn(self.brief().status, c.CLOSED)
+        self.assertNotIn(b.status, c.CLOSED)

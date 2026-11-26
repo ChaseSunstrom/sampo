@@ -393,16 +393,19 @@ def deleted_test_procs(table=None, facts=None, note=None):
     return holders(gone, table, facts=facts, ns=True, note=note)
 
 
-def end_procs(find, grace=3.0, poll=0.1, sleep=time.sleep, kill=killsafe.kill):
+def end_procs(find, grace=3.0, poll=0.1, sleep=time.sleep, kill=killsafe.kill_other):
     """T-4720: SIGTERM what find() names, SIGKILL what is left after grace s, reading afresh each round so a gone or reused
-    pid is not signalled from an old list; bounded. Returns the pids signalled; find() None ends nothing."""
+    pid is not signalled from an old list; bounded. Returns the pids signalled; find() None ends nothing.
+    kill_other, not kill: T-6095 made killsafe.kill refuse a pid this process didn't start, and a lane's or a deleted test
+    folder's leftovers never are; find() is the checked record (holders: this user's, no terminal, never us or an
+    ancestor, read afresh each round)."""
     sent = set()
 
     def signal_all(sig):
         found = find()
         for pid, _ in found or ():
             with contextlib.suppress(OSError):
-                if kill(pid, sig) is not False:  # T-5900: killsafe.kill says False for a pid it won't signal; a test's kill says None
+                if kill(pid, sig) is not False:  # T-5900: killsafe says False for a pid it won't signal; a test's kill says None
                     sent.add(pid)
         return bool(found)
 
@@ -3324,7 +3327,7 @@ SPEED_STAR_NAMES = frozenset({"run", "call", "check_call", "check_output", "Pope
                               "create_subprocess_exec", "create_subprocess_shell"})  # T-6168 review: what 'from subprocess/os/multiprocessing/asyncio import *' brings in bare
 SPEED_SAMPO_IMPORT = re.compile(r"\bfrom\s+sampo(?:\.(\w+))?\s+import\s+([\w, ]+)|\bimport\s+sampo\.(\w+)")  # T-6168 review: a sampo module's imports
 SPEED_STALL = re.compile(r"\b\w+\.sleep\s*\(|\bsleep\s*\(|\bfrom\s+time\s+import\b[^\n]*\bsleep\b|\.wait\s*\(\s*[\d.]+")  # T-6168 review: a sleep a builder's start waits on, any alias or event wait with a timeout
-SPEED_SUITE = re.compile(r"\bfull\s*=\s*(?:True\b|(?:not\s+)?bool\s*\()|[\"']full[\"']\s*:\s*True\b")  # T-6168 review: the full suite made the train's default
+SPEED_SUITE = re.compile(r"\bfull\s*(?::\s*\w+\s*)?=\s*(?:True\b|1\b|(?:not\s+)?bool\s*\()|[\"']full[\"']\s*:\s*(?:True\b|1\b)")  # T-6168 review: the full suite made the train's default (True, 1, bool(), a dict's 'full': True or 1)
 SPEED_START_FILE = re.compile(r"(?:^|/)(?:lanes|lanepilot)\.py$")  # T-6168 review: where a builder starts
 SPEED_TRAIN_FILE = re.compile(r"(?:^|/)(?:train|run|selfgate)\.py$")  # T-6168 review: where the train picks its tests
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")  # T-6168 review: the colour codes a coloured diff wraps its lines in
@@ -3446,8 +3449,8 @@ def speed_blocks(files, diff, numbers):
     note when the NUMBERS line states a measured cost win (a figure) and a bound (a figure); (1) never passes on the
     builder's words (T-6168 review). (1) A child process
     started or waited on in a file a hook can run (subprocess, Popen, os.system, aliases and from-imports of those,
-    communicate(), wait()), detached or not: a hook pays it on every call. (2) A sleep added to a lane's start (lanes,
-    lanepilot): a builder's start waits on it. (3) The full suite made a train's default (full=True in train, run,
+    communicate(), wait()), detached or not: a hook pays it on every call. (2) A sleep or a child process added to a lane's
+    start (lanes, lanepilot): a builder's start waits on it, on a hook path or not. (3) The full suite made a train's default (full=True in train, run,
     selfgate): every train runs it. The diff is read by its hunks, so an added line that looks like a file header is
     body; a noprefix or a coloured header still names its file. `diff` is the lane's diff (bytes)."""
     text = diff.decode("utf-8", "replace") if isinstance(diff, (bytes, bytearray)) else str(diff or "")
@@ -3496,7 +3499,7 @@ def speed_blocks(files, diff, numbers):
     for cur, body in body_of:
         if spawn.search(body) and _hook_side(cur, reach):
             hits.append(f"{cur}: {c.fit(body.strip(), 80)}")
-        elif SPEED_STALL.search(body) and SPEED_START_FILE.search(cur):
+        elif (SPEED_STALL.search(body) or spawn.search(body)) and SPEED_START_FILE.search(cur):  # T-6168: a child a start waits on too
             stalls.append(f"{cur}: {c.fit(body.strip(), 80)}")
         elif SPEED_SUITE.search(body) and SPEED_TRAIN_FILE.search(cur):
             stalls.append(f"{cur}: {c.fit(body.strip(), 80)}")
@@ -3506,7 +3509,7 @@ def speed_blocks(files, diff, numbers):
     blocked = stalls
     if not blocked:
         return [], []
-    what = "a sleep in a builder's start or the full suite as a train default"
+    what = "a sleep or a child process in a lane module a builder's start runs (lanes, lanepilot), or the full suite as a train default"
     numbers = numbers() if callable(numbers) else numbers  # read (git) only once a blatant slowdown is in the diff
     nums = " ".join(str(numbers or "").split())
     # T-6168 review: the figures are the builder's own words, nothing here measures them: the pass is a note the reviewer

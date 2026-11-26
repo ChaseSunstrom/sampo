@@ -6039,8 +6039,15 @@ def cmd_land(p, args, main):
     elif got.get("ship_asked") and not got.get("ship_own") and not got["restart"]:  # T-6858: a join is not awaited
         wait = f"ship joined: the running ship goes again on the new trunk when it is done ({os.path.join(p.dir, 'ship.log')})"
         got["ship"], got["ship_log"] = wait, os.path.join(p.dir, "ship.log")
-    elif got.get("ship_asked") and not got["restart"]:  # T-4239: the land's last ship, awaited (bounded) with the lock released
-        secs = float(os.environ.get("FOREMAN_LAND_SHIP_WAIT_S") or 1800)  # SAMPO_LAND_SHIP_WAIT_S, mirrored by core
+    elif got.get("ship_asked") and not got["restart"]:  # T-4239: the land's last ship, read if it already ended
+        # T-6858 review: the land never waits for its own ship either (the 19:08 land sat 30 min on one); a ship still
+        # running is named with its log. SAMPO_LAND_SHIP_WAIT_S (mirrored by core) asks for a bounded wait (tests, hand runs)
+        try:  # T-6896 review: a bad value ("abc") never stops the land, and nan or inf never makes the wait endless
+            secs = float(os.environ.get("FOREMAN_LAND_SHIP_WAIT_S") or 0)
+        except ValueError:
+            secs = 0.0
+        if not math.isfinite(secs) or secs < 0:
+            secs = 0.0
         if _ship_wait(p, secs):
             rec = ship_last(p)
             if rec and float(rec.get("start") or 0) >= t_land - 0.2:  # this land's ship (start is rounded to 0.1 s)

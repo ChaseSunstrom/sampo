@@ -7,6 +7,7 @@ import glob
 import os
 import re
 import shutil
+import symtable
 import tempfile
 import unittest
 
@@ -14,18 +15,40 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 MEANT = {"setUp", "tearDown", "setUpClass", "tearDownClass", "run", "runTest"}  # overriding these is the design
 
 
+SCOPE_NODES = {ast.ListComp: "listcomp", ast.SetComp: "setcomp", ast.DictComp: "dictcomp", ast.GeneratorExp: "genexpr",
+               ast.Lambda: "lambda"}
+
+
 def unbound(src):
-    """T-0698: "line name" for each name read that no builtin is and nothing in the module binds (stdlib ast, no
-    pyflakes). Scopes aren't modelled, so it only misses a name also bound somewhere else; a star import skips it."""
-    tree, bound = ast.parse(src), set(dir(builtins)) | {"__file__", "__builtins__"}
+    """T-0698: "line name" for each name read that no builtin is and nothing binds where it is read (stdlib ast and
+    symtable, no pyflakes); a star import skips the file. T-6927: scopes are modelled. A name a function reads as a
+    global must be bound at the module (or by a `global` statement), not only somewhere: smap, imported inside other
+    functions of cli.py and read bare in _symbol_names, raised NameError in every affected(dependent=...) call."""
+    tree = ast.parse(src)
+    if any(isinstance(n, ast.ImportFrom) and any(a.name == "*" for a in n.names) for n in ast.walk(tree)):
+        return []
+    tables, todo = [], [symtable.symtable(src, "<src>", "exec")]
+    while todo:
+        tables.append(todo.pop())
+        todo += tables[-1].get_children()
+    known = set(dir(builtins)) | {"__file__", "__builtins__"}
+    known |= {s.get_name() for t in tables for s in t.get_symbols()
+              if (t is tables[0] or s.is_declared_global()) and (s.is_assigned() or s.is_imported() or s.is_namespace())}
+    nodes = {("top", 0): tree}
     for n in ast.walk(tree):
-        if isinstance(n, ast.Name) and not isinstance(n.ctx, ast.Load):
-            bound.add(n.id)
-        for attr in ("name", "asname", "arg", "rest"):  # def, class, import, argument, except and match names
-            if isinstance(getattr(n, attr, None), str):
-                bound.add(getattr(n, attr).split(".")[0])
-    return [] if "*" in bound else [f"{n.lineno} {n.id}" for n in ast.walk(tree) if isinstance(n, ast.Name)
-                                    and isinstance(n.ctx, ast.Load) and n.id not in bound]
+        name = n.name if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) else SCOPE_NODES.get(type(n))
+        if name:
+            nodes.setdefault((name, n.lineno), n)
+    found = set()
+    for t in tables:
+        for s in t.get_symbols():
+            # read as a global, bound nowhere global; not is_global(): symtable takes any table named "top" for the
+            # module, so a function top()'s own locals would read as globals
+            if s.is_referenced() and not s.is_free() and (t is tables[0] or not s.is_local()) and s.get_name() not in known:
+                where = nodes.get((t.get_name(), t.get_lineno()), tree)  # an annotation scope: the whole module
+                found |= {(n.lineno, n.id) for n in ast.walk(where)
+                          if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load) and n.id == s.get_name()}
+    return [f"{line} {name}" for line, name in sorted(found)]
 
 
 def inherited_tests(src):
@@ -297,6 +320,17 @@ class UndefinedNames(unittest.TestCase):
         # T-0698: renames left _new_context_file, _UPDATE, _veto_note, _mask_substs and _IFS_USE read but bound
         # nowhere, each a NameError at run time (in the guard, a blocked call)
         self.assertEqual(unbound("import os\ndef f(a):\n    return os, a, len, _gone\n"), ["3 _gone"])
+        # T-6927: bound only inside another function is unbound here (cli._symbol_names read smap so); a global
+        # statement, a nested function's free name, a class body, a lambda and a comprehension are each modelled
+        self.assertEqual(unbound("def f():\n    import json as smap\n    return smap\n"
+                                 "def g():\n    return smap\n"), ["5 smap"])
+        self.assertEqual(unbound("def f():\n    global late\n    late = 1\ndef g():\n    return late\n"
+                                 "def h(a):\n    def i():\n        return a\n    return i\n"
+                                 "class C:\n    y = 1\n    z = [_ for _ in (y,)]\n"), [])  # the first iterable: the class's
+        self.assertEqual(unbound("x = 1\nclass C:\n    y = x\n    def m(self):\n        return y\n"
+                                 "f = lambda: gone\nl = [gone2 for _ in ()]\n"), ["5 y", "6 gone", "7 gone2"])
+        self.assertEqual(unbound("from os import *\ndef f():\n    return getcwd\n"), [])
+        self.assertEqual(unbound("def top(p):\n    r = p\n    return r, gone\n"), ["3 gone"])  # the module's table name
         plugin, found = os.path.dirname(HERE), []
         for path in sorted(glob.glob(f"{plugin}/lib/*.py") + glob.glob(f"{plugin}/lib/sampo/*.py") + glob.glob(f"{plugin}/hooks/*")):
             if not os.path.isfile(path):  # T-0783: importing a hook script leaves hooks/__pycache__/

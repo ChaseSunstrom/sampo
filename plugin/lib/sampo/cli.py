@@ -8917,6 +8917,7 @@ def _own_view(p, b, base, changed=None, landing=True, span=None):
 def _symbol_names(root, base, tree, pys):
     """T-6160: the names the diff between the view's base and the tree changed in its .py files: affected hands the base
     and the files it took from the view, as _hub_tests does (the close-time guard lists this reader by name)."""
+    from sampo import map as smap  # T-6927: a local import, as every other reader here: a bare smap was a NameError
     return smap.changed_symbols(root, base, tree, pys)
 
 

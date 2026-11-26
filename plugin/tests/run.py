@@ -122,6 +122,8 @@ OPERATOR_SWITCHES.add("CARGO_SHARED")  # T-4717: the operator's off switch for t
 OPERATOR_SWITCHES.add("KNOWN_RED_MIN")  # T-4269: how long a red class's record is believed; a nested run's is its own
 OPERATOR_SWITCHES.add("EVIDENCE_TREE")  # T-3536: the tree an evidence run started on, for the command it runs; a test never inherits it
 OPERATOR_SWITCHES.add("SESSION_SLOTS_DIR")  # T-5386: where an exam's endpoint session slots are locked; a slot test sets its own
+OPERATOR_SWITCHES.add("TEST_MEM_MB")  # T-6926: the per-process data cap of a run's classes; a nested run in a class sets its own
+MEM_MB = 6144  # T-6926: the data cap of each process a class runs, in MB (a busy loop reached 38.7 GB and took the session)
 CGROUP_ROOT = "/sys/fs/cgroup"
 LIVE_CLASSES = set()  # T-4538: the class processes running now (each leads its own session, so its pid is its group)
 PARENT_POLL_S = 1.0  # T-4538: how often a run checks that the process which started it is still alive
@@ -133,6 +135,15 @@ ENDPOLL_S = 0.5  # T-4399: how often a class's wait reads whether the run was en
 def _env(name):
     """T-3442: SAMPO_X, or FOREMAN_X once importing sampo renamed it (core.mirror_env), as in every test process."""
     return os.environ.get(name) or os.environ.get("FOREMAN_" + name[len("SAMPO_"):])
+
+
+def mem_cap_mb():
+    """T-6926: SAMPO_TEST_MEM_MB, the data cap of each process a class runs; 0 (or below) is off, a bad value keeps
+    MEM_MB."""
+    try:
+        return max(0, int(_env("SAMPO_TEST_MEM_MB") or MEM_MB))
+    except ValueError:
+        return MEM_MB
 
 
 def _cgroup_dir():
@@ -2748,6 +2759,28 @@ except Exception:
 if sys.argv[1] != '0' and os.getppid() != int(sys.argv[1]):
     os._exit(1)  # run.py was gone before the prctl
 _cpu = os.environ.pop('RUNPY_CPU', '')
+try:  # T-6926: the class and what it starts get RUNPY_MEM MB of data a process and dump no core (1: a piped core_pattern starts no helper; faulthandler printed the stack)
+    import resource
+    _mem = int(os.environ.pop('RUNPY_MEM', '') or 0) << 20
+    _caps = ((resource.RLIMIT_DATA, _mem), (resource.RLIMIT_CORE, 1))
+except (ImportError, ValueError):
+    _caps = ()
+for _lim, _cap in _caps:  # each on its own: a cap past rlim_t (OverflowError) or one the kernel refuses leaves the other
+    try:
+        _soft, _hard = resource.getrlimit(_lim)
+        if _hard != resource.RLIM_INFINITY:
+            _cap = min(_cap, _hard)
+        if _cap > 0 and (_soft == resource.RLIM_INFINITY or _soft > _cap):  # only ever lowered: a tighter limit stands
+            resource.setrlimit(_lim, (_cap, _hard))
+    except (ValueError, OSError, OverflowError):
+        pass
+try:  # T-6926: when memory runs out the kernel takes a test process before the session that started the run
+    with open('/proc/self/oom_score_adj', 'r+') as _f:
+        if int(_f.read() or 0) < 500:  # only ever raised: a higher score stands
+            _f.seek(0)
+            _f.write('500')
+except (OSError, ValueError):
+    pass
 if _cpu:
     import atexit, resource, time
     def _forked():
@@ -2811,6 +2844,7 @@ if _cpu:
         except (OSError, ValueError):
             forked = 0.0
         _put(_cpu, me.ru_utime + me.ru_stime + them.ru_utime + them.ru_stime + forked)
+        _put(_cpu + '.rss', them.ru_maxrss)  # T-6926: the largest process's peak (KB; bytes on macOS)
         if code < 0:  # the class died of a signal: so does its parent, so run.py reads the same negative code
             try:
                 signal.signal(-code, signal.SIG_DFL)
@@ -2828,6 +2862,7 @@ if _cpu:
         def _alone():
             me, them = resource.getrusage(resource.RUSAGE_SELF), resource.getrusage(resource.RUSAGE_CHILDREN)
             _put(_cpu, me.ru_utime + me.ru_stime + them.ru_utime + them.ru_stime + _forked())
+            _put(_cpu + '.rss', max(me.ru_maxrss, them.ru_maxrss))  # T-6926
         atexit.register(_alone)
 sys.path.insert(0, os.environ.get('RUNPY_TESTS') or os.getcwd())  # the tests folder, not whatever folder the class starts in
 try:
@@ -3190,6 +3225,9 @@ def _run_one(cid, k, timeout, deadline, slot):
         env[SLOT_ENV] = "none" if slot is None else str(slot)  # T-3442: with no slot too, its runs never queue again
         env["RUNPY_CPU"] = os.path.join(tmp, ".runcpu")  # T-3757: what the class's processes cost, written as it exits
         env["RUNPY_TESTS"] = os.path.dirname(os.path.abspath(__file__))  # T-5900: where BOOT finds killguard
+        cap = mem_cap_mb()
+        if cap:  # T-6926: BOOT caps each of the class's processes at this much data
+            env["RUNPY_MEM"] = str(cap)
         if COVER_PY:  # T-3593: its processes append the repo files they read here, the venv's python first on PATH
             env["RUNPY_COVER"] = os.path.join(tmp, ".runcover")
             env["PATH"] = os.path.dirname(COVER_PY[0]) + os.pathsep + env.get("PATH", os.defpath)
@@ -3238,10 +3276,18 @@ def _run_one(cid, k, timeout, deadline, slot):
                 COVERED[cid] = f.read()
         with contextlib.suppress(OSError, ValueError), open(os.path.join(tmp, ".runcpu")) as f:
             CPU[cid] = float(f.read())
+        rss = 0
+        with contextlib.suppress(OSError, ValueError), open(os.path.join(tmp, ".runcpu.rss")) as f:
+            rss = int(float(f.read()))  # T-6926: the peak RSS of its largest process (KB; bytes on macOS)
         with contextlib.suppress(OSError), open(os.path.join(tmp, ".runerr"), encoding="utf-8", errors="replace") as f:
             tail = f.read() + tail  # T-4758: read before the folder goes
         clear_folder(tmp, lock=lock)  # T-4720: what a class's git hook left running in it ends first; T-4728: then the lock
         OWN_FOLDERS.discard(tmp)
+    if cap and p.returncode:  # T-6926: a class that failed at its memory cap says so, with its peak and the knob
+        mb = rss // (1 << 20 if sys.platform == "darwin" else 1 << 10)
+        if mb >= cap * 0.9 or re.search(r"(?m)^(MemoryError|.*Cannot allocate memory|memory allocation of)", tail):
+            tail += (f"\nrun.py: {cid} over its memory cap ({cap} MB of data a process, SAMPO_TEST_MEM_MB; 0 turns it "
+                     f"off): peak RSS {mb} MB (T-6926)\n")
     err = tail
     m = re.search(r"Ran (\d+) tests?", err)
     return cid, p.returncode, err, int(m.group(1)) if m else 0, time.time() - t0  # killed: negative

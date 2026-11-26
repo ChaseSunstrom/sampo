@@ -383,12 +383,14 @@ def sweep_orphans(max_age=1800):
             if time.time() - float(at) < max(max_age, float(timeout) + 60):
                 continue  # its run may still be waiting on it
             pid = int(name)
+            if pid == os.getpgrp():  # this sweep runs in that group (a hook the dead helper started): killing it would end
+                continue  # the sweep and the entries after it; the entry stays for a sweep from outside the group
             try:
                 ours = b"--no-session-persistence" in _cmdline(pid) and _starttime(pid) == start
             except FileNotFoundError:  # the leader is gone
                 ours = _strays(pid, start)  # T-1249: ps's start time is no number; only the /proc scan compares it
-            if ours:
-                if killsafe.killpg(pid, signal.SIGKILL):
+            if ours:  # the checked record: killpg_other, as a dead run's helper is never this process's child (T-6095)
+                if killsafe.killpg_other(pid, signal.SIGKILL):
                     n += 1
         except (OSError, ValueError, IndexError):  # gone, garbled or not ours to kill: the entry goes
             pass

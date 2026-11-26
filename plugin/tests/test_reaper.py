@@ -1,9 +1,11 @@
 """The claude -p helpers' reaper (T-1044): every child runs in its own process group, so a timeout kills its
 grandchildren too; each is registered in state/children/<pid>, and SessionStart sweeps the ones a dead run left
 behind — only when the pid is still the same process (its start time) running a helper (its command line)."""
+import contextlib
 import os
 import signal
 import subprocess
+import sys
 import time
 import unittest
 from unittest import mock
@@ -215,6 +217,48 @@ class Sweep(_Stubbed):
         self.assertEqual(self.fmideas.sweep_orphans(), 1)
         self.assertTrue(self.grandchild_reaped(), "the dead leader's group outlived the sweep")
         self.assertEqual(self.entries(), [])
+
+    def test_a_helper_another_process_started_is_killed(self):
+        """A SessionStart sweep runs in a new process: the dead run's helper is no child of it (T-6095's killpg refused
+        it, and the entry went, so the helper was never reaped)."""
+        lib = os.path.dirname(os.path.dirname(os.path.abspath(self.fmideas.__file__)))
+        out = subprocess.run([sys.executable, "-c",
+                              "import subprocess, sys; sys.path.insert(0, sys.argv[1]); from sampo import ideas; "
+                              "pr = ideas._popen([sys.argv[2], '-p', '--no-session-persistence'], 1, "
+                              "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); "
+                              "print(pr.pid)", lib, self.stub],
+                             capture_output=True, text=True, timeout=60, check=True)
+        pid = int(out.stdout.split()[-1])
+
+        def end():  # a failing test leaves no helper: it leads its own group
+            if not gone(pid, 0.2):
+                with contextlib.suppress(OSError):
+                    os.killpg(pid, signal.SIGKILL)
+        self.addCleanup(end)
+        path = os.path.join(self.reg, str(pid))
+        with open(path) as f:
+            _, _, timeout = f.read().split()
+        with open(path, "w") as f:  # its start time as this process reads it (SweepWithoutProc reads ps's, not /proc's)
+            f.write(f"{self.fmideas._starttime(pid)} {time.time() - 4000:.0f} {timeout}")
+        self.grandchildren()
+        self.assertEqual(self.fmideas.sweep_orphans(), 1)
+        self.assertTrue(gone(pid), "the orphaned helper outlived the sweep")
+        self.assertTrue(self.grandchild_reaped())
+        self.assertEqual(self.entries(), [])
+
+    def test_a_sweep_inside_the_dead_leaders_group_never_ends_itself(self):
+        """A hook the dead helper started runs the sweep inside that helper's group: killing the group would end the
+        sweep with it (and the entries after it). It is left, entry and all, to a sweep from outside the group."""
+        own = os.getpgrp()
+        os.makedirs(self.reg, exist_ok=True)
+        with open(os.path.join(self.reg, str(own)), "w") as f:
+            f.write(f"1 {time.time() - 4000:.0f} 60")
+        with mock.patch.object(self.fmideas, "_cmdline", side_effect=FileNotFoundError), \
+                mock.patch.object(self.fmideas, "_strays", return_value=True), \
+                mock.patch.object(self.fmideas.killsafe, "killpg_other") as kpg:
+            self.assertEqual(self.fmideas.sweep_orphans(), 0)
+        kpg.assert_not_called()
+        self.assertEqual(self.entries(), [str(own)])
 
     def test_a_reused_pid_a_stranger_and_a_fresh_helper_are_left_alone(self):
         reused = self.helper(start="1")  # the pid now belongs to another process: its start time differs

@@ -267,7 +267,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmrollback` (T-1085: a snapshot of every project's record before a new version… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmsandbox` (T-3222: `sampo sandbox status|run`, the job tier: a command in its own namespaces through bwrap… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmscene` (T-1633: scene.json validated, `sampo scene compile --to three`… [→ files-lib-4](docs/map/files-lib-4.md)
-- `fmwatchdog` (T-6859: the throughput watchdog, every 30 min: builder-done to on trunk (median and p90 hours, lanes landed an hour) and a stage census (parked, held, waiting on land, waiting on ship, runner idle); a regressed outcome names the stage and its fix, and advice that ran and did not move its stage raises the stage alarm instead of repeating it; the lead hears it in sampo next, no inbox item… [→ files-lib-4](docs/map/files-lib-4.md)
+- `fmwatchdog` (T-6859: the throughput watchdog, every 30 min: builder-done to on trunk and a stage census… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmscorecard` (T-3845: `sampo scorecard [--json]`, the direction's seven measures, each with a bar and a mark; the… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmscout` (`sampo scout`, T-0950: Sampo finds its own work; T-2178… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmsecond` (`sampo second`: plan, debate and session second reads; objections… [→ files-lib-4](docs/map/files-lib-4.md)

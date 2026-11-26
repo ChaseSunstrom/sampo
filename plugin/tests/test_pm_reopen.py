@@ -417,6 +417,7 @@ class AncestorExitCodes(ForemanTestCase):
     ALLOWED = {
         # the code is assigned first and compared explicitly on the next line, which the walk does not follow
         ("sampo/lanes.py", "_pm_anc"): "True on 0, False on 1, None on any other code",
+        ("sampo/lanepilot.py", "fix_delta_base"): "0 returns the prior base, any code but 1 returns None: no delta base",
         ("sampo/lanes.py", "ancestor"): "focus: a code outside (0, 1) raises, nothing is focused",
         ("sampo/reverify.py", "scan"): "124 and 127 retry next time, 0 reads the range, 1 and 128 read none",
         # the failure lands on the side that keeps or refuses; none reopens, closes or removes anything on a git fault

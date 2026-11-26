@@ -1570,8 +1570,8 @@ class StandingShip(AcceptCase):
                 self.assertIn("--why", err)
                 self.assertIsNone(core.standing_ship(self.p))
         self.assertIn("prompt", err, "it names where it looked: the prompts on the ledger")
-        self.say("and can you make sure to keep pushing to main?")  # a question is no ask: it is not a quote either
-        self.assertTrue(self.ship_auto("on", why="can you make sure to keep pushing to main")[0])
+        self.say("should we keep pushing to main?")  # a real question is no ask, nor a quote (T-6359: a polite one is)
+        self.assertTrue(self.ship_auto("on", why="should we keep pushing to main")[0])
         self.assertIsNone(core.standing_ship(self.p))
         self.say("please make sure to keep pushing to main")
         for why in ("keep pushing", "the user said hi there friend"):  # under four words; not in their words
@@ -1641,11 +1641,12 @@ class StandingShip(AcceptCase):
 
     def test_the_prompt_hook_turns_it_on_from_plain_words(self):
         """1c: 'keep pushing to main' in the user's own short sentence, like the other plain-word verbs."""
-        for words in ("keep pushing to main", "Keep main pushed.", "please keep shipping to main"):
+        for words in ("keep pushing to main", "Keep main pushed.", "please keep shipping to main",
+                      "and can you make sure to keep pushing to main?"):  # T-6359: a polite ask counts
             self.assertEqual((self.find_ship_verb(words) or {}).get("on"), True, words)
         for words in ("don't keep pushing to main", "should we keep pushing to main?", "keep pushing to main branches only",
                       "keep pushing to main if CI is green", "do not keep main pushed", "set the budget to unlimited",
-                      "```keep pushing to main```", "and can you make sure to keep pushing to main?"):
+                      "```keep pushing to main```"):
             self.assertIsNone(self.find_ship_verb(words), words)
 
     def find_ship_verb(self, words):
@@ -2814,10 +2815,21 @@ class ShipNoWait(ShipCase):
                "stopped": "", "lines": [], "restart": False, "ship_asked": True, "ship_own": True, "ship_failed": None,
                "ship_grant": None, "ship": ""}
         args = SimpleNamespace(batch=1, merged=False, first=None, bg=False, drop_empty=False)
-        with mock.patch.object(train, "land", return_value=got), mock.patch.object(train, "_stamp_output"), \
+        env = {k: v for k, v in os.environ.items() if k not in ("FOREMAN_LAND_SHIP_WAIT_S", "SAMPO_LAND_SHIP_WAIT_S")}
+        for bad in ("", "abc", "nan", "inf", "-5"):  # the default, and values that must never mean a wait (T-6896 review)
+            with self.subTest(wait=bad), mock.patch.dict(os.environ, env, clear=True):
+                if bad:
+                    os.environ["FOREMAN_LAND_SHIP_WAIT_S"] = bad
+                self.go_own_ship(got, args, bad)
+
+    def go_own_ship(self, got, args, bad):
+        with mock.patch.object(train, "land", return_value=dict(got)), mock.patch.object(train, "_stamp_output"), \
                 mock.patch.object(train, "_ship_alive", return_value=True), \
-                mock.patch.object(train.cli, "out", side_effect=lambda a, g, t: t), \
-                mock.patch.object(train.time, "sleep") as sleep:
+                mock.patch.object(cli, "out", side_effect=lambda a, g, t: t), \
+                mock.patch.object(train.time, "sleep", side_effect=AssertionError("the land slept: it waited for its own ship")) as sleep:
+            # T-6896: the sleep raises at once. A bare mock with _ship_alive always True busy-looped _ship_wait for 1800 s,
+            # each pass recording calls on both mocks: 38.7 GB in 5 min on 2026-11-25 22:29, and the kernel's OOM kill
+            # took the lead session's whole tmux scope with it
             t0 = time.monotonic()
             text = train.cmd_land(self.p, args, self.repo)
         self.assertLess(time.monotonic() - t0, 5, "the land waited for its own ship")

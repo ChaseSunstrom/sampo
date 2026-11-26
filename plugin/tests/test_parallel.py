@@ -277,7 +277,7 @@ class Parallel(ForemanTestCase):
     def slow_merge(self, secs=2):
         import time
 
-        def integrate(p, tid, path):
+        def integrate(p, tid, path, timing=None):  # T-6851: the runner passes its phase timing
             time.sleep(secs)
             with open(self.log, "a") as f:
                 f.write(f"merge-end {tid}\n")
@@ -354,7 +354,7 @@ class Parallel(ForemanTestCase):
         self.fm("task", "set", "T-0003", "depends_on=T-0001")
         good = self.slow_merge(0)
 
-        def integrate(p, tid, path):
+        def integrate(p, tid, path, timing=None):
             if tid == "T-0001":
                 raise RuntimeError("boom")
             return good(p, tid, path)

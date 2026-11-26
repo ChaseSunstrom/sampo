@@ -65,7 +65,7 @@ if os.environ.get("FOREMAN_DRIVE_TASK"):  # the fix session
             f.write("x\n")
     elif mode == "sens":  # a real fix that adds code the sensitivity scan reads
         drop_bad()
-        with open(os.path.join(lane, "guard.py"), "w") as f:  # a protected path (the depth map's floor): all five
+        with open(os.path.join(lane, "auth.py"), "w") as f:  # a protected path (the depth map's floor): all five; off the hot path (T-6168: a hot path asks NUMBERS)
             f.write("import os\nos.system(cmd)\n")
     elif mode == "stray":  # a real fix, and a branch the session was never given the tools to make
         drop_bad()
