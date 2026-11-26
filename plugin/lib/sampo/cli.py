@@ -9840,6 +9840,8 @@ def cmd_audit(args):
     from sampo import lanes, sinks
     linked = _tests_linked(p, b, files)
     depth = lanes.review_depth(b, files, r.stdout, p=p, tests_linked=linked)
+    # T-6168: the performance lens and an empty NUMBERS line on a hot path, for any review prep (not only the pilot's)
+    speed_note, speed_finds = lanes.speed_review(files, lambda: lanes.lane_numbers(b))
     args.depth = depth  # `audit run` reads the map's model from the namespace it passed
     ptier, ptier_why = depth["ptier"], depth["why"]
     one_group = c.audit_groups(b.tier, depth["scored"]) == [{"self"}]  # the gate's tier, not the floored one
@@ -9860,8 +9862,11 @@ def cmd_audit(args):
     # steps, the past findings and nits) is inlined only while the brief fits BRIEF_MAX; past that the largest go to
     # ID.context.md, named by path in the brief and read on demand. head_a, head_b and head_c are the head around them.
     # T-0068: mechanical findings first, so the reviewer confirms them instead of hunting for them
+    found = list(found) + speed_finds  # T-6168: an empty NUMBERS line on a hot path is a finding of any prep
     pre_text = ("\nPre-audit (mechanical; confirm or dismiss each, then review the rest):\n"
                 + "\n".join(f"- {x}" for x in found)) if found else ""
+    if speed_note:  # T-6168: the performance lens on a hot-path diff, read by every reviewer of any prep
+        pre_text += "\n" + speed_note
     head_b = ""
     stale = lanes.stale_stack(p, b)  # T-5725 review: the dependency moved on after this lane was built on it
     if stale:

@@ -2306,6 +2306,7 @@ def _run(p, main, ids, defer_verify=False, judged=None):
     # T-3602: the gate a run narrows to named tests: the affected template's runner with no names
     suite = next((g for g in checks if "{names}" in tpl and bare(g) == bare(tpl.replace("{names}", ""))), None)
     passed, diffs, reaches = {}, {}, {}  # (tree, command line): its passing row; lane id: its files; lane id: its tests
+    classwall = {}  # T-6168: each test class named in a gate run: the wall seconds of the runs that named it (shared out)
     dropped = {}  # T-4289: lane id: the red classes it was left out for (put back when the base proves red on them)
     base_green, base_bad, confirm_s = set(), set(), [0.0]  # T-4676: classes a run of their own proved green on the bare
     # base (T-4700: red, base_bad); confirm seconds
@@ -2449,6 +2450,9 @@ def _run(p, main, ids, defer_verify=False, judged=None):
             if not wt_gone():
                 break
         row = {"cmd": cmd, "exit": code, "s": round(time.monotonic() - t0, 1), **({"affected": mods} if mods else {})}
+        named = [w for w in str(line or "").split() if w.startswith("test_")]  # T-6168: this run's wall, shared by the classes it named
+        for w in named:  # T-6168 review: a class's wall is its longest run (a class named by three runs is not three runs' sum)
+            classwall[w] = max(classwall.get(w, 0.0), row["s"])
         if code:
             if _machine_only(out):  # T-4652: the disk, not the code: no base is called red and no lane blamed for it
                 raise _machine_refusal(p, out)
@@ -2986,7 +2990,7 @@ def _run(p, main, ids, defer_verify=False, judged=None):
         return {"merged": ids_in, "left_out": left, "notes": notes, "kept": kept, "map_merged": maps,
                 "test_merged": unions, "map_follow_up": map_task, "gate_runs": runs[0], "verify_owed": bool(part and defer_verify),
                 "map_moved": [(i, "; ".join(moved_maps[i])) for i in ids_in if moved_maps.get(i)],  # T-5381
-                "probes": probes[0], "tip": tip, "branch": branch, "affected": part, "minutes": mins, "phases": phases, "probes_skipped": sum(
+                "probes": probes[0], "tip": tip, "branch": branch, "affected": part, "minutes": mins, "phases": phases, "classes": {k: round(v, 1) for k, v in classwall.items()}, "probes_skipped": sum(
                     w.startswith(SKIPPED) for _, w in notes), "lanes_probed": len(rows)}
     finally:
         for folder in olds:  # T-4728: each one the train made (the first, and one rebuilt after a loss), nothing else
@@ -3015,6 +3019,97 @@ def _map_follow_up(p, maps):
     except Exception:  # noqa: BLE001 — a busy lock or a full disk costs the note, never the landed lanes
         pass
     c.log_event(p, "map_union", data={"lanes": {i: fs for i, fs in maps}, "followup": made})
+    return made
+
+
+SPEED_TRAINS = 5  # T-6168: a class or stage is judged against the median of the last five trains
+SPEED_CLASS_RATIO, SPEED_CLASS_S = 1.5, 10.0  # a class: 50% over its median and 10 s over it (both)
+SPEED_STAGE_RATIO = 2.0  # a stage: past twice its median
+
+
+def _median(xs):
+    s = sorted(xs)
+    if not s:
+        return None
+    mid = len(s) // 2
+    return s[mid] if len(s) % 2 else (s[mid - 1] + s[mid]) / 2
+
+
+def speed_flags(classes, stages, history):
+    """T-6168: the slowed classes and stages of this train, as (kind, name, seconds, median): a class past 50% and 10 s
+    over its median, a stage past twice its median, both over the last five trains in `history` (dicts with classes and
+    stages). A name no earlier train has is no slowdown."""
+    recent = [h for h in (history or [])[-SPEED_TRAINS:] if isinstance(h, dict)]
+    out = []
+    for kind, now, key, ok in (("class", classes or {}, "classes", lambda cur, med: cur > med * SPEED_CLASS_RATIO
+                                and cur - med >= SPEED_CLASS_S),
+                               ("stage", stages or {}, "stages", lambda cur, med: cur > med * SPEED_STAGE_RATIO)):
+        for name, cur in sorted(now.items()):
+            med = _median([float(h[key][name]) for h in recent
+                           if isinstance(h.get(key), dict) and isinstance(h[key].get(name), (int, float))])
+            if med and ok(float(cur), med):
+                out.append((kind, name, round(float(cur), 1), round(med, 1)))
+    return out
+
+
+LANE_STAGE_TRAINS = 20  # T-6168 review: a lane stage is judged against the median of the last twenty landed lanes
+
+
+def lane_speed_flags(lane_stages, history):
+    """T-6168 review: the lanes' own stages (LANE_OWN_STAGES: brief to launch and to return) past twice the median of that
+    stage over the last twenty landed lanes in `history` (the land_train records' lanes_stages), as (kind, stage, seconds,
+    median, lane) per flag. The merge-side stages and the train's own are not a lane's: speed_flags judges those."""
+    from sampo import lanes
+    seen = {}
+    for h in history or ():
+        ls = h.get("lanes_stages") if isinstance(h, dict) else None
+        for st in (ls.values() if isinstance(ls, dict) else ()):
+            for k in lanes.LANE_OWN_STAGES:
+                if isinstance(st, dict) and isinstance(st.get(k), (int, float)) and not isinstance(st.get(k), bool):
+                    seen.setdefault(k, []).append(float(st[k]))
+    out = []
+    for lane, st in sorted((lane_stages or {}).items()):
+        for k in lanes.LANE_OWN_STAGES:  # T-6168 review: the merge-side stages hold the train's wait, the train's stages judge it
+            cur = st.get(k) if isinstance(st, dict) else None
+            med = _median(seen.get(k, [])[-LANE_STAGE_TRAINS:])
+            if isinstance(cur, (int, float)) and not isinstance(cur, bool) and med and float(cur) > med * SPEED_STAGE_RATIO:
+                out.append(("lane", k, round(float(cur), 1), round(med, 1), lane))
+    return out
+
+
+def file_speed_tasks(p, flags, lane):
+    """T-6168: one discovered task a day per slowed class or stage (a ledger speed_task event holds the day and the key),
+    naming the lane whose train slowed it. Returns the ids made; a busy lock or a full disk costs the task, never a land."""
+    from sampo import cli
+    if not flags:
+        return []
+    day = time.strftime("%Y-%m-%d")
+    try:
+        seen = {(e.get("data") or {}).get("key") for e in c.ledger_tail(p, 500, ["speed_task"])
+                if (e.get("data") or {}).get("day") == day}
+    except Exception:  # noqa: BLE001
+        seen = set()
+    made = []
+    for flag in flags:
+        kind, name, cur, med = flag[:4]
+        lane_of = flag[4] if len(flag) > 4 else lane  # T-6168 review: a lane stage names the lane that ran it
+        key = f"{kind}:{name}"
+        if key in seen:
+            continue
+        title = f"Slowed {kind} {name}: {cur} s in a train, its median over the last trains {med} s"
+        text = (f"{title}\n\nThe lane train that ran {c.fit(lane_of, 200)} took {cur} s on {kind} {name}, past 50% and 10 s "
+                f"over its median of {med} s (a class) or past twice it (a stage). Find the change that made it slower: "
+                "its NUMBERS line says what it costs, and the record's land_train event has each train's classes and stages.")
+        try:
+            with c.lock(p.dir, timeout=5):
+                n = cli._create(p, title, "FIX", "S", "captured", raw=text, source="discovered", net=False)
+                c.log_event(p, "speed_task", task=n.id, data={"key": key, "day": day, "lane": c.fit(lane_of, 200),
+                                                              "source": "discovered"})
+                c.regen_views(p)
+            made.append(n.id)
+            seen.add(key)
+        except Exception:  # noqa: BLE001 — a busy lock or a full disk costs the task, never the train's verdict
+            continue
     return made
 
 
@@ -3750,10 +3845,11 @@ def _accepted(b):
         return None
 
 
-def _train_times(p, land_id, n, got, by, wall, closes=0.0):
+def _train_times(p, land_id, n, got, by, wall, closes=0.0, classes=None):
     """T-4239: one train's times: the summary row (lanes landed, minutes in the gate, minutes waiting: the train's wall
     time minus its gate run, the probes, the merge and the queue before them) and, for a train that landed lanes, a
-    land_train ledger event (lanes, seconds, gate_s, wait_s, at, each lane's accept time)."""
+    land_train ledger event (lanes, seconds, gate_s, wait_s, at, each lane's accept time). T-6168: also its picked
+    classes' wall seconds and its stage seconds (precheck, gate, land), and a slowed class or stage files a task."""
     gate = round(float((got.get("minutes") or {}).get("gate") or 0) + float((got.get("minutes") or {}).get("confirm") or 0), 1)
     wait = max(0.0, round(wall / 60 - gate, 1))
     row = {"train": n, "lanes": list(got["merged"]), "gate": gate, "waiting": wait, "seconds": round(wall, 1)}
@@ -3762,14 +3858,69 @@ def _train_times(p, land_id, n, got, by, wall, closes=0.0):
         got_ph = got.get("phases") if isinstance(got.get("phases"), dict) else {}
         phases = {k: round(float(got_ph.get(k) or 0.0), 1) for k in ("holds", "smoke", "shape", "timing")}
         phases["closes"] = round(max(0.0, float(closes or 0.0)), 1)  # T-5935: seconds per phase (closes: the closer's, meanwhile)
+        mins = got.get("minutes") if isinstance(got.get("minutes"), dict) else {}
+        stages = {"precheck": phases["holds"], "gate": round(gate * 60, 1),  # T-6168: the lane stages' seconds this train
+                  "land": round(float(mins.get("land") or 0) * 60, 1)}
+        classes = {k: round(float(v), 1) for k, v in (classes or {}).items()}
+        # T-6168 review: each merged lane's stage seconds: its own (from its task log and launch) and the train's
+        # precheck, gate and land, which every merged lane waited through
+        shared = {k: stages[k] for k in ("precheck", "gate", "land")}
+        lanes_st = {t: {**st, **shared} for t, st in _lane_stages(by, got["merged"]).items()}
+        hist = []  # T-6168: the last trains' records, read before this train's own is written (its flags compare with them)
         try:
+            hist = [e.get("data") or {} for e in c.ledger_tail(p, 50, ["land_train"])]
             c.log_event(p, "land_train", data={"land": land_id, "train": n, "lanes": list(got["merged"]),
                                                "seconds": round(wall, 1), "gate_s": round(gate * 60, 1),
                                                "wait_s": round(max(0.0, wall - gate * 60), 1),
-                                               "at": round(time.time(), 3), "accepted": acc, "phases": phases})
+                                               "at": round(time.time(), 3), "accepted": acc, "phases": phases,
+                                               "classes": classes, "stages": stages, "lanes_stages": lanes_st})
         except Exception:  # noqa: BLE001 — a record that can't be written never stops the land
             pass
+        flags = [(k, n, cur, med, _slow_lanes(p, got["merged"], n)) if k == "class" else (k, n, cur, med)
+                 for k, n, cur, med in speed_flags(classes, stages, hist)]  # T-6168 review: a class names its lane(s)
+        flags += lane_speed_flags(lanes_st, hist)  # T-6168: a slowed class, stage or lane stage files its task (never stops the land)
+        if flags:
+            file_speed_tasks(p, flags, c.joinmore(list(got["merged"]), 8))
     return row
+
+
+def _slow_lanes(p, merged, name):
+    """T-6168 review: the merged lanes whose own tests (_lane_own) include the test module `name` names: the lane that
+    changed the test that slowed. All of the merged lanes when none did (no lane touched that module, so the train names
+    itself)."""
+    mod = str(name).split(".")[0]
+    hit = [t for t in merged if mod in (_lane_own(p, t) or ())]
+    return c.joinmore(hit or list(merged), 8)
+
+
+def _lane_stages(by, merged):
+    """T-6168 review: {lane: its stage seconds} of the merged lanes, read from each brief's task log (lanes.lane_stages),
+    with the brief→launch stage from its launch time; a lane whose log can't be read, or has no stage yet, has none."""
+    from sampo import lanes
+    out = {}
+    for t in merged:
+        b = by.get(t)
+        if b is None:
+            continue
+        try:
+            st = lanes.lane_stages(b.section("Log"), b.meta.get("builder"))
+        except Exception:  # noqa: BLE001 — a log that can't be read costs the lane's stages, never the land
+            continue
+        if st:
+            out[t] = st
+    return out
+
+
+def _speed_notes(p, b, notes):
+    """T-6168 review: the accept's speed notes: each written to the lane's task log (one line each) and returned as the
+    lines accept prints under its own line. A note that can't be logged still prints; it never refuses the accept."""
+    from sampo import cli
+    for n in notes:
+        try:
+            cli.mutate(p, b.id, lambda x, n=n: x.append_log(n), "speed_note")
+        except Exception:  # noqa: BLE001
+            pass
+    return [f"  {n}" for n in notes]
 
 
 def finite_num(v):
@@ -5012,7 +5163,7 @@ def _land_trains(p, main, batch, owed, closer=None):
         landed += got["merged"]
         parked += got["left_out"]
         times.append(_train_times(p, land_id, trains, got, by, time.monotonic() - t_train,
-                                  closes=getattr(closer, "spent", 0.0) - closes0))
+                                  closes=getattr(closer, "spent", 0.0) - closes0, classes=got.get("classes")))
         to_close(got["merged"], front=True)  # T-5368: on the closer's thread: the next train starts at once
         # T-5873: no leftover slice per train: all of them go on at once; T-5912: after the first train's merges, so that
         # train never waits behind them (the FIX-waiting and red-waiting ones are not: release_waiting, look_red)
@@ -6756,9 +6907,18 @@ def _accept_gaps(b, path, main, rows, counted=(), p=None, tier_out=None):
     T-5715: the lane's diff is read once, for the sensitive check and the process tier (core.ptier_now, linked tests
     from project `p`'s map); `tier_out`, a dict, gets the tier and its reasons for the caller to stamp."""
     from sampo import cli
+    from sampo import lanes
     tree = c.worktree_id(path)
     base = c.task_base(main, b)  # the close reads the same start point: a task with none is judged on its audits alone
-    names = c.task_diff(path, base, "--name-only", "--no-renames") if base and tree else None
+    # T-6168 review: a task whose start is pruned (or never kept) is read against main for the speed gate, so a hook-path
+    # child can't pass by its base being gone; the audit side keeps the no-base rule
+    from sampo import foresight
+    # T-6168 review: the integration branch this clone names, else the first of main/master that exists (a master-only
+    # clone with no origin/HEAD has no 'main' to read the lane against)
+    use = base or next((ref for ref in dict.fromkeys([foresight.default_branch(main), "main", "master"])
+                        if c._git(main, "rev-parse", "--verify", "-q", ref + "^{commit}", fail=None)), "main")
+    names = c.task_diff(path, use, "--name-only", "--no-renames") if tree else None
+    diff = c.task_diff(path, use, "--no-renames") if names is not None else None  # T-6168 review: a rename adds no lines
     if not base:
         risky = []
         ptier, why = c.unmeasured_ptier(b), []
@@ -6766,9 +6926,16 @@ def _accept_gaps(b, path, main, rows, counted=(), p=None, tier_out=None):
         risky = ["diff unavailable, so its content wasn't checked"]
         ptier, why = c.unmeasured_ptier(b), []
     else:
-        files, diff = sorted(set(names.splitlines())), c.task_diff(path, base) or ""
-        risky = c.sensitive(files, diff)
-        ptier, why = c.ptier_now(b, files, diff, cli._tests_linked(p, b, files) if p else {})
+        files = sorted(set(names.splitlines()))
+        risky = c.sensitive(files, diff or "")
+        ptier, why = c.ptier_now(b, files, diff or "", cli._tests_linked(p, b, files) if p else {})
+    speed, speed_notes = [], []  # T-6168: a blatant slowdown on a hot path blocks; a measured win with a bound passes (its note in tier_out)
+    if names is None or diff is None:  # T-6168 review: fail closed: a diff git can't read is a hot path nobody checked
+        speed = ["speed: the lane's diff can't be read, so its hot path wasn't checked (T-6168): accept again once git reads it"]
+    else:
+        speed, speed_notes = lanes.speed_blocks(sorted(set(names.splitlines())), diff, lambda: lanes.lane_numbers(b))
+    if tier_out is not None:
+        tier_out["speed_notes"] = speed_notes
     if tier_out is not None:
         tier_out.update(ptier=ptier, why=why)
     given = [(lens, how) for lens, how, _ in rows] + [(lens, "") for lens in sorted(counted)]
@@ -6776,7 +6943,7 @@ def _accept_gaps(b, path, main, rows, counted=(), p=None, tier_out=None):
     if risky and "adversary" not in {lens for lens, _ in given}:
         gaps += [r + cli._adversary_ask(risky) for r in b.audit_blockers(tree=tree, need=("adversary",))
                  if r.startswith("audit missing: adversary")]
-    return gaps
+    return gaps + speed
 
 
 SHAPE_WALL_S = 900  # T-4542: the repo-shape modules in a lane before its long check; past it, no verdict (the check runs them)
@@ -7092,6 +7259,7 @@ def accept(p, b, main, args):
              + (f" ({', '.join(sorted({lens for lens, _, _ in rows}))})" if rows else "")
              + (f", {len(rows) - added} already on the brief" if added < len(rows) else "")
              + (f"; counted from audits after the lane tip: {', '.join(sorted(counted))}" if counted else "") + "."]
+    lines += _speed_notes(p, b, tier.get("speed_notes") or [])  # T-6168 review: printed and in the task log, not only in tier
     if stale := lanes.stale_stack(p, b):  # T-5725 review: the dependency this lane is stacked on has a newer tip
         lines.append(f"  {stale}")
     lines += [f"  the close will be refused: {g}" + ("" if g.startswith("no red→green proof") else

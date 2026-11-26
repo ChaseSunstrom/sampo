@@ -7966,6 +7966,462 @@ class StaleCodeLoop(unittest.TestCase):
         self.assertTrue(any("exec" in str(a) for a in log.call_args_list), "the failed exec is logged")
 
 
+class SpeedStub:
+    """T-6168 review: a brief stand-in whose Log section is a stub task log (plain text, as the file holds it)."""
+
+    def __init__(self, tid, log):
+        self.id, self._log, self.meta = tid, log, {}
+
+    def section(self, name):
+        return self._log if name == "Log" else ""
+
+
+class SpeedStanding(ForemanTestCase):
+    """T-6168: speed is a standing criterion. A hot-path file gets the speed lines in its brief, the performance note and
+    an empty NUMBERS line as a finding in review prep; a docs-only lane gets neither. The train record carries each
+    class's wall time and each lane's stage times, and a slowed class or stage files one discovered task a day."""
+
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        self.p = c.find_project(self.repo)
+
+    def test_brief_lines_name_the_hot_path_and_ask_for_before_and_after_numbers(self):
+        text = "\n".join(slanes.speed_brief(["plugin/lib/sampo/hooks.py", "docs/map.md"]))
+        self.assertIn("plugin/lib/sampo/hooks.py", text)
+        self.assertIn("NUMBERS", text)
+        self.assertIn("before", text)
+        self.assertIn("after", text)
+        self.assertIn("background", text, "work that can run off the critical path must")
+        self.assertEqual(slanes.speed_brief(["docs/map.md", "plugin/tests/test_lanes.py"]), [],
+                         "a lane touching only docs and tests gets no speed lines")
+
+    def test_a_hot_path_diff_gets_the_performance_note_and_an_empty_numbers_line_is_a_finding(self):
+        note, finds = slanes.speed_review(["plugin/lib/sampo/cli.py"], "")
+        self.assertIn("performance", note.lower())
+        self.assertEqual(len(finds) == 1 and "NUMBERS" in finds[0], True, finds)
+        note, finds = slanes.speed_review(["plugin/lib/sampo/cli.py"], "hook p95 12 ms → 11 ms (5 runs each)")
+        self.assertEqual(finds, [], "a filled NUMBERS line is no finding")
+        self.assertIn("performance", note.lower(), "the note still asks for the performance lens")
+        self.assertEqual(slanes.speed_review(["docs/map.md"], ""), ("", []))
+
+    def test_a_class_past_half_again_and_10_s_over_its_five_train_median_is_flagged(self):
+        hist = [{"classes": {"test_x": 10.0}}] * 5
+        self.assertEqual(train.speed_flags({"test_x": 20.0}, {}, hist), [("class", "test_x", 20.0, 10.0)])
+        self.assertEqual(train.speed_flags({"test_x": 14.0}, {}, hist), [], "40 percent and 4 s is no slowdown")
+        self.assertEqual(train.speed_flags({"test_y": 99.0}, {}, hist), [], "a class with no history is no slowdown")
+        slow = [{"classes": {"test_x": 100.0}}] * 5
+        self.assertEqual(train.speed_flags({"test_x": 140.0}, {}, slow), [], "40 percent is under the bar")
+        self.assertEqual(train.speed_flags({"test_x": 160.0}, {}, slow), [("class", "test_x", 160.0, 100.0)])
+        old = [{"classes": {"test_x": 1000.0}}] + [{"classes": {"test_x": 10.0}}] * 5
+        self.assertEqual(train.speed_flags({"test_x": 20.0}, {}, old), [("class", "test_x", 20.0, 10.0)],
+                         "only the last five trains make the median")
+
+    def test_a_stage_past_twice_its_median_is_flagged(self):
+        hist = [{"stages": {"gate": 60.0}}] * 5
+        self.assertEqual(train.speed_flags({}, {"gate": 130.0}, hist), [("stage", "gate", 130.0, 60.0)])
+        self.assertEqual(train.speed_flags({}, {"gate": 110.0}, hist), [])
+
+    def test_a_slowed_class_files_one_discovered_task_naming_the_lane_once_a_day(self):
+        made = []
+
+        def create(p, title, type, tier, status, raw=None, source="user", **kw):
+            made.append((title, source, raw or ""))
+            return SimpleNamespace(id=f"T-9{len(made):03d}")
+
+        flags = [("class", "test_x", 20.0, 10.0)]
+        with mock.patch("sampo.cli._create", side_effect=create):
+            first = train.file_speed_tasks(self.p, flags, "T-1234")
+            again = train.file_speed_tasks(self.p, flags, "T-1234")
+        self.assertEqual(first, ["T-9001"])
+        self.assertEqual(again, [], "one task per class per day")
+        self.assertEqual(len(made), 1)
+        self.assertIn("test_x", made[0][0])
+        self.assertIn("T-1234", made[0][2], "the task names the lane that caused the slowdown")
+        self.assertEqual(made[0][1], "discovered")
+
+    def test_the_train_record_carries_each_picked_class_wall_and_the_stage_times(self):
+        got = {"merged": ["T-1"], "left_out": [], "minutes": {"gate": 1.0, "land": 0.5},
+               "phases": {"holds": 3.0, "smoke": 0.0, "shape": 0.0, "timing": 0.0}}
+        train._train_times(self.p, "L-1", 1, got, {}, 90.0, classes={"test_x": 12.0})
+        data = c.ledger_tail(self.p, 50, ["land_train"])[-1]["data"]
+        self.assertEqual(data["classes"], {"test_x": 12.0})
+        self.assertEqual(data["stages"]["gate"], 60.0)
+        self.assertEqual(data["stages"]["land"], 30.0)
+        self.assertEqual(data["stages"]["precheck"], 3.0)
+
+    def test_lane_stages_read_brief_return_merge_and_parks_from_the_task_log(self):
+        log = ("- 2026-11-01T10:00:00Z builder brief: audits/T-1.builder.md\n"
+               "- 2026-11-01T10:30:00Z local builder returned: close fields from the commit: changelog\n"
+               "- 2026-11-01T10:31:00Z land: parked: conflicts with main: a.py\n"
+               "- 2026-11-01T10:40:00Z merged foreman/T-1 in merge train\n")
+        self.assertEqual(slanes.lane_stages(log), {"brief_return": 1800.0, "return_merged": 600.0,
+                                                   "brief_merged": 2400.0, "parks": 1})
+        self.assertEqual(slanes.lane_stages("- 2026-11-01T10:00:00Z builder brief: x\n"), {},
+                         "a lane not yet returned has no stage")
+        self.assertEqual(slanes.lane_stages("- not-a-time builder brief: x\n"), {}, "a torn timestamp is no stage")
+        self.assertEqual(slanes.lane_stages("- 2026-11-01T10:00:00Z builder brief: x\n", "2026-11-01T10:05:00Z"),
+                         {"brief_launch": 300.0}, "the brief→launch stage comes from the builder's launch time")
+        self.assertEqual(slanes.lane_stages("- 2026-11-01T10:00:00Z builder brief: x\n", "not-a-time"), {},
+                         "a torn launch time is no stage")
+
+    def test_a_class_flag_names_the_merged_lane_whose_own_tests_include_it(self):
+        # T-6168 review: a class's slowdown names the lane that changed its test module, not every merged lane
+        for _ in range(5):
+            c.log_event(self.p, "land_train", data={"classes": {"test_x": 10.0}})
+        made = []
+
+        def create(p, title, type, tier, status, raw=None, source="user", **kw):
+            made.append(raw or "")
+            return SimpleNamespace(id=f"T-9{len(made):03d}")
+
+        def own(p, tid, main=None):
+            return ["test_x"] if tid == "T-2" else ["test_other"]
+
+        with mock.patch("sampo.train._lane_own", side_effect=own), mock.patch("sampo.cli._create", side_effect=create):
+            train._train_times(self.p, "L-3", 1, {"merged": ["T-1", "T-2"], "left_out": [], "minutes": {},
+                                                  "phases": {}}, {}, 90.0, classes={"test_x": 40.0})
+        self.assertEqual(len(made), 1, made)
+        self.assertIn("T-2", made[0])
+        self.assertNotIn("T-1", made[0].split("\n")[2], "the lane that did not touch the test is not named")
+
+    def test_a_lane_stage_past_twice_the_median_of_the_last_twenty_lanes_is_flagged(self):
+        hist = [{"lanes_stages": {f"T-{i}": {"brief_return": 1000.0}}} for i in range(20)]
+        self.assertEqual(train.lane_speed_flags({"T-9": {"brief_return": 2500.0}}, hist),
+                         [("lane", "brief_return", 2500.0, 1000.0, "T-9")])
+        self.assertEqual(train.lane_speed_flags({"T-9": {"brief_return": 1900.0}}, hist), [],
+                         "under twice its median is no slowdown")
+        self.assertEqual(train.lane_speed_flags({"T-9": {"brief_return": 2500.0}}, []), [], "no history, no flag")
+
+    def test_a_merge_side_stage_that_waited_on_the_train_is_no_lane_flag(self):  # T-6168 review: the train's wait
+        hist = [{"lanes_stages": {f"T-{i}": {"return_merged": 1000.0, "brief_merged": 1000.0}}} for i in range(20)]
+        self.assertEqual(train.lane_speed_flags({"T-1": {"return_merged": 2500.0, "brief_merged": 2500.0}}, hist), [],
+                         "a slow gate lands on every lane's merge side: the train's stage names it, not each lane")
+
+    def test_a_lane_stage_from_the_stub_task_log_reaches_the_train_record_and_files_its_lane(self):
+        log = ("- 2026-11-01T10:00:00Z builder brief: x\n"
+               "- 2026-11-01T10:30:00Z local builder returned: close fields from the commit: changelog\n"
+               "- 2026-11-01T10:40:00Z merged foreman/T-1 in merge train\n")
+        got = {"merged": ["T-1"], "left_out": [], "minutes": {"gate": 1.0, "land": 0.5},
+               "phases": {"holds": 3.0, "smoke": 0.0, "shape": 0.0, "timing": 0.0}}
+        train._train_times(self.p, "L-2", 1, got, {"T-1": SpeedStub("T-1", log)}, 90.0)
+        data = c.ledger_tail(self.p, 50, ["land_train"])[-1]["data"]
+        self.assertEqual(data["lanes_stages"], {"T-1": {"brief_return": 1800.0, "return_merged": 600.0,
+                                                        "brief_merged": 2400.0, "precheck": 3.0, "gate": 60.0,
+                                                        "land": 30.0}}, "each merged lane carries the train's shared stages")
+        hist = [{"lanes_stages": {f"T-{i}": {"brief_merged": 1200.0}}} for i in range(20)]
+        made = []
+
+        def create(p, title, type, tier, status, raw=None, source="user", **kw):
+            made.append((title, raw or ""))
+            return SimpleNamespace(id=f"T-9{len(made):03d}")
+
+        slow = {"T-1": {"brief_merged": 3000.0}}
+        with mock.patch("sampo.cli._create", side_effect=create):
+            made_ids = train.file_speed_tasks(self.p, train.lane_speed_flags(slow, hist), "T-1")
+        self.assertEqual(made_ids, ["T-9001"])
+        self.assertIn("brief_merged", made[0][0])
+        self.assertIn("T-1", made[0][1], "the task names the lane whose stage slowed")
+
+    def test_a_class_whose_wall_doubles_on_a_loaded_host_is_still_flagged(self):
+        # T-6168 review: the record keeps the run's raw wall (no division by load): a class that takes 20 s where it took
+        # 10 s is a slowdown whatever the host's load, so it files; the load is no longer hidden from the flag
+        hist = [{"classes": {"test_x": 10.0}}] * 5
+        self.assertEqual(train.speed_flags({"test_x": 20.0}, {}, hist), [("class", "test_x", 20.0, 10.0)])
+
+
+class SpeedStandingAccept(ForemanTestCase):
+    """T-6168: a blatant slowdown is a blocking finding at accept; a slowdown with a measured cost win and a stated bound
+    passes with a note."""
+
+    DIFF = (b"diff --git a/plugin/lib/sampo/hooks.py b/plugin/lib/sampo/hooks.py\n"
+            b"--- a/plugin/lib/sampo/hooks.py\n+++ b/plugin/lib/sampo/hooks.py\n@@ -1,1 +1,2 @@\n x = 1\n"
+            b"+    subprocess.run(['git', 'status'])\n")
+
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        self.p = c.find_project(self.repo)
+
+    def test_a_subprocess_added_on_a_hook_path_blocks_accept(self):
+        blocks, notes = slanes.speed_blocks(["plugin/lib/sampo/hooks.py"], self.DIFF, "")
+        self.assertEqual(len(blocks), 1, blocks)
+        self.assertIn("hooks.py", blocks[0])
+        self.assertIn("subprocess", blocks[0])
+
+    def test_a_child_on_a_hook_path_is_not_passed_by_the_builders_own_figures(self):
+        # T-6168 review: the builder's NUMBERS line can't authorize a child process on a hook path, measured or not
+        blocks, notes = slanes.speed_blocks(["plugin/lib/sampo/hooks.py"], self.DIFF,
+                                            "cost: 3 s CPU → 1 s per run, measured; bound: 0.2 s added per hook call")
+        self.assertEqual(len(blocks), 1, blocks)
+        self.assertEqual(notes, [])
+
+    def test_a_cost_pair_the_builder_does_not_call_measured_still_blocks(self):  # T-6168 review: a figure is no proof
+        blocks, notes = slanes.speed_blocks(["plugin/lib/sampo/hooks.py"], self.DIFF,
+                                            "cost: 3 s CPU → 1 s per run; bound: 0.2 s added per hook call")
+        self.assertEqual(len(blocks), 1, blocks)
+
+    def test_a_getattr_or_posix_spawn_on_a_hook_path_blocks_accept(self):  # T-6168 review: calls the pattern missed
+        for line in ('getattr(subprocess, "Popen")(["true"])', 'os.posix_spawn("/bin/true", ["true"], {})',
+                     '__import__("subprocess").run(["true"])'):
+            with self.subTest(line=line):
+                blocks, notes = slanes.speed_blocks(["plugin/lib/sampo/hooks.py"], self.hook_diff(line), "")
+                self.assertEqual(len(blocks), 1, blocks)
+
+    def test_a_form_feed_inside_an_added_line_does_not_cut_it(self):  # T-6168 review: splitlines broke the line in two
+        blocks, notes = slanes.speed_blocks(["plugin/lib/sampo/hooks.py"],
+                                            self.hook_diff("x = 1;\x0csubprocess.run(['true'])"), "")
+        self.assertEqual(len(blocks), 1, blocks)
+
+    def test_a_sleep_aliased_or_an_event_wait_on_a_start_path_blocks_accept(self):  # T-6168 review: the aliases
+        head = (b"diff --git a/plugin/lib/sampo/lanes.py b/plugin/lib/sampo/lanes.py\n"
+                b"--- a/plugin/lib/sampo/lanes.py\n+++ b/plugin/lib/sampo/lanes.py\n@@ -1,1 +1,3 @@\n x = 1\n")
+        for line in ("+from time import sleep as nap\n+nap(30)\n", "+threading.Event().wait(30)\n"):
+            with self.subTest(line=line):
+                blocks, notes = slanes.speed_blocks(["plugin/lib/sampo/lanes.py"], head + line.encode(), "")
+                self.assertEqual(len(blocks), 1, blocks)
+
+    def test_a_subprocess_outside_a_hook_path_is_no_blocking_finding(self):
+        diff = self.DIFF.replace(b"hooks.py", b"reports.py")
+        with mock.patch.object(slanes, "hook_reach", lambda: frozenset({"hooks"})):  # reports is no hook's import
+            self.assertEqual(slanes.speed_blocks(["plugin/lib/sampo/reports.py"], diff, "")[0], [])
+
+    def hook_diff(self, line):
+        return (b"diff --git a/plugin/lib/sampo/hooks.py b/plugin/lib/sampo/hooks.py\n"
+                b"--- a/plugin/lib/sampo/hooks.py\n+++ b/plugin/lib/sampo/hooks.py\n@@ -1,1 +1,2 @@\n x = 1\n"
+                + b"+" + line.encode() + b"\n")
+
+    def test_each_blocking_call_on_a_hook_path_blocks_accept(self):
+        # the blocking set: a call that waits for its child (run, check_output, check_call, call, os.system), a
+        # communicate() and a wait() on any process
+        for line in ("subprocess.run(['git', 'status'])", "subprocess.check_output(['git', 'status'])",
+                     "subprocess.check_call(['git', 'status'])", "subprocess.call(['git', 'status'])",
+                     "os.system('git status')", "out, err = proc.communicate()", "proc.wait()"):
+            with self.subTest(line=line):
+                blocks, notes = slanes.speed_blocks(["plugin/lib/sampo/hooks.py"], self.hook_diff(line), "")
+                self.assertEqual(len(blocks), 1, blocks)
+                self.assertIn(line.split("(")[0].split(".")[-1], blocks[0])
+                self.assertEqual(notes, [])
+
+    def test_a_detached_popen_on_a_hook_path_still_blocks(self):
+        # T-6168 review: a child in its own session still costs the hook its fork on every call: it blocks too
+        for line in ("subprocess.Popen(['git', 'status'], start_new_session=True)",
+                     "subprocess.Popen(['git', 'status'], stdout=None, start_new_session=True, close_fds=True)"):
+            with self.subTest(line=line):
+                blocks, notes = slanes.speed_blocks(["plugin/lib/sampo/hooks.py"], self.hook_diff(line), "")
+                self.assertEqual(len(blocks), 1, blocks)
+                self.assertIn("hooks.py", blocks[0])
+
+    def test_the_spawn_spellings_an_alias_or_a_module_call_use_block_too(self):
+        # T-6168 review: an aliased os, a multiprocessing child and an asyncio subprocess are the same spawn
+        cases = (("o.system('git status')", b"+import os as o\n"),
+                 ("multiprocessing.Process(target=run)", b""),
+                 ("asyncio.create_subprocess_exec('git', 'status')", b""))
+        for line, extra in cases:
+            with self.subTest(line=line):
+                diff = (self.hook_diff(line).replace(b"@@ -1,1 +1,2 @@", b"@@ -1,1 +1,3 @@") + extra)
+                blocks, notes = slanes.speed_blocks(["plugin/lib/sampo/hooks.py"], diff, "")
+                self.assertEqual(len(blocks), 1, blocks)
+
+    def test_a_noprefix_or_coloured_diff_still_reads_the_hook_file(self):
+        # T-6168 review: diff.noprefix drops the b/ on '+++ ' and colour codes wrap each line: the file and the line stay
+        diff = (b"diff --git plugin/lib/sampo/hooks.py plugin/lib/sampo/hooks.py\n"
+                b"--- plugin/lib/sampo/hooks.py\n+++ plugin/lib/sampo/hooks.py\n@@ -1,1 +1,2 @@\n x = 1\n"
+                b"+    subprocess.run(['git', 'status'])\n")
+        for d in (diff, diff.replace(b"+++ plugin", b"\x1b[1m+++ plugin\x1b[m").replace(
+                b"+    subprocess", b"\x1b[32m+    subprocess").replace(b"])\n", b"])\x1b[m\n")):
+            with self.subTest(diff=d[:40]):
+                blocks, notes = slanes.speed_blocks(["plugin/lib/sampo/hooks.py"], d, "")
+                self.assertEqual(len(blocks), 1, blocks)
+                self.assertIn("hooks.py", blocks[0])
+
+    def test_a_module_a_hook_imports_lazily_is_on_the_hook_path(self):
+        # T-6168 review: hooks.py reaches the rest of sampo through lazy imports: a spawn in a reached module blocks
+        with mock.patch.object(slanes, "hook_reach", lambda: frozenset({"hooks", "reports"})):
+            blocks, notes = slanes.speed_blocks(["plugin/lib/sampo/reports.py"],
+                                                self.DIFF.replace(b"hooks.py", b"reports.py"), "")
+        self.assertEqual(len(blocks), 1, blocks)
+
+    def test_a_builder_start_stall_or_a_full_suite_default_blocks_accept(self):
+        # T-6168 review: a sleep in the lane start, or a full-suite default in the train, is a blatant slowdown
+        cases = (("plugin/lib/sampo/lanes.py", "    time.sleep(30)"),
+                 ("plugin/lib/sampo/train.py", "def pick(names, full=True):"))
+        for path, line in cases:
+            with self.subTest(path=path):
+                diff = (f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1,1 +1,2 @@\n x = 1\n"
+                        f"+{line}\n").encode()
+                blocks, notes = slanes.speed_blocks([path], diff, "")
+                self.assertEqual(len(blocks), 1, blocks)
+                blocks, notes = slanes.speed_blocks([path], diff, "cost: 3 s → 1 s per run, measured; bound: 0.2 s")
+                self.assertEqual(blocks, [], "a measured win and a bound pass with a note")
+                self.assertEqual(len(notes), 1, notes)
+
+    def test_a_blocking_call_with_a_measured_win_and_a_bound_still_blocks_on_a_hook_path(self):
+        # T-6168 review: a hook-path child is paid on every call; the builder's own words never pass it
+        blocks, notes = slanes.speed_blocks(["plugin/lib/sampo/hooks.py"], self.hook_diff("subprocess.run(['git'])"),
+                                            "cost: 3 s CPU → 1 s per run, measured; bound: 0.2 s added per hook call")
+        self.assertEqual(len(blocks), 1, blocks)
+        self.assertEqual(notes, [])
+
+    def test_a_content_line_that_looks_like_a_header_does_not_switch_the_file(self):
+        # T-6168 review: git prints an added line '++ b/docs/x.md' as '+++ b/docs/x.md'; inside the hunk it is body
+        diff = (b"diff --git a/plugin/lib/sampo/hooks.py b/plugin/lib/sampo/hooks.py\n"
+                b"--- a/plugin/lib/sampo/hooks.py\n+++ b/plugin/lib/sampo/hooks.py\n@@ -1,1 +1,3 @@\n x = 1\n"
+                b"+++ b/docs/x.md\n+    subprocess.run(['git', 'status'])\n")
+        blocks, notes = slanes.speed_blocks(["plugin/lib/sampo/hooks.py"], diff, "")
+        self.assertEqual(len(blocks), 1, blocks)
+        self.assertIn("hooks.py", blocks[0])
+
+    def test_a_waited_call_on_a_detached_popen_line_still_blocks(self):
+        # T-6168 review: a Popen in its own session with a .wait() on the same line holds the hook
+        for line in ("subprocess.Popen(['git'], start_new_session=True).wait()",
+                     "subprocess.Popen(['git'], start_new_session=True).communicate()"):
+            with self.subTest(line=line):
+                blocks, notes = slanes.speed_blocks(["plugin/lib/sampo/hooks.py"], self.hook_diff(line), "")
+                self.assertEqual(len(blocks), 1, blocks)
+
+    def test_the_other_ways_to_start_or_wait_a_child_block_too(self):
+        # T-6168 review: os.popen, os.waitpid, getoutput, and an aliased or from-imported subprocess
+        for line in ("os.popen('git status')", "os.waitpid(pid, 0)", "getoutput('git status')",
+                     "sp.run(['git', 'status'])", "run(['git', 'status'])"):
+            with self.subTest(line=line):
+                # the alias or from-import is an added line of the same hunk (the hunk counts its lines)
+                extra = {"sp.": b"+import subprocess as sp\n", "run(": b"+from subprocess import run\n"}
+                diff = (self.hook_diff(line).replace(b"@@ -1,1 +1,2 @@", b"@@ -1,1 +1,3 @@")
+                        + next((v for k, v in extra.items() if line.startswith(k)), b""))
+                blocks, notes = slanes.speed_blocks(["plugin/lib/sampo/hooks.py"], diff, "")
+                self.assertEqual(len(blocks), 1, blocks)
+
+    def test_a_from_import_with_an_as_clause_on_a_hook_path_blocks_accept(self):  # T-6168 review: the alias evaded
+        diff = (self.hook_diff("P(['true'])").replace(b"@@ -1,1 +1,2 @@", b"@@ -1,1 +1,3 @@")
+                + b"+from subprocess import Popen as P\n")
+        blocks, notes = slanes.speed_blocks(["plugin/lib/sampo/hooks.py"], diff, "")
+        self.assertEqual(len(blocks), 1, blocks)
+
+    def test_a_star_import_of_a_spawning_module_on_a_hook_path_blocks_accept(self):  # T-6168 review: the star evaded
+        for line, star in (("run(['git', 'status'])", "subprocess"), ("Popen(['git', 'status'])", "subprocess"),
+                           ("system('git status')", "os")):
+            with self.subTest(line=line):
+                diff = (self.hook_diff(line).replace(b"@@ -1,1 +1,2 @@", b"@@ -1,1 +1,3 @@")
+                        + f"+from {star} import *\n".encode())
+                blocks, notes = slanes.speed_blocks(["plugin/lib/sampo/hooks.py"], diff, "")
+                self.assertEqual(len(blocks), 1, blocks)
+
+    def test_a_pass_needs_the_cost_pair_measured_and_a_bound_with_its_unit_in_one_claim(self):  # T-6168 review
+        # the cost pair and 'measured' name one claim: a clause that only says 'measured' does not vouch for another
+        for nums in ("cost: 3 s CPU → 1 s per run; measured separately; bound: 0.2 s added per hook call",
+                     "cost: 3 s CPU → 1 s per run, measured; bound: about a tenth"):
+            with self.subTest(numbers=nums):
+                blocks, notes = slanes.speed_blocks(["plugin/lib/sampo/hooks.py"], self.DIFF, nums)
+                self.assertEqual(len(blocks), 1, nums)
+
+    def test_the_lanes_diff_is_read_without_rename_detection(self):  # T-6168 review: a pure rename adds no lines
+        # the names call answers, the diff call stops the walk: the diff must be read with --no-renames
+        from sampo import cli
+        n = cli._create(self.p, "Rename speed lane", "FIX", "S", "captured", raw="x", source="discovered", net=False)
+        b = cli.need_brief(self.p, n.id)
+        calls = []
+
+        def task_diff(root, base, *opts):
+            calls.append((base, opts))
+            if "--name-only" in opts:
+                return "plugin/lib/sampo/hookutil.py\n"
+            raise RuntimeError("stop after the diff call")
+        with mock.patch.object(c, "task_diff", task_diff), mock.patch.object(c, "task_base", lambda root, b: "abc"), \
+                mock.patch.object(c, "worktree_id", lambda root: "tree"), self.assertRaises(RuntimeError):
+            train._accept_gaps(b, self.repo, self.repo, [], p=self.p)
+        self.assertIn("--no-renames", calls[-1][1], calls)
+
+    def test_a_clone_with_no_origin_head_reads_a_lane_with_no_start_against_a_branch_that_exists(self):
+        # T-6168 review: default_branch falls back to 'main', which a master-only clone lacks
+        from sampo import cli, foresight
+        n = cli._create(self.p, "Base speed lane", "FIX", "S", "captured", raw="x", source="discovered", net=False)
+        b = cli.need_brief(self.p, n.id)
+        seen = []
+
+        def task_diff(root, base, *opts):
+            seen.append(base)
+            if "--name-only" in opts:
+                return "plugin/lib/sampo/hookutil.py\n"
+            raise RuntimeError("stop after the diff call")
+        with mock.patch.object(c, "task_diff", task_diff), mock.patch.object(c, "task_base", lambda root, b: None), \
+                mock.patch.object(c, "worktree_id", lambda root: "tree"), \
+                mock.patch.object(foresight, "default_branch", lambda root: "no-such-branch"), \
+                self.assertRaises(RuntimeError):
+            train._accept_gaps(b, self.repo, self.repo, [], p=self.p)
+        self.assertEqual(seen[0], "main" if "main" in self.git("branch") else "master", seen)
+
+    def test_a_cost_word_and_a_bound_word_without_figures_do_not_pass_a_subprocess(self):
+        # T-6168 review: the win and the bound are figures (a measured pair and a number), not the words alone
+        for nums in ("cost is lower, bound later", "$ saved; bound it", "cost: 3 s → 1 s"):
+            with self.subTest(numbers=nums):
+                blocks, notes = slanes.speed_blocks(["plugin/lib/sampo/hooks.py"], self.DIFF, nums)
+                self.assertEqual(len(blocks), 1, nums)
+
+    def test_the_accept_speed_note_is_printed_and_written_to_the_task_log(self):
+        from sampo import cli
+        n = cli._create(self.p, "Speed note lane", "FIX", "S", "captured", raw="x", source="discovered", net=False)
+        b = cli.need_brief(self.p, n.id)
+        note = "speed: a detached subprocess.Popen on a hook path does not block the hook; noted: hooks.py"
+        lines = train._speed_notes(self.p, b, [note])
+        self.assertEqual(lines, [f"  {note}"], "accept prints the note under its own line")
+        self.assertIn(note, cli.need_brief(self.p, n.id).section("Log"), "and the task log holds it")
+        self.assertEqual(train._speed_notes(self.p, b, []), [], "no notes, no lines")
+
+    def test_a_form_feed_or_separator_inside_a_hook_line_does_not_hide_the_call(self):
+        # T-6168 review: str.splitlines breaks on \x0c, \x1c-\x1e, \x85 and U+2028; the diff is split on newlines only
+        for line in ("x = 1;\x0csubprocess.run(['git', 'status'])", "x = 1; subprocess.run(['git'])",
+                     "x = 1;\x1csubprocess.run(['git'])"):
+            with self.subTest(line=repr(line)):
+                blocks, notes = slanes.speed_blocks(["plugin/lib/sampo/hooks.py"], self.hook_diff(line), "")
+                self.assertEqual(len(blocks), 1, blocks)
+
+    def test_the_posix_spawn_and_getattr_spellings_on_a_hook_path_block(self):
+        # T-6168 review: os.posix_spawn, getattr(subprocess, 'Popen')(...) and import_module('subprocess') start a child
+        for line in ("os.posix_spawn('/bin/git', ['git'], {})", "getattr(subprocess, 'Popen')(['git'])",
+                     "importlib.import_module('subprocess').run(['git'])"):
+            with self.subTest(line=line):
+                blocks, notes = slanes.speed_blocks(["plugin/lib/sampo/hooks.py"], self.hook_diff(line), "")
+                self.assertEqual(len(blocks), 1, blocks)
+
+    def test_an_aliased_sleep_or_an_event_wait_in_the_builder_start_blocks(self):
+        # T-6168 review: from time import sleep as nap; nap(30) and threading.Event().wait(30) stall the start
+        head = (b"diff --git a/plugin/lib/sampo/lanes.py b/plugin/lib/sampo/lanes.py\n"
+                b"--- a/plugin/lib/sampo/lanes.py\n+++ b/plugin/lib/sampo/lanes.py\n@@ -1,1 +1,3 @@\n x = 1\n")
+        for body in (b"+from time import sleep as nap\n+    nap(30)\n", b"+    threading.Event().wait(30)\n"):
+            with self.subTest(body=body):
+                blocks, notes = slanes.speed_blocks(["plugin/lib/sampo/lanes.py"], head + body, "")
+                self.assertEqual(len(blocks), 1, blocks)
+
+    def test_a_child_process_in_the_builder_start_blocks_even_off_a_hook_path(self):
+        # T-6168 review: a child started on the start path (lanes.py) is a blatant slowdown though no hook reaches it
+        diff = (b"diff --git a/plugin/lib/sampo/lanes.py b/plugin/lib/sampo/lanes.py\n"
+                b"--- a/plugin/lib/sampo/lanes.py\n+++ b/plugin/lib/sampo/lanes.py\n@@ -1,1 +1,2 @@\n x = 1\n"
+                b"+    subprocess.run(['git', 'status'])\n")
+        with mock.patch.object(slanes, "hook_reach", lambda: frozenset({"hooks"})):
+            blocks, notes = slanes.speed_blocks(["plugin/lib/sampo/lanes.py"], diff, "")
+        self.assertEqual(len(blocks), 1, blocks)
+
+    def test_the_full_suite_spelled_as_a_dict_or_an_int_default_blocks(self):
+        # T-6168 review: {'full': True} and full=1 make the train run the full suite too
+        head = (b"diff --git a/plugin/lib/sampo/train.py b/plugin/lib/sampo/train.py\n"
+                b"--- a/plugin/lib/sampo/train.py\n+++ b/plugin/lib/sampo/train.py\n@@ -1,1 +1,2 @@\n x = 1\n")
+        for body in (b"+DEFAULTS = {'full': True}\n", b"+def pick(names, full=1):\n"):
+            with self.subTest(body=body):
+                blocks, notes = slanes.speed_blocks(["plugin/lib/sampo/train.py"], head + body, "")
+                self.assertEqual(len(blocks), 1, blocks)
+
+    def test_a_new_module_a_hook_imports_in_this_diff_is_on_the_hook_path(self):
+        # T-6168 review: the lane's own hooks.py imports a module the lane adds: its subprocess is on the hook path
+        diff = (b"diff --git a/plugin/lib/sampo/hooks.py b/plugin/lib/sampo/hooks.py\n"
+                b"--- a/plugin/lib/sampo/hooks.py\n+++ b/plugin/lib/sampo/hooks.py\n@@ -1,1 +1,2 @@\n x = 1\n"
+                b"+from sampo import newmod\n"
+                b"diff --git a/plugin/lib/sampo/newmod.py b/plugin/lib/sampo/newmod.py\n"
+                b"--- /dev/null\n+++ b/plugin/lib/sampo/newmod.py\n@@ -0,0 +1,1 @@\n"
+                b"+subprocess.run(['git', 'status'])\n")
+        with mock.patch.object(slanes, "hook_reach", lambda: frozenset({"hooks"})):
+            blocks, notes = slanes.speed_blocks(["plugin/lib/sampo/hooks.py", "plugin/lib/sampo/newmod.py"], diff, "")
+        self.assertTrue(any("newmod.py" in b for b in blocks), blocks)
 class UsageCutoff(ForemanTestCase):
     """T-6221: a brand-new lane is refused when the weekly cap is projected inside the p90 brief-to-merge time plus 30 min;
     urgent work, a recovery or resume, --why, an unknown rate and a far cap still brief."""

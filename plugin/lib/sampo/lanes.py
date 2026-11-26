@@ -3306,6 +3306,252 @@ def review_depth(b, files, diff, p=None, tests_linked=None):
             "model": DEPTH_MODEL[ptier], "why": why}
 
 
+HOT_PATH = re.compile(r"(?i)(?:^|/)(?:hooks?|guards?[a-z_]*|cli|lanes|train|lanepilot|land[a-z_]*|run|selfgate)\.py$"
+                      r"|(?:^|/)hooks/")  # T-6168: the code a hook, a CLI verb, a lane, a train, a land or the test runner runs on the critical path
+SPEED_MODS = frozenset({"subprocess", "os", "multiprocessing", "asyncio", "pty"})  # T-6168 review: modules that start children
+SPEED_SPAWN_WORD = re.compile(r"(?:run|call|check_\w+|Popen|system|popen\w*|spawn\w*|exec\w*|fork\w*|wait\w*|getoutput"
+                              r"|getstatusoutput|communicate|Process|Pool|create_subprocess_\w+)")  # T-6168 review: their calls
+SPEED_SPAWN = re.compile(r"\bsubprocess\.\w+\s*\(|\bPopen\s*\(|\bos\.(?:system|popen|waitpid|wait[34]?|spawn\w*|posix_spawn\w*|exec\w*|fork\w*)\s*\("
+                         r"|\b(?:getoutput|getstatusoutput)\s*\(|\.communicate\s*\(|\.wait\s*\("
+                         r"|\bmultiprocessing\.(?:Process|Pool)\s*\(|\bcreate_subprocess_\w+\s*\(|\bpty\.spawn\s*\("
+                         r"|\bgetattr\s*\(\s*(?:subprocess|os|multiprocessing|asyncio|pty)\b"  # T-6168 review: getattr(subprocess, 'Popen')
+                         r"|\b__import__\s*\(\s*[\"'](?:subprocess|os|multiprocessing|asyncio|pty)[\"']"
+                         r"|\bimportlib\.import_module\s*\(\s*[\"'](?:subprocess|os|multiprocessing|asyncio|pty)[\"']")  # T-6168: a hook path that starts or waits for a child
+SPEED_IMPORT = re.compile(r"\bimport\s+(\w+)\s+as\s+(\w+)|\bfrom\s+(\w+)\s+import\s+([\w ,*]+)")  # T-6168: an alias or a from-import of a spawning module names calls the pattern misses
+SPEED_STAR_NAMES = frozenset({"run", "call", "check_call", "check_output", "Popen", "system", "popen", "getoutput",
+                              "getstatusoutput", "communicate", "waitpid", "fork", "forkpty", "posix_spawn", "posix_spawnp",
+                              "spawnv", "spawnve", "spawnl", "execv", "execve", "execvp", "execvpe", "Process", "Pool",
+                              "create_subprocess_exec", "create_subprocess_shell"})  # T-6168 review: what 'from subprocess/os/multiprocessing/asyncio import *' brings in bare
+SPEED_SAMPO_IMPORT = re.compile(r"\bfrom\s+sampo(?:\.(\w+))?\s+import\s+([\w, ]+)|\bimport\s+sampo\.(\w+)")  # T-6168 review: a sampo module's imports
+SPEED_STALL = re.compile(r"\b\w+\.sleep\s*\(|\bsleep\s*\(|\bfrom\s+time\s+import\b[^\n]*\bsleep\b|\.wait\s*\(\s*[\d.]+")  # T-6168 review: a sleep a builder's start waits on, any alias or event wait with a timeout
+SPEED_SUITE = re.compile(r"\bfull\s*=\s*(?:True\b|(?:not\s+)?bool\s*\()|[\"']full[\"']\s*:\s*True\b")  # T-6168 review: the full suite made the train's default
+SPEED_START_FILE = re.compile(r"(?:^|/)(?:lanes|lanepilot)\.py$")  # T-6168 review: where a builder starts
+SPEED_TRAIN_FILE = re.compile(r"(?:^|/)(?:train|run|selfgate)\.py$")  # T-6168 review: where the train picks its tests
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")  # T-6168 review: the colour codes a coloured diff wraps its lines in
+_LIB = os.path.dirname(os.path.abspath(__file__))  # T-6168 review: the lib whose sources hook_reach reads
+_REACH = {}  # T-6168 review: the hook-reachable stems, read once per process
+LANE_STAGES = ("brief_launch", "brief_return", "return_merged", "brief_merged")  # T-6168 review: a lane's own stages, from its task log and launch time
+LANE_OWN_STAGES = ("brief_launch", "brief_return")  # T-6168 review: the stages a lane's own work sets; the merge side waits on the train
+LANE_SHARED_STAGES = ("precheck", "gate", "land")  # T-6168 review: the train's stages, recorded on each merged lane it waited through
+HUNK_RANGE = re.compile(r"^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@")  # T-6168 review: a hunk's old and new line counts
+SPEED_HOOK = re.compile(r"(?i)(?:^|/)hooks?[a-z_]*\.py$|(?:^|/)hooks/|(?:^|/)guards?[a-z_]*\.py$")
+SPEED_COST = re.compile(r"(?i)\b(?:cost|tokens?|usd|cpu)\b[^;]*\d|\$\s?\d")  # T-6168: a cost figure on NUMBERS
+SPEED_PAIR = re.compile(r"\d[^;]*(?:→|->)[^;]*\d")  # T-6168: a measured before and after, both figures
+SPEED_BOUND = re.compile(r"(?i)\bbound\b[^.;]*\d[\d.,]*\s*(?:ms|s|secs?|seconds?|%|x|calls?|bytes?|kb|mb|lines?)\b")  # T-6168: a stated bound, with its figure and unit
+SPEED_MEASURED = re.compile(r"(?i)\bmeasured\b")  # T-6168 review: the win is measured, said in the same claim as its figures
+SPEED_NOTE = ("performance lens (T-6168): this diff touches the hot path {hot}. Look at what it makes slower on that path: "
+              "work added per hook call, per request or per loop, a scan that grows with the ledger, a process started; "
+              "then check the NUMBERS line says how much.")
+
+
+def hot_path_files(files):
+    """T-6168: the hot-path files among these (a hook, the guard, the CLI verbs, lane, train and land code, selfgate,
+    run.py): the code every hook call, verb or train runs. [] for a docs or tests-only lane."""
+    return sorted({str(f) for f in files or () if HOT_PATH.search(str(f))})
+
+
+def speed_brief(files):
+    """T-6168: the speed lines a builder brief carries when its scope touches a hot path ([] when it does not): the
+    hot path named, its time before and after asked for on the NUMBERS line, and off-path work told to run in the
+    background, cached per tree, or bounded by a wall cap."""
+    hot = hot_path_files(files)
+    if not hot:
+        return []
+    return ["## Speed (T-6168)",
+            f"Your scope touches the hot path: {c.joinmore(hot, 4)}. Time it before and after your change and put both on "
+            "the NUMBERS line (`NUMBERS: <metric>: <before> → <after> (how measured)`, or `NUMBERS: none: <why>`).",
+            "Work that can run off the critical path must: in the background, cached per tree, or bounded by a wall cap. "
+            "A slowdown needs a measured cost win and a stated bound, or the review and accept refuse it.", ""]
+
+
+def lane_numbers(b):
+    """T-6168: the NUMBERS value a lane's close carries: its brief's Close fields, else its commits' trailers ('' if none)."""
+    f = close_fields(b.section(CLOSE_FIELDS)) or lane_trailers(b.meta.get("lane") or "", b.meta.get("base") or "", b.id)
+    return f.get("numbers", "")
+
+
+def speed_review(files, numbers):
+    """T-6168: (a note for each reviewer, findings) of a diff touching a hot path: the performance lens as a note, and an
+    empty NUMBERS line as a finding. ("", []) for a lane with no hot-path file."""
+    hot = hot_path_files(files)
+    if not hot:
+        return "", []
+    numbers = numbers() if callable(numbers) else numbers  # a lane's NUMBERS is read (git) only for a hot-path lane
+    finds = [] if " ".join(str(numbers or "").split()) else [
+        f"speed: hot path {c.joinmore(hot, 3)} touched but the NUMBERS line is empty: give its time before and after "
+        "(NUMBERS: <metric>: <before> → <after>, or NUMBERS: none: <why>)"]
+    return SPEED_NOTE.format(hot=c.joinmore(hot, 4)), finds
+
+
+def _disk_text(stem):
+    """T-6168 review: a lib module's text on disk, '' when no module of the lib has that stem."""
+    try:
+        with open(os.path.join(_LIB, stem + ".py"), encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except OSError:  # a name that is no module of this lib (a name from 'from sampo import x')
+        return ""
+
+
+def _reach_from(seeds, text_of):
+    """T-6168 review: the stems a hook can run from `seeds`: every sampo module they import, lazy imports inside a
+    function included (a hook runs those too). Each module's text is text_of(stem)."""
+    todo, seen = sorted(seeds), set()
+    while todo:
+        stem = todo.pop()
+        if stem in seen:
+            continue
+        seen.add(stem)
+        for m in SPEED_SAMPO_IMPORT.finditer(text_of(stem) or ""):
+            if m.group(3) or m.group(1):
+                todo.append(m.group(3) or m.group(1))
+            else:
+                todo += [x.strip() for x in m.group(2).split(",") if x.strip()]
+    return frozenset(seen)
+
+
+def hook_reach():
+    """T-6168 review: the stems of the lib modules a hook can run: the hook and guard files, and every sampo module they
+    import. Read from the lib on disk, once per process; a lane's own sources are added by _lane_reach."""
+    if "stems" not in _REACH:
+        have = {f[:-3] for f in os.listdir(_LIB) if f.endswith(".py")}
+        _REACH["stems"] = _reach_from(sorted({s for s in have if SPEED_HOOK.search(s + ".py")} | {"fmguard"}), _disk_text)
+    return _REACH["stems"]
+
+
+def _lane_reach(files, added):
+    """T-6168 review: hook_reach plus what the lane itself makes a hook reach: its added lines of each lib module are read
+    with the module's disk text, from the hook files the lane touches, so a new module a hook imports is hook-side."""
+    lane_text = {}
+    for cur, body in added:
+        if "lib/sampo/" in cur and cur.endswith(".py"):
+            stem = os.path.basename(cur)[:-3]
+            lane_text[stem] = lane_text.get(stem, "") + "\n" + body
+    names = {str(f) for f in files or ()} | {cur for cur, _ in added}
+    seeds = {os.path.basename(f)[:-3] for f in names if f.endswith(".py") and SPEED_HOOK.search(f)}
+    return hook_reach() | _reach_from(seeds, lambda stem: _disk_text(stem) + lane_text.get(stem, ""))
+
+
+def _hook_side(cur, reach=None):
+    """T-6168 review: a file a hook can run: the hook or guard file, or a sampo module one of them reaches (`reach`:
+    the stems a lane's own sources reach, default the lib's)."""
+    if SPEED_HOOK.search(cur):
+        return True
+    if "lib/sampo/" not in cur or not cur.endswith(".py"):
+        return False
+    return os.path.basename(cur)[:-3] in (hook_reach() if reach is None else reach)
+
+
+def speed_blocks(files, diff, numbers):
+    """T-6168: (blocking findings, notes) of a lane's diff at accept. Three blatant slowdowns block. (2) and (3) pass with a
+    note when the NUMBERS line states a measured cost win (a figure) and a bound (a figure); (1) never passes on the
+    builder's words (T-6168 review). (1) A child process
+    started or waited on in a file a hook can run (subprocess, Popen, os.system, aliases and from-imports of those,
+    communicate(), wait()), detached or not: a hook pays it on every call. (2) A sleep added to a lane's start (lanes,
+    lanepilot): a builder's start waits on it. (3) The full suite made a train's default (full=True in train, run,
+    selfgate): every train runs it. The diff is read by its hunks, so an added line that looks like a file header is
+    body; a noprefix or a coloured header still names its file. `diff` is the lane's diff (bytes)."""
+    text = diff.decode("utf-8", "replace") if isinstance(diff, (bytes, bytearray)) else str(diff or "")
+    added, cur, old, new = [], "", 0, 0
+    for ln in text.split("\n"):  # T-6168 review: splitlines also breaks on form feed, so a line git wrote whole was cut in two
+        ln = _ANSI.sub("", ln)  # T-6168 review: a coloured diff wraps its lines in colour codes
+        if old > 0 or new > 0:  # inside a hunk every line is body (T-6168 review: a '+++ b/x' content line is no header)
+            if ln.startswith("+"):
+                new -= 1
+                added.append((cur, ln[1:]))
+            elif ln.startswith("-"):
+                old -= 1
+            elif not ln.startswith("\\"):  # a context line (a space; an empty one git strips)
+                old, new = old - 1, new - 1
+            continue
+        if ln.startswith("@@"):
+            m = HUNK_RANGE.match(ln)
+            old, new = (int(m.group(1) or 1), int(m.group(2) or 1)) if m else (0, 0)
+        elif ln.startswith("+++ "):
+            path = ln[4:].split("\t")[0].strip('"')  # T-6168 review: diff.noprefix drops the b/ prefix
+            cur = "" if path == "/dev/null" else (path[2:] if path.startswith("b/") else path)
+        elif ln.startswith("diff --git"):
+            cur = ""
+    reach = _lane_reach(files, added)  # T-6168 review: the hook reach with the lane's own new modules, not the disk's alone
+    body_of = [(cur, body) for cur, body in added if HOT_PATH.search(cur) or _hook_side(cur, reach)]
+    mods, names = set(SPEED_MODS), set()  # an alias or a from-import of a spawning module names more calls
+    for _, body in body_of:
+        for m in SPEED_IMPORT.finditer(body):
+            if m.group(1) and m.group(1) in SPEED_MODS:
+                mods.add(m.group(2))
+            elif m.group(3) in SPEED_MODS:
+                for item in m.group(4).split(","):  # T-6168 review: 'Popen as P' names Popen and the alias P
+                    orig, _, alias = item.strip().partition(" as ")
+                    orig = orig.strip()
+                    if orig == "*":  # T-6168 review: a star import brings every spawning name in bare
+                        names.update(SPEED_STAR_NAMES)
+                    elif SPEED_SPAWN_WORD.fullmatch(orig):
+                        names.update(x for x in (orig, alias.strip()) if x)
+    mod_alt = "|".join(re.escape(m) for m in sorted(mods))
+    name_alt = "|".join(re.escape(n) for n in sorted(names))
+    pats = [f"(?:{SPEED_SPAWN.pattern})", rf"\b(?:{mod_alt})\.{SPEED_SPAWN_WORD.pattern}\s*\("]
+    if names:
+        pats.append(rf"\b(?:{name_alt})\s*\(")
+    spawn = re.compile("|".join(pats))
+    hits, stalls = [], []
+    for cur, body in body_of:
+        if spawn.search(body) and _hook_side(cur, reach):
+            hits.append(f"{cur}: {c.fit(body.strip(), 80)}")
+        elif SPEED_STALL.search(body) and SPEED_START_FILE.search(cur):
+            stalls.append(f"{cur}: {c.fit(body.strip(), 80)}")
+        elif SPEED_SUITE.search(body) and SPEED_TRAIN_FILE.search(cur):
+            stalls.append(f"{cur}: {c.fit(body.strip(), 80)}")
+    if hits:  # T-6168 review: a child on a hook path is paid on every call, so the builder's own figures never pass it
+        return [f"speed: a child process on a hook path blocks accept (a hook pays it on every call): {hits[0]}; move the "
+                "work off the path (in the background, cached per tree, or bounded by a wall cap)"], []
+    blocked = stalls
+    if not blocked:
+        return [], []
+    what = "a sleep in a builder's start or the full suite as a train default"
+    numbers = numbers() if callable(numbers) else numbers  # read (git) only once a blatant slowdown is in the diff
+    nums = " ".join(str(numbers or "").split())
+    # T-6168 review: the figures are the builder's own words, nothing here measures them: the pass is a note the reviewer
+    # reads, and it needs the word 'measured' with the cost pair, so an unmeasured claim is named as one
+    clauses = nums.split(";")  # T-6168 review: the cost pair and 'measured' are one claim, and the bound its own
+    if (any(SPEED_COST.search(cl) and SPEED_PAIR.search(cl) and SPEED_MEASURED.search(cl) for cl in clauses)
+            and any(SPEED_BOUND.search(cl) for cl in clauses)):
+        return [], [f"speed: {what} passes on its NUMBERS line ({c.fit(nums, 200)}; the figures are the builder's own, "
+                    f"not measured here): {blocked[0]}"]
+    return [f"speed: {what} blocks accept (a hook pays it on every call, a start waits on it, or every train runs the full "
+            f"suite): {blocked[0]}; give a measured cost win and a bound on the NUMBERS line, or move the work off the path"], []
+
+
+def lane_stages(log, launched=None):
+    """T-6168 review: a lane's stage seconds from its task log's own timestamps (no new measurement): brief→return (the
+    builder's 'close fields from' return), return→merged ('merged … in merge train'), brief→merged, and the parks it took
+    ('land: parked') when any. `launched` is the builder's launch time (its brief's meta): brief→launch. {} until the log
+    holds the brief and something to measure from it."""
+    at, parks = {}, 0
+    for ln in str(log or "").splitlines():
+        m = re.match(r"- (\S+) (.*)$", ln)
+        if not m or (when := c.parse_ts(m.group(1))) is None:
+            continue
+        text = m.group(2)
+        if text.startswith("builder brief:"):
+            at.setdefault("brief", when)
+        elif "close fields from" in text:
+            at.setdefault("return", when)
+        elif "land: parked" in text:
+            parks += 1
+        elif text.startswith("merged ") and "in merge train" in text:
+            at.setdefault("merged", when)
+    out = {}
+    for key, a, b in (("brief_return", "brief", "return"), ("return_merged", "return", "merged"),
+                      ("brief_merged", "brief", "merged")):
+        if a in at and b in at:
+            out[key] = round((at[b] - at[a]).total_seconds(), 1)
+    lt = c.parse_ts(str(launched or ""))
+    if lt is not None and "brief" in at and lt >= at["brief"]:
+        out["brief_launch"] = round((lt - at["brief"]).total_seconds(), 1)
+    if out and parks:
+        out["parks"] = parks
+    return out
+
+
 SECURITY_SURFACES = (  # T-5972: (name, a line a diff adds, or a file path, that touches it, whether the pattern reads string
     # contents), in the order a brief names them. A pattern reads a CALL SITE or an assignment in code: a line is read with
     # its comments cut and, unless the surface reads strings, its string contents emptied (a quoted mode of 3 characters or less stays), so a word in a comment, a
@@ -6049,6 +6295,7 @@ def builder_brief(p, b, args, resume_branch=None, after="", stacked=None, check=
         print(f"sampo: {b.id}: no working-set note: {c.fit(str(e), 200)}", file=sys.stderr)
     if ws and ws["lines"]:
         parts[ws_at:ws_at] = ws["lines"]
+    parts += speed_brief(files)  # T-6168: the hot path the scope touches: its time before and after, off-path work backgrounded
     parts += ["## Your report", c.REPORT_SHAPE, ""]  # T-6162: the one shape; the PreToolUse refusal of a report file names it too
     from sampo import redfirst  # T-6155: the plan-time job's red tests, embedded when ready; the brief never waits for the writer
     first_brief = not (resume_branch and redfirst.briefed(p, b.id))  # T-6155: a resume keeps the flag of its first brief

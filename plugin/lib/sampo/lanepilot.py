@@ -2160,6 +2160,8 @@ def pilot(p, tid, main):
         # T-6044: the first read may take only the fix for a lens that was clean at the last stamped tip; after a fix
         # round of this pilot every lens reads the whole diff (the accept needs each one at the new tip, T-5707)
         scopes = {x: ("", own) for x in claude} if fixes else scopes_for(main, b, claude, before[0], whole, sensitive)
+        speed_note, speed_finds = lanes.speed_review(names, lambda: lanes.lane_numbers(b))  # T-6168: the performance lens on a hot path
+        pnote = "\n".join(x for x in (note, speed_note) if x)
         res["ran"] = True  # T-6226: a run that reviewed (a gate refusal never gets here): its outcome is recorded
         c.log_event(p, "pilot_review", task=b.id, data={"class": lane_class(b), "effort": effort})  # T-6165: the escape rows' class and effort
         queue = []  # T-6164: the round's ledger lines, written once below, after the paid runs
@@ -2170,7 +2172,7 @@ def pilot(p, tid, main):
         audits = []
         try:
             with auditrun.deferring(audits):
-                verdicts, findings, why, unparsed, answered = review_escalated(p, b, main, before, claude, scopes, note, effort, queue)  # not _busy: its lock comes after the reviewers
+                verdicts, findings, why, unparsed, answered = review_escalated(p, b, main, before, claude, scopes, pnote, effort, queue)  # not _busy: its lock comes after the reviewers
         finally:
             unlogged = _flush(p, queue)  # one non-blocking try; an escalation the busy lock kept out is on the result
             if any(x[0] == "pilot_lens" for x in unlogged):  # T-6322: a verdict of this round is unlogged: no ok audit lands
@@ -2181,7 +2183,7 @@ def pilot(p, tid, main):
         for x, (verdict, found) in settled.items():  # T-6089: the local answer that stands, as review() words a Claude one
             verdicts[x], answered[x] = verdict, "local"
             findings += [f"{x}: " + " ".join(f"{sev} {at} {text}".split()) for sev, at, text in found[:20]]
-        res["findings"], res["reviews"] = findings, fixes + 1
+        res["findings"], res["reviews"] = findings + speed_finds, fixes + 1  # T-6168: an empty NUMBERS line on a hot path
         res["model"], res["lens_models"] = _models(lenses, answered, model)  # T-6164: this round's; per lens in lens_models
         if unparsed:  # T-6042: counted before any other exit (selfcheck.verdict_rate reads it), even when the tip moved
             with c.lock(p.dir):
