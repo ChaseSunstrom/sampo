@@ -63,12 +63,16 @@ class _Stubbed(ForemanTestCase):
     def queue(self):
         return [q["id"] for q in json.loads(self.fm("queue", "--json").stdout)["order"]]
 
-    def seven(self):
-        for title, typ in (("export the report as CSV", "FEATURE"), ("settings page layout", "FEATURE"),
-                           ("rename the CLI", "FEATURE"), ("parse the report", "FEATURE"),
-                           ("settings page crashes on save", "FIX"), ("add the API client", "FEATURE"),
-                           ("the API client times out", "FIX")):
-            self.fm("capture", title, "--type", typ, "--tier", "M", "--source", "user")
+    def seven(self, gap=False):
+        for n, (title, typ) in enumerate((("export the report as CSV", "FEATURE"), ("settings page layout", "FEATURE"),
+                                          ("rename the CLI", "FEATURE"), ("parse the report", "FEATURE"),
+                                          ("settings page crashes on save", "FIX"), ("add the API client", "FEATURE"),
+                                          ("the API client times out", "FIX"))):
+            if gap and n == 1:
+                time.sleep(1.1)  # the next capture lands in a later second than T-0001's
+            # derived, not the user's asks: those sort by their one-second capture stamp (T-5494), so a run that
+            # crosses a second boundary reorders them; derived tasks keep the type order these tests assert
+            self.fm("capture", title, "--type", typ, "--tier", "M", "--source", "discovered")
         for tid in ("T-0006", "T-0007"):
             self.fm("task", "set", tid, "status=planned")
 
@@ -113,6 +117,10 @@ class Child(_Stubbed):
             brief = self.fm("task", "show", tid).stdout
             self.assertNotIn("inferred_", brief)
             self.assertNotIn("group:", brief)
+
+    def test_the_fixture_order_holds_when_its_captures_straddle_a_second(self):
+        self.seven(gap=True)  # a loaded machine stamps T-0001 a second before T-0005: the order must not move
+        self.assertEqual(self.inbox(), ["T-0005", "T-0001", "T-0002", "T-0003", "T-0004"])
 
     def test_a_sensitive_project_keeps_its_words_out_of_any_child(self):
         self.seven()

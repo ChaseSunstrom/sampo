@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- test_relate's fixture no longer reorders when its captures straddle a second (T-6952).
 - A land that finds a ship already running joins it and finishes its merges and closes at once; the running ship goes again on the new trunk (T-6858).
 - Speed is a standing criterion: a train records each lane's brief-to-merge stages, class times divide by load, a detached Popen on a hook path passes with a note, and accept prints and logs its speed note (T-6168).
 - The hook modules compile no pattern at import and no longer import `signal` on the hot path, so `LazyPatterns` and `HotPathImports` pass again (T-5888).
