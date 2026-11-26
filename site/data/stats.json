@@ -1,17 +1,17 @@
 {
- "generated": "2026-11-25",
+ "generated": "2026-11-26",
  "totals": {
-  "tasks_done": 1539,
-  "evidence": 10778,
-  "proofs": 907,
-  "commits": 1177,
-  "gate_runs": 501,
-  "subagents": 5291,
-  "lanes_merged": 1234,
-  "findings": 6461,
-  "guard_blocks": 1466,
-  "captures": 2464,
-  "lessons_shown": 2750
+  "tasks_done": 1632,
+  "evidence": 11945,
+  "proofs": 972,
+  "commits": 1261,
+  "gate_runs": 511,
+  "subagents": 5490,
+  "lanes_merged": 1280,
+  "findings": 11563,
+  "guard_blocks": 1912,
+  "captures": 2730,
+  "lessons_shown": 2866
  },
  "daily": [
   {
@@ -269,71 +269,82 @@
   },
   {
    "day": "2026-11-25",
-   "FEATURE": 0,
-   "FIX": 0,
-   "CLEAN": 0,
-   "PERFORMANCE": 0,
+   "FEATURE": 36,
+   "FIX": 23,
+   "CLEAN": 2,
+   "PERFORMANCE": 9,
    "SECURITY": 0,
    "RESEARCH": 0,
-   "lanes": 0,
-   "evidence": 20
+   "lanes": 34,
+   "evidence": 1108
+  },
+  {
+   "day": "2026-11-26",
+   "FEATURE": 5,
+   "FIX": 10,
+   "CLEAN": 0,
+   "PERFORMANCE": 7,
+   "SECURITY": 1,
+   "RESEARCH": 0,
+   "lanes": 12,
+   "evidence": 79
   }
  ],
  "tiers": {
-  "S": 724,
-  "M": 780,
+  "S": 776,
+  "M": 821,
   "L": 34
  },
  "types": {
-  "FEATURE": 449,
-  "FIX": 727,
-  "CLEAN": 65,
-  "PERFORMANCE": 209,
-  "SECURITY": 64,
+  "FEATURE": 490,
+  "FIX": 760,
+  "CLEAN": 67,
+  "PERFORMANCE": 225,
+  "SECURITY": 65,
   "RESEARCH": 25
  },
  "guard": {
-  "brief": 676,
-  "core": 343,
-  "system": 207,
-  "state-direct": 83,
-  "rm-outside": 51,
-  "credentials": 33,
-  "confine": 28,
-  "pipe-shell": 16
+  "brief": 753,
+  "core": 398,
+  "confine": 308,
+  "system": 218,
+  "state-direct": 91,
+  "rm-outside": 64,
+  "credentials": 34,
+  "self-authorize": 16
  },
  "findings": {
   "lenses": {
-   "other": 3031,
-   "adversary": 682,
-   "edge": 653,
-   "intent": 583,
-   "self": 583,
-   "maintainer": 542
+   "other": 3554,
+   "intent": 1840,
+   "maintainer": 1565,
+   "edge": 1564,
+   "adversary": 1467,
+   "operator": 933
   },
   "severity": {
-   "LOW": 1137,
-   "MEDIUM": 655,
-   "HIGH": 144
+   "LOW": 1314,
+   "MEDIUM": 756,
+   "HIGH": 164
   }
  },
  "subagents": {
-  "sampo:fm-builder": 2131,
+  "sampo:fm-builder": 2227,
   "fm-builder": 1112,
-  "general-purpose": 918,
-  "sampo:fm-reviewer": 589,
+  "general-purpose": 920,
+  "sampo:fm-reviewer": 672,
   "workflow-subagent": 244,
   "fm-reviewer": 208
  },
  "gate_seconds": {
-  "runs": 501,
-  "median": 442.5
+  "runs": 511,
+  "median": 450.1
  },
  "tools": {
   "misses": 30,
   "resolved": 0,
   "proved": 0,
-  "searches": 507,
+  "searches": 582,
   "queued": 3,
   "refused": 0
  },
@@ -456,11 +467,11 @@
   "tests": 17596
  },
  "calibration": {
-  "scored": 34,
-  "pending": 1132,
+  "scored": 39,
+  "pending": 1163,
   "brier": {
-   "stated": 0.21132352941176472,
-   "base": 0.2777181818181818
+   "stated": 0.26256410256410256,
+   "base": 0.3614342105263158
   },
   "bars": {
    "research": 70,
@@ -476,16 +487,16 @@
     {
      "lo": 60,
      "hi": 79,
-     "n": 1,
+     "n": 3,
      "held": 0,
      "pct": 0,
-     "stated": 75,
-     "gap": 75
+     "stated": 73,
+     "gap": 73
     },
     {
      "lo": 80,
      "hi": 94,
-     "n": 8,
+     "n": 11,
      "held": 0,
      "pct": 0,
      "stated": 83,
@@ -534,16 +545,16 @@
     {
      "lo": 60,
      "hi": 79,
-     "n": 103,
-     "held": 96,
-     "pct": 93
+     "n": 106,
+     "held": 98,
+     "pct": 92
     },
     {
      "lo": 80,
      "hi": 94,
-     "n": 569,
-     "held": 528,
-     "pct": 93
+     "n": 598,
+     "held": 551,
+     "pct": 92
     },
     {
      "lo": 95,
@@ -556,16 +567,17 @@
   }
  },
  "proof": {
-  "n": 867,
+  "n": 853,
   "counts": {
-   "typed": 87,
-   "meaning-user": 98,
+   "typed": 88,
+   "meaning-user": 101,
    "research-uncited": 26,
-   "meaning-notes": 415,
+   "meaning-notes": 420,
    "red": 83,
-   "perf-typed": 227,
-   "docs": 116,
-   "tui-unshot": 2,
+   "perf-typed": 242,
+   "docs": 41,
+   "tui-unshot": 1,
+   "ui-unshot": 1,
    "perf-noise": 1
   },
   "history": [
@@ -664,6 +676,10 @@
    {
     "day": "2026-11-25",
     "n": 867
+   },
+   {
+    "day": "2026-11-26",
+    "n": 853
    }
   ]
  },
@@ -671,31 +687,31 @@
   "triggers": [
    {
     "trigger": "discovered",
-    "fired": 1545,
-    "precision": 0.886,
+    "fired": 1718,
+    "precision": 0.885,
     "route": "inbox"
    },
    {
     "trigger": "followup",
-    "fired": 240,
+    "fired": 256,
     "precision": 0.554,
     "route": "inbox"
    },
    {
     "trigger": "self",
-    "fired": 225,
-    "precision": 0.781,
+    "fired": 230,
+    "precision": 0.78,
     "route": "inbox"
    },
    {
     "trigger": "steer",
-    "fired": 165,
+    "fired": 173,
     "precision": 0.45,
     "route": "inbox"
    },
    {
     "trigger": "ci-red",
-    "fired": 82,
+    "fired": 84,
     "precision": 0.778,
     "route": "inbox"
    },
@@ -724,9 +740,21 @@
     "route": "inbox"
    },
    {
+    "trigger": "trunk-red",
+    "fired": 26,
+    "precision": null,
+    "route": "inbox"
+   },
+   {
     "trigger": "genesis-anticipation",
     "fired": 23,
     "precision": 0.0,
+    "route": "inbox"
+   },
+   {
+    "trigger": "sentinel reverify",
+    "fired": 23,
+    "precision": 1.0,
     "route": "inbox"
    },
    {
@@ -736,20 +764,8 @@
     "route": "inbox"
    },
    {
-    "trigger": "sentinel reverify",
-    "fired": 18,
-    "precision": 1.0,
-    "route": "inbox"
-   },
-   {
     "trigger": "steer-recur",
-    "fired": 13,
-    "precision": null,
-    "route": "inbox"
-   },
-   {
-    "trigger": "trunk-red",
-    "fired": 12,
+    "fired": 22,
     "precision": null,
     "route": "inbox"
    },
@@ -757,6 +773,12 @@
     "trigger": "trial",
     "fired": 11,
     "precision": null,
+    "route": "inbox"
+   },
+   {
+    "trigger": "recurring-failure",
+    "fired": 10,
+    "precision": 0.0,
     "route": "inbox"
    },
    {
@@ -778,7 +800,19 @@
     "route": "inbox"
    },
    {
+    "trigger": "repeat",
+    "fired": 8,
+    "precision": null,
+    "route": "inbox"
+   },
+   {
     "trigger": "landscape:which-capabilities-do-users-say",
+    "fired": 7,
+    "precision": null,
+    "route": "inbox"
+   },
+   {
+    "trigger": "sentinel bisect",
     "fired": 7,
     "precision": null,
     "route": "inbox"
@@ -796,12 +830,6 @@
     "route": "inbox"
    },
    {
-    "trigger": "recurring-failure",
-    "fired": 5,
-    "precision": 0.0,
-    "route": "inbox"
-   },
-   {
     "trigger": "scorecard",
     "fired": 5,
     "precision": null,
@@ -814,15 +842,15 @@
     "route": "inbox"
    },
    {
-    "trigger": "sentinel bisect",
-    "fired": 4,
+    "trigger": "predicted",
+    "fired": 3,
     "precision": null,
     "route": "inbox"
    },
    {
-    "trigger": "predicted",
+    "trigger": "self-failure",
     "fired": 3,
-    "precision": null,
+    "precision": 1.0,
     "route": "inbox"
    },
    {
@@ -833,18 +861,6 @@
    },
    {
     "trigger": "night",
-    "fired": 2,
-    "precision": 1.0,
-    "route": "inbox"
-   },
-   {
-    "trigger": "repeat",
-    "fired": 2,
-    "precision": null,
-    "route": "inbox"
-   },
-   {
-    "trigger": "self-failure",
     "fired": 2,
     "precision": 1.0,
     "route": "inbox"
@@ -877,9 +893,9 @@
   "predictions": [
    {
     "kind": "next-request",
-    "n": 362,
-    "hit": 0.423,
-    "base_hit": 0.378,
+    "n": 398,
+    "hit": 0.422,
+    "base_hit": 0.382,
     "lead": [
      true,
      0.004520592745393515,
@@ -887,10 +903,10 @@
      9
     ],
     "muted": false,
-    "shown_n": 254,
-    "shown_hit": 0.421,
+    "shown_n": 288,
+    "shown_hit": 0.424,
     "overlap": 0.056,
-    "base_overlap": 0.052
+    "base_overlap": 0.053
    }
   ],
   "lean": [
@@ -947,6 +963,643 @@
   }
  },
  "decisions": [
+  {
+   "date": "2026-11-26",
+   "text": "No Claude-model benchmark or exam runs (Sonnet, Opus, Fable, plain Claude Code or Sampo-in-Claude-Code) until the user calls Sampo genuinely insane; local models only",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-26",
+   "text": "read T-6865: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-26",
+   "text": "Page keeps its 31 browser loads; no shared-page cut to reach 30 s",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-26",
+   "text": "PlanForm keeps all 27 tests; no cut to reach 30 s",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-26",
+   "text": "Result-only grades in test_exam_kinds run in-process; the CLI stays for exit codes, --bar and --against refusals",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-26",
+   "text": "Memoize louhi._run in-process by planted-tree content (shared_exam_checks) and set SLOW_T to 2 s in tests only",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-26",
+   "text": "test_exam_think_before.py and test_exam_kinds.Against do not exist: the brief's names are stale; the classes measured are test_exam_think.KeptArm* and test_exam_kinds.Kinds/Compare",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-26",
+   "text": "Keep one real Chrome render per card (its defaults) in test_art_card_pair; the other 15 samples are checked by source gates in Draw, with no browser",
+   "later": null,
+   "confidence": 80,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "A derived scope is held by the lane like any scope (guard note, sampo edit refusal, widen with scope+=); only the process-tier gates treat it as unstated",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "T-5084: the run worker hands the lane back committed (222bf8d1f) and leaves the task active, not blocked: finish is refused in a builder lane, and a blocked status would drop the finished lane from la",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "Blocked T-5287 instead of copying or committing T-5285's uncommitted diff: it builds on T-5285's forgive and guard_false_refusal event, and taking another lane's work would land it under the wrong tas",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "T-5199: before its re-exec the mail monitor import-checks the new code in a subprocess; code that fails to import leaves the old monitor running until the next change",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "livegate.split runs an unconfigured front check in front, and puts every check in front when none is the suite",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "livegate.mode keeps the gated default of train.live_mode (T-5444), not T-4308's 'default live' interface line",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "A runner-derived scope is kept in meta scope_derived and, while unchanged, no gate reads it as a stated scope (process tier, tests-only, one-way evidence)",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "fm run derives a scope for every queued scopeless planned S/M task (not only the head), once per run, before each pick, in the pool and in the main loop when parallel>1 or serving",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "T-5089: hooks on fallback stays FAIL for the whole 24 h even once the cause is fixed, as its criterion says; no stale-code filter",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "T-3249: the drive's background round stays gated on claude_bench (T-5584), although criterion 2 does not name it: an automatic start must never reach a Claude call the user left off; night still runs ",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "T-6356: leave it active with a handoff log, not blocked: the finish is refused only because a builder's lane never closes its task, and a block could keep it from landing",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "sampo lane pick stays strict: no --unchecked flag on the race pick",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "--unchecked REASON merges a lane with no passing check; the main thread only, not a builder; the waiver is logged only after the merge lands",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "The hand train and merge verbs hold a lane with no passing check at its tip, as the land does (T-4767); live mode skips the hold, as _lane_hold does",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "T-5715: a claimed S or M scored risky keeps its own claimed groups (not the L groups), so a sensitive small claim still closes on self + adversary; the spec line 'risky gets today's L groups' reads as",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "test_lanes.RedFirst.test_a_test_that_arrives_after_the_brief_is_dropped fails with T-5323's code reverted, so it is not caused by this change",
+   "later": null,
+   "confidence": 80,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "rune.long_row takes optional lines so lead compares the window's pair exactly as the scorecard does, with no change to its default path",
+   "later": null,
+   "confidence": 85,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "long-horizon-graded and long-horizon-lead read exam.jsonl through rune.exam_rows, with no row when the window holds nothing to count or compare",
+   "later": null,
+   "confidence": 85,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "read T-6519: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "plan gate reads tests-folder data files (e.g. plugin/tests/fixtures/sample.json) as code, matching the close",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "T-5240: the affected-set run is waived on the record; the land train's full gate runs it before merge",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "T-5239: read the AC 'census rows include wired functions and verbs' as the unwired wired.py rows (nothing on the default path refers to them); AC text left as written",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "T-5239: capture order seeds first, then runtime and unwired kinds take turns; a board item is never captured again under a new flag (dedupe by kind and name)",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "T-5239: census.json is written only by a capture run (sampo outcomes --census --capture), so a plain query leaves it alone",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "T-5239: a partial scan (any skipped module, not only cli.py or a seed) gives no unwired rows and no census.json",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "T-5239: the census night job runs only in Sampo's home project: its scan reads Sampo's own modules (scout._is_home gate in night.jobs)",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "T-5227: waive the affected-test gate in the lane close (702 of 715 files); the full gate runs at the land train",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "T-5227: the review records each kept task's open waits; due() turns true at once on a new block or a waited-on close (ledger tail since the review), instead of waiting for the hour",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "T-5083: the behind checks run on HEAD by the probe after a green suite, a red one bisected as its own class (no suite per merge)",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "Ticket comments (eco._post) and PR comments (pr.post) redact strictly: an unreadable private list refuses the post",
+   "later": null,
+   "confidence": 80,
+   "kind": "outward"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "T-5715: a claimed M or S that the change scores risky keeps its own claimed groups plus the adversary lens for sensitive files; only a claimed L or bigger gets the L groups",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "T-6488 license: Apache-2.0 as the default (permissive plus patent grant); not added yet because a published license can't be taken back for copies already made",
+   "later": null,
+   "confidence": 7,
+   "kind": "outward"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "By-name argv is judged at wrapper seeds only; a one-hop forwarder's caller is judged inside the forwarder body",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "eco._post scope widened to eco.py (T-5288 brief named pr.py only)",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "The model transport models._send is classified reviewed-model, not redacted in the transport; its prompt is built by the caller, which owns the routing",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "Collisions show false-refusal counts only for rules with blocks in the window",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "Pending entries from before this change (no state field) log no event",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "Non-spending blocks (brief, plugin, core, remote) log a false refusal and refund nothing",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "A focus or grant that lifts a block logs no false refusal; a spending refund stays as it was",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "served_context is a GET of Ollama /api/ps and /api/show, so it is NOT_SENDING, not a site",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "Scan models.py for claude/gemini argv (EXCLUDED removed); match process and socket calls by name on any base, with from-import aliases; add --prompt to PROMPT_FLAGS",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "read T-6476: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "adopt map entry placed in docs/map/files-lib-2.md: files-lib-3 was leased by T-5247",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "UNDO_LINE names the python undo call; the sampo verb is wired by T-5338",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "knob-content dedupe in variants: the same knobs under another parent are the same process to measure",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "load legend: NOW reading drawn as three plain labels (NOW, value, CORES)",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "load kind: 2-minute buckets over 30 minutes, stacked per bar in kind order, cores as capacity line, goal as dashed line on the same scale",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "T-5148: close without the full affected-suite gate",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "T-5203 closes without the affected-set gate: a run worker never runs sampo check, and the affected set is 702 of 715 files",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "a replay goal the grader could not run (error) is excluded infra, not a model failure",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "Haiku models are smoke in the yardstick (arm_of: smoke, on neither side), for bench rows too, not only the replay suite",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "T-5184: close with --skip-affected, the merge gates this lane",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "periodicity test pins the ten kit kinds with no shared loop under an hour",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "stdlib ElementTree stays; DOCTYPE and ENTITY refused before parse",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "set and animateColor are refused by name",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "no plugin/lib/fmpanelmotion.py shim",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "panelmotion.frame evaluates the SMIL subset at phase 0 before the terminal draws",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "Gate ledger counts a refusal as both a run and a catch; passing runs are not logged, so the skip flag only fires for audit/affected/panel gates",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "A dropped duplicate with no known host keeps its own text as a same row (docstring corrected, not skipped)",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "T-5716: a mistyped lane accept --audit that argparse itself refuses (arity) logs no gate event; the gate ledger counts only refusals that reach accept",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "T-5094: switch name stays FOREMAN_NO_BOOK_CARDS though '0' enables the notes; the constant comment says so",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "T-5094: the CLEAN route test expects repo-sweep.md but route() returns the stage's INDEX.md (the documented INDEX-first rule); the test was already red at base, so the assertion now names the INDEX an",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "T-5132: card_show reads one card by name over MCP (write cards shown, never run); no card_pick over MCP and no confined write run: card_find is the look, card_call stays read-only (T-5603)",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "Guard tests for a loop fault's fix are checked by their flags, and the one not-built fix (empty) is the only exception",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "T-5838: L-tier headless builders with no route take the spawn table's builder model (the brief says tier route stands, else the table)",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "T-5838: the scorecard stays sampo usage --agents; the task title's 'cost --agents' is a naming slip (--agents lives on usage since T-0647)",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "read T-6422: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "read T-6421: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "read T-6400: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "read T-6394: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "read T-6388: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "Lead compaction window back to Sampo's own 200k at 70% (was the user's 400k at 75%, set on purpose 2026-10-30 as 1M): the lead re-read 193k tokens per turn over 866 turns in the last day, from an 88k ",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "Lanes past 3 review rounds whose open findings are MEDIUM edge cases (no HIGH, no security hole) are accepted and their findings filed as one follow-up task, instead of another round",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "T-6308: a Workflow agent() stage with no model stays denied in every mode with the fix line, not filled",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "T-6238 lease rule: a builder's return drops only builder-made leases (tags scope, edit, lane); a person's fm lease take (tag take) survives the return and its own expiry ends it",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "T-5731 resume on Haiku, not the Sonnet routing picked",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "T-6238 round 3 on Haiku, not the routed Sonnet",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "T-6155 round 4 on Haiku, not the routed Sonnet",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "T-6303 round 5 on Haiku, not the routed Sonnet",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "T-6303 resume runs on Haiku, not the routed Sonnet",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "T-6237: strict headless runs keep their write grants on home package caches and /dev/shm for now; per-lane caches are T-6315",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "T-6303 round 3 on Haiku, not the routed Sonnet: its two failed rounds were a stale-lease refusal (T-6238) and an intent false lead, not Haiku quality; the edit is fully specified",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-25",
+   "text": "After the 2026-11-25 reset two copies of conversation e43fecc5 run: the reset-started one in tmux sampo (pid 2440935, driving the pending list with 10 background tasks) and the user's tmux 0 copy (pid",
+   "later": null,
+   "confidence": 85,
+   "kind": "reversible"
+  },
   {
    "date": "2026-11-25",
    "text": "read T-6295: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
@@ -1167,7 +1820,10 @@
   {
    "date": "2026-11-22",
    "text": "No Claude-model benchmark or exam runs (Sonnet, Opus, Fable, plain Claude Code or Sampo-in-Claude-Code) until the user calls Sampo genuinely insane; local jarvis models only; Claude cost measured offl",
-   "later": null,
+   "later": {
+    "date": "2026-11-26",
+    "how": "revisited"
+   },
    "confidence": null,
    "kind": "reversible"
   },
@@ -1706,646 +2362,6 @@
   {
    "date": "2026-11-15",
    "text": "read T-4690: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-15",
-   "text": "Renewed the publish grant on T-4581 after train p shipped 3 commits to main (4f4a8900e): the next train (T-4684, then the guard and foresight reworks after their re-reviews) ships on it, under the sta",
-   "later": null,
-   "confidence": null,
-   "kind": "outward"
-  },
-  {
-   "date": "2026-11-15",
-   "text": "Renewed the publish grant on T-4581 for train p (T-4658, T-4671) and the T-4681 test fix; main pushes are pre-approved by the user's standing rule",
-   "later": null,
-   "confidence": null,
-   "kind": "outward"
-  },
-  {
-   "date": "2026-11-15",
-   "text": "Renewed the publish grant on T-4581 for train o (T-4670 drive wait, T-4676 train blame and narrowed confirm); main pushes are pre-approved by the user's standing rule",
-   "later": null,
-   "confidence": null,
-   "kind": "outward"
-  },
-  {
-   "date": "2026-11-14",
-   "text": "Renewed the publish grant on T-4581 for train n (six lanes: T-4662 T-4672 T-4669 T-4658 T-4667 T-4661) plus the two commits train m could not ship; main pushes are pre-approved by the user's standing ",
-   "later": null,
-   "confidence": null,
-   "kind": "outward"
-  },
-  {
-   "date": "2026-11-14",
-   "text": "Renewed the publish grant on T-4581 for the third train's ship to main (standing approval for main pushes)",
-   "later": null,
-   "confidence": null,
-   "kind": "outward"
-  },
-  {
-   "date": "2026-11-14",
-   "text": "Renewed the publish grant on T-4581 for the next train's ship to main (standing approval for main pushes, recorded in memory); the train carries the credentials-guard security fix T-4666",
-   "later": null,
-   "confidence": null,
-   "kind": "outward"
-  },
-  {
-   "date": "2026-11-14",
-   "text": "Also removed, on T-4657 with its own rm-outside grant: bytecode files in the lanes outside the project and twelve exam arm trees of 2026-11-11 (3 GB), each archived in the scratchpad first",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-14",
-   "text": "Removed eleven exported trunk snapshots (1.5 GB) of this session's own exam scratch outside the project, setting the rm-outside grant on T-4656 myself: they are plain exports of commits in the repo, a",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-14",
-   "text": "Parked T-4654 at a one-way, ambiguous step: delete the *.pyc files under the lane worktrees (.claude/worktrees and ~/.claude/foreman.lanes); re-measure.",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-14",
-   "text": "Parked T-4654 at a one-way, ambiguous step: delete the __pycache__ folders under .claude/worktrees and ~/.claude/foreman.lanes; re-measure.",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-14",
-   "text": "Parked T-4654 at a one-way, ambiguous step: delete the __pycache__ folders under .claude/worktrees and ~/.claude/foreman.lanes; re-measure",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-14",
-   "text": "Disk at 100% (1.5 GB free) stopped the merge train: freed 4 GB with sampo tidy --apply, sampo lane rm on 10 clean lanes already on the trunk, and git worktree remove on 11 clean task-less worktrees (b",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-14",
-   "text": "Snapshot before a one-way step: reproduce the refused close for a lane-built CLEAN task; failing tests in plugin/tests/test_lane_behaviour_lock.py; the bounded lock form, the hook's allowance and mess",
-   "later": null,
-   "confidence": 90,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-14",
-   "text": "Held-out measure read as: 25 of 164 before the fixes, 40 after, one run per arm, reported with the caveat that per-problem swings (up to 13 checks) make the gap weak evidence; next measure runs all fo",
-   "later": null,
-   "confidence": 80,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-13",
-   "text": "read T-4598: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-13",
-   "text": "Run the eight exam packs I have not read as a held-out set (163 hidden checks), on the fixed code and on the code before the fixes, once the current exam run frees the model",
-   "later": null,
-   "confidence": 85,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-13",
-   "text": "T-4547: the 30-runs-without-a-prompt clause of its criterion is dropped; the fallback with a seen stamp now compares whole seconds and counts the seen second, which is what lands",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-13",
-   "text": "Snapshot before a one-way step: failing tests in plugin/tests/test_disk_pressure.py (doctor thresholds with a patched disk reading; tidy lists a merged clean old lane, skips a dirty one, an unmerged o",
-   "later": null,
-   "confidence": 90,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-13",
-   "text": "T-4491 (two lane checks at once by default) is held out of the trains: on 2026-11-12 two concurrent checks under the 8-core cap each ran past their deadline, and T-4528's batches (landed) get the thro",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-13",
-   "text": "Accepted the plugin supply-chain baseline after review: security-guidance 2.0.19 to 2.0.20 from the official marketplace (auto-updated 2026-11-12). The added PostToolUse handler is a PowerShell matche",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-12",
-   "text": "T-4528's builder runs on Sonnet, not the Haiku the routing named: the change is concurrent state in train.py (locks, per-lane results), where a wrong edit stalls every landing",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-12",
-   "text": "T-4189's builder runs on Sonnet, not the Haiku the lane brief routes: the task changes the concerns ledger, the tick and the finish gate together, and its brief is over the size where Haiku lanes land",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-12",
-   "text": "read T-4504: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-12",
-   "text": "read T-4495: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-12",
-   "text": "read T-4439: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-12",
-   "text": "read T-4434: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-12",
-   "text": "Confirm M lanes on haiku",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-12",
-   "text": "Hard exam: the first thinking problem (ideas judged against a product's own data) and the first instrument problem (facts only in a stack card) are written by Opus sessions; the judge of thinking answ",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-12",
-   "text": "read T-4423: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-12",
-   "text": "The hard exam has bands: 1 = today's toy problems, 2 = real-sized projects (Fable alone 44/44 on the first three), 3 = problems Fable gets about half of; band 2 measures the local model's gap to Fable",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-11",
-   "text": "The hard exam's packs are written by Opus sessions (three at a time) and measured on Fable alone and with Sampo: a problem that is hard for the strongest model cannot be written or calibrated by a loc",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-11",
-   "text": "Ran Claude Fable with Sampo on the twelve goal requests at the user's request (2026-11-11): 45/48 for $12.87 (Fable alone 38/48 for $5.84)",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-11",
-   "text": "T-4358: plan calls stay with thinking off for the local model. On the twelve seed-8 goal requests the two arms with plan thinking scored 16 (E, 83 min) and 19 of 48 (H, with notes and the cut-reply fi",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-11",
-   "text": "Run the Fable plain reference arm on the same twelve goal requests (run s8-053, plain agent), about 5 dollars by Sonnet's 0.93: the local model's target is Fable, and Sonnet alone left 16 of 48 points",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-11",
-   "text": "Reference arms, after Sonnet plain cost under a dollar for the twelve goal requests: the same twelve once on Sonnet with Sampo loaded (--agent foreman) and once as a plain session on Fable, so the pag",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-11",
-   "text": "Reference arm for the goal exam: run seed 8's twelve goal scenarios once as a plain Claude session on Sonnet (sampo exam run s8-049 --agent plain --model sonnet), so the local model's 15 to 22 of 48 h",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-11",
-   "text": "sampo code's turn-cap carry (T-4291) on the user's own endpoint profile still holds after today's smith.py changes (T-4363, T-4377: plan gate only): up to 4 carries of 20 turns each on a run that is s",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-11",
-   "text": "sampo code's turn-cap carry (T-4291) also applies to the user's own endpoint profile: up to 4 carries of 20 turns each on a run that is still progressing",
-   "later": {
-    "date": "2026-11-11",
-    "how": "revisited"
-   },
-   "confidence": 70,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-11",
-   "text": "Thinking off becomes sampo code's default arm for local profiles (T-4297), after T-4290 and T-4291 land and the same-seed exam is run again; the state-layer arm as built is not taken further",
-   "later": null,
-   "confidence": 70,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-11",
-   "text": "T-4206 builder on Sonnet, not the Haiku the lane router named",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-11",
-   "text": "sampo code's default thinking: found native thinking ON by default (reason=None) and the compact-state arm (T-3006) unused; not flipped on a guess: A/B on five tasks (plain, off, state) decides the de",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-11",
-   "text": "T-4229: 'that AI architecture' read as three earlier asks taken together (reasoning layer 11-04, tiny steward model 11-10, council and orchestrators of orchestrators 11-08) = programme T-4233; every r",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-11",
-   "text": "read T-4228: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-11",
-   "text": "ponytail: already off for the foreman project (settings.local.json, since T-4130); turned off for the JARVIS project the same way (its 'simplest, shortest, no unrequested' rule works against the user'",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-11",
-   "text": "T-4219 big tiers: built as parent tasks with a checked full plan, children on an integration branch, wave launches and one close (not a longer single-agent loop); split into T-4220..T-4224; part B's b",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-11",
-   "text": "read T-4225: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-11",
-   "text": "The machine-wide pause I set by mistake (bare sampo pause, 23:47 and again 00:49) was removed by my own new test's late cleanup (T-4196: an addCleanup ran after tearDown restored the real home). I did",
-   "later": null,
-   "confidence": null,
-   "kind": "outward"
-  },
-  {
-   "date": "2026-11-11",
-   "text": "Slate: T-4181, T-4188, T-4189, T-4185, T-4190, T-4192, T-4191, T-4193 in that order; groups C, E, G, N, P are built or covered; J and the 45 unread titles stay open. Why: my own read of the user's mes",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-11",
-   "text": "T-4171 brainstorm: build order is T-4181 (meter), T-4188 (concerns ledger), T-4189, T-4185, T-4190, then local best-of-N and the cut; built or duplicate groups skipped (catalogue: research brainstorm-",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-11",
-   "text": "read T-4187: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-11",
-   "text": "read T-4186: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-11",
-   "text": "read T-4184: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-11",
-   "text": "read T-4178: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-11",
-   "text": "read T-4176: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-11",
-   "text": "read T-4172: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-11",
-   "text": "read T-4170: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-11",
-   "text": "read T-4167: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-11",
-   "text": "read T-4166: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-11",
-   "text": "read T-4159: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-11",
-   "text": "read T-4156: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-11",
-   "text": "read T-4136: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-11",
-   "text": "read T-4133: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-10",
-   "text": "read T-4129: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-10",
-   "text": "read T-4126: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-10",
-   "text": "read T-4117: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-10",
-   "text": "read T-4114: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-10",
-   "text": "T-4105, T-4106, T-4107 stay separate from T-4109 rather than one batch: T-4105's one-call classifier at capture is the seam the steward's tier-1 heads plug into, and shipping it first gives the user J",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-10",
-   "text": "read T-4112: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-10",
-   "text": "read T-4110: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-10",
-   "text": "model-shadow: intake-type: live agreement 160/280 under the floor 0.96",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-10",
-   "text": "model-live: intake-type: exam m20261110-081044128: kev:4b-q8_0 at confidence >= 0.7 beat the train majority by +0.041, lower bound +0.010 over 9 held-out projects",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-10",
-   "text": "read T-4104: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-09",
-   "text": "read T-4097: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-09",
-   "text": "read T-4095: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-09",
-   "text": "Recommendation: build on the substrate Sampo already runs (bus, second/rival, Kalevala towers, leases) rather than a new orchestration layer, cheapest first, each piece with its A/B: a Haiku tripwire ",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-09",
-   "text": "Recommendation: give LFM3-1.7B the cheap structured jobs it was built for (purposes tools, structured, agent): on Sampo's own probe it picked the right tool 20 of 20 (args right 19), produced valid an",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-08",
-   "text": "Adopt a two-rung Haiku-then-Sonnet ladder for exam-style plain sessions (21/35 pass at $0.060 per pass vs all-Sonnet 16/35 at $0.129, and 17/35 at $0.187 for Sonnet given a second try); drop the Opus ",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-08",
-   "text": "Pace new subagents to the Wednesday 07:00 UTC horizon (budget set --until 2026-11-11T07:00Z): in-flight builders finish, new ones start when the recent rate falls under the allowance; optional passes ",
-   "later": null,
-   "confidence": 75,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-08",
-   "text": "T-1331: a re-brainstorm round past the 8 newest ideas.md gave 71 new titles, 0 confirmed and at most 2 plausible gaps after grounding 14 against code: dry for fm code at this depth (research t1331-rou",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-08",
-   "text": "Recommendation: route the ideas lenses and deepen rounds through moonscale's local-first routing (_generative/_local/_ask) instead of claude -p for every child, as the Mission's Approaches choose; shi",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-08",
-   "text": "budget raised: day 100 \u2192 130",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-08",
-   "text": "Parked T-3926 at a one-way, ambiguous step: implement sampo safe / safe off (cli verb reusing serve.panic_stop and c.set_panic; land/train stop at a clean point; snapshot via a temp GIT_INDEX_FILE + c",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-08",
-   "text": "read T-3919: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-08",
-   "text": "Snapshot before a one-way step: drop the gpu-lfm3 line from models.json; check mimo answers",
-   "later": null,
-   "confidence": 90,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-08",
-   "text": "budget raised: day 40 \u2192 100",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-08",
-   "text": "Accepted the supply chain delta that made the base red (land stopped 07:52 UTC): sampo@sampo and sampo-ui@sampo are this repo's own plugins under the T-3707 name (same hooks as foreman@foreman); the o",
-   "later": null,
-   "confidence": null,
-   "kind": "outward"
-  },
-  {
-   "date": "2026-11-08",
-   "text": "read T-3901: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-08",
-   "text": "read T-3899: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-08",
-   "text": "read T-3896: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-08",
-   "text": "read T-3894: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-08",
-   "text": "read T-3893: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
    "later": null,
    "confidence": null,
    "kind": "costly"
