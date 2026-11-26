@@ -2941,3 +2941,137 @@ class DeferSensitive(PilotCase):
         os.environ["STUB_BAD_LENS"] = "edge"
         r = self.pilot()
         self.assertEqual(r["outcome"], "accepted", r)
+
+
+class Parked(PilotCase):
+    """T-6588: a lane parked on a stamped tip (its fix rounds spent, its last round's findings still open) settles on its
+    next pilot when every finding is MEDIUM or LOW: one follow-up, the lane accepted, no review run. A HIGH keeps it
+    parked, and so does an edit after the stamp. The park is made here by one fix round that changes nothing (mocked),
+    so the stamp is a real changes_asked one, as a lane parked before the deferral existed is."""
+    tier = "M"
+
+    def setUp(self):
+        super().setUp()
+        for k, v in (("STUB_BAD_LENS", "edge"), ("STUB_BAD_SEV", "MEDIUM")):
+            os.environ[k] = v
+            self.addCleanup(os.environ.pop, k, None)
+        fix = mock.patch.object(lanepilot, "fix_round", return_value="the fix session left the lane as it was")
+        fix.start()
+        self.addCleanup(fix.stop)
+
+    def follow_ups(self):
+        return [x for x in c.load_briefs(c.find_project(self.repo)) if x.meta.get("deferred_from") == self.tid]
+
+    def park(self):
+        r = self.pilot()
+        self.assertEqual(r["outcome"], "exception", r)
+        self.assertIn("after 1 fix round", r["reason"])
+        self.assertEqual(self.brief().meta.get("changes_asked"), "lane-pilot")
+        self.assertFalse(self.accepted())
+
+    def test_a_stamped_tip_with_only_medium_findings_settles_with_no_review(self):
+        self.park()
+        reviews = len(self.calls())
+        r = self.pilot()
+        self.assertEqual(r["outcome"], "accepted", r)
+        self.assertTrue(self.accepted())
+        self.assertEqual(len(self.calls()), reviews, "no reviewer runs on the settle")
+        self.assertEqual(self.audits(), ["adversary", "edge", "intent"], "the deferred lens is counted too")
+        (f,) = self.follow_ups()
+        self.assertIn("it is slow", f.render())
+        self.pilot()  # accepted: a rerun files no second follow-up
+        self.assertEqual(len(self.follow_ups()), 1)
+
+    def test_a_high_finding_on_the_parked_tip_keeps_it_parked(self):
+        os.environ["STUB_BAD_SEV"] = "HIGH"
+        self.park()
+        reviews = len(self.calls())
+        r = self.pilot()
+        self.assertNotEqual(r["outcome"], "accepted", r)
+        self.assertIn("changes needed", r["reason"])
+        self.assertFalse(self.accepted())
+        self.assertEqual(len(self.calls()), reviews, "no reviewer runs for a parked lane")
+        self.assertEqual(self.follow_ups(), [])
+
+    def test_an_edit_after_the_stamp_keeps_the_lane_parked(self):
+        self.park()
+        with open(os.path.join(self.brief().meta["lane"], "f1.txt"), "a") as f:
+            f.write("an edit the reviewers never read\n")
+        r = self.pilot()
+        self.assertNotEqual(r["outcome"], "accepted", r)
+        self.assertFalse(self.accepted())
+        self.assertEqual(self.follow_ups(), [])
+
+    def test_the_sweep_lists_a_settleable_parked_lane(self):  # T-6588 round 2: the sweep no longer skips it
+        self.park()
+        p = c.find_project(self.repo)
+        self.assertIn(self.tid, [t for t, _ in lanepilot._awaiting(p, self.repo)])
+
+    def test_the_sweep_settles_a_settleable_parked_lane(self):  # T-6588 round 2: its rows come from pilot, in process
+        from types import SimpleNamespace
+        self.park()
+        p = c.find_project(self.repo)
+        args = SimpleNamespace(all=True, id=None, max=None, dry=False, json=False, retry=False, held=True)
+        sweep = lambda p, main, top: [lanepilot._in_process(p, t, main, lanepilot.pilot)  # noqa: E731
+                                      for t, _ in lanepilot._awaiting(p, main)]
+        with mock.patch.object(lanepilot, "_sweep", sweep):
+            lanepilot.cmd(p, args, self.repo)
+        self.assertTrue(self.accepted())
+        self.assertEqual(len(self.follow_ups()), 1)
+
+    def test_the_sweep_still_skips_a_parked_lane_with_a_high_finding(self):  # T-6588 round 2
+        os.environ["STUB_BAD_SEV"] = "HIGH"
+        self.park()
+        p = c.find_project(self.repo)
+        self.assertNotIn(self.tid, [t for t, _ in lanepilot._awaiting(p, self.repo)])
+
+    def test_the_dry_plan_says_it_would_settle_not_review(self):  # T-6588 round 2: plan() names the settle
+        self.park()
+        p = c.find_project(self.repo)
+        self.assertEqual(lanepilot.line(lanepilot.plan(p, self.brief(), self.repo)),
+                         f"{self.tid}: would settle (defer 2 findings, accept)")  # the stub's two MEDIUM findings
+
+    def test_the_dry_plan_of_a_high_parked_lane_says_it_would_stop(self):  # T-6588 round 2
+        os.environ["STUB_BAD_SEV"] = "HIGH"
+        self.park()
+        p = c.find_project(self.repo)
+        self.assertIn("would stop", lanepilot.line(lanepilot.plan(p, self.brief(), self.repo)))
+
+    def test_a_high_past_the_logged_finding_cap_keeps_the_lane_parked(self):  # T-6588 round 3: the ledger keeps 20 lines a lens
+        os.environ.update(STUB_BAD_SEV="HIGH", STUB_PAD="25")
+        self.addCleanup(os.environ.pop, "STUB_PAD", None)
+        self.park()
+        r = self.pilot()
+        self.assertNotEqual(r["outcome"], "accepted", r)
+        self.assertIn("changes needed", r["reason"])
+        self.assertFalse(self.accepted())
+        self.assertEqual(self.follow_ups(), [])
+
+    def test_a_medium_past_the_logged_finding_cap_keeps_the_lane_parked(self):  # T-6588 round 3: a full log may hide more
+        os.environ["STUB_PAD"] = "25"
+        self.addCleanup(os.environ.pop, "STUB_PAD", None)
+        self.park()
+        r = self.pilot()
+        self.assertNotEqual(r["outcome"], "accepted", r)
+        self.assertFalse(self.accepted())
+        self.assertEqual(self.follow_ups(), [])
+
+    def test_a_changes_request_from_another_source_logged_after_the_park_keeps_it_parked(self):  # T-6588 round 3
+        self.park()
+        p = c.find_project(self.repo)
+        c.log_event(p, "changes_asked", task=self.tid, data={"who": "fm-reviewer", "tree": "x"})
+        r = self.pilot()
+        self.assertNotEqual(r["outcome"], "accepted", r)
+        self.assertFalse(self.accepted())
+        self.assertEqual(self.follow_ups(), [])
+
+    def test_a_changes_request_from_another_source_stamped_on_the_brief_keeps_it_parked(self):  # T-6588 round 3
+        self.park()
+        p = c.find_project(self.repo)
+        x = c.find_brief(p, self.tid)
+        x.meta["changes_asked"] = "fm-reviewer"  # the hooks' writer, over the pilot's stamp
+        c.save_brief(p, x)
+        r = self.pilot()
+        self.assertNotEqual(r["outcome"], "accepted", r)
+        self.assertFalse(self.accepted())
+        self.assertEqual(self.follow_ups(), [])

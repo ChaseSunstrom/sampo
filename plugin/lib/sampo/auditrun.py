@@ -581,7 +581,7 @@ def run(p, args):
             ok_audit(p, b.id, lens, "fm audit run (claude -p reviewer)", briefed,  # T-6322: held for a pilot round
                      {"lens": lens, "how": "fm audit run", "result": "ok"})
         with c.lock(p.dir):
-            for sev, at, text in found[:20]:
+            for sev, at, text in found[:c.FINDING_LOG_CAP]:
                 c.log_event(p, "finding", task=b.id, data={"lens": lens, "verdict": "reported",
                                                            "text": c.redact(" ".join(f"{sev} {at} {text}".split()))[:300]})
     # T-6043: each reply the regex parser had to read (the typed one failed twice), counted: the rate says the schema drifted

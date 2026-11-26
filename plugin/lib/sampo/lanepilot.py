@@ -403,7 +403,9 @@ def gate(p, b, main):
         return "its lane branch has no commit"
     if b.meta.get("reviewed_tip") == tip:
         return f"reviewed at {tip[:12]} and not accepted: sampo lane accept {b.id} says why"
-    if tip in _stamped(p, b):  # round 3: a changes round already spent its reviewers on this tip (round 5: or the aside stamp)
+    # round 3: a changes round already spent its reviewers on this tip (round 5: or the aside stamp). T-6588: unless its
+    # last round's findings are all MEDIUM or LOW, the pilot settles it (_settle, no review): read here, acted on there
+    if tip in _stamped(p, b) and _settle_plan(p, b, main, tip) is None:
         return f"reviewed at {tip[:12]}, changes needed: waiting for the builder's next commit"
     if c.is_big(b):
         return c.big_refusal(b)
@@ -2046,6 +2048,62 @@ def _accept(tid, main):
     return r.returncode, (lines[-1][:300] if lines else "")
 
 
+SETTLE_KINDS = ("pilot_review", "pilot_lens", "pilot_changes", "finding", "changes_asked")  # T-6588: the ledger lines a settle reads
+
+
+def _settle_plan(p, b, main, tip):
+    """T-6588: (stuck lenses, findings, sensitive, tree) of the review that stamped `tip`, or None. Read only. The lane's
+    tree must be the one the stamp recorded (nothing edited since); the last pilot_changes line for this tip names the
+    stuck lenses, each read at this tip in the round that wrote it (a pilot_lens line), and that round's reported findings
+    are its finding lines. A lens the verdict cache answered logs no finding line, so it holds the lane (None), as does a
+    stamp the ledger no longer shows. Round 3: a lens whose log is full (FINDING_LOG_CAP lines) holds too, as does a stamp
+    the pilot did not make (changes_asked is not "lane-pilot") or a finding or changes request another source logged after
+    the pilot's changes line. Then deferrable() decides: only MEDIUM and LOW, the adversary never MEDIUM here."""
+    tree = lanes.review_tree(p, b)
+    if not tree or tree != b.meta.get("changes_asked_tree") or b.meta.get("changes_asked") != "lane-pilot":
+        return None  # T-6588 round 3: only a changes request the pilot itself made is settled
+    tip12, evs = tip[:12], [e for e in c.ledger_events(p, SETTLE_KINDS) if e.get("task") == b.id]
+    ends = [i for i, e in enumerate(evs) if e.get("event") == "pilot_changes" and (e.get("data") or {}).get("tip") == tip12]
+    if not ends:
+        return None
+    end = ends[-1]
+    if any(e.get("event") == "finding" or (e.get("event") == "changes_asked" and (e.get("data") or {}).get("who") != "lane-pilot")
+           for e in evs[end + 1:]):
+        return None  # T-6588 round 3: a finding or a changes request from another source after the pilot's changes line
+    starts = [i for i in range(end) if evs[i].get("event") == "pilot_review"]
+    rnd = evs[(starts[-1] + 1 if starts else 0):end]
+    stuck = [str(x) for x in ((evs[end].get("data") or {}).get("lenses") or [])]
+    read = {str((e.get("data") or {}).get("lens")) for e in rnd
+            if e.get("event") == "pilot_lens" and (e.get("data") or {}).get("tip") == tip12}
+    if not stuck or not set(stuck) <= read:
+        return None
+    logged = [(e.get("data") or {}).get("lens") for e in rnd if e.get("event") == "finding"]
+    if any(logged.count(x) >= c.FINDING_LOG_CAP for x in stuck):
+        return None  # T-6588 round 3: the log keeps FINDING_LOG_CAP lines a lens, so a full one may hide a finding past its cut
+    findings = [f"{d.get('lens')}: {d.get('text')}" for d in (e.get("data") or {} for e in rnd if e.get("event") == "finding")
+                if d.get("verdict") == "reported" and d.get("lens") in stuck]
+    sensitive = _sensitive(main, tip)
+    return (stuck, findings, sensitive, tree) if deferrable(stuck, findings, sensitive) else None
+
+
+def _settle(p, b, main, tip, done):
+    """T-6588: a lane parked on a spent tip whose findings are all MEDIUM or LOW (_settle_plan) is accepted with no review.
+    _defer_rest files them as one follow-up and records each stuck lens's audit on the lane's tree, then the accept takes
+    the lane. A settle that cannot finish (a busy lock, a tip that moved) leaves the lane parked, as the gate words it."""
+    plan = _settle_plan(p, b, main, tip)
+    if plan is None or not _defer_rest(p, b, *plan):
+        return done("exception", f"reviewed at {tip[:12]}, changes needed: waiting for the builder's next commit")
+    if train._lane_tip(main, b) != tip:  # a commit that landed meanwhile: the follow-up stands, nothing is accepted
+        return done("exception", f"its lane moved past {tip[:12]} while it was settled: nothing accepted, rerun the pilot")
+    rc, last = _accept_busy(b.id, main)
+    fresh = c.find_brief(p, b.id)
+    if rc == 0 and fresh and fresh.meta.get("accepted_at"):
+        return done("accepted", "settled: its MEDIUM and LOW findings are deferred to a follow-up, no review run")
+    if rc == 0 and fresh and fresh.meta.get("check_state") == "running" and fresh.meta.get("check_tip") == tip:
+        return done("accepted", "check running")
+    return done("exception", last or f"sampo lane accept exited {rc}")
+
+
 def pilot(p, tid, main):
     """One lane through the pilot (T-5706). Returns {tid, outcome, lenses, findings, model, seconds, reason}: outcome
     accepted (sampo lane accept took it), changes (a lens reported changes needed, its clean lenses recorded, no
@@ -2074,7 +2132,10 @@ def pilot(p, tid, main):
     why = _busy(gate, p, b, main)
     if why:
         return done("exception", why)
-    _spend_retry(p, b, train._lane_tip(main, b))  # T-6226: a retry spends its tip before any paid step runs
+    tip = train._lane_tip(main, b)
+    if tip in _stamped(p, b):  # T-6588: a spent tip whose findings are all MEDIUM or LOW settles here, and no review runs
+        return _settle(p, b, main, tip, done)  # before _spend_retry: a T-6226 retry is not spent, so it stays a paid review
+    _spend_retry(p, b, tip)  # T-6226: a retry spends its tip before any paid step runs
     fixes, note, rounds, spent = 0, "", fix_rounds(), []  # spent: USD of each fix round so far
     while True:
         _reexec_if_code_changed(p)  # T-6169: a round that begins after a module changed re-execs (the ledger keeps the lane)
@@ -2136,7 +2197,7 @@ def pilot(p, tid, main):
             if verdict == "ok":
                 _record_local(p, b.id, x, before[1])
             with c.lock(p.dir):
-                for sev, at, text in found[:20]:
+                for sev, at, text in found[:c.FINDING_LOG_CAP]:
                     c.log_event(p, "finding", task=b.id, data={"lens": x, "verdict": "reported", "reviewer": "local",
                                                                "text": c.redact(" ".join(f"{sev} {at} {text}".split()))[:300]})
         if sample:  # T-6089: a sampled lane's local verdicts, each checked against Claude's on this same tree
@@ -2224,6 +2285,10 @@ def plan(p, b, main):
         res["reason"] = why
         return res
     tip = train._lane_tip(main, b)
+    spent = _settle_plan(p, b, main, tip) if tip in _stamped(p, b) else None  # T-6588: the pilot settles it, no review
+    if spent:
+        res.update(settle=len(spent[1]))
+        return res
     names, whole = lane_diff(main, tip)
     lenses, model = lenses_for(b, _sensitive(main, tip), p, names, whole)
     res.update(lenses=lenses, model=model)
@@ -2240,6 +2305,8 @@ def line(r):
     if r["outcome"] == "dry":
         if r["reason"]:
             return f"{r['tid']}: would stop: {r['reason']}"
+        if r.get("settle") is not None:  # T-6588: a spent tip whose findings settle: deferred, accepted, no review
+            return f"{r['tid']}: would settle (defer {r['settle']} findings, accept)"
         return f"{r['tid']}: would review {', '.join(r['lenses'])} on {r['model']}, then accept"
     return f"{r['tid']}: exception: {r['reason']}"
 
@@ -2299,7 +2366,9 @@ def _awaiting(p, main):
         if b.id not in awaiting or not lanes._builder_returned(b):
             continue
         tip = train._lane_tip(main, b)
-        if tip not in {b.meta.get("reviewed_tip"), *_stamped(p, b)}:
+        settles = (tip in _stamped(p, b) and b.meta.get("reviewed_tip") != tip  # T-6588: a spent tip that settles (the gate's
+                   and _settle_plan(p, b, main, tip) is not None)  # "reviewed and not accepted" check still comes first)
+        if tip not in {b.meta.get("reviewed_tip"), *_stamped(p, b)} or settles:
             out.append((b.id, tip))
     return out
 

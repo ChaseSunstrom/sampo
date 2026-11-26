@@ -4214,6 +4214,7 @@ def session_id():
 
 
 LEDGER_LIST_CAP, LEDGER_STR_CAP = 200, 4000
+FINDING_LOG_CAP = 20  # T-6588: finding events one review round logs per lens (auditrun and the local path cut there)
 
 
 def cap_payload(data):
