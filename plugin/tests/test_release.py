@@ -1143,7 +1143,8 @@ class ShipRecordsCase(ForemanTestCase):
         d = os.path.join(c.find_project(self.repo).dir, "postmerge")
         os.makedirs(d, exist_ok=True)
         c.write_atomic(os.path.join(d, f"{sha}.json"), json.dumps(
-            {"sha": sha, "task": self.tid, "state": state, "run_at": sha, "n": time.time_ns(), "at": c.now(), **kv}))
+            {"sha": sha, "task": self.tid, "state": state, "run_at": sha, "n": time.time_ns(), "at": c.now(),
+             "uncached": True, **kv}))
         return sha
 
     def runs(self):
@@ -1201,6 +1202,48 @@ class ShipFromRecords(ShipRecordsCase):
         self.assertEqual(self.main_log()[:4], ["add d", "add c", "add b", "add a"])
         passes = lanes.pm_full_passes(c.find_project(self.repo))
         self.assertEqual([x["sha"] for x in passes], [self.rev("HEAD")], "the ship's own green run is a full pass on the head")
+
+    def full_rows(self, *rows):
+        """T-6565: postmerge/.full.json as lanes.pm_full_pass writes it: (rev, cached, hours ago) per row, this suite."""
+        p = c.find_project(self.repo)
+        os.makedirs(os.path.join(p.dir, "postmerge"), exist_ok=True)
+        c.write_atomic(os.path.join(p.dir, "postmerge", ".full.json"), json.dumps([
+            {"sha": self.rev(rev), "tree": self.rev(f"{rev}^{{tree}}"), "cmd": self.suite, "env": c.env_id(),
+             "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - hours * 3600)),
+             **({"cached": True} if cached else {})} for rev, cached, hours in rows]))
+
+    def test_proof_trees_a_cached_sweep_alone_is_no_proof_so_the_ship_runs_the_suite(self):
+        self.full_rows(("HEAD", True, 0))
+        r = self.ship()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.runs(), ["full"], "no uncached pass beside it: the cache's blind reads are unbounded")
+
+    def test_proof_trees_a_cached_sweep_beside_an_uncached_pass_under_a_day_old_is_pushed_unrun(self):
+        self.full_rows(("HEAD~2", False, 20), ("HEAD", True, 0))
+        r = self.ship()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.runs(), [], r.stdout + r.stderr)
+        self.assertEqual(self.main_log()[:4], ["add d", "add c", "add b", "add a"])
+
+    def test_proof_trees_an_uncached_pass_over_a_day_old_anchors_no_cached_sweep(self):
+        self.full_rows(("HEAD~2", False, 25), ("HEAD", True, 0))
+        r = self.ship()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.runs(), ["full"], "a stale anchor: the cached pass proves nothing, the ship runs the suite")
+
+    def test_proof_trees_a_cached_green_record_with_no_uncached_anchor_is_no_proof(self):
+        self.rec("HEAD~1", uncached=False)  # c: green, but on the cached sweep with no uncached pass in a day
+        r = self.ship()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.runs(), ["full"], "a cached record alone proves nothing: the ship runs the suite")
+
+    def test_proof_trees_a_cached_green_record_beside_a_fresh_uncached_pass_ships_unrun(self):
+        self.full_rows(("HEAD~3", False, 20))
+        sha = self.rec("HEAD~1", uncached=False)
+        r = self.ship()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.runs(), [], r.stdout + r.stderr)
+        self.assertIn(f"record on {sha[:9]}", r.stdout)
 
     def test_a_partial_a_narrowed_or_a_reverted_green_is_no_proof(self):
         self.rec("HEAD", partial=True)

@@ -845,19 +845,29 @@ def _proves(r):
                                                or r.get("unrelated")) and _fresh(r.get("at")))
 
 
+UNCACHED_ANCHOR_S = 24 * 3600
+
+
 def _proof_trees(p, root, said, recs, trees=None):
     """T-6097: {tree: how to say the pass} for the trees the verify's records show the whole suite green on, with this ship's
     suite: the full passes (lanes.pm_full_passes, this environment) and the records (lanes.pm_records: green, `proves`),
     each read at the tree of `covered_by or sha` (a merge a later full run covered). `trees` = {sha: tree} already known."""
     from sampo import lanes
     out = {}
-    for x in lanes.pm_full_passes(p):
-        if _suite(x.get("cmd")) == _suite(said) and x.get("env") == c.env_id() and _fresh(x.get("at")):
-            out[str(x.get("tree"))] = f"the post-merge verify's full run on {str(x.get('sha'))[:9]} ({x.get('at')})"
+    rows = [x for x in lanes.pm_full_passes(p) if _suite(x.get("cmd")) == _suite(said) and x.get("env") == c.env_id()]
+    # T-6565: a cached sweep's pass counts only beside an uncached one under a day old (that one may itself be past
+    # CACHE_DAYS): the cache can't see a class's blind reads, and the daily uncached run is what bounds that
+    ages = [c.age_days(str(x.get("at"))) for x in rows if not x.get("cached")]
+    anchored = any(d is not None and d * 86400 < UNCACHED_ANCHOR_S for d in ages)
+    for x in rows:
+        if not _fresh(x.get("at")) or (x.get("cached") and not anchored):
+            continue
+        out[str(x.get("tree"))] = (f"the post-merge verify's {'cached ' if x.get('cached') else ''}full run on "
+                                   f"{str(x.get('sha'))[:9]} ({x.get('at')})")
     suite = lanes.pm_cmd(root, uncached=True, p=p)  # a record carries no command: it ran the project's own suite
     if suite and _suite(suite) == _suite(said):
         for sha, r in recs.items():
-            if not _proves(r):
+            if not _proves(r) or not (r.get("uncached") or anchored):  # T-6565: a cached sweep's record, as its pass
                 continue
             of = str(r.get("covered_by") or sha)
             tree = (trees or {}).get(of) or _git(root, "rev-parse", "--verify", "-q", f"{of}^{{tree}}", ok=True).strip()

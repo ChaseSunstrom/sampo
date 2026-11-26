@@ -7546,16 +7546,17 @@ def _pm_partial(p, main, wt, since, heads=1, sha=None, r=None, sweep=None, tasks
 FULL_KEEP = 50
 
 
-def pm_full_pass(p, main, sha, cmd):
-    """T-3666: a clean uncached run of the whole suite on sha's tree, for fm ship to push that commit without running it
-    again (~80 CPU-min). The newest FULL_KEEP, oldest first, in postmerge/.full.json (pm_records skips a list)."""
+def pm_full_pass(p, main, sha, cmd, cached=False):
+    """T-3666: a clean run of the whole suite on sha's tree, for fm ship to push that commit without running it again
+    (~80 CPU-min). The newest FULL_KEEP, oldest first, in postmerge/.full.json (pm_records skips a list). T-6565: `cached`
+    marks a sweep that ran SAMPO_CACHE_FULL=1; ship takes one only beside an uncached pass under a day old."""
     tree = _git(main, "rev-parse", f"{sha}^{{tree}}").stdout.strip()
     if not tree or not cmd:
         return
     os.makedirs(_pm_dir(p), exist_ok=True)
     with c.lock(_pm_dir(p)):
         rows = pm_full_passes(p) + [{"sha": _git(main, "rev-parse", sha).stdout.strip(), "tree": tree, "cmd": cmd,
-                                     "env": c.env_id(), "at": c.now()}]
+                                     "env": c.env_id(), "at": c.now(), **({"cached": True} if cached else {})}]
         c.write_atomic(os.path.join(_pm_dir(p), ".full.json"), json.dumps(rows[-FULL_KEEP:]))
 
 
@@ -8297,14 +8298,16 @@ def pm_verify(p, main, sha):
             part = None if gone else _pm_partial(p, main, wt, f"{sha}^1", sha=sha, r=r, sweep=sweep, tasks=[r["task"]])
             if part is not None or r.get("partial"):
                 pm_set(p, sha, partial=part is not None)
-            # a sweep is an uncached run: it is the full pass sampo ship pushes without running the suite itself
-            full = False if part is not None else bool(sweep) or _pm_uncached_due(p)
-            if full:
+            # T-6565: a sweep runs cached (run.py reruns 1 in 10 and every class whose code changed); only the daily or
+            # 20th run (_pm_uncached_due) drops the cache. Both record a full pass; ship takes a cached one beside a fresh uncached one
+            unc = False if part is not None else _pm_uncached_due(p)
+            full = part is None and (bool(sweep) or unc)
+            if unc:
                 pm_set(p, sha, uncached=True)
             if part is not None and not part[0]:
                 code, out = 0, ""  # nothing reaches this head's change: the shape pass was its verify
             else:
-                code, out = c.run_command(wt, part[0] if part is not None else pm_cmd(main, uncached=full, p=p),
+                code, out = c.run_command(wt, part[0] if part is not None else pm_cmd(main, uncached=unc, p=p),
                                           c.load_scaled(3600), env=cpu_env(p, gate=False), niced=True,
                                           low=True, origin="verify")  # T-3757: what landed becomes the usual; T-4197; T-4570: yields slots to waiting builders
             if _pm_tree_lost(p, sha, r, tries, wt):  # T-4728: a run in a removed folder ends 127: no merge is reverted for it
@@ -8344,8 +8347,8 @@ def pm_verify(p, main, sha):
         return True
     if not code:
         pm_set(p, sha, state="green")
-        if full and not gone:  # T-3666: sha's own tree passed the whole suite uncached; a requeued one ran another tree
-            pm_full_pass(p, main, sha, pm_cmd(main, uncached=True, p=p))
+        if full and not gone:  # T-3666: sha's own tree passed the whole suite; a requeued one ran another tree
+            pm_full_pass(p, main, sha, pm_cmd(main, uncached=True, p=p), cached=not unc)
             if full:  # T-5936: the counts restart only with a recorded full pass: a sweep excused as flaky, unrelated or
                 _pm_sweep_reset(p)  # inherited leaves them due, so the next head sweeps again and ship gets its commit
         said = (f"verified: the shape modules and the {len(part[1])} affected test file(s) are green on {sha[:9]} (a partial "
@@ -8774,11 +8777,12 @@ def _pm_green_at(p, main, sha, reds=None, short=None, part=None, since=None, hea
         plan = _pm_partial(p, main, wt, since, heads, sweep=sweep, tasks=tasks) if part is not None and since else None
         if plan is not None:
             part.append(True)
-        full = False if plan is not None else bool(sweep) or _pm_uncached_due(p)  # a sweep is uncached: ship's full pass
+        unc = False if plan is not None else _pm_uncached_due(p)  # T-6565: a sweep runs cached unless the uncached run is due
+        full = plan is None and (bool(sweep) or unc)
         if plan is not None and not plan[0]:
             code, out = 0, ""  # nothing reaches the change: the shape pass was the probe
         else:
-            code, out = c.run_command(wt, plan[0] if plan is not None else pm_cmd(main, uncached=full, p=p),
+            code, out = c.run_command(wt, plan[0] if plan is not None else pm_cmd(main, uncached=unc, p=p),
                                       c.load_scaled(3600), env=cpu_env(p, gate=False), niced=True, low=True,
                                       origin="verify")  # T-4197; T-4570
         if _tree_lost(wt):  # T-4728: a run in a removed folder is no red suite: stop the pass, the merge stays pending
@@ -8789,7 +8793,7 @@ def _pm_green_at(p, main, sha, reds=None, short=None, part=None, since=None, hea
                 reds.extend(k for k in pm_classes(out, code) if not k.startswith("suite exit"))
             return False
         if full:
-            pm_full_pass(p, main, sha, pm_cmd(main, uncached=True, p=p))
+            pm_full_pass(p, main, sha, pm_cmd(main, uncached=True, p=p), cached=not unc)
             _pm_sweep_reset(p)  # T-5936: the counts restart only with a recorded full pass
         return True
     finally:

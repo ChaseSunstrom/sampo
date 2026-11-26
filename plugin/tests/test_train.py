@@ -1169,10 +1169,12 @@ class BehindAffected(BehindBase):
         self.assertEqual(runs[9], ["shape", "full"], "the 11th head: ten have passed since the last full run")
         self.assertEqual(self.head("plugin/lib/sampo/a.py") and self.verify(), ["shape", "part", "test_a"], "and the count starts over")
 
-    def test_behind_affected_every_sweep_is_an_uncached_full_pass_sampo_ship_can_push(self):
-        # round 2 (HIGH): a sweep that ran cached left ship no fully verified commit: it ran its own suite
+    def test_behind_affected_every_sweep_is_a_full_pass_and_only_the_due_one_runs_uncached(self):
+        # round 2 (HIGH): a sweep that recorded no pass left ship no fully verified commit: it ran its own suite.
+        # T-6565: a sweep runs cached (~11k CPU s each uncached); the first, then the daily or 20th run, drops the cache
         self.swept()
         self.assertEqual(len(slanes.pm_full_passes(self.p)), 1)
+        self.assertNotIn("cached", slanes.pm_full_passes(self.p)[0], "no uncached run on record: the first sweep is one")
         for rounds in (2, 3):
             for _ in range(9):
                 self.head("plugin/lib/sampo/a.py")
@@ -1183,6 +1185,25 @@ class BehindAffected(BehindBase):
             passes = slanes.pm_full_passes(self.p)
             self.assertEqual(len(passes), rounds, "the sweep (the 11th head, the 21st) is a pass ship can push")
             self.assertEqual(passes[-1]["sha"], sha)
+            self.assertTrue(passes[-1].get("cached"), "a sweep with the uncached run not due runs SAMPO_CACHE_FULL=1")
+            self.assertFalse(self.rec(sha).get("uncached"))
+
+    def test_behind_affected_a_sweep_with_the_uncached_run_due_runs_without_the_cache(self):
+        self.swept()
+        for _ in range(9):
+            self.head("plugin/lib/sampo/a.py")
+            self.verify()
+        with open(os.path.join(slanes._pm_dir(self.p), ".uncached"), "w") as f:
+            json.dump({"t": 0, "k": 0}, f)  # the last uncached run a day ago
+        sha = self.head("plugin/lib/sampo/a.py")
+        seen = []
+        real = c.run_command
+        with mock.patch.object(c, "run_command", side_effect=lambda wt, cmd, *a, **k: seen.append(cmd) or real(wt, cmd, *a, **k)):
+            self.assertEqual(self.verify(), ["shape", "full"])
+        self.assertIn("python3 plugin/tests/run.py", seen)
+        self.assertFalse([x for x in seen if "SAMPO_CACHE_FULL" in x], "the due run drops the cache")
+        self.assertNotIn("cached", slanes.pm_full_passes(self.p)[-1])
+        self.assertTrue(self.rec(sha).get("uncached"))
 
     def test_behind_affected_a_partial_green_is_logged_partial_and_a_sweeps_is_not(self):
         self.swept()
