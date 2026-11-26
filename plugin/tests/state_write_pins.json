@@ -385,6 +385,18 @@
 ],
 1
 ],
+"sampo/hooks.py::_abs_path": [
+[
+"expanduser"
+],
+1
+],
+"sampo/hooks.py::_headless_paths": [
+[
+"expanduser"
+],
+1
+],
 "sampo/hooks.py::_big_read_rewrite": [
 [
 "expanduser"
