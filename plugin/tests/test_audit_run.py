@@ -32,8 +32,9 @@ if os.environ.get("STUB_ENVELOPE"):  # T-6043: a recorded claude -p --output-for
     print(open(os.environ["STUB_ENVELOPE"]).read())
     sys.exit(0)
 if lens == os.environ.get("STUB_BAD_LENS"):  # T-6043: replies are the typed JSON object; STUB_REPLY gives any other text
-    text = json.dumps({"lens": lens, "verdict": "changes needed", "findings": [
-        {"severity": "HIGH", "file": "a.py", "line": 3, "text": "the thing breaks on empty input"},
+    text = json.dumps({"lens": lens, "verdict": "changes needed", "findings": [  # STUB_PAD: that many LOW ones first
+        {"severity": "LOW", "file": "p.py", "line": i + 1, "text": f"pad {i}"} for i in range(int(os.environ.get("STUB_PAD") or 0))] + [
+        {"severity": os.environ.get("STUB_BAD_SEV", "HIGH"), "file": "a.py", "line": 3, "text": "the thing breaks on empty input"},
         {"severity": "MEDIUM", "file": "b.py", "line": 9, "text": "it is slow"}], "not_checked": []})
 elif lens in os.environ.get("STUB_NO_HEADER", "").split(","):  # T-6042: a reply holding no verdict at all
     text = "Looked it over, all fine, nothing to report."

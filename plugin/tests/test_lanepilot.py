@@ -525,9 +525,10 @@ class PilotHaiku(PilotHaikuCase):
         sleeps = []
         with mock.patch.object(c, "log_event", side_effect=busy), mock.patch.object(lanepilot, "_sleep", sleeps.append):
             r = self.pilot()
-        self.assertEqual(r["outcome"], "accepted", r)
+        # T-6322/T-6577: a ledger that never takes the round's lens lines withholds its clean audits: no accept
+        self.assertNotEqual(r["outcome"], "accepted", r)
         self.assertIn(("edge", "sonnet"), self.attempts)
-        self.assertEqual([x["lens"] for x in r["unlogged"]], ["edge"], "an escalation the busy ledger kept out is not lost")
+        self.assertIn("edge", [x["lens"] for x in r["unlogged"]], "an escalation the busy ledger kept out is not lost")
         self.assertLessEqual(len(sleeps), len(lanepilot.LOCK_BACKOFF), f"one backoff for the round, not one per lens: {sleeps}")
 
     def test_a_busy_lock_costs_no_wait_between_two_paid_runs(self):  # T-6164 review round 2: ~60 s per lens before
@@ -2852,3 +2853,91 @@ class SweepParallel(PilotCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DeferAfterCap(PilotCase):
+    """T-6576: once the pilot's fix rounds are spent, a lane whose open findings are all MEDIUM or LOW is accepted and
+    the findings go to one follow-up task (filed, never lost); a HIGH one, or an adversary MEDIUM on a sensitive lane,
+    still holds it. The cap here is 0 rounds, so the first review is the last."""
+    tier = "M"
+
+    def setUp(self):
+        super().setUp()
+        self.no_fix_rounds()
+        for k, v in (("STUB_BAD_LENS", "edge"), ("STUB_BAD_SEV", "MEDIUM")):
+            os.environ[k] = v
+            self.addCleanup(os.environ.pop, k, None)
+
+    def follow_ups(self):
+        return [x for x in c.load_briefs(c.find_project(self.repo)) if x.meta.get("deferred_from") == self.tid]
+
+    def test_medium_findings_after_the_cap_are_filed_and_the_lane_is_accepted(self):
+        r = self.pilot()
+        self.assertEqual(r["outcome"], "accepted", r)
+        self.assertTrue(self.accepted())
+        self.assertEqual(self.audits(), ["adversary", "edge", "intent"], "the deferred lens is counted too")
+        self.assertNotIn("changes_asked", self.brief().meta)
+        (f,) = self.follow_ups()
+        self.assertEqual(f.meta.get("source"), "discovered")
+        self.assertIn("it is slow", f.render())
+        self.pilot()  # the lane is accepted: a rerun files no second follow-up
+        self.assertEqual(len(self.follow_ups()), 1)
+
+    def test_a_high_finding_still_holds_the_lane(self):
+        os.environ["STUB_BAD_SEV"] = "HIGH"
+        r = self.pilot()
+        self.assertEqual(r["outcome"], "changes", r)
+        self.assertFalse(self.accepted())
+        self.assertEqual(self.follow_ups(), [])
+
+    def test_a_high_finding_past_the_twentieth_still_holds_the_lane(self):
+        os.environ.update(STUB_BAD_SEV="HIGH", STUB_PAD="25")
+        self.addCleanup(os.environ.pop, "STUB_PAD", None)
+        r = self.pilot()
+        self.assertNotEqual(r["outcome"], "accepted", r)
+        self.assertFalse(self.accepted())
+        self.assertEqual(self.follow_ups(), [])
+
+    def test_every_deferred_finding_is_filed_past_the_prompt_cap(self):
+        os.environ["STUB_PAD"] = "25"
+        self.addCleanup(os.environ.pop, "STUB_PAD", None)
+        r = self.pilot()
+        self.assertEqual(r["outcome"], "accepted", r)
+        (f,) = self.follow_ups()
+        self.assertIn("pad 24", f.render())
+        self.assertIn("it is slow", f.render())
+
+    def test_an_unknown_severity_still_holds_the_lane(self):
+        os.environ["STUB_BAD_SEV"] = "SEVERE"
+        r = self.pilot()
+        self.assertNotEqual(r["outcome"], "accepted", r)
+        self.assertFalse(self.accepted())
+
+    def test_the_follow_up_capture_is_not_read_as_a_review_escape(self):
+        self.pilot()
+        caps = [e for e in c.ledger_events(c.find_project(self.repo), ["capture"])
+                if (e.get("data") or {}).get("deferred_from")]
+        self.assertEqual(len(caps), 1)
+        self.assertNotIn("from", caps[0]["data"], "review_escape_rows reads `from` as an escape once the lane lands")
+
+
+class DeferSensitive(PilotCase):
+    name = "auth.py"
+
+    def setUp(self):
+        super().setUp()
+        self.no_fix_rounds()
+        os.environ["STUB_BAD_SEV"] = "MEDIUM"
+        self.addCleanup(os.environ.pop, "STUB_BAD_SEV", None)
+        self.addCleanup(os.environ.pop, "STUB_BAD_LENS", None)
+
+    def test_an_adversary_medium_on_a_sensitive_lane_still_holds_it(self):
+        os.environ["STUB_BAD_LENS"] = "adversary"
+        r = self.pilot()
+        self.assertNotEqual(r["outcome"], "accepted", r)
+        self.assertFalse(self.accepted())
+
+    def test_another_lens_medium_on_a_sensitive_lane_is_deferred(self):
+        os.environ["STUB_BAD_LENS"] = "edge"
+        r = self.pilot()
+        self.assertEqual(r["outcome"], "accepted", r)

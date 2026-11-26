@@ -185,6 +185,8 @@ def _argv(model, cap, lane="", effort=""):
 
 
 BLOCKING = c.BLOCKING_SEVERITIES  # T-5706: a finding this severe or worse keeps its lens from being clean
+SEV_RANK = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}  # an unknown severity ranks first (-1): never cut
+TYPED_CAP = 200  # typed findings per lens handed on (T-6576: a deferred follow-up files them all; ~60 KB at most)
 _AT = re.compile(r"[\w./-]+:\d+")  # the file:line a finding names
 _FINDING_HEAD = re.compile(r"(?i)^[\s\-+*.)\d#]*(?:finding\s*\d*\s*[:.)-]?\s*\(?\s*)?(?:severity\s*[:=-]?\s*)?"
                            r"(critical|crit|high|medium|med|low)\b[\s:—–)-]*")
@@ -595,7 +597,9 @@ def run(p, args):
             "findings": {k: [" ".join(f"{s} {a} {t}".split()) for s, a, t in v[1]] for k, v in verdicts.items() if v[1]},
             # T-6043: the typed reply's findings, field by field: a reader (the pilot) takes these, not the flattened strings
             "typed": {k: [{"severity": f["severity"], "file": f["file"][:200], "line": f["line"], "text": f["text"][:300]}
-                          for f in v[:20]] for k, v in typed_out.items() if v and k in verdicts},
+                          # T-6576: worst first, so the cap never drops a HIGH the pilot must hold on
+                          for f in sorted(v, key=lambda f: SEV_RANK.get(f["severity"], -1))[:TYPED_CAP]]
+                      for k, v in typed_out.items() if v and k in verdicts},
             "fallbacks": len(fallbacks), "failed": failed, "unparsed": unparsed}
     cli.out(args, data, f"{b.id}: " + ", ".join(f"{k} {v[0]}" for k, v in verdicts.items())
               + (f"; no verdict: {', '.join(f'{k} ({v})' for k, v in failed.items())}" if failed else "")
