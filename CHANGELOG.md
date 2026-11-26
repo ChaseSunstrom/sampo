@@ -10,6 +10,7 @@
 - **Moons at scale.** `sampo moons grow` fills a grid of 10,000 candidate moons, and a cheap-first funnel (dedupe, kill test, tier, novelty) and families cut them down to the few worth a moon page.
 
 ### Everything else
+- test_night.NightGuards and test_second make their CLAUDE_CONFIG_DIR under the headless launcher's safe root (helpers.safe_config_dir) instead of /tmp, which the T-5706 launcher refuses, so the stub claude runs again and the night's spend and usage stops are tested (T-6017).
 - the lane pilot's headless resolver and builder start in a fresh private scratch folder outside the repo, read the lane through --add-dir and drop the switch that loads CLAUDE.md from an added folder, so a CLAUDE.md a builder wrote in the lane never loads into them (T-5970).
 - Builder briefs now list the line range of each symbol their steps name and flag scope files over 1,500 lines, so builders read ranges, not whole modules (T-5965).
 - Hook notes name at most 3 unverified merges, then a count: the list grew to 50+ tasks on every promp (T-5949).
