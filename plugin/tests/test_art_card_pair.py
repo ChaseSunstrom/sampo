@@ -192,16 +192,18 @@ class Check(unittest.TestCase):
 
 
 def _render_test(name, i, sample):
-    @unittest.skipUnless(headless_chrome(), "no headless Chromium here")
     def test(self):
+        # no skip: a run without a browser must fail, never pass with zero real renders
+        if not headless_chrome():
+            self.fail(f"{name}: no headless Chromium, so the card's real render cannot run")
         self.render_sample(name, i, sample)
     return test
 
 
-# one test per sample (and the defaults), so the runner shards the renders instead of one method taking minutes
+# T-6566: one real Chrome render per card (its defaults), not one per sample: 17 renders took 63 s wall under the runner
+# on a loaded box. Every sample still draws and passes the source gates in Draw, with no browser.
 for _name in ART:
-    for _i, _sample in enumerate([{}] + SAMPLES[_name]):
-        setattr(Check, f"test_render_{_name.replace('-', '_')}_{_i}", _render_test(_name, _i, _sample))
+    setattr(Check, f"test_render_{_name.replace('-', '_')}_default", _render_test(_name, 0, {}))
 
 
 @confined
