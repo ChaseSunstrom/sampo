@@ -1,17 +1,17 @@
 {
- "generated": "2026-11-26",
+ "generated": "2026-11-27",
  "totals": {
-  "tasks_done": 1632,
-  "evidence": 11945,
-  "proofs": 972,
-  "commits": 1261,
-  "gate_runs": 511,
-  "subagents": 5490,
-  "lanes_merged": 1280,
-  "findings": 11563,
-  "guard_blocks": 1912,
-  "captures": 2730,
-  "lessons_shown": 2866
+  "tasks_done": 1706,
+  "evidence": 12584,
+  "proofs": 1018,
+  "commits": 1323,
+  "gate_runs": 515,
+  "subagents": 5619,
+  "lanes_merged": 1328,
+  "findings": 17397,
+  "guard_blocks": 2430,
+  "captures": 3019,
+  "lessons_shown": 2920
  },
  "daily": [
   {
@@ -280,71 +280,82 @@
   },
   {
    "day": "2026-11-26",
-   "FEATURE": 5,
-   "FIX": 10,
+   "FEATURE": 7,
+   "FIX": 21,
    "CLEAN": 0,
-   "PERFORMANCE": 7,
-   "SECURITY": 1,
+   "PERFORMANCE": 9,
+   "SECURITY": 2,
    "RESEARCH": 0,
-   "lanes": 12,
-   "evidence": 79
+   "lanes": 20,
+   "evidence": 278
+  },
+  {
+   "day": "2026-11-27",
+   "FEATURE": 27,
+   "FIX": 20,
+   "CLEAN": 5,
+   "PERFORMANCE": 3,
+   "SECURITY": 3,
+   "RESEARCH": 0,
+   "lanes": 40,
+   "evidence": 440
   }
  ],
  "tiers": {
-  "S": 776,
-  "M": 821,
+  "S": 808,
+  "M": 863,
   "L": 34
  },
  "types": {
-  "FEATURE": 490,
-  "FIX": 760,
-  "CLEAN": 67,
-  "PERFORMANCE": 225,
-  "SECURITY": 65,
+  "FEATURE": 519,
+  "FIX": 791,
+  "CLEAN": 72,
+  "PERFORMANCE": 230,
+  "SECURITY": 69,
   "RESEARCH": 25
  },
  "guard": {
-  "brief": 753,
-  "core": 398,
-  "confine": 308,
-  "system": 218,
-  "state-direct": 91,
-  "rm-outside": 64,
-  "credentials": 34,
-  "self-authorize": 16
+  "brief": 834,
+  "confine": 654,
+  "core": 445,
+  "system": 231,
+  "state-direct": 98,
+  "rm-outside": 80,
+  "credentials": 36,
+  "self-authorize": 19
  },
  "findings": {
   "lenses": {
-   "other": 3554,
-   "intent": 1840,
-   "maintainer": 1565,
-   "edge": 1564,
-   "adversary": 1467,
-   "operator": 933
+   "other": 3895,
+   "intent": 3356,
+   "maintainer": 2841,
+   "edge": 2659,
+   "adversary": 2390,
+   "operator": 1609
   },
   "severity": {
-   "LOW": 1314,
-   "MEDIUM": 756,
-   "HIGH": 164
+   "LOW": 1433,
+   "MEDIUM": 837,
+   "HIGH": 179
   }
  },
  "subagents": {
-  "sampo:fm-builder": 2227,
+  "sampo:fm-builder": 2274,
   "fm-builder": 1112,
-  "general-purpose": 920,
-  "sampo:fm-reviewer": 672,
+  "general-purpose": 935,
+  "sampo:fm-reviewer": 734,
   "workflow-subagent": 244,
   "fm-reviewer": 208
  },
  "gate_seconds": {
-  "runs": 511,
-  "median": 450.1
+  "runs": 515,
+  "median": 452.3
  },
  "tools": {
   "misses": 30,
   "resolved": 0,
   "proved": 0,
-  "searches": 582,
+  "searches": 642,
   "queued": 3,
   "refused": 0
  },
@@ -464,14 +475,14 @@
  "code": {
   "model_tests": 107,
   "endpoints": 9,
-  "tests": 17596
+  "tests": 18106
  },
  "calibration": {
-  "scored": 39,
-  "pending": 1163,
+  "scored": 37,
+  "pending": 1209,
   "brier": {
-   "stated": 0.26256410256410256,
-   "base": 0.3614342105263158
+   "stated": 0.24621621621621625,
+   "base": 0.32824722222222225
   },
   "bars": {
    "research": 70,
@@ -487,16 +498,16 @@
     {
      "lo": 60,
      "hi": 79,
-     "n": 3,
+     "n": 2,
      "held": 0,
      "pct": 0,
-     "stated": 73,
-     "gap": 73
+     "stated": 75,
+     "gap": 75
     },
     {
      "lo": 80,
      "hi": 94,
-     "n": 11,
+     "n": 10,
      "held": 0,
      "pct": 0,
      "stated": 83,
@@ -545,16 +556,16 @@
     {
      "lo": 60,
      "hi": 79,
-     "n": 106,
-     "held": 98,
-     "pct": 92
+     "n": 107,
+     "held": 99,
+     "pct": 93
     },
     {
      "lo": 80,
      "hi": 94,
-     "n": 598,
-     "held": 551,
-     "pct": 92
+     "n": 599,
+     "held": 548,
+     "pct": 91
     },
     {
      "lo": 95,
@@ -567,17 +578,19 @@
   }
  },
  "proof": {
-  "n": 853,
+  "n": 847,
   "counts": {
-   "typed": 88,
-   "meaning-user": 101,
+   "typed": 89,
+   "meaning-user": 103,
    "research-uncited": 26,
-   "meaning-notes": 420,
-   "red": 83,
-   "perf-typed": 242,
-   "docs": 41,
-   "tui-unshot": 1,
-   "ui-unshot": 1,
+   "meaning-notes": 428,
+   "red": 85,
+   "perf-typed": 244,
+   "ui-unshot": 5,
+   "tui-unshot": 4,
+   "docs": 10,
+   "infra": 4,
+   "data": 1,
    "perf-noise": 1
   },
   "history": [
@@ -680,6 +693,10 @@
    {
     "day": "2026-11-26",
     "n": 853
+   },
+   {
+    "day": "2026-11-27",
+    "n": 847
    }
   ]
  },
@@ -687,31 +704,31 @@
   "triggers": [
    {
     "trigger": "discovered",
-    "fired": 1718,
-    "precision": 0.885,
+    "fired": 1928,
+    "precision": 0.889,
     "route": "inbox"
    },
    {
     "trigger": "followup",
-    "fired": 256,
-    "precision": 0.554,
+    "fired": 286,
+    "precision": 0.536,
     "route": "inbox"
    },
    {
     "trigger": "self",
-    "fired": 230,
-    "precision": 0.78,
+    "fired": 222,
+    "precision": 0.829,
     "route": "inbox"
    },
    {
     "trigger": "steer",
-    "fired": 173,
-    "precision": 0.45,
+    "fired": 177,
+    "precision": 0.607,
     "route": "inbox"
    },
    {
     "trigger": "ci-red",
-    "fired": 84,
+    "fired": 88,
     "precision": 0.778,
     "route": "inbox"
    },
@@ -741,13 +758,25 @@
    },
    {
     "trigger": "trunk-red",
-    "fired": 26,
+    "fired": 28,
     "precision": null,
     "route": "inbox"
    },
    {
+    "trigger": "steer-recur",
+    "fired": 25,
+    "precision": null,
+    "route": "inbox"
+   },
+   {
+    "trigger": "foresight-date",
+    "fired": 24,
+    "precision": 0.0,
+    "route": "inbox"
+   },
+   {
     "trigger": "genesis-anticipation",
-    "fired": 23,
+    "fired": 24,
     "precision": 0.0,
     "route": "inbox"
    },
@@ -758,14 +787,14 @@
     "route": "inbox"
    },
    {
-    "trigger": "foresight-date",
-    "fired": 22,
+    "trigger": "recurring-failure",
+    "fired": 14,
     "precision": 0.0,
     "route": "inbox"
    },
    {
-    "trigger": "steer-recur",
-    "fired": 22,
+    "trigger": "repeat",
+    "fired": 11,
     "precision": null,
     "route": "inbox"
    },
@@ -773,12 +802,6 @@
     "trigger": "trial",
     "fired": 11,
     "precision": null,
-    "route": "inbox"
-   },
-   {
-    "trigger": "recurring-failure",
-    "fired": 10,
-    "precision": 0.0,
     "route": "inbox"
    },
    {
@@ -800,8 +823,8 @@
     "route": "inbox"
    },
    {
-    "trigger": "repeat",
-    "fired": 8,
+    "trigger": "failure classes",
+    "fired": 7,
     "precision": null,
     "route": "inbox"
    },
@@ -814,12 +837,6 @@
    {
     "trigger": "sentinel bisect",
     "fired": 7,
-    "precision": null,
-    "route": "inbox"
-   },
-   {
-    "trigger": "failure classes",
-    "fired": 6,
     "precision": null,
     "route": "inbox"
    },
@@ -842,15 +859,15 @@
     "route": "inbox"
    },
    {
-    "trigger": "predicted",
-    "fired": 3,
-    "precision": null,
+    "trigger": "self-failure",
+    "fired": 4,
+    "precision": 1.0,
     "route": "inbox"
    },
    {
-    "trigger": "self-failure",
+    "trigger": "predicted",
     "fired": 3,
-    "precision": 1.0,
+    "precision": null,
     "route": "inbox"
    },
    {
@@ -866,6 +883,12 @@
     "route": "inbox"
    },
    {
+    "trigger": "promise",
+    "fired": 2,
+    "precision": null,
+    "route": "inbox"
+   },
+   {
     "trigger": "capability-miss",
     "fired": 1,
     "precision": null,
@@ -873,12 +896,6 @@
    },
    {
     "trigger": "landscape:what-do-rival-harnesses-ship",
-    "fired": 1,
-    "precision": null,
-    "route": "inbox"
-   },
-   {
-    "trigger": "promise",
     "fired": 1,
     "precision": null,
     "route": "inbox"
@@ -893,9 +910,9 @@
   "predictions": [
    {
     "kind": "next-request",
-    "n": 398,
-    "hit": 0.422,
-    "base_hit": 0.382,
+    "n": 411,
+    "hit": 0.426,
+    "base_hit": 0.387,
     "lead": [
      true,
      0.004520592745393515,
@@ -903,10 +920,10 @@
      9
     ],
     "muted": false,
-    "shown_n": 288,
-    "shown_hit": 0.424,
-    "overlap": 0.056,
-    "base_overlap": 0.053
+    "shown_n": 301,
+    "shown_hit": 0.429,
+    "overlap": 0.054,
+    "base_overlap": 0.051
    }
   ],
   "lean": [
@@ -963,6 +980,909 @@
   }
  },
  "decisions": [
+  {
+   "date": "2026-11-27",
+   "text": "T-5150 keeps panelmotion and the phase-0 frame in --term: T-5148 is a dependency merged into this lane (3471c9560) and not yet on main, so the land carries it with T-5150",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-4521's concern that stays open until the push lands is the unfinished ship itself, not a new ledger event",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "The 8 test_hooks failures (Stop lead holds, SessionStart room cut, refused-start plan verbs) are pre-existing and not part of T-6756",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-6357: the guard keeps trusting the shared-.git ledger; a forged line in both the ledger and info/exclude still passes the guard (accepted residual)",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "test_serve PlanGate and DeadEndResume stay red, tracked on T-6355",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "close waived the affected-set gate (647 of 737 files)",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "sentinel.py merge keeps build's pass structure and re-adds the T-7061 remedy (restart, exit-status gate, ledger, cache reset)",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-3339: QUESTION keeps agent research papers in track 2",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-3339: deps deadline is per read, not per fetch total; kept",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-3339: eco whole-token key matcher kept",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-3339: cc_watch keeps its text= parameter as a test seam",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-3339: the cc changelog cache is replaced on every successful fetch with release headings",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-5150: the terminal keeps drawing rotate, scale and matrix as outlines; the review round's translate-only narrowing is reverted",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-7148: the land's guard_refused (core) was a self-change row on one recorded ps command that reads /proc/<pid>/fd/1; its verdict is state-direct while that process writes Sampo state and allow once i",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "A planned L goes to a builder (whole, or split into children); the 2026-10-31 rows that keep an L in the main thread are superseded",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-7031: the queue's planned key for an L is lane-readiness (approval-held L reads false, as the planner's gate needs); brief_summary's autonomy stays optional",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-7031 review round 2: keep fm lane's step_files dropping a '..' path; keep _plan_same_file's casefold; a split child's route stays the mode's pick (haiku-first only in the default mode)",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-6626 stall: the lane's ANDON.md was T-6168's (one train.py::_run edit blocked by T-6300's lease), left in a lane reused for T-6626. Answered: moved aside, the edit captured as a follow-up of T-7189.",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "Benchmark tracks renamed to prove-track and the width transition dropped",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "Rollup test expectation extended with failed, reworked and causes",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "fmshadow kept as an old-path shim plus its MASTER bullet",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "Arm roles shown as Claude alone, Claude in Sampo, local model in Sampo, ceiling, floor",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "Cost field exported per arm and run in stats.json",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-7148's land refusal guard_refused (core) is a self-change guard row, base 'state-direct' vs branch 'allow' on one recorded ps command; the lane's diff touches no guard code and the standing core yes",
+   "later": null,
+   "confidence": null,
+   "kind": "outward"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-7148 closes with DeadEndResume red: it fails identically on its base d234b9fbc (the resume regex strips apostrophes, unchanged by this task); fixing it here would widen the task, so it is filed as T",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-7060 deferred LOWs: journal read keeps its newest 2000 lines per poll; a FIFO source; pid reuse in --land-pid; the runner restart stays in T-7061 (the slot reports failed, so the lead is woken)",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-7060: the separate sampo pipewatch run loop (3 s poll) is the wake path; the hourly foreman-tick timer, watchdog and keepalive are not rewired to it",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-5691: the cap-held lane's retry is already on HEAD: wait_checks re-polls it (readmit), so the land does not exit without retrying. StaleRetryAfterCap passes on HEAD, so no red was reproduced; disabl",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-6300: a --user uid:gid is redacted too (docker run --user 1000:1000 becomes 1000:[REDACTED])",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-6357: keep smith's built-folder lines in the claimed set (the criterion names them) and accept the forgeable-ledger limit",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "Widened the report-file refusal to Edit, MultiEdit, fixer, resolver, reproducer and untyped in-lane launches",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "Reproducer report: 'at most 1500 characters and 6 lines', no never-write clause",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "Loop length (one loop = 1 s vs kit SMIL 1.2-4 s) deferred to T-5151 follow-ups",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "Rows carry bold as a fourth field (text, fg, bg, bold)",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "MAX_FRAMES = CACHE_MAX (256)",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "The grid cache key is the theme's values (sorted vars), not repr(theme)",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "Rotation and scale are drawn as outlines in the rasteriser (affine transforms in panelterm._shape); rotated or scaled text is refused by name",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-6300: the prose redact() keeps the wider value rule (quoted values to their own quote, ASCII blanks) for every prose writer",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-6300: the ambient re-run of a secret-bearing last failing command stays refused; last.json carries a redacted flag, not a text match",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-3353: RecoverAfterStop writes content and a future mtime instead of a bare utime; the Lanes fixtures write the real transcript shape (message.content)",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-3353: scope widened to plugin/lib/sampo/train.py for the refused-report subject guard (T-6524 review)",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-5042: the scratch tree is reset and cleaned with -x before the smoke; a failed reset refuses the train",
+   "later": null,
+   "confidence": 9,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-5042: a symlinked hook or plugin/hooks folder is refused before anything runs it",
+   "later": null,
+   "confidence": 9,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-5042: the second smoke runs only when the tip moved since the first",
+   "later": null,
+   "confidence": 8,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-5042: the serve.py fast-forward gets no hook smoke in this task",
+   "later": null,
+   "confidence": 7,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-5042: widen scope to CHANGELOG.md and plugin/lib/sampo/hooksmoke.py",
+   "later": null,
+   "confidence": 8,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-5884 usage hold: a local run is not rerouted to haiku; its review is the usual unrouted Claude review, as for any builder",
+   "later": null,
+   "confidence": 75,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-5884 launch line is the lane wrapper: sampo lane local ID runs sampo code --task headless",
+   "later": null,
+   "confidence": 80,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-4240: the guard's FM_CMD_FLAGS stays the guard's own table; the new inventory test cross-checks it against the parser walk, instead of generating it from the parser",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-5149: full-gate close waived to the lane train",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-5149: the tiles tooltip carries the label only, not label and state",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-3971 gap: the uplift row reads the newest T-3930 gap rows of the same run and does not recompute the gap",
+   "later": null,
+   "confidence": 70,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-4978: the red-run answer follows the task's text (sampo task evidence --run exit 1 is an answer), so T-4999's assertion that it stays a failure is flipped",
+   "later": null,
+   "confidence": 70,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-3969 closed with --skip-affected: the affected set was 98% of tests from trunk's changes; the lane's own diff is 2 files with 139 tests OK; the train's gate covers the tree at merge",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "Guard fast path stats the active briefs' keys; a closed brief edited in place to active is seen within 10 s (_ACTIVE_WALK_S)",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "Program-sent prompts stay unsigned, so PromptMac's program case asserts headless True and no MAC",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-5410 acceptance criterion checks origin/main is an ancestor of the lane HEAD; a replayed push never makes that true, so the checkable form is sampo ship --check (exit 0)",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "Add plugin/lib/fmcpubudget.py as the fm shim for sampo.cpubudget",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "steward stall: the sampo steward stall verb is wired by T-5012's dispatcher, not this slice; T-5015's criterion is met at the function (run/stalled) and its verb-level test waits for T-5012 on trunk",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "Sink inventory: place the trunk's state helpers (base, foreman_home, paths) and rename headroom._write's parameter to state_path, instead of reviewing them; lower the ratchet 323 to 317",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-3353: commit the foreman/build merge into this lane; keep the 3 test_lanes classes red (RecoverAfterStop, DerivedChangelog, Lanes.test_a_lane_without_edit_is_not_bound_to_a_task_the_builder_did_not_",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-4013: the lane's red_after_merge was a stale gate park; closed the task on the trunk-equal tree, left the stray CHANGELOG line uncommitted",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-4845: guard tests red on foreman/build (GuardHeredoc, SameAsFm, ScriptPipeShell) are not this lane's: left as-is, filed T-7176",
+   "later": null,
+   "confidence": 80,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-5042: the broken pre-existing ExcuseSitesKnownRed failure is filed as T-7147, not fixed here",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-5042: the hook smoke gates only trees with plugin/hooks/hook (Sampo's own tree), placed right after the build and before the live compile check and any gate",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-6148: agent_ok's deferral is checked by running the built sampo-fast on sample payloads against the Python hook (test_fast_equiv's pair harness), replacing the source regexes; it skips without a bin",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "Train 8 prep: the T-3339 lane takes trunk's landscape (T-3362, T-5506) wholesale: its opt-in night job (--night on\\|off), per-track yield and tuple rows are superseded, and its tests follow trunk",
+   "later": null,
+   "confidence": 80,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "Supersedes the Parallel Missions 5-8 rows: an L no longer stays in the main thread. Every task, L included, goes to a builder; a planned L is briefed whole, an unplanned one is refused until planned",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-5514: the fixes scorecard bar is 40% of reviewed lanes asked for changes per 7 days (FIX_ROUND_MAX=40.0)",
+   "later": null,
+   "confidence": 50,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-5514: a builder brief's review section lists only MEDIUM-or-worse findings on its scope files from the last 30 days, newest first, within 8 lines and 1200 bytes, and sits beside the T-5723 defect se",
+   "later": null,
+   "confidence": 70,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-7054: a pool pass plans its free slots' heads in one batched call (cap 8), not one call per head",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-7054: a whole-reply fence or prose is read for its first JSON object; a malformed entry still costs only its task",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-7054: a queued task a planning pass cannot scope (or no lane can take) is skipped for the run, in serve and non-serve pools, so the pool goes on",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "Standing: cost is a first-class goal: about one tenth of native Claude Code cost for the same work, for every consumer (subagents, planners, reviewers, retries), measured per task against that baselin",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "Standing: Sampo is the product and Claude Code is one surface of it. Every feature, rule, setting and prompt works across all of Sampo; CC-specific logic is a thin adapter; tests cover the shared path",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "Standing: prevent conflicts and later rework as part of the task: inspect target state first, keep changes scoped, sync with base, update every surface, run build/type/lint/tests, fix root causes and ",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "Standing: UI quality is an acceptance criterion on every user-facing change: polished, all states (loading, empty, error, disabled, focus, overflow), responsive, accessible, verified by running it (T-",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "Standing: for every task, map every surface the change touches (code, callers, tests, docs, config, migrations, types, edge cases) and handle them unasked; exhaustive reasoning in proportion to risk; ",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "Standing: Claude and Claude Code have no 5-hour usage window. Sampo must not model, display, enforce or plan around it for CC. Other limits (weekly, token, USD) stay (T-3848)",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "Standing: build the direction from everything the user sends: fast, efficient, cheap, high quality, complete, act rather than advise, report faithfully, correctness > completeness > speed/cost; newest",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "Standing: treat the GIL as a design constraint. CPU-bound work uses processes; I/O-bound uses asyncio or threads; no GIL-bound hot path lands without 1-vs-N worker benchmark evidence (T-3136)",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-7061: remedies run without a lead; what they don't fix is held until a lead appears (pause still holds everything)",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-7061: the restart remedy is gated on any attempt within 10 min (ledger rows, failed attempts count), so a restart loop cannot restart again inside the window",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-7061: the watcher unit's ExecStart passes --unit foreman-run-<slug>.service (T-7051's run unit name), not the brief's sampo-run-foreman default",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-7061: the service verb is pipewatch --service on\\|off\\|status, not sampo sentinel (that verb is the older re-run-checks command; pipewatch is the watcher)",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "A refused lib .py union falls through to the local model when a loopback profile exists; its merge must pass the content, parse, name and lane-test checks, else the lane parks as before",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "the unit pins this interpreter and plugin fm, as fm serve does, and freezes PATH and FOREMAN_HOME at on time; re-run fm run --service on after changing them",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "a spend cap, --stall-usd or a contract end exits 0 and the unit stays down; any other failure restarts (30 s delay, 5 tries in 10 min)",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "a deliberate stop (fm pause --now) exits 4 (STOPPED_EXIT); the unit sets RestartPreventExitStatus=4, so after a pause the queue stays down until fm run --service on, and fm pause off does not restart ",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "fm run --service turns linger on, so the queue survives logout the way fm serve's unit does",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "pilotsig interrupted-wait deferred to T-7093",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "find_project None deferred to T-7092",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "Recover's tip branch mirrors resume",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "Unknown tip never trips",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "Replay: first run gets half the remaining window, the retry the rest",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "Stage stop means cut, not overrun-after-finish",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "plan --file is judged by reading the file, relative paths resolved from the payload cwd, failing closed",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "Any refused lane start blocks the task with its reason and does not count toward FAILS_MAX",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "A gapped head is skipped in _run_pool when no serve is running, so cmd_run cannot re-pick it forever",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "Pool plan gate is exactly core.plan_gaps, pool-only; serial path unchanged",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-6616: investigated the six friction items (mission and ideas run, 147 ideas, root causes logged on each member); no build round. The 'Ran N stop hooks' line is Claude Code's own, so Sampo cannot res",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-5736: a fix's Measured gain at close has no after side until its lane lands (the line says not measurable yet); the line is filled at landing, a follow-up task",
+   "later": null,
+   "confidence": 80,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-7047 step 4 (watchdog alarms run their remedy) is left out of this change; the three acceptance criteria (trip, no false trip, stage deadlines) are the task's done-when",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-7060: the runner unit name defaults to sampo-run-foreman; generalising it to other projects is deferred to the everything-general sweep",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-7060: the trunk breakage 'Stopped: merges wait' is its own kind, separate from 'full suite is red'",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-7060: no progress fires on its second line",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-7060: the default remedy table is empty; runner-stopped and unit-inactive wake the lead until T-7061 adds the restart",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-7060: a remedy that reports done suppresses mail and wake; failed or no remedy still wakes",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-7060: a pause holds breakages (no mail, no wake) and reports them once the pause lifts",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-7060: mail immediately; wake the lead at most once per 5 min",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-7060: the sentinel is the pipewatch verb (module sampo/sentinel.py), not sampo sentinel",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-5736: the day still running is scaled to the hours so far, and the gain's after side starts on the day the fix's lane landed",
+   "later": null,
+   "confidence": 80,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-5736: the CPU-per-lane target is provisional but leads T-5709's ranking when past, its title naming the largest share; the set-aside 'quiet' flag is dropped",
+   "later": null,
+   "confidence": 70,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-7047 watchdog alarms do not run their remedies in this change (step 4 left out)",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-7047 replay deadline fails closed: a guard replay past its stage deadline is cut, the stage is recorded stopped, and the gate refuses the branch (the RuntimeError path), never passes it unreplayed",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "close T-7048 without the 78-file affected run in the close: the full gate runs at the lane's merge",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "unlanded footprint = git log --name-only of each tip past HEAD, cached per tip (LANE_FILES, 512) and bisect index (_hits)",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "skip check (T-6409) passes landing=False: a temporary wait is not a skip",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "_unlanded keeps merging lanes (no running exclusion): a lane the pool is merging holds its real files, the same as a returned one",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "Step 4 (watchdog alarms run their remedy) is not an acceptance criterion; left out of this change: the alarms keep reporting, and the breaker files its task at the trip",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "T-4581: its criterion 1 checks origin main with the unscoped sampo ship --check, which lists 37 trunk commits newer than 4b1d8d0e3 (none an ancestor of it); the task's text is up to 4b1d8d0e3, so the ",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "read T-7035: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-27",
+   "text": "read T-7034: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-26",
+   "text": "Snapshot before a one-way step: T-6118: test first, plugin/tests/test_judgment.py class T6118ProseIsNotACommand: the step 'Run rm with a test path, python -c, /bin/sh, and the others' is two-way with ",
+   "later": null,
+   "confidence": 90,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-26",
+   "text": "Parked T-6707 at a one-way, ambiguous step: T-5775: test first, plugin/tests/test_judgment.py class T5775WriteSourceIsNotADoor: classify a step 'Write tests red first from /proc/stat.' and expect door",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-26",
+   "text": "T-5881: reverse the earlier call; the guard's fast path stats the ~100 active briefs and checks each entry's file key, falling back to a walk on any mismatch",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-26",
+   "text": "T-5881 ANDON: a settled tasks folder is trusted by its stamp; in-place brief rewrites are seen at the next rename",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-26",
+   "text": "read T-6973: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-26",
+   "text": "read T-6972: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
   {
    "date": "2026-11-26",
    "text": "No Claude-model benchmark or exam runs (Sonnet, Opus, Fable, plain Claude Code or Sampo-in-Claude-Code) until the user calls Sampo genuinely insane; local models only",
@@ -1459,912 +2379,6 @@
    "later": null,
    "confidence": null,
    "kind": "reversible"
-  },
-  {
-   "date": "2026-11-25",
-   "text": "Guard tests for a loop fault's fix are checked by their flags, and the one not-built fix (empty) is the only exception",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-25",
-   "text": "T-5838: L-tier headless builders with no route take the spawn table's builder model (the brief says tier route stands, else the table)",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-25",
-   "text": "T-5838: the scorecard stays sampo usage --agents; the task title's 'cost --agents' is a naming slip (--agents lives on usage since T-0647)",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-25",
-   "text": "read T-6422: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-25",
-   "text": "read T-6421: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-25",
-   "text": "read T-6400: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-25",
-   "text": "read T-6394: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-25",
-   "text": "read T-6388: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-25",
-   "text": "Lead compaction window back to Sampo's own 200k at 70% (was the user's 400k at 75%, set on purpose 2026-10-30 as 1M): the lead re-read 193k tokens per turn over 866 turns in the last day, from an 88k ",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-25",
-   "text": "Lanes past 3 review rounds whose open findings are MEDIUM edge cases (no HIGH, no security hole) are accepted and their findings filed as one follow-up task, instead of another round",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-25",
-   "text": "T-6308: a Workflow agent() stage with no model stays denied in every mode with the fix line, not filled",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-25",
-   "text": "T-6238 lease rule: a builder's return drops only builder-made leases (tags scope, edit, lane); a person's fm lease take (tag take) survives the return and its own expiry ends it",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-25",
-   "text": "T-5731 resume on Haiku, not the Sonnet routing picked",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-25",
-   "text": "T-6238 round 3 on Haiku, not the routed Sonnet",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-25",
-   "text": "T-6155 round 4 on Haiku, not the routed Sonnet",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-25",
-   "text": "T-6303 round 5 on Haiku, not the routed Sonnet",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-25",
-   "text": "T-6303 resume runs on Haiku, not the routed Sonnet",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-25",
-   "text": "T-6237: strict headless runs keep their write grants on home package caches and /dev/shm for now; per-lane caches are T-6315",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-25",
-   "text": "T-6303 round 3 on Haiku, not the routed Sonnet: its two failed rounds were a stale-lease refusal (T-6238) and an intent false lead, not Haiku quality; the edit is fully specified",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-25",
-   "text": "After the 2026-11-25 reset two copies of conversation e43fecc5 run: the reset-started one in tmux sampo (pid 2440935, driving the pending list with 10 background tasks) and the user's tmux 0 copy (pid",
-   "later": null,
-   "confidence": 85,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-25",
-   "text": "read T-6295: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-23",
-   "text": "Sampo vs plain Claude Code is measured offline from shipped lanes and recorded sessions, not by new Claude benchmark runs; the same-task A/B of about 10 real tasks waits until the user lifts the no-Cl",
-   "later": null,
-   "confidence": 80,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-23",
-   "text": "read T-6273: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-23",
-   "text": "read T-6208: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-23",
-   "text": "Order after the 2026-11-25 reset: cost, perf (T-6201 Haiku/local parity included), T-6200 kith post-mortem, T-6197 generality, rest; kith stays stopped until T-6200 and its fixes land",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-23",
-   "text": "read T-6199: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-23",
-   "text": "read T-6198: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-23",
-   "text": "Until the weekly reset (2026-11-25 07:00 UTC), brief only lanes that cut cost or unblock the pipeline (T-6194, T-5960, T-6184, T-6159/T-6158 class); the rest wait",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-23",
-   "text": "lane brief checks the plan gate before running criteria at HEAD",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-23",
-   "text": "T-6160's train gate runs merged-tree dependents by a ranked time budget (patches a changed symbol > names one > reads a changed data/web file > names the changed path > import-only) up to 90 s estimat",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-23",
-   "text": "read T-6167: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-23",
-   "text": "Snapshot before a one-way step: test-first: WorkingSetRunner red on trunk (rm with a test path, python -c, /bin/sh, VAR=x prefix, unknown runner dropped; run.py, pytest, cargo test kept)",
-   "later": null,
-   "confidence": 90,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-23",
-   "text": "read T-6099: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-23",
-   "text": "read T-6087: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-23",
-   "text": "read T-6059: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-23",
-   "text": "Re-architecture brainstorm slate (T-6036): build T-6042 verdict-loss alarms, T-6043 typed reviewer replies, T-6044 lens map + verdict cache, T-6045 one-child review behind a 20-lane recall kill test, ",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-22",
-   "text": "Ship Sampo's read-only MCP server (cards, do) in the plugin manifest (T-5885) instead of leaving registration as a manual step",
-   "later": null,
-   "confidence": null,
-   "kind": "outward"
-  },
-  {
-   "date": "2026-11-22",
-   "text": "Re-queue the 16 lanes the 10:05 shape cull parked for test_fast_equiv.Passthrough (a flaky class, not their fault) once the running 7-lane train lands; T-5879/T-5880 fix the flake and the cull's blame",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-22",
-   "text": "Hold T-5501 (agent rename) unaccepted until the land queue drains, then land it alone and restart sessions",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-22",
-   "text": "Brief urgent tasks with T-5774's lane code while trunk's sampo lane brief crashes on _defs",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-22",
-   "text": "Night run: marked T-5588, T-5534, T-5561, T-5562 urgent so their builders run while the 47-lane land drains",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-22",
-   "text": "T-5584 andon: a custom non-Claude --worker name stays refused while claude-bench is off (fail closed), and the bench child stays gated even with the switch on",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-22",
-   "text": "T-5715 andon: a claimed S/M diff scored risky keeps its own audit groups plus the adversary lens on the sensitive files; only a claimed L+ owes the full L groups",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-22",
-   "text": "T-5715 andon: a claimed S/M change scored risky keeps its claimed audit groups plus the adversary lens on the sensitive files (today's flow), not the full L groups",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-22",
-   "text": "Parked T-5736 at a one-way, ambiguous step: Add the cpu_per_lane measure in measure.py from the run cache, close records, train ledger and /proc/stat, with tests written red first on fixture records",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-22",
-   "text": "Session restart deferred to a natural lull; the night wave launched first",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-22",
-   "text": "read T-5773: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-22",
-   "text": "read T-5763: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-22",
-   "text": "read T-5727: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-22",
-   "text": "read T-5705: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-22",
-   "text": "read T-5688: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-22",
-   "text": "No Claude-model benchmark or exam runs (Sonnet, Opus, Fable, plain Claude Code or Sampo-in-Claude-Code) until the user calls Sampo genuinely insane; local jarvis models only; Claude cost measured offl",
-   "later": {
-    "date": "2026-11-26",
-    "how": "revisited"
-   },
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-22",
-   "text": "read T-5584: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-22",
-   "text": "T-5565: every grounded brainstorm idea is built, with no checklist page; the slate is ordered by how much each cuts the lead's own tokens and context first",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-22",
-   "text": "read T-5566: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-22",
-   "text": "T-5547 round 6 converges on two variable classes: a Sampo-specific state variable set in assignment shape anywhere in the command text (quotes, bodies, variables, interpreter code, files written in th",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-22",
-   "text": "T-5560 andon: close the source spoof at the producer in this lane: research _line neutralizes the tail's delimiters in model-written fields (claim, quote, tier, date, why, support), so only the real t",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-22",
-   "text": "read T-5563: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-22",
-   "text": "T-5547 state guard: fail closed on any real state assignment unless every reached command is a bare-name text program (echo, printf, true, false, test, [, ls, cat, head, tail, wc, grep); no argument s",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-22",
-   "text": "read T-5551: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-22",
-   "text": "read T-5532: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-22",
-   "text": "read T-5515: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-22",
-   "text": "read T-5510: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-22",
-   "text": "read T-5505: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-22",
-   "text": "Recommendation: build in this order: the user's own asks first (T-5494), the event-driven lane (T-5495), builders write close material (T-5496), every agent typed and model-routed (T-5497), the agent ",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-21",
-   "text": "read T-5450: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-21",
-   "text": "read T-5448: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-21",
-   "text": "read T-5442: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-21",
-   "text": "read T-5426: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-20",
-   "text": "read T-5414: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-19",
-   "text": "Hold T-5084 and other new builds: 117 finished lanes wait to land and the user asked to ease off so kith can finish; this session finishes merged-but-open tasks first",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-19",
-   "text": "read T-5382: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-19",
-   "text": "T-5381 (train relocates a lane's new map entries when the combination overflows a shard, slice of the user's T-3137) is briefed past the unmerged cap as urgent: ~35 of the waiting lanes would otherwis",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-19",
-   "text": "T-5380 (shape-stage batching, a slice of the user's T-3137) is briefed past the unmerged cap as urgent: ~74 lanes wait ~6 h on per-lane shape runs under the 8-core cap, and this cuts that work about N",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-19",
-   "text": "T-5365: a train's confirm after a lane is left out reruns only the red names (and flaky ones) and the other gates whole, no longer every test the left-out lane's diff reaches; the post-merge verify's ",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-19",
-   "text": "Land the backlog in hand trains of about 20 lanes, each after one repo-shape run on a merge of all its lanes, instead of 27 per-lane checks",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-19",
-   "text": "read T-5057: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-18",
-   "text": "read T-4987: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-18",
-   "text": "Train 3 takes 41 lanes with T-4976 (CI red on main) first; T-4938, T-3365, T-3010, T-4968 go to train 4; hand closes run between trains",
-   "later": null,
-   "confidence": 75,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-18",
-   "text": "Land the 63 finished lanes in four hand trains: train 2 (20), train 3 (trains 3a and 3b, 37, plus 3 lanes rebased on train 2), train 4 (3 lanes rebased on train 3)",
-   "later": null,
-   "confidence": 70,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-18",
-   "text": "T-3311 approved under full autonomy with the revised plan: harness and 2 cards, a fixed-bar A/B, then 8 cards",
-   "later": null,
-   "confidence": 75,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-18",
-   "text": "Land the backlog in hand trains of about 20 lanes, each after one repo-shape run on a merge of all its lanes, instead of 27 per-lane checks",
-   "later": null,
-   "confidence": 85,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-18",
-   "text": "read T-4937: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-17",
-   "text": "T-0325 (Desktop tray icon) needs a root package install only the user can run (libappindicator-gtk3, xdotool; neither is on the machine); it stays blocked as a user-only item, named once in the final ",
-   "later": null,
-   "confidence": null,
-   "kind": "outward"
-  },
-  {
-   "date": "2026-11-17",
-   "text": "JARVIS box synced from the T-4910 lane (trunk 47e01ca53 merged with T-4910's README rules) on the user's 'update sampo on the jarvis machine and have it use the README skill, immediately'; the box ses",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-17",
-   "text": "T-4845: steer rows dated before 2026-11-17 (when prompts began to be signed, T-4844) stay in force as legacy rules, sealed once under selfgate's key the first time verified_steers reads the project; e",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-17",
-   "text": "Correction to the last decision: T-3857 keeps normal priority (priority is only normal or urgent, and urgent is for security and baseline breaks); it stays in its place in the queue",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-17",
-   "text": "T-3857 (merge-train triage, close-prep and safe-rename skills) moved up: today's session again did train triage and six hand closes by hand, the work it names; new skills T-4913 to T-4915 queue behind",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-17",
-   "text": "Re-deferred the 23 due catalogue tasks (T-0788 and 22 more) to 2026-11-24: weekly usage 71% against the 75% floor with kith sharing it; finishing in-flight lands, closes and the ship beats starting L ",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-17",
-   "text": "Stopped the T-2981 hand rerun (10 min in) to cut six concurrent lane checks to five on the session's 8-CPU cgroup; the others keep their progress. T-2981 reruns after the queue drains.",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-17",
-   "text": "Held T-3050 (L: Kalevala, many Rune towers at once): weekly usage is at 67% with the 75% floor in force and this session capped at half the account for kith; an L build with many concurrent towers wou",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-17",
-   "text": "Lifted the hold on new builder lanes: load fell from 14-19 to about 7 and no builder was working, so T-4404 (lane accept restart) starts in a builder lane while the held checks rerun by hand; at most ",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-17",
-   "text": "T-4581 stays open: the ship pushed through 49c11e7a6 (T-4822), and four commits that landed while it ran (T-4823, T-4543, T-4827) wait for the next ship; land the green lanes first so one ship covers ",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-17",
-   "text": "T-0352 will create the public GitHub repo for Sampo Desktop (the user's yes of 2026-10-06), after a scan that no key, host or private name is in its tree or history; it runs when its turn comes in the",
-   "later": null,
-   "confidence": null,
-   "kind": "outward"
-  },
-  {
-   "date": "2026-11-17",
-   "text": "Hold new builder lanes until the lane-check pile drains: 13 lanes wait on affected checks, 5 cut off at 1200 s, on this session's 8-CPU share with the ship's full suite running; more builders only add",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-16",
-   "text": "model-shadow: ward-head: run m20261117-021719156: catches: the head adds 6, under 10; 6 is under 20% more than the rules' 32; false asks 0.337% of held-out normal calls, over 0.2%; 21.8 asks a day, ov",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-16",
-   "text": "model-shadow: ward-head: run m20261117-014616799: false asks 0.680% of held-out normal calls, over 0.2%; 43.6 asks a day, over 5; the false-ask rate rests on 294 held-out normal calls, under the 500 a",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-17",
-   "text": "T-4827 lands as a union: the call shapes are added and the old bare-word rule stays, so the guard blocks no less and the self-change check passes; letting plain words through is a separate task waitin",
-   "later": null,
-   "confidence": null,
-   "kind": "outward"
-  },
-  {
-   "date": "2026-11-16",
-   "text": "Round 3's dry probe (a local model, two lenses, two rounds, past every earlier ideas.md) gave 42 new titles; grounding put every one in a cluster: built (upstream watch, claude-compatible flags, hooks",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-16",
-   "text": "T-1382 round 3 is dry: 42 new titles from a local-model probe ground to 0 new ideas of value (all built, folded into T-3856, or skipped with reasons); the recursive rounds stop",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-16",
-   "text": "Recommendation: stop the fm code brainstorm loop: round 1's 522 ideas are catalogued and their build clusters were briefed and worked; the 2026-10-20 probe past 368 earlier ideas gave 2 of real value ",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-16",
-   "text": "Ship again to the public main (23rd renewal of the publish grant on T-4581): the previous ship stopped at the last verified commit, before the CI fix; the post-merge verify has now run on the tip carr",
-   "later": null,
-   "confidence": null,
-   "kind": "outward"
-  },
-  {
-   "date": "2026-11-16",
-   "text": "Ship trunk to the public main (22nd renewal of the publish grant on T-4581, under the user's standing full-auto request): it carries the CI fix for the red 10:05 push (T-4820), builders' foreground-wa",
-   "later": null,
-   "confidence": null,
-   "kind": "outward"
-  },
-  {
-   "date": "2026-11-16",
-   "text": "Do not install rtk. Over 7 days this project's 33,461 model calls re-read 3.16B cached tokens; tool outputs are 19% of that, and the commands rtk filters (git, grep, ls, test runners, linters) about 4",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-16",
-   "text": "T-4785: the guard refuses a line whose command word is an unreadable expansion followed by another unreadable word ($EDITOR $FILE) as system, rather than soften the computed-word rule; 0 of 901 corpus",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-16",
-   "text": "Parked T-4820 at a one-way, ambiguous step: test_cargo_disk.TheOldSharedFolder.test_tidy_lists_it_and_apply_removes_it (test_cargo_disk.py:1489): on macOS (no /proc) the old shared folder was removed ",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-16",
-   "text": "Renewed T-4581's publish grant myself (twenty-first time) to push trains 1116b and 1116c (T-4783, T-4293, T-4780, T-4792, T-4774) to the public main, under the standing rule that main pushes are pre-a",
-   "later": null,
-   "confidence": null,
-   "kind": "outward"
-  },
-  {
-   "date": "2026-11-16",
-   "text": "T-4774: the guard will refuse the repository's own install.sh when an agent runs it (its uv installer pipes a download into sh): accepted, it is the same finding and grant as the typed line",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-16",
-   "text": "Renewed T-4581's publish grant (twentieth) to ship train 1116a's landings (workflow lint, gated single merges, unread scripts refused) to the public main: main pushes are pre-approved by the user's st",
-   "later": null,
-   "confidence": null,
-   "kind": "outward"
-  },
-  {
-   "date": "2026-11-16",
-   "text": "T-4789: kept 'reproduce first' over the rival read's divisor fixes: the one sample of the slot folder showed no waiters while the run idled, so the divisor is unproven; the rival's two-tier divisor an",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-16",
-   "text": "Renewed T-4581's publish grant (nineteenth) to ship train 1115p's landings and the CI fix to the public main: main pushes are pre-approved by the user's standing rule",
-   "later": null,
-   "confidence": null,
-   "kind": "outward"
-  },
-  {
-   "date": "2026-11-16",
-   "text": "T-4758 (unread scripts refused) may land: on its current head the guard reads all 726 real scripts on this machine and 381 user-owned ones inside its budgets (0 refused as too long; the trunk refuses ",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-16",
-   "text": "T-4758 (unread scripts refused) stays out of the trunk until the guard's script parse is near-linear: its builder measured 1.9 s CPU at 4.7 KB and 44 s at 37 KB, so the rule would refuse every ordinar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-16",
-   "text": "Raised the builder cap from 2 to 3 for T-4771",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-16",
-   "text": "Ship train 1115l (T-4154, T-4155, T-4283, T-4768) to GitHub main on a publish grant renewed by the session (eighteenth renewal)",
-   "later": null,
-   "confidence": null,
-   "kind": "outward"
-  },
-  {
-   "date": "2026-11-16",
-   "text": "T-4758: a script the command guard cannot read to the end within its hard budget is refused outright, instead of allowed after a word scan",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-15",
-   "text": "Renewed T-4581's publish grant after the ship at 54b6023ca (seventeenth renewal; main pushes are pre-approved by the user's standing rule)",
-   "later": null,
-   "confidence": null,
-   "kind": "outward"
-  },
-  {
-   "date": "2026-11-15",
-   "text": "Renewed T-4581's publish grant after the ship at 67b434bf6 (sixteenth renewal; main pushes are pre-approved by the user's standing rule)",
-   "later": null,
-   "confidence": null,
-   "kind": "outward"
-  },
-  {
-   "date": "2026-11-15",
-   "text": "T-4742: excusals stay capped at half the risk cap per project per day, so a day like the other project's 2026-11-15 still steps down; widening it is the user's call",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-15",
-   "text": "Renewed T-4581's publish grant (fifteenth) after train 1115h shipped 6 commits to main at 9a0e556a7; the user's standing rule pre-approves main pushes",
-   "later": null,
-   "confidence": null,
-   "kind": "outward"
-  },
-  {
-   "date": "2026-11-15",
-   "text": "Renewed T-4581's publish grant (fourteenth) after a hand ship put 7 commits on main at 9b8f6ad59 (train 1115g's own ship had been refused on a test it did not name; the re-run passed); the user's stan",
-   "later": null,
-   "confidence": null,
-   "kind": "outward"
-  },
-  {
-   "date": "2026-11-15",
-   "text": "Renewed T-4581's publish grant (thirteenth) after train 1115f shipped 7 commits to main at 62e41e23c; the user's standing rule pre-approves main pushes",
-   "later": null,
-   "confidence": null,
-   "kind": "outward"
-  },
-  {
-   "date": "2026-11-15",
-   "text": "Renewed T-4581's publish grant (twelfth renewal) after the ship of 5 commits to main at 6fd32b4c8; the user's standing rule pre-approves releases and main pushes",
-   "later": null,
-   "confidence": null,
-   "kind": "outward"
-  },
-  {
-   "date": "2026-11-15",
-   "text": "Renewed the publish grant on T-4581 for the next train's ship to GitHub main (eleventh renewal; main pushes are pre-approved by the user's standing rule); the last ship put 3 commits on main at 3f1223",
-   "later": null,
-   "confidence": null,
-   "kind": "outward"
-  },
-  {
-   "date": "2026-11-15",
-   "text": "T-3091: criteria 1 and 2 reworded to what is true: the per-lane low-load bench was never run and the named lanes merged long ago; the finding note says so plainly instead of claiming the bench",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-15",
-   "text": "Renewed the publish grant on T-4581 for the next train's ship to GitHub main (tenth renewal; main pushes are pre-approved by the user's standing rule); the last ship put 11 commits on main at c46fe8ec",
-   "later": null,
-   "confidence": null,
-   "kind": "outward"
-  },
-  {
-   "date": "2026-11-15",
-   "text": "Renewed the publish grant on T-4581 for the next train's ship to GitHub main (ninth renewal; main pushes are pre-approved by the user's standing rule)",
-   "later": null,
-   "confidence": null,
-   "kind": "outward"
-  },
-  {
-   "date": "2026-11-15",
-   "text": "Set the builder limit to 2 at once (it read 12): the user's 2026-11-08 instruction was fewer subagents, two lanes at most; two builders (T-4680, T-4679) and a four-lane train are running, so the drive",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-15",
-   "text": "read T-4690: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
   }
  ],
  "louhi": {
